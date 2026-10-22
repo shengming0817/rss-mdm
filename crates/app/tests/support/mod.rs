@@ -67,3 +67,5 @@ pub(crate) mod storage;
 #[path = "../../../content-service/tests/fixtures/installers.rs"]
 pub(crate) mod installer_fixtures;
 pub(crate) mod runtime;
+
+pub(crate) mod gateway;

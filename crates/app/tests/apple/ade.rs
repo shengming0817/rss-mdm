@@ -500,13 +500,14 @@ impl Control {
         let startup = owner.startup()?;
         let mut launch = startup.commit();
         launch.stage_task_with_token(
-            tls::registration(
+            crate::test_support::gateway::registration(
                 listener,
                 tls,
                 f.app.audit_store.clone(),
                 case_tenant().into(),
                 native::NativeListenerKind::AppleWebhookFixture,
             )
+            .await?
             .critical(),
         );
         launch.finish();

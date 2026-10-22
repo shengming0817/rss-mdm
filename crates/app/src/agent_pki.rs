@@ -61,6 +61,7 @@ impl Config {
         _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
+        bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
@@ -93,8 +94,6 @@ impl Config {
             rss_mdm_device_trust::agent::AgentTrust::from_trust(device_trust, days)
                 .map_err(|_| invalid())?,
         );
-        let prepared_bootstrap = self.bootstrap_materials(&providers, clock.unix_seconds()?)?;
-        let bootstrap = prepared_bootstrap;
         let issuer = AgentIssuer::new(
             providers,
             days,
@@ -131,6 +130,18 @@ impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
     }
 }
 impl AgentPki {
+    pub(crate) fn remove_bootstrap(
+        &mut self,
+        endpoint: &crate::native::TlsEndpoint,
+    ) -> Result<(), Error> {
+        let verifier =
+            rss_mdm_device_trust::enrollment_verifier(vec![self.issuer.trust().trust.clone()])
+                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
+        self.tls = crate::native::tls::configuration(endpoint, Some(verifier))?;
+        self.bootstrap = None;
+        Ok(())
+    }
+
     pub(crate) fn issuance_ready(&self, now: i64) -> bool {
         !matches!(
             health(self.issuer.trust().expires(), now, self.required_seconds),

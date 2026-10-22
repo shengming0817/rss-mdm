@@ -564,3 +564,9 @@ mod contract_tests {
         assert_eq!(actual, published);
     }
 }
+
+/// Current eligibility of an exact loaded WNS revision, shared by diagnostics and dispatch.
+pub async fn is_selected(c: &mut PgConnection, tenant: &str, revision: i64) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=$2 AND selected AND NOT revoked AND qualified_at IS NOT NULL)")
+        .bind(tenant).bind(revision).fetch_one(c).await.map_err(db)
+}

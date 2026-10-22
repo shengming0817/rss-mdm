@@ -480,7 +480,7 @@ add('catalog.contract', build=None, python='catalog',
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
 # Gateway owns a complete product host and therefore its tenant projection claim.
 add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity','local_worker'),
-    sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
+    sources=('deployment/nginx.conf','deployment/http.conf'), support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
 MODULES['gateway.admission'] = replace(MODULES['gateway.admission'], scope='tenant')
 
 
@@ -2071,3 +2071,9 @@ consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current
 MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
+
+consume(('crates/app/src/native/proxy.rs',), 'native.tls gateway.admission apple.host')
+consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')
+
+for name in ('native.tls','apple.host'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/gateway.rs'))

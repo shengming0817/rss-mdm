@@ -172,15 +172,32 @@ pub(crate) async fn open(
         let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
             protection: protection.clone(),
         });
-        let signer = if let Some(signing) = &config.task_signing {
-            Some(Arc::new(
-                crate::task_signing::open(signing, &config.access_database, tenant, &protection)
-                    .await?
-                    .task,
-            ))
-        } else {
-            None
+        let channels = Arc::new(crate::channel_status::Channels::new(config));
+        let providers = crate::device_pki::prepare(&config.device_pki, &channels)?;
+        let loaded_signing = crate::task_signing::prepare(
+            config.task_signing.as_ref(),
+            &config.access_database,
+            tenant,
+            &protection,
+            &channels,
+        )
+        .await?;
+        let (signer, configuration_signer) = match loaded_signing {
+            Some(loaded) => (
+                Some(Arc::new(loaded.task)),
+                Some(Arc::new(loaded.configuration)),
+            ),
+            None => (None, None),
         };
+        let bootstrap = channels
+            .material(
+                rss_mdm_management_http::runtime_diagnostics::ChannelName::AgentBootstrap,
+                config.agent_pki.bootstrap_materials(
+                    &providers,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                ),
+            )?
+            .flatten();
         let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
             rss_mdm_software_service::catalog::Reader::new(tenant),
             exports
@@ -199,26 +216,18 @@ pub(crate) async fn open(
                     crate::agent_pki::Config::StepCa { endpoint, .. } => endpoint.origin.clone(),
                     _ => String::new(),
                 },
-                bootstrap: config
-                    .agent_pki
-                    .bootstrap_materials(
-                        crate::device_pki::providers(&config.device_pki)?.as_ref(),
-                        time::OffsetDateTime::now_utc().unix_timestamp(),
-                    )?
-                    .map(|_| {
-                        config
-                            .device_pki
-                            .iter()
-                            .filter(|p| {
-                                p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
-                            })
-                            .filter_map(|p| {
-                                p.scep_url
-                                    .as_ref()
-                                    .map(|url| (p.issuer.clone(), url.clone()))
-                            })
-                            .collect()
-                    }),
+                bootstrap: bootstrap.as_ref().map(|_| {
+                    config
+                        .device_pki
+                        .iter()
+                        .filter(|p| p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap)
+                        .filter_map(|p| {
+                            p.scep_url
+                                .as_ref()
+                                .map(|url| (p.issuer.clone(), url.clone()))
+                        })
+                        .collect()
+                }),
                 enrollment_entries: config.enrollment_entries.clone(),
                 runtime: runtime.clone(),
                 tenant,
@@ -271,6 +280,10 @@ pub(crate) async fn open(
         ));
         service.validate_recovery_credentials().await?;
         Ok(Assembly {
+            channels,
+            providers,
+            bootstrap,
+            configuration_signer,
             #[cfg(test)]
             webhooks: Arc::default(),
             service,
@@ -290,6 +303,12 @@ pub(crate) async fn open(
 
 #[derive(Clone)]
 pub(crate) struct Assembly {
+    pub(crate) channels: Arc<crate::channel_status::Channels>,
+    pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
+    pub(crate) bootstrap:
+        Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
+    pub(crate) configuration_signer:
+        Option<Arc<rss_mdm_registration_service::agent::configurations::Signer>>,
     #[cfg(test)]
     pub(crate) webhooks: Arc<std::sync::OnceLock<Arc<crate::webhooks::Backend>>>,
     pub(crate) service: Arc<ExecutionService>,

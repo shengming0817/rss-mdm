@@ -112,7 +112,8 @@ impl Input {
             || !u.username().is_empty()
             || u.password().is_some()
             || u.origin().ascii_serialization() != self.origin
-            || !self.listen.ip().is_loopback()
+            || self.listen.ip().is_unspecified()
+            || self.trusted_gateway.is_unspecified()
             || self.listen.port() == 0
             || self.database.name.is_empty()
             || self.organization_name.trim().is_empty()

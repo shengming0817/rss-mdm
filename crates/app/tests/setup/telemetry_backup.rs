@@ -57,6 +57,7 @@ pub(crate) async fn roundtrip(
             installation: Input {
                 directory,
                 deployment: super::super::runtime_files::Config {
+                    gateway_directory: root.join("gateway"),
                     directory: inputs.clone(),
                     probe_address: None,
                     certificate_file: inputs.join("server.crt"),

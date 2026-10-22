@@ -33,11 +33,14 @@ async fn lock(c: &mut PgConnection, tenant: TenantId) -> Result<i64, Error> {
     .map_err(db)
 }
 pub async fn current(c: &mut PgConnection, tenant: TenantId) -> Result<Trust, Error> {
-    let body:serde_json::Value=sqlx::query_scalar("SELECT v.body FROM mdm_task_signing.versions v JOIN mdm_task_signing.heads h USING(tenant_id,revision) WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(c).await.map_err(db)?;
-    let trust: Trust = serde_json::from_value(body).map_err(|_| Error::Conflict)?;
-    trust.validate().map_err(|_| Error::Conflict)?;
+    let body:serde_json::Value=sqlx::query_scalar("SELECT v.body FROM mdm_task_signing.versions v JOIN mdm_task_signing.heads h USING(tenant_id,revision) WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
+    let trust: Trust = serde_json::from_value(body)
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
+    trust
+        .validate()
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
     if trust.tenant.to_string() != tenant.to_string() {
-        return Err(Error::Conflict);
+        return Err(Error::Unavailable(crate::Failure::CommandInvariant));
     }
     Ok(trust)
 }
@@ -276,28 +279,12 @@ pub async fn load(
     revision: u64,
     protection: &Protector,
 ) -> Result<Loaded, Error> {
-    let current = current(c, tenant).await?;
-    let body: serde_json::Value = sqlx::query_scalar(
-        "SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND revision=$2",
-    )
-    .bind(tenant.to_string())
-    .bind(i64::try_from(revision).map_err(|_| Error::Malformed)?)
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(db)?
-    .ok_or(Error::Conflict)?;
-    let trust: Trust = serde_json::from_value(body).map_err(|_| Error::Conflict)?;
-    trust.validate().map_err(|_| Error::Conflict)?;
+    let trust = selected_trust(c, tenant, revision).await?;
     let active = trust
         .keys
         .iter()
         .find(|k| k.state == KeyState::Active)
         .ok_or(Error::Conflict)?;
-    if !current.keys.iter().any(|k| {
-        k.id == active.id && k.public_key == active.public_key && k.state == KeyState::Active
-    }) {
-        return Err(Error::Conflict);
-    }
     let sealed: Vec<u8> = sqlx::query_scalar(
         "SELECT private_key FROM mdm_task_signing.keys WHERE tenant_id=$1::uuid AND key_id=$2",
     )
@@ -308,21 +295,63 @@ pub async fn load(
     .map_err(db)?;
     let private = protection
         .open_bytes(&sealed, &aad(tenant, &active.id)?)
-        .map_err(|_| Error::Conflict)?;
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
     let keys = trust
         .keys
         .iter()
         .map(|key| (key.id.clone(), key.public_key.clone()))
         .collect();
     Ok(Loaded {
-        task: super::Signer::from_bytes(private.expose(), &active.id, &keys)?,
+        task: super::Signer::from_bytes(private.expose(), &active.id, &keys)
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
         configuration: rss_mdm_registration_service::agent::configurations::Signer::new(
             private.expose(),
             &active.id,
             &keys,
         )
-        .map_err(|_| Error::Conflict)?,
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
     })
+}
+
+async fn selected_trust(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    revision: u64,
+) -> Result<Trust, Error> {
+    let current = current(c, tenant).await?;
+    let body: serde_json::Value = sqlx::query_scalar(
+        "SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND revision=$2",
+    )
+    .bind(tenant.to_string())
+    .bind(i64::try_from(revision).map_err(|_| Error::Malformed)?)
+    .fetch_optional(&mut *c)
+    .await
+    .map_err(db)?
+    .ok_or(Error::Conflict)?;
+    let trust: Trust = serde_json::from_value(body)
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
+    trust
+        .validate()
+        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
+    let active = trust
+        .keys
+        .iter()
+        .find(|k| k.state == KeyState::Active)
+        .ok_or(Error::Conflict)?;
+    if !current.keys.iter().any(|k| {
+        k.id == active.id && k.public_key == active.public_key && k.state == KeyState::Active
+    }) {
+        return Err(Error::Conflict);
+    }
+    Ok(trust)
+}
+/// Check the loaded revision against the current authority without decrypting private material.
+pub async fn check_revision(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    revision: u64,
+) -> Result<(), Error> {
+    selected_trust(c, tenant, revision).await.map(|_| ())
 }
 
 pub async fn operation(c: &mut PgConnection, tenant: TenantId, id: Uuid) -> Result<Trust, Error> {

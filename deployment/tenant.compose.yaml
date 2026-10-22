@@ -4,6 +4,7 @@ services:
     extends: {file: production.compose.yaml, service: server}
     depends_on: !reset {}
     networks:
+      ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:?tenant backend address required}"}
       default:
         aliases: !override ["${MDM_SERVER_ALIAS:?}"]
     volumes: !override
@@ -12,15 +13,8 @@ services:
         target: /run/mdm
         read_only: true
         volume: {subpath: "${MDM_RUNTIME_SUBPATH:?}/server", nocopy: true}
-  gateway:
-    extends: {file: production.compose.yaml, service: gateway}
-    volumes: !override
-      - type: volume
-        source: state
-        target: /run/gateway
-        read_only: true
-        volume: {subpath: "${MDM_RUNTIME_SUBPATH:?}/gateway", nocopy: true}
 volumes:
   state: {external: true, name: "${MDM_STATE_VOLUME:?}"}
 networks:
+  ingress: {external: true, name: "${MDM_INGRESS_NETWORK:?}"}
   default: {external: true, name: "${MDM_NETWORK:?}"}

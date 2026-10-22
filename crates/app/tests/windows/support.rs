@@ -375,6 +375,7 @@ impl Host {
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
+            config.agent_pki.bootstrap_materials(crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
         let agent_enrollment = agent_pki
             .as_ref()
@@ -460,6 +461,7 @@ impl Host {
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         let app = Arc::new(Assembly {
+            channels: execution.channels.clone(),
             telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
             apple_material_roots: Arc::new(Vec::new()),
@@ -575,13 +577,14 @@ impl Host {
                 .pop()
                 .expect("additional management listener");
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     listener,
                     router,
                     self.app.audit_store.clone(),
                     case_tenant().into(),
                     kind,
                 )
+                .await?
                 .critical(),
             );
         }
@@ -598,13 +601,14 @@ impl Host {
             ),
         ] {
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     listener,
                     router,
                     self.app.audit_store.clone(),
                     case_tenant().into(),
                     kind,
                 )
+                .await?
                 .critical(),
             );
         }

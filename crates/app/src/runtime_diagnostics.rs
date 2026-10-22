@@ -5,6 +5,8 @@ use rss_mdm_management_http::runtime_diagnostics::*;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
+    pub channels: Arc<crate::channel_status::Channels>,
+    pub apple_store: Arc<rss_mdm_apple_channel::Store>,
     pub access: sqlx::PgPool,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
@@ -35,7 +37,6 @@ impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
         let audit = self.audit_health();
-        let apple = self.apple_health();
         let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
@@ -78,7 +79,7 @@ impl RuntimeDiagnostics {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
         let execution = execution_component(self.execution.health());
-        let mut components = vec![inventory, audit, apple, automation, execution];
+        let mut components = vec![inventory, audit, automation, execution];
         if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
             components.push(telemetry);
         }
@@ -86,6 +87,7 @@ impl RuntimeDiagnostics {
             components.push(initialization);
         }
         Snapshot {
+            channels: self.channel_health(cutoff).await,
             alive: true,
             ready: components
                 .iter()
@@ -347,30 +349,97 @@ impl RuntimeDiagnostics {
         }
         audit
     }
-    fn apple_health(&self) -> Component {
-        let Some(apple) = &self.apple else {
-            let mut result = component(ComponentName::Apple, false);
-            result.readiness = Readiness::NotApplicable;
-            result.health = Health::NotApplicable;
-            return result;
+    async fn channel_health(&self, cutoff: Instant) -> Vec<ChannelStatus> {
+        let mut channels = self.channels.snapshot();
+        for channel in &mut channels {
+            if channel.state != ChannelState::Ready {
+                continue;
+            }
+            let failure = match self.clock.unix_seconds() {
+                Ok(now) => match channel.name {
+                    ChannelName::Apple => self.apple_failure(now, cutoff).await,
+                    ChannelName::Signing | ChannelName::WindowsPush => {
+                        self.selected_material_failure(channel, cutoff).await
+                    }
+                    _ => None,
+                },
+                Err(_) => Some(Reason::ClockUnavailable),
+            };
+            if let Some(reason) = failure {
+                channel.state = ChannelState::Degraded;
+                channel.reasons = vec![reason];
+            }
+        }
+        channels
+    }
+    async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
+        let apple = self.apple.as_ref()?;
+        let health = apple.channel.health(now);
+        if health.certificates_expired() {
+            return Some(Reason::CertificateExpired);
+        }
+        if !health.push_available {
+            return Some(Reason::PushUnavailable);
+        }
+        match tokio::time::timeout_at(
+            cutoff.into(),
+            apple
+                .channel
+                .check_materials(&self.apple_store, &self.tenant.to_string(), now),
+        )
+        .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(rss_mdm_apple_channel::Error::Conflict)) => Some(Reason::MaterialInvalid),
+            _ => Some(Reason::DependencyUnavailable),
+        }
+    }
+    async fn selected_material_failure(
+        &self,
+        channel: &ChannelStatus,
+        cutoff: Instant,
+    ) -> Option<Reason> {
+        let key = match channel.name {
+            ChannelName::WindowsPush => "wns",
+            ChannelName::Signing => "signing",
+            _ => return None,
         };
-        match self.clock.unix_seconds() {
-            Ok(now) => {
-                let state = apple.channel.health(now);
-                let mut result = component(ComponentName::Apple, state.is_ready());
-                if !state.push_available {
-                    result.reasons.push(Reason::PushUnavailable);
+        let Some(revision) = channel.loaded_materials.get(key) else {
+            return Some(Reason::MaterialNotSelected);
+        };
+        let check = async {
+            let mut tx = self.access.begin().await.map_err(|_| ())?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true)").bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_| ())?;
+            let valid = match channel.name {
+                ChannelName::WindowsPush => rss_mdm_windows_channel::wns_materials::is_selected(
+                    &mut tx,
+                    &self.tenant.to_string(),
+                    *revision,
+                )
+                .await
+                .map_err(|_| ()),
+                ChannelName::Signing => {
+                    match rss_mdm_execution_service::task_signing::trust::check_revision(
+                        &mut tx,
+                        self.tenant,
+                        *revision as u64,
+                    )
+                    .await
+                    {
+                        Ok(()) => Ok(true),
+                        Err(rss_mdm_execution_service::Error::Conflict) => Ok(false),
+                        Err(_) => Err(()),
+                    }
                 }
-                if state.certificates_expired() {
-                    result.reasons.push(Reason::CertificateExpired);
-                }
-                result
-            }
-            Err(_) => {
-                let mut result = component(ComponentName::Apple, false);
-                result.reasons.push(Reason::ClockUnavailable);
-                result
-            }
+                _ => Err(()),
+            };
+            tx.rollback().await.map_err(|_| ())?;
+            valid
+        };
+        match tokio::time::timeout_at(cutoff.into(), check).await {
+            Ok(Ok(true)) => None,
+            Ok(Ok(false)) => Some(Reason::MaterialRevoked),
+            _ => Some(Reason::DependencyUnavailable),
         }
     }
 }

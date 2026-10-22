@@ -8,31 +8,36 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-const GATEWAY_PORT: u16 = 8445;
 
-/// All runtime listeners share the gateway's container network namespace.
+/// Native listeners share only the backend namespace; the gateway has its own.
 pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
-    let mut ports = vec![config.listen.port()];
+    let mut addresses = vec![config.listen];
     if let Some(windows) = &config.native_protocols.windows {
-        ports.extend([
-            windows.enrollment.listen.port(),
-            windows.management.listen.port(),
-        ]);
-        ports.extend(
+        addresses.extend([windows.enrollment.listen, windows.management.listen]);
+        addresses.extend(
             windows
                 .additional_management
                 .iter()
-                .map(|endpoint| endpoint.listen.port()),
+                .map(|endpoint| endpoint.listen),
         );
     }
     if let Some(apple) = &config.native_protocols.apple {
-        ports.push(apple.management.listen.port());
+        addresses.push(apple.management.listen);
     }
     if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
-        ports.push(endpoint.listen.port());
+        addresses.push(endpoint.listen);
     }
-    if ports.contains(&GATEWAY_PORT) {
-        return Err(Error::Input);
+    for (i, address) in addresses.iter().enumerate() {
+        if address.port() == 0
+            || addresses[..i].iter().any(|other| {
+                other.port() == address.port()
+                    && (other.ip() == address.ip()
+                        || other.ip().is_unspecified()
+                        || address.ip().is_unspecified())
+            })
+        {
+            return Err(Error::Input);
+        }
     }
     Ok(())
 }
@@ -42,6 +47,8 @@ pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
 pub struct Config {
     /// Runtime files mounted by the deployment manifest.
     pub directory: PathBuf,
+    /// Shared ingress output for all tenant hosts on this gateway.
+    pub gateway_directory: PathBuf,
     /// Optional internal HTTPS endpoint; certificate identity remains product_origin.
     pub probe_address: Option<String>,
     pub certificate_file: PathBuf,
@@ -149,31 +156,45 @@ fn project(
     journal: &Journal,
     mounts: &mut BTreeMap<String, PathBuf>,
     local: bool,
+    optional: bool,
 ) -> Result<()> {
     match value {
         Value::Object(values) => {
             for (name, value) in values {
+                // Only device channel material trees are optional; core database/identity/protection inputs are not.
+                let optional = optional
+                    || matches!(
+                        name.as_str(),
+                        "native_protocols" | "agent_pki" | "device_pki" | "apple_material_roots"
+                    );
                 if name.ends_with("_file") && value.is_string() {
-                    project_file(value, journal, mounts, !public_file(name), local)?;
+                    project_file(value, journal, mounts, !public_file(name), local, optional)?;
                 } else if matches!(name.as_str(), "key_files" | "credential_keys") {
                     for key in value.as_object_mut().ok_or(Error::Input)?.values_mut() {
-                        project_file(key, journal, mounts, true, local)?;
+                        project_file(key, journal, mounts, true, local, optional)?;
                     }
                 } else if matches!(
                     name.as_str(),
                     "apple_material_roots" | "historical_files" | "ca_files"
                 ) {
                     for root in value.as_array_mut().ok_or(Error::Input)? {
-                        project_file(root, journal, mounts, name == "historical_files", local)?;
+                        project_file(
+                            root,
+                            journal,
+                            mounts,
+                            name == "historical_files",
+                            local,
+                            optional,
+                        )?;
                     }
                 } else {
-                    project(value, journal, mounts, local)?;
+                    project(value, journal, mounts, local, optional)?;
                 }
             }
         }
         Value::Array(values) => {
             for value in values {
-                project(value, journal, mounts, local)?;
+                project(value, journal, mounts, local, optional)?;
             }
         }
         _ => (),
@@ -186,12 +207,26 @@ fn project_file(
     mounts: &mut BTreeMap<String, PathBuf>,
     private: bool,
     local: bool,
+    optional: bool,
 ) -> Result<()> {
     let source = Path::new(value.as_str().ok_or(Error::Input)?);
-    if !source.is_absolute() {
+    if !source.is_absolute() && !(optional && source.as_os_str().is_empty()) {
         return Err(Error::Input);
     }
-    let bytes = crate::config::read(source, 64 * 1024 * 1024, private).map_err(|_| Error::Input)?;
+    let bytes = match crate::config::read(source, 64 * 1024 * 1024, private) {
+        Ok(bytes) => bytes,
+        Err(_) if optional => {
+            // No stand-in secret or stale copied material: the running channel observes an absent input.
+            if !local {
+                *value = Value::String(format!(
+                    "/run/mdm/unavailable-{:x}",
+                    Sha256::digest(source.as_os_str().as_encoded_bytes())
+                ));
+            }
+            return Ok(());
+        }
+        Err(_) => return Err(Error::Input),
+    };
     let filename = format!(
         "input-{:x}",
         if local {
@@ -211,7 +246,7 @@ fn project_file(
 }
 /// Freeze deployment file inputs under content-addressed private names before computing an application digest.
 pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
-    project(runtime, journal, &mut BTreeMap::new(), true)
+    project(runtime, journal, &mut BTreeMap::new(), true, false)
 }
 
 // ref: smallstep/certificates scep/api/api.go@v0.30.2; nginx ngx_http_proxy_module.
@@ -240,8 +275,14 @@ fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<S
         if ca.scheme() != "https" || ca.origin().ascii_serialization() != provider.origin {
             return Err(Error::Input);
         }
-        let root = crate::config::read(&provider.tls_root_file, 131072, false)
-            .map_err(|_| Error::Input)?;
+        let Ok(root) = crate::config::read(&provider.tls_root_file, 131072, false) else {
+            // reason: an unavailable optional CA has no public SCEP route; the catch-all rejects it.
+            continue;
+        };
+        if reqwest::Certificate::from_pem(&root).is_err() {
+            // reason: malformed optional CA input must not make the entire gateway configuration unloadable.
+            continue;
+        }
         let name = format!("scep-root-{:x}.crt", Sha256::digest(&root));
         let route = (
             provider.origin.clone(),
@@ -301,7 +342,7 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
     validate_listeners(&decoded)?;
     let compiled = decoded.compile().map_err(|_| Error::Input)?;
     let decoded = &compiled.config;
-    if !decoded.listen.ip().is_loopback() || decoded.trusted_gateway != decoded.listen.ip() {
+    if decoded.listen.ip().is_unspecified() || decoded.trusted_gateway.is_unspecified() {
         return Err(Error::Input);
     }
     let origin = url::Url::parse(&decoded.product_origin).map_err(|_| Error::Input)?;
@@ -322,9 +363,11 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
         tls.apply(&mut effective);
     }
     let server = Journal::open(&config.directory.join("server"))?;
-    let gateway = Journal::open(&config.directory.join("gateway"))?;
+    let ingress = Journal::open(&config.gateway_directory)?;
+    let host_id = decoded.runtime_binding.host_id.simple().to_string();
+    let gateway = Journal::open(&config.gateway_directory.join(&host_id))?;
     let mut projected = runtime.clone();
-    project(&mut projected, &server, &mut BTreeMap::new(), false)?;
+    project(&mut projected, &server, &mut BTreeMap::new(), false, false)?;
     server.save("runtime.json", &projected)?;
     let certificate = crate::config::read(&effective.certificate_file, 128 * 1024, false)
         .map_err(|_| Error::Input)?;
@@ -333,9 +376,8 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
     gateway.replace("tls.crt", &certificate)?;
     gateway.replace("tls.key", &key)?;
     let authority = &origin[url::Position::BeforeHost..url::Position::AfterPort];
-    let nginx = include_str!("../../../../deployment/nginx.conf")
+    let nginx = include_str!("../../../../deployment/http.conf")
         .replace("127.0.0.1:8081", &decoded.listen.to_string())
-        .replace("listen 443 ssl;", &format!("listen {GATEWAY_PORT} ssl;"))
         .replace(
             "server_name mdm.example.test;",
             &format!("server_name {hostname};"),
@@ -344,12 +386,38 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
             "proxy_set_header Host mdm.example.test;",
             &format!("proxy_set_header Host {authority};"),
         )
-        .replace("/private/mdm-tls.crt", "/run/gateway/tls.crt")
-        .replace("/private/mdm-tls.key", "/run/gateway/tls.key")
-        .replace("/run/config/ui.json", "/run/gateway/ui.json")
-        .replace("/run/config/mdm.json", "/run/gateway/mdm.json");
+        .replace(
+            "/private/mdm-tls.crt",
+            &format!("/run/gateway/{host_id}/tls.crt"),
+        )
+        .replace(
+            "/private/mdm-tls.key",
+            &format!("/run/gateway/{host_id}/tls.key"),
+        )
+        .replace(
+            "/run/config/ui.json",
+            &format!("/run/gateway/{host_id}/ui.json"),
+        )
+        .replace(
+            "/run/config/mdm.json",
+            &format!("/run/gateway/{host_id}/mdm.json"),
+        );
     let nginx = nginx.replace("# MDM_SCEP_LOCATIONS", &scep_locations(decoded, &gateway)?);
-    gateway.replace("nginx.conf", nginx.as_bytes())?;
+    let nginx = nginx
+        .replace("mdm_backend", &format!("mdm_backend_{host_id}"))
+        .replace(
+            "/run/gateway/scep-root-",
+            &format!("/run/gateway/{host_id}/scep-root-"),
+        );
+    Journal::open(&config.gateway_directory.join("http"))?
+        .replace(&format!("{host_id}.conf"), nginx.as_bytes())?;
+    let routes = ingress_routes(decoded)?;
+    Journal::open(&config.gateway_directory.join("routes"))?
+        .replace(&format!("{host_id}.conf"), routes.as_bytes())?;
+    ingress.replace(
+        "nginx.conf",
+        include_bytes!("../../../../deployment/nginx.conf"),
+    )?;
     let public = super::public_configuration::read(decoded).await?;
     gateway.save("ui.json", &public.identity)?;
     gateway.save("mdm.json", &public.mdm)?;
@@ -443,3 +511,50 @@ async fn observe(
 #[cfg(test)]
 #[path = "../../tests/setup/runtime_files.rs"]
 mod tests;
+
+fn ingress_routes(config: &crate::config::Config) -> Result<String> {
+    let mut routes = BTreeMap::new();
+    fn add(routes: &mut BTreeMap<String, String>, origin: &str, target: String) -> Result<()> {
+        let origin = url::Url::parse(origin).map_err(|_| Error::Input)?;
+        let hostname = origin.domain().ok_or(Error::Input)?;
+        if origin.scheme() != "https"
+            || origin.port_or_known_default() != Some(443)
+            || !hostname
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+            || routes.insert(hostname.to_owned(), target).is_some()
+        {
+            return Err(Error::Input);
+        }
+        Ok(())
+    }
+    add(&mut routes, &config.product_origin, "127.0.0.1:8445".into())?;
+    if let Some(w) = &config.native_protocols.windows {
+        for endpoint in [&w.enrollment, &w.management]
+            .into_iter()
+            .chain(&w.additional_management)
+        {
+            if endpoint.listen.ip().is_unspecified() {
+                return Err(Error::Input);
+            }
+            add(&mut routes, &endpoint.origin, endpoint.listen.to_string())?;
+        }
+    }
+    if let Some(a) = &config.native_protocols.apple {
+        add(
+            &mut routes,
+            &a.management.origin,
+            a.management.listen.to_string(),
+        )?;
+    }
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
+        if endpoint.listen.ip().is_unspecified() {
+            return Err(Error::Input);
+        }
+        add(&mut routes, &endpoint.origin, endpoint.listen.to_string())?;
+    }
+    Ok(routes
+        .into_iter()
+        .map(|(host, target)| format!("{host} {target};\n"))
+        .collect())
+}

@@ -42,6 +42,20 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
     let runtime: Value = owner
         .load("requested-runtime.json")?
         .ok_or(Error::Corrupt)?;
+    let intended: Vec<_> = [
+        Purpose::Agent,
+        Purpose::Windows,
+        Purpose::Apple,
+        Purpose::AgentBootstrap,
+    ]
+    .into_iter()
+    .filter(|purpose| channel(&runtime, *purpose).is_some())
+    .map(|purpose| device_origin(&runtime, purpose).map(|origin| (purpose, origin)))
+    .collect::<Result<_>>()?;
+    // Record no CA configuration operation until an explicit device endpoint exists.
+    if intended.is_empty() {
+        return Err(Error::Input);
+    }
     let current_profile = profile(&request.settings).await?;
     let client = client::Client::new(&current_profile, clock()?)?;
     let renewal = renewal_targets(
@@ -54,7 +68,10 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
     let settings = serde_json::to_vec(&request.settings).map_err(|_| Error::Input)?;
     let crl = crate::config::read(&request.settings.root_crl_file, 16 * 1024 * 1024, false)
         .map_err(|_| Error::Input)?;
-    let digest = rss_mdm_device_trust::digest(&[settings.as_slice(), crl.as_slice()].concat());
+    let intent = serde_json::to_vec(&intended).map_err(|_| Error::Input)?;
+    let digest = rss_mdm_device_trust::digest(
+        &[settings.as_slice(), crl.as_slice(), intent.as_slice()].concat(),
+    );
     let name = format!("step-ca-{}-{}", host.simple(), &digest[..16]);
     let journal = Journal::open(&request.installation.directory.join(name))?;
     journal.secret("settings.json", &settings)?;
@@ -101,7 +118,7 @@ pub async fn run(request: Request) -> Result<configure::Receipt> {
         },
     })
     .await?;
-    // Channel enablement can refine previously unbound addresses without changing this CA operation.
+    // Verify the explicitly selected channel endpoints under this CA operation.
     let journal = Journal::open(&directory.join(format!("configuration-{operation}")))?;
     let request: configure::Request = journal.load("request.json")?.ok_or(Error::Corrupt)?;
     if let configure::Change::StepCa { settings } = request.change {
@@ -203,6 +220,9 @@ pub(in crate::setup) async fn prepare(
         Purpose::Apple,
         Purpose::AgentBootstrap,
     ] {
+        if channel(runtime, purpose).is_none() {
+            continue;
+        }
         let owner = Journal::open(&journal.path(purpose_name(purpose))?)?;
         let existing = runtime["device_pki"]
             .as_array()
@@ -398,16 +418,6 @@ fn channel_path(p: Purpose) -> &'static str {
         Purpose::Apple => "/native_protocols/apple",
         Purpose::AgentBootstrap => "/agent_pki/bootstrap",
     }
-}
-fn default_origin(product: &str, purpose: Purpose) -> Result<String> {
-    let port = match purpose {
-        Purpose::Agent | Purpose::AgentBootstrap => 9445,
-        Purpose::Windows => 8444,
-        Purpose::Apple => 9446,
-    };
-    let mut url = url::Url::parse(product).map_err(|_| Error::Input)?;
-    url.set_port(Some(port)).map_err(|_| Error::Input)?;
-    Ok(url.origin().ascii_serialization())
 }
 async fn current_trust(
     c: &mut PgConnection,
@@ -611,6 +621,9 @@ async fn verify(journal: &Journal, runtime: &Value, settings: &Settings) -> Resu
         Purpose::Apple,
         Purpose::AgentBootstrap,
     ] {
+        if channel(runtime, purpose).is_none() {
+            continue;
+        }
         let owner = Journal::open(&journal.path(purpose_name(purpose))?)?;
         let expected: wire::Provisioner = owner.load("expected-jwk.json")?.ok_or(Error::Corrupt)?;
         ensure_provider(&client, &expected, Preparation::Import).await?;
@@ -650,13 +663,8 @@ fn device_origin(runtime: &Value, purpose: Purpose) -> Result<String> {
     source
         .and_then(|v| v.get(field))
         .and_then(|v| v["origin"].as_str())
-        .map(|v| Ok(v.to_owned()))
-        .unwrap_or_else(|| {
-            default_origin(
-                runtime["product_origin"].as_str().ok_or(Error::Corrupt)?,
-                purpose,
-            )
-        })
+        .map(str::to_owned)
+        .ok_or(Error::Input)
 }
 fn callback_origin(runtime: &Value, purpose: Purpose) -> Result<String> {
     if purpose == Purpose::AgentBootstrap {
@@ -694,6 +702,9 @@ async fn renewal_targets(
         .map_err(|_| Error::Corrupt)?;
     let mut result = Vec::new();
     for purpose in [Purpose::Apple, Purpose::AgentBootstrap] {
+        if channel(runtime, purpose).is_none() {
+            continue;
+        }
         let name = resource_name(names(purpose).1.ok_or(Error::Input)?, primary, tenant);
         if let Some(remote) = client.get::<wire::Provisioner>(&name, clock()?).await?
             && scep_needs_renewal(&remote)?

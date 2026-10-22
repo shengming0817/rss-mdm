@@ -75,9 +75,9 @@ def build(out, header, web_image=None, target_platform=None):
         staged.rename(out)
     print("candidate: " + str(out / "candidate.json"))
 
-RUNTIME_TOOLS = ("release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
+RUNTIME_TOOLS = ("gateway_fixture.py", "release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
-DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", "deployment/http.conf", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 

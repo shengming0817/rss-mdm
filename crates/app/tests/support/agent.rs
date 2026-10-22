@@ -65,6 +65,10 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
             fixture.audit.clone(),
             Arc::new(crate::clock::SystemClock),
             providers.clone(),
+            config.bootstrap_materials(
+                &providers,
+                crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+            )?,
         )?
         .ok_or_else(|| anyhow::anyhow!("Agent PKI fixture missing"))?;
     let registry = rss_mdm_pki_service::registry::Registry::new(
@@ -81,7 +85,7 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
         origin: pki.origin.clone(),
-        configuration_signer: Arc::new(fixture_signer()?),
+        configuration_signer: Some(Arc::new(fixture_signer()?)),
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
@@ -145,7 +149,7 @@ pub(crate) fn application_service(
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
         origin: pki.origin.clone(),
-        configuration_signer: Arc::new(fixture_signer()?),
+        configuration_signer: Some(Arc::new(fixture_signer()?)),
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: pki.bootstrap.clone(),
         binding: Arc::new(crate::agent::Bindings),
@@ -186,6 +190,7 @@ pub(crate) async fn seed_profile(
                 crate::device_pki::providers(&serde_json::from_value::<
                     Vec<crate::device_pki::Provider>,
                 >(base["device_pki"].clone())?)?,
+                None,
             )?
             .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
         let service = application_service(&pki, &access, audit, execution)?;
@@ -289,6 +294,7 @@ pub(crate) async fn enroll_profile(
             crate::device_pki::providers(&serde_json::from_value::<
                 Vec<crate::device_pki::Provider>,
             >(base["device_pki"].clone())?)?,
+            None,
         )?
         .unwrap();
     let chain = candidate["certificateChain"]

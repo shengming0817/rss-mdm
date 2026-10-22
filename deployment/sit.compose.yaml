@@ -1,5 +1,5 @@
 # Add to production.compose.yaml after preparing the existing CA/storage volumes.
-# Only device listeners are public; CA and RustFS stay on the Compose network.
+# Device traffic enters through the single 443 gateway; CA and RustFS stay private.
 services:
   step-ca:
     image: ${MDM_STEP_CA_IMAGE:?fixed step-ca image required}
@@ -37,19 +37,16 @@ services:
       retries: 3
       start_period: 30s
     restart: unless-stopped
-  init:
+  ca-init:
+    extends: {file: production.compose.yaml, service: init}
     environment:
       MDM_STEP_CA_CONFIG: /inputs/step-ca.json
+      MDM_INITIALIZE_CA_ONLY: "1"
     depends_on:
+      init: {condition: service_completed_successfully}
       step-ca: {condition: service_healthy}
-  server:
-    depends_on:
-      step-ca: {condition: service_healthy}
-      rustfs: {condition: service_healthy}
-    ports:
-      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_AGENT_PORT:-9445}:9445"
-      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_WINDOWS_ENROLLMENT_PORT:-8443}:8443"
-      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_WINDOWS_MANAGEMENT_PORT:-8444}:8444"
+    restart: on-failure
+
 volumes:
   pki: {external: true, name: "${MDM_CA_VOLUME:-rss-mdm_pki}"}
   rustfs: {external: true, name: "${MDM_RUSTFS_VOLUME:-rss-mdm_rustfs}"}

@@ -48,7 +48,7 @@ pub async fn cycle(
     loop {
         let mut read = dbase.begin_read(tenant).await?;
         if let Some(revision) = push.material_revision {
-            let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=$2 AND selected AND NOT revoked AND qualified_at IS NOT NULL)").bind(tenant).bind(revision).fetch_one(&mut *read).await.map_err(db)?;
+            let live = crate::wns_materials::is_selected(&mut read, tenant, revision).await?;
             if !live {
                 return Err(Error::Conflict);
             }

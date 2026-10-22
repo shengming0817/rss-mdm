@@ -124,7 +124,7 @@ impl Apple {
             })
             .collect()
     }
-    pub(crate) async fn check_materials(
+    pub async fn check_materials(
         &self,
         store: &Store,
         tenant: &str,

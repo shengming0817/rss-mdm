@@ -389,15 +389,16 @@ pub(crate) async fn grant_fault(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    owner
-        .startup()?
-        .stage_task_with_token(crate::native::tls::registration(
+    owner.startup()?.stage_task_with_token(
+        crate::test_support::gateway::registration(
             listener,
             router,
             peer.app.audit_store.clone(),
             case_tenant().into(),
             crate::native::NativeListenerKind::Agent,
-        ));
+        )
+        .await?,
+    );
     let result = async {
         let key = peer.directory.path().join("bootstrap.pk8");
         let mut io = super::agent_http::connect_agent_with_key(

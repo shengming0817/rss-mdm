@@ -58,7 +58,12 @@ pub(crate) fn configuration(
         config.send_tls13_tickets = 0;
         Ok(Arc::new(config))
     };
-    build().map_err(|_| Error::Configuration(ConfigIssue::NativeTls))
+    build().map_err(|error| match error {
+        Error::Configuration(
+            ConfigIssue::FileAccess | ConfigIssue::FileShape | ConfigIssue::FileSize,
+        ) => error,
+        _ => Error::Configuration(ConfigIssue::NativeTls),
+    })
 }
 pub(crate) fn registration(
     listener: TcpListener,
@@ -66,6 +71,7 @@ pub(crate) fn registration(
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
     kind: super::NativeListenerKind,
+    gateway: std::net::IpAddr,
 ) -> ManagedTaskRegistration {
     let router = if kind == super::NativeListenerKind::Agent {
         app.router
@@ -82,6 +88,7 @@ pub(crate) fn registration(
             audit_store,
             tenant,
             kind,
+            gateway,
         },
         kind.name(),
         crate::lifecycle::http_policy(),
@@ -108,6 +115,7 @@ struct TlsTransport {
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: String,
     kind: super::NativeListenerKind,
+    gateway: std::net::IpAddr,
 }
 impl ConnectionTransport for TlsTransport {
     type Io = TlsStream<TcpStream>;
@@ -117,13 +125,16 @@ impl ConnectionTransport for TlsTransport {
 
     async fn prepare(
         &self,
-        stream: TcpStream,
+        mut stream: TcpStream,
         socket_peer: SocketAddr,
     ) -> Result<EstablishedTransport<Self::Io, Self::Metadata, Self::Guard>, Self::Error> {
+        let source = super::proxy::source(&mut stream, socket_peer, self.gateway)
+            .await
+            .map_err(|_| ConnectionFailure::Gateway)?;
         // Capacity refusal is reported by Admission; it performs no TLS or PG work.
         let permit = self
             .admission
-            .connection(socket_peer.ip())
+            .connection(source.ip())
             .ok_or(ConnectionFailure::Capacity)?;
         let stream = match tokio::time::timeout(
             Duration::from_secs(5),
@@ -163,6 +174,7 @@ impl ConnectionTransport for TlsTransport {
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum ConnectionFailure {
+    Gateway,
     Capacity,
     HandshakeTimeout,
     HandshakeProtocol,

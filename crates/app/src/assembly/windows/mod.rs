@@ -103,8 +103,7 @@ impl Windows {
             &config.trust_file,
             rss_mdm_agent_wire::pki::Purpose::Windows,
             now,
-        )
-        .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
+        )?;
         if trust
             .public()
             .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?

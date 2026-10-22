@@ -8,7 +8,7 @@ pub(crate) fn load(
     now: i64,
 ) -> Result<DeviceTrust, Error> {
     let invalid = || Error::Configuration(ConfigIssue::AgentPki);
-    let bytes = crate::config::read(path, 64 * 1024 * 1024, false).map_err(|_| invalid())?;
+    let bytes = crate::config::read(path, 64 * 1024 * 1024, false)?;
     let trust: Trust = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     DeviceTrust::restore(trust, purpose, now).map_err(|_| invalid())
 }
@@ -52,6 +52,56 @@ pub(crate) fn providers(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    rss_mdm_pki_service::providers::Providers::new(entries)
+        .map(std::sync::Arc::new)
+        .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))
+}
+
+/// Prepare each issuer independently; a missing optional issuer cannot hide a valid one.
+pub(crate) fn prepare(
+    config: &[Provider],
+    channels: &crate::channel_status::Channels,
+) -> Result<std::sync::Arc<rss_mdm_pki_service::providers::Providers>, Error> {
+    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    if config.len() > 48
+        || config.iter().enumerate().any(|(i, p)| {
+            config[..i]
+                .iter()
+                .any(|q| p.purpose == q.purpose && p.issuer == q.issuer)
+        })
+    {
+        return Err(Error::Configuration(ConfigIssue::AgentPki));
+    }
+    let mut entries = Vec::new();
+    for p in config {
+        match providers(std::slice::from_ref(p)) {
+            Ok(prepared) => {
+                entries.push(rss_mdm_pki_service::providers::Provider {
+                    purpose: p.purpose,
+                    issuer: p.issuer.clone(),
+                    client: prepared
+                        .get(p.purpose, &p.issuer)
+                        .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?
+                        .clone(),
+                    scep_url: p.scep_url.clone(),
+                });
+            }
+            Err(Error::Configuration(_)) => {
+                let name = match p.purpose {
+                    Purpose::Windows => ChannelName::Windows,
+                    Purpose::Apple => ChannelName::Apple,
+                    Purpose::Agent => ChannelName::Agent,
+                    Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
+                };
+                channels.set(
+                    name,
+                    ChannelState::Degraded,
+                    Some(Reason::MaterialUnreadable),
+                )?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
     rss_mdm_pki_service::providers::Providers::new(entries)
         .map(std::sync::Arc::new)
         .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))

@@ -7,7 +7,7 @@ fn scep_gateway_publishes_exact_device_paths_with_private_upstream_tls() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let ca = root.join("ca.pem");
-    std::fs::write(&ca, b"public CA certificate").unwrap();
+    std::fs::write(&ca, test_certificate()).unwrap();
     config.product_origin = "https://mdm.example.test".into();
     config.device_pki = vec![crate::device_pki::Provider {
         purpose: rss_mdm_agent_wire::pki::Purpose::Apple,
@@ -45,16 +45,16 @@ fn scep_gateway_publishes_exact_device_paths_with_private_upstream_tls() {
 }
 
 #[test]
-fn runtime_listeners_cannot_take_the_shared_gateway_port() {
+fn runtime_listeners_reject_backend_collisions_not_gateway_namespace() {
     let mut config: crate::config::Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     assert!(validate_listeners(&config).is_ok());
-    config.listen.set_port(GATEWAY_PORT);
-    assert!(validate_listeners(&config).is_err());
+    config.listen.set_port(8445);
+    assert!(validate_listeners(&config).is_ok());
     config.listen.set_port(8081);
     let windows = config.native_protocols.windows.as_mut().unwrap();
     let mut endpoint = serde_json::to_value(&windows.management).unwrap();
-    endpoint["listen"] = json!("0.0.0.0:8445");
+    endpoint["listen"] = json!("0.0.0.0:8081");
     windows
         .additional_management
         .push(serde_json::from_value(endpoint).unwrap());
@@ -194,6 +194,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let primary = Config {
+        gateway_directory: root.join("gateway"),
         directory: root.join("primary-runtime"),
         content_volume: Some(root.join("primary-content")),
         probe_address: None,
@@ -234,6 +235,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
             origin: "https://secondary.example.test".into(),
             listen: "127.0.0.1:8082".parse().unwrap(),
             deployment: Config {
+                gateway_directory: root.join("gateway"),
                 directory: root.join(if explicit {
                     "explicit-runtime"
                 } else {
@@ -296,4 +298,71 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
             primary.content_snapshot(&runtime).unwrap()
         );
     }
+}
+
+#[test]
+fn optional_channel_files_do_not_block_projection_or_reuse_stale_secrets() {
+    let temporary = tempfile::tempdir().unwrap();
+    let journal = Journal::open(temporary.path()).unwrap();
+    let absent = temporary.path().join("absent-key");
+    let mut channel =
+        json!({"native_protocols":{"apple":{"management":{"private_key_file":absent}}}});
+    project(&mut channel, &journal, &mut BTreeMap::new(), false, false).unwrap();
+    let missing = channel["native_protocols"]["apple"]["management"]["private_key_file"]
+        .as_str()
+        .unwrap();
+    assert!(missing.starts_with("/run/mdm/unavailable-"));
+    let mut core = json!({"native_protection":{"active_file":absent}});
+    assert!(project(&mut core, &journal, &mut BTreeMap::new(), false, false).is_err());
+}
+
+#[test]
+fn sni_routes_share_443_without_sharing_authentication_listeners() {
+    let mut config: crate::config::Config =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    config.product_origin = "https://mdm.example.test".into();
+    config.agent_pki = crate::agent_pki::Config::Disabled {};
+    config.native_protocols.apple = None;
+    let windows = config.native_protocols.windows.as_mut().unwrap();
+    windows.enrollment.origin = "https://enroll.example.test".into();
+    windows.management.origin = "https://manage.example.test".into();
+    windows.additional_management.clear();
+    windows.enrollment.listen = "127.0.0.1:8443".parse().unwrap();
+    windows.management.listen = "127.0.0.1:8444".parse().unwrap();
+    let routes = ingress_routes(&config).unwrap();
+    assert!(routes.contains("mdm.example.test 127.0.0.1:8445;"));
+    assert!(routes.contains("enroll.example.test ") && routes.contains("manage.example.test "));
+    config
+        .native_protocols
+        .windows
+        .as_mut()
+        .unwrap()
+        .management
+        .origin = config.product_origin.clone();
+    assert!(ingress_routes(&config).is_err());
+}
+
+fn test_certificate() -> Vec<u8> {
+    use openssl::{
+        asn1::Asn1Time,
+        hash::MessageDigest,
+        pkey::PKey,
+        rsa::Rsa,
+        x509::{X509, X509NameBuilder},
+    };
+    let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "fixture CA").unwrap();
+    let name = name.build();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_subject_name(&name).unwrap();
+    cert.set_issuer_name(&name).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    cert.sign(&key, MessageDigest::sha256()).unwrap();
+    cert.build().to_pem().unwrap()
 }

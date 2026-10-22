@@ -106,7 +106,7 @@ pub struct Service {
     binding: Arc<dyn RuntimeBinding>,
     native: Arc<dyn NativeAdmission>,
     origin: String,
-    configuration_signer: Arc<configurations::Signer>,
+    configuration_signer: Option<Arc<configurations::Signer>>,
     installations: Arc<dyn configurations::InstallationAdmission>,
     bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
@@ -119,7 +119,7 @@ pub struct Assembly {
     pub binding: Arc<dyn RuntimeBinding>,
     pub native: Arc<dyn NativeAdmission>,
     pub origin: String,
-    pub configuration_signer: Arc<configurations::Signer>,
+    pub configuration_signer: Option<Arc<configurations::Signer>>,
     pub installations: Arc<dyn configurations::InstallationAdmission>,
     pub bootstrap: Option<Arc<bootstrap::Configuration>>,
 }

@@ -4,6 +4,7 @@ import http.client
 import json
 from pathlib import Path
 import ssl
+import socket
 import subprocess
 import time
 import uuid
@@ -48,8 +49,8 @@ class Installation:
 
 
 class Browser:
-    def __init__(self, origin, ca):
-        self.origin=origin;self.url=urlsplit(origin);self.cookie='';self.csrf=''
+    def __init__(self, origin, ca, port):
+        self.origin=origin;self.url=urlsplit(origin);self.cookie='';self.csrf='';self.port=port
         self.context=ssl.create_default_context(cafile=str(ca))
 
     def call(self, method, path, data=None, operation=None):
@@ -60,6 +61,7 @@ class Browser:
         if data is not None:headers['Content-Type']='application/json'
         connection=http.client.HTTPSConnection(self.url.hostname,self.url.port or 443,context=self.context,timeout=20)
         try:
+            connection.sock=self.context.wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=20),server_hostname=self.url.hostname)
             connection.request(method,path,json.dumps(data) if data is not None else None,headers)
             response=connection.getresponse()
             cookies=response.headers.get_all('set-cookie') or []
@@ -79,19 +81,19 @@ class Browser:
 
 
 
-def qualify(owner,origin,other_origin):
+def qualify(owner,origin,other_origin,port,second_backend):
     owner.compose('up','-d')
     first=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
     check(first['stage']=='initialized','seed initialization')
     check(first['platformPrincipalId']!=first['administratorId'],'independent administrators')
     ca=owner.root/'inputs/gateway-ca.crt'
-    business=Browser(origin,ca)
+    business=Browser(origin,ca,port)
     until(lambda:business.call('GET','/readyz')[0]==200)
     business.login(first['tenantId'],'administrator',(owner.root/'inputs/administrator-password').read_text().strip())
     status,grants=business.call('GET','/api/v1/authorization')
     check(status==200,'real business authorization')
     owner.product('prepare-hosts')
-    platform=Browser(origin,ca)
+    platform=Browser(origin,ca,port)
     # The public host config supplies the actual reserved management tenant.
     status,public=business.call('GET','/api/v1/mdm-host/config.json')
     check(status==200,'public management locator')
@@ -106,13 +108,15 @@ def qualify(owner,origin,other_origin):
         dict(name='Second organization',administratorLogin='second',administratorPassword='Second-compose-admin-2026!'),operation)
     check(status==202,'real second tenant and administrator')
     second=created['result']
-    owner.script("import json,pathlib;p=pathlib.Path('/var/lib/rss-mdm/installation-input.json');v=json.loads(p.read_text().strip());d=dict(v['deployment'],directory='/var/lib/rss-mdm/runtime/second',probe_address='second-server:8445');v['additional_hosts']=[dict(origin=SECOND_ORIGIN,listen='127.0.0.1:8081',deployment=d)];q=p.with_name('maintenance.json');q.write_text(json.dumps(v));q.chmod(0o600)".replace('SECOND_ORIGIN',repr(other_origin)))
+    owner.script("import json,pathlib;p=pathlib.Path('/var/lib/rss-mdm/installation-input.json');v=json.loads(p.read_text().strip());d=dict(v['deployment'],directory='/var/lib/rss-mdm/runtime/second',probe_address='gateway:8443');v['additional_hosts']=[dict(origin=SECOND_ORIGIN,listen=SECOND_BACKEND, deployment=d)];q=p.with_name('maintenance.json');q.write_text(json.dumps(v));q.chmod(0o600)".replace('SECOND_ORIGIN',repr(other_origin)).replace('SECOND_BACKEND',repr(second_backend+':8081')))
     owner.product('prepare-hosts','/var/lib/rss-mdm/maintenance.json')
     # Ordinary Compose override supplied by the acceptance environment, not by product code.
     second_owner=Installation(owner.root,owner.root/'tenant.compose.yaml',owner.project+'-second',owner.root/'second.env')
     try:
         second_owner.compose('up','-d')
-        peer=Browser(other_origin,ca)
+        owner.compose('exec','-T','gateway','nginx','-t','-c','/run/gateway/nginx.conf')
+        owner.compose('exec','-T','gateway','nginx','-s','reload','-c','/run/gateway/nginx.conf')
+        peer=Browser(other_origin,ca,port)
         until(lambda:peer.call('GET','/readyz')[0]==200)
         status,_=peer.call('POST','/api/v1/identity/tenants/'+first['tenantId']+'/login',dict(login='administrator',password=(owner.root/'inputs/administrator-password').read_text().strip()))
         check(status==401,'first tenant account rejected by second host')
@@ -128,4 +132,9 @@ def qualify(owner,origin,other_origin):
     ids=owner.compose('ps','--all','--quiet').split()
     actual=json.loads(subprocess.check_output(['docker','inspect',*ids],text=True))
     check(all(not any(m['Destination'].endswith('docker.sock') for m in c['Mounts']) for c in actual),'no Docker socket')
+    published=[binding['HostPort'] for c in actual for bindings in (c.get('NetworkSettings',{}).get('Ports') or {}).values() for binding in (bindings or [])]
+    check(published==[str(port)],'only gateway entry is published')
+    for service in ('web','server','gateway'):
+        owner.compose('up','-d','--no-deps','--force-recreate',service)
+        until(lambda:business.call('GET','/readyz')[0]==200)
     return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services'])

@@ -102,10 +102,30 @@ impl Registry {
     }
     /// Bootstrap is audited. Durable revisions win over deployment files after rotation.
     pub async fn admit(&self, tenant: TenantId, now: i64) -> Result<(), Error> {
+        self.admit_selected(tenant, now, None).await
+    }
+    /// Isolate admission by purpose while keeping the same durable trust/rollback checks.
+    pub async fn admit_purpose(
+        &self,
+        tenant: TenantId,
+        now: i64,
+        purpose: Purpose,
+    ) -> Result<(), Error> {
+        self.admit_selected(tenant, now, Some(purpose)).await
+    }
+    async fn admit_selected(
+        &self,
+        tenant: TenantId,
+        now: i64,
+        selected_purpose: Option<Purpose>,
+    ) -> Result<(), Error> {
         for binding in &self.bindings {
+            if selected_purpose.is_some_and(|p| binding.public().is_ok_and(|t| t.purpose != p)) {
+                continue;
+            }
             let configured = binding.public().map_err(|_| Error::Configuration)?;
             if configured.tenant.to_string() != tenant.to_string() {
-                return Err(Error::Configuration);
+                return Err(Error::Forbidden);
             }
             let mut read = self.begin(&tenant.to_string()).await?;
             let stored = sqlx::query_scalar::<_, Vec<u8>>(

@@ -37,12 +37,47 @@ pub(crate) async fn open(
         config.revision,
         protection,
     )
-    .await?;
+    .await;
     tx.rollback()
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
     c.close()
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    Ok(loaded)
+    loaded.map_err(Error::from)
+}
+
+/// Only absent/inactive selections are optional. Persistence and integrity errors stay fatal.
+pub(crate) async fn prepare(
+    config: Option<&Config>,
+    database: &crate::config::Database,
+    tenant: rss_request_context::TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    channels: &crate::channel_status::Channels,
+) -> Result<Option<rss_mdm_execution_service::task_signing::trust::Loaded>, Error> {
+    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    let Some(config) = config else {
+        return Ok(None);
+    };
+    match open(config, database, tenant, protection).await {
+        Ok(value) => {
+            channels.set(ChannelName::Signing, ChannelState::Ready, None)?;
+            channels.loaded(
+                ChannelName::Signing,
+                [("signing".into(), config.revision as i64)],
+            )?;
+            Ok(Some(value))
+        }
+        Err(Error::Execution(
+            rss_mdm_execution_service::Error::Conflict | rss_mdm_execution_service::Error::NotFound,
+        )) => {
+            channels.set(
+                ChannelName::Signing,
+                ChannelState::Waiting,
+                Some(Reason::MaterialNotSelected),
+            )?;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }

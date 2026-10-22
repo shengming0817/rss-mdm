@@ -6,6 +6,12 @@
 
 Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；账户驱动注册和 ADE 使用独立组织授权，ADE 同步与分配状态不代表设备已经完成注册。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
+## 启用意图与材料就绪
+
+完整部署为 Apple 配置独立 hostname 的 443/SNI 入口，设备 TLS 由 Rust 验证。可以先保存通道配置，APNs/Profile 版本暂为空；此时管理面正常运行，Apple 显示 waiting 及缺失原因。TLS、设备信任、SCEP webhook 或材料无效时状态为 degraded，相关设备操作拒绝，不能通过省略证书验证获得 ready。
+
+复用现有材料申请、导入、选择与撤销 API。选择后仍须 prepare-hosts、受控重建 server，并通过当前进程的加载版本与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
+
 ## 注册与凭据
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。

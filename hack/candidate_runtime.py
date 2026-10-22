@@ -90,7 +90,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, gateway_file, *, database_host="postgres"):
+def inputs(root, example, gateway_file, *, database_host="postgres", hostname="mdm.example.test"):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -101,7 +101,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
             "-addext","subjectKeyIdentifier=hash",
             "-keyout",root/"ca.key","-out",root/"ca.crt")
     openssl("req","-new","-newkey","rsa:2048","-nodes","-subj","/CN=localhost","-keyout",root/"server.key","-out",root/"server.csr")
-    (root/"extensions").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:localhost,DNS:mdm.example.test,DNS:mdm-other.example.test,DNS:idp.example.test,IP:127.0.0.1,DNS:"+database_host+"\n")
+    (root/"extensions").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\nsubjectAltName=DNS:localhost,DNS:mdm.example.test,DNS:mdm-other.example.test,DNS:idp.example.test,IP:127.0.0.1,DNS:"+hostname+",DNS:*."+hostname+",DNS:"+database_host+"\n")
     openssl("x509","-req","-in",root/"server.csr","-CA",root/"ca.crt","-CAkey",root/"ca.key","-CAcreateserial","-days","1","-extfile",root/"extensions","-out",root/"server.crt")
     def write(directory, name, value):
         path=directory/name;path.write_text(value if isinstance(value,str) else json.dumps(value));path.chmod(0o600)
@@ -134,9 +134,8 @@ def inputs(root, example, gateway_file, *, database_host="postgres"):
     write(operator,"migrate.json",dict(database=database(operator,"mdm_owner"),installation=installation()))
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
-    gateway=gateway_file.read_text().replace("listen 443 ssl;","listen 8445 ssl;")
-    gateway=gateway.replace("/run/config/ui.json","/certs/ui.json").replace("/run/config/mdm.json","/certs/mdm.json")
-    gateway=gateway.replace("/private/mdm-tls.crt","/certs/server.crt").replace("/private/mdm-tls.key","/certs/server.key")
+    from gateway_fixture import render
+    gateway=render(gateway_file.parent, origin="https://"+hostname, backend="server:8081")
     (root/"nginx.conf").write_text(gateway)
     root.chmod(0o700)
     (root/"server.key").chmod(0o600)
@@ -338,13 +337,13 @@ class Candidate:
         from t2_environment import private
         windows=generate(self.root,self.root/'server.crt',self.root/'server.key')
         for channel,port in [('enrollment',8443),('management',8444)]:
-            windows[channel]['listen']=f'0.0.0.0:{port}'
-            windows[channel]['origin']='https://localhost:'+self.compose('port','runtime-netns',str(port),stage=Stage.PORT).rsplit(':',1)[1]
+            windows[channel]['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+f':{port}'
+            windows[channel]['origin']=f'https://windows-{channel}.{self.host}:{self.port}'
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
         windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
-        agent_origin='https://localhost:'+self.compose('port','runtime-netns','9445',stage=Stage.PORT).rsplit(':',1)[1]
+        agent_origin=f'https://agent.{self.host}:{self.port}'
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
                                             agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
         def copy_file(source):
@@ -357,17 +356,18 @@ class Candidate:
             if isinstance(value,list):return [copy(item) for item in value]
             return value
         self.config['native_protocols']['windows']=copy(json.loads((self.root/'windows.json').read_text()))
-        agent=json.loads((self.root/'agent-pki.json').read_text());agent['endpoint']['listen']='0.0.0.0:9445'
+        agent=json.loads((self.root/'agent-pki.json').read_text());agent['endpoint']['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+':9445'
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
         self.agent_external_origin=next(item['origin'] for item in providers if item['purpose']=='agent')
+        self.compose('create','--no-deps','server',stage=Stage.SERVER)
         for config, provider in zip(providers, [windows_provider, self.agent_provider], strict=True):
             from urllib.parse import urlsplit
             from t2_environment import PKI_CA
             external=urlsplit(config['origin'])
             require(external.scheme=='https' and external.hostname=='localhost' and external.port,'invalid fixture CA origin')
             provider.owner.extra['MDM_PKI_PUBLISH']=f'127.0.0.1:{external.port}:{PKI_CA["port"]}'
-            docker('network','connect', provider.owner.project+'_default', self.container('runtime-netns'), stage=Stage.SERVER)
+            docker('network','connect', provider.owner.project+'_default', self.container('server'), stage=Stage.SERVER)
             config['origin']='https://'+provider.internal_host+':19443'
         self.config['device_pki']=copy(providers)
         self.agent_origin=agent_origin
@@ -379,8 +379,13 @@ class Candidate:
             self.root=Path(self.temporary.name)
             self.worktree_identity=project_name(self.root)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json",
-                                                  self.directory/"deployment/nginx.conf",database_host=self.pg_host)
+                                                  self.directory/"deployment/nginx.conf",database_host=self.pg_host,hostname=self.host)
+            import socket
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1',0));self.port=reservation.getsockname()[1]
+            segment=int(hashlib.sha256(self.name.encode()).hexdigest()[:2],16)
             self.compose_environment={**{key:value for key,value in os.environ.items() if not key.startswith('COMPOSE_')},
+                'MDM_INGRESS_SUBNET':f'172.29.{segment}.0/24','MDM_GATEWAY_ADDRESS':f'172.29.{segment}.2','MDM_BACKEND_ADDRESS':f'172.29.{segment}.3',
                 'MDM_ENV_ROOT':str(self.root),'MDM_WORKTREE_ID':self.worktree_identity,
                 'MDM_SERVER_IMAGE':self.image,'MDM_WEB_IMAGE':self.web['id'] if self.web else self.providers['nginx'],
                 'MDM_POSTGRES_IMAGE':self.providers['postgres'],'MDM_RUNTIME_IMAGE':self.providers['runtime'],
@@ -390,7 +395,7 @@ class Candidate:
                 'MDM_PKI_HOST_ADDRESS':'host-gateway','MDM_NETWORK_NAME':self.network,
                 'MDM_PRODUCT_HOST':self.host,'MDM_PG_HOST':self.pg_host,'MDM_PG_DATABASE':'mdm_test',
                 'MDM_SERVER_CONFIG':'config.json','MDM_PRODUCT_ORIGIN':'https://'+self.host,
-                'MDM_GATEWAY_PUBLISH':'127.0.0.1::8445',
+                'MDM_GATEWAY_PUBLISH':f'127.0.0.1:{self.port}:8443',
                 'MDM_GATEWAY_TLS_CERT_FILE':str(self.root/'server.crt'),'MDM_GATEWAY_TLS_KEY_FILE':str(self.root/'server.key')}
             if not self.own_network:
                 self.compose_override=self.root/'external-network.yaml'
@@ -402,12 +407,13 @@ class Candidate:
             self.config=json.loads((self.runtime/'config.json').read_text())
             self.config['product_origin']='https://'+self.host
             self.config['identity'].update(instance_id=self.instance,tenant_id=self.tenant)
-            self.compose('up','-d','--no-deps','postgres','runtime-netns',stage=Stage.POSTGRES)
+            self.compose('up','-d','--no-deps','postgres',stage=Stage.POSTGRES)
             self.pg=self.container('postgres');self.created.append(self.pg)
-            self.netns=self.container('runtime-netns');self.created.append(self.netns)
             wait(lambda:subprocess.run(['docker','exec',self.pg,'pg_isready','-h','127.0.0.1','-U','postgres'],capture_output=True,timeout=5).returncode==0,'PostgreSQL')
             self.register_private_files()
             if self.prepare:self.prepare(self)
+            self.config['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+':8081'
+            self.config['trusted_gateway']=self.compose_environment['MDM_GATEWAY_ADDRESS']
             self.prepare_pki()
             self.register_private_files()
             private(self.runtime/'config.json',self.config)
@@ -419,8 +425,11 @@ class Candidate:
             authorization['user'].update(instanceId=self.instance,tenantId=self.tenant)
             authorization['installation']['instance_id']=self.instance
             private(path,authorization)
-            gateway=(self.root/'nginx.conf').read_text().replace('mdm.example.test',self.host)
-            if self.web is None:gateway=gateway.replace('location / { try_files $uri $uri/ /index.html; }','location / { return 404; }')
+            from gateway_fixture import render
+            endpoints=[self.config['native_protocols']['windows'][key] for key in ['enrollment','management']]+[self.config['agent_pki']['endpoint']]
+            from urllib.parse import urlsplit
+            gateway=render(self.directory/'deployment',origin='https://'+self.host,
+                           backend=self.config['listen'],targets={urlsplit(e['origin']).hostname:e['listen'] for e in endpoints},web=self.web is not None)
             private(self.root/'nginx.conf',gateway)
             shutil.copyfile(self.root/'nginx.conf',gateway_dir/'nginx.conf')
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
@@ -459,7 +468,7 @@ class Candidate:
             private(self.runtime/'config.json',self.config)
             self.copy_runtime()
             self.start_server();self.start_gateway()
-            self.port=int(self.compose('port','runtime-netns','8445',stage=Stage.PORT).rsplit(':',1)[1])
+            self.port=int(self.compose('port','gateway','8443',stage=Stage.PORT).rsplit(':',1)[1])
             self.ready()
             # First signing authority is generated in its final encrypted owner through real HTTP.
             from candidate_smoke import Browser
@@ -500,6 +509,7 @@ class Candidate:
         self.ready()
 
     def start_gateway(self):
+        if self.web is not None:self.compose("up","-d","--no-deps","web",stage=Stage.GATEWAY)
         self.compose('up','-d','--no-deps','gateway',stage=Stage.GATEWAY)
         self.gateway=self.container('gateway')
         if self.gateway not in self.created:self.created.append(self.gateway)
@@ -507,6 +517,8 @@ class Candidate:
         def check():
             conn=http.client.HTTPSConnection("127.0.0.1",self.port,context=ssl.create_default_context(cafile=str(self.root/"ca.crt")),timeout=3)
             try:
+                import socket
+                conn.sock=ssl.create_default_context(cafile=str(self.root/"ca.crt")).wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=3),server_hostname=self.host)
                 conn.request("GET","/readyz",headers={"Host":self.host})
                 r=conn.getresponse();r.read();return r.status==200
             finally:conn.close()

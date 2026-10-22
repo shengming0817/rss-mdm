@@ -11,6 +11,7 @@ pub struct Config {
     pub management: TlsEndpoint,
     #[serde(default)]
     pub trust_file: PathBuf,
+    #[serde(default)]
     pub materials: rss_mdm_apple_channel::runtime_materials::runtime::Selection,
     #[serde(default = "unconfigured_seed")]
     pub identity_seed: rss_mdm_apple_channel::IdentitySeed,
@@ -28,8 +29,8 @@ impl Config {
         {
             return Err(bad(ConfigIssue::AppleListeners));
         }
-        if self.materials.apns < 1
-            || self.materials.profile < 1
+        if self.materials.apns.is_some_and(|v| v < 1)
+            || self.materials.profile.is_some_and(|v| v < 1)
             || self.materials.accounts.len() > 16
         {
             return Err(bad(ConfigIssue::AppleApns));
@@ -41,9 +42,10 @@ impl Config {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
         };
-        if !valid(&self.identity_seed.challenge_id)
-            || !valid(&self.identity_seed.notify_id)
-            || self.identity_seed.challenge_id == self.identity_seed.notify_id
+        if (!self.identity_seed.challenge_id.is_empty() && !valid(&self.identity_seed.challenge_id))
+            || (!self.identity_seed.notify_id.is_empty() && !valid(&self.identity_seed.notify_id))
+            || (!self.identity_seed.challenge_id.is_empty()
+                && self.identity_seed.challenge_id == self.identity_seed.notify_id)
         {
             return Err(bad(ConfigIssue::AppleChallengeWebhook));
         }

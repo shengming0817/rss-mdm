@@ -33,7 +33,7 @@ for directory in (root, inputs, content):
     directory.chmod(0o700)
     os.chown(directory, 10001, 10001)
 config = dict(directory=str(root/'installation'),
-    deployment=dict(directory=str(root/'runtime/primary'), probe_address='primary-server:8445',
+    deployment=dict(directory=str(root/'runtime/primary'), gateway_directory=str(root/'runtime/gateway'), probe_address='gateway:8443',
         certificate_file=str(inputs/'gateway.crt'), private_key_file=str(inputs/'gateway.key'),
         trust_file=str(inputs/'gateway-ca.crt'), content_volume='/var/lib/rss-mdm-content'),
     database=dict(name='mdm',administrator=dict(host='postgres',port=5432,name='postgres',user='postgres',
@@ -42,9 +42,9 @@ config = dict(directory=str(root/'installation'),
     organization_name=os.environ.get('MDM_ORGANIZATION','My organization'),
     platform_login='platform',administrator_login='administrator',
     platform_password_file=str(inputs/'platform-password'),administrator_password_file=str(inputs/'administrator-password'),
-    origin=os.environ['MDM_PRODUCT_ORIGIN'],listen='127.0.0.1:8081',trusted_gateway='127.0.0.1')
+    origin=os.environ['MDM_PRODUCT_ORIGIN'],listen=os.environ['MDM_BACKEND_ADDRESS']+':8081',trusted_gateway=os.environ['MDM_GATEWAY_ADDRESS'])
 ca_request = None
-ca_source = os.environ.get('MDM_STEP_CA_CONFIG')
+ca_source = os.environ.get('MDM_STEP_CA_CONFIG') if os.environ.get('MDM_INITIALIZE_CA_ONLY') == '1' else None
 if ca_source:
     source = Path(ca_source)
     if source.is_symlink() or not source.is_file():

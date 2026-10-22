@@ -411,11 +411,14 @@ class RunFixtures:
                 private(root / target, source.read_text())
 
     @contextmanager
-    def gateway(self, config):
+    def gateway(self, config, files=None):
         environment = self.gateway_owner
         try:
             environment.prepare_inputs(certificates=False)
             private(environment.root / 'probe/nginx.conf', config)
+            for name,value in (files or {}).items():
+                if Path(name).name!=name:raise ValueError('gateway fixture filename required')
+                private(environment.root / 'probe' / name,value)
             environment.verify_ownership()
             environment.compose('--profile', 'probe', 'up', '-d', 'gateway-probe')
             name = environment.compose('ps', '-q', 'gateway-probe')

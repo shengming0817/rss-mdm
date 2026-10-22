@@ -190,7 +190,7 @@ impl Config {
         if self.apple_material_roots.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
         }
-        if !self.listen.ip().is_loopback() {
+        if self.listen.ip().is_unspecified() || self.trusted_gateway.is_unspecified() {
             return Err(Error::Configuration(ConfigIssue::Listen));
         }
         if self.access_database.user != "mdm_access" {
@@ -272,9 +272,6 @@ impl Config {
             }
         }
         if let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki {
-            if self.task_signing.is_none() {
-                return Err(Error::Configuration(ConfigIssue::AgentPki));
-            }
             let origin = https_url(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
             if origin.origin().ascii_serialization() != endpoint.origin

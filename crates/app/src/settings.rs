@@ -468,10 +468,8 @@ impl Source for Directory {
                                 } else {
                                     let loaded =
                                         self.state.apple.as_ref().and_then(|apple| match purpose {
-                                            Purpose::Apns => Some(apple.config.materials.apns),
-                                            Purpose::Profile => {
-                                                Some(apple.config.materials.profile)
-                                            }
+                                            Purpose::Apns => apple.config.materials.apns,
+                                            Purpose::Profile => apple.config.materials.profile,
                                             Purpose::ManagedAccount => None,
                                         });
                                     projection.applied_revision = loaded;
@@ -592,6 +590,7 @@ impl Source for Directory {
                                     .state
                                     .windows
                                     .as_ref()
+                                    .filter(|w| w.channel.push.is_some())
                                     .and_then(|w| w.config.push.as_ref().map(|p| p.revision));
                                 if let Some(applied) = projection.applied_revision {
                                     let valid = values.versions.iter().any(|v| {

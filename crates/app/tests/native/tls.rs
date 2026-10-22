@@ -193,8 +193,14 @@ async fn listener_connections_and_bounded_shutdown() -> anyhow::Result<()> {
                 .await?,
             crate::test_support::case::tenant().into(),
             crate::native::NativeListenerKind::WindowsEnrollment,
+            "127.0.0.1".parse()?,
         ));
-        let stream = TcpStream::connect(address).await?;
+        let mut stream = TcpStream::connect(address).await?;
+        stream
+            .write_all(
+                format!("PROXY TCP4 127.0.0.1 127.0.0.1 1234 {}\r\n", address.port()).as_bytes(),
+            )
+            .await?;
         let mut io: Box<dyn tokio::io::AsyncRead + Unpin> = if established {
             let mut stream = tokio_rustls::TlsConnector::from(client.clone())
                 .connect("localhost".try_into()?, stream)

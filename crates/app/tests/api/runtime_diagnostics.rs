@@ -35,14 +35,13 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                     })?;
                     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
                     ensure!(status == StatusCode::OK, "{status} {value}");
-                    ensure!(value.as_object().unwrap().len() == 3);
+                    ensure!(value.as_object().unwrap().len() == 4);
                     ensure!(value["alive"] == true && value["ready"].is_boolean());
                     names(
                         &value["components"],
                         &[
                             "inventory",
                             "identity_audit",
-                            "apple",
                             "automation",
                             "execution_recovery",
                         ],
@@ -105,6 +104,8 @@ impl Fixture {
         )
         .await?;
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            channels: execution.channels.clone(),
+            apple_store: authority.access.apple_store(),
             access: authority.access.archive_pool(),
             telemetry: None,
             execution: execution.service,

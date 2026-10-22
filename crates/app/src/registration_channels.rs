@@ -4,6 +4,7 @@ use rss_mdm_management_http::enrollment::channels::{Availability, Reason, Source
 use rss_mdm_registration_service::quotas::Channel;
 use std::sync::Arc;
 pub(crate) struct Channels {
+    pub preparation: Arc<crate::channel_status::Channels>,
     pub windows: Option<Arc<crate::windows::Windows>>,
     pub agent: Option<Arc<crate::agent_pki::AgentPki>>,
     pub apple: Option<Arc<crate::apple::Apple>>,
@@ -18,6 +19,20 @@ impl Source for Channels {
             Channel::MacosMdm => (self.apple.is_some(), Purpose::Apple),
         };
         if !configured {
+            use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState};
+            let name = match channel {
+                Channel::Agent => ChannelName::Agent,
+                Channel::WindowsMdm => ChannelName::Windows,
+                Channel::MacosMdm => ChannelName::Apple,
+            };
+            if self
+                .preparation
+                .snapshot()
+                .iter()
+                .any(|c| c.name == name && c.state != ChannelState::Disabled)
+            {
+                return fault(Reason::CertificateUnavailable);
+            }
             return Status {
                 availability: Availability::Unconfigured,
                 reason: Some(Reason::NotConfigured),
