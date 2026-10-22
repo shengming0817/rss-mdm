@@ -69,7 +69,7 @@ pub(super) async fn reconcile(
     slots: &BTreeMap<Uuid, usize>,
     c: &mut PgConnection,
 ) -> Result<usize> {
-    let receipts: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND receipt->'result'->>'phase'='enabled' ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
+    let receipts: Vec<Value> = sqlx::query_scalar("SELECT receipt FROM public.mdm_tenant_operations WHERE action='provision' AND (receipt->'result'->>'phase'='enabled' OR (receipt->'result'->>'phase'='host_pending' AND jsonb_typeof(receipt->'result'->'application')='object')) ORDER BY operation_id").fetch_all(&mut *c).await.map_err(|_|Error::Storage)?;
     let mut completed = 0;
     for mut original in receipts {
         let mut receipt: Receipt =
@@ -152,6 +152,9 @@ pub(super) async fn reconcile(
                     failure: None,
                 });
                 progress.blocked = None;
+                // Initial hosts may need prepared domain materials before baseline readiness.
+                // Enable them only after observing this exact runtime in a real process.
+                progress.phase = super::model::Phase::Enabled;
                 completed += 1;
             }
             Err(_) => {

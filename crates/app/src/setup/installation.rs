@@ -34,6 +34,14 @@ pub struct DatabaseInput {
     pub administrator: crate::config::Database,
     pub name: String,
 }
+#[derive(Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentStorage {
+    #[default]
+    Volume,
+    /// Qualify a tenant connection before the first content-store admission.
+    S3,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Input {
@@ -45,6 +53,8 @@ pub struct Input {
     pub storage_profiles: Vec<super::providers::storage::Profile>,
     #[serde(default)]
     pub mail_profiles: Vec<super::providers::mail::Profile>,
+    #[serde(default)]
+    pub content_storage: ContentStorage,
     pub database: DatabaseInput,
     pub audit_mode: AuditMode,
     pub organization_name: String,
@@ -358,8 +368,13 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     let telemetry =
         super::default_telemetry::prepare(input, journal, saved.receipt.tenant_id).await?;
     runtime["telemetry"] = serde_json::to_value(telemetry).map_err(invalid)?;
-    let content = input.deployment.prepare_content_storage()?;
-    runtime["content"] = serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":65535,"max_expansion_ratio":100});
+    runtime["content"] = match input.content_storage {
+        ContentStorage::Volume => {
+            let content = input.deployment.prepare_content_storage()?;
+            serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":4096,"max_expansion_ratio":100})
+        }
+        ContentStorage::S3 => serde_json::Value::Null,
+    };
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
     super::runtime_files::prepare(&input.directory, &input.deployment, &runtime).await?;

@@ -115,6 +115,8 @@ docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 
 接线按下面顺序执行一次，保留维护输入、操作 UUID 和回执。变更通过原领域 API/维护 CLI 完成；不能修改生成的 `runtime.json` 或写 SQL 伪造就绪。
 
+新实例使用 S3 作为内容后端时，在首次 `init` 前设置 `MDM_CONTENT_STORAGE=s3` 并保留在部署环境中。该选项暂缓首次内容存储绑定；准备下述租户连接后，由 `prepare-hosts` 导出 S3 配置，再重建服务完成首次准入。默认 `volume` 使用持久内容卷。已经绑定的后端不能通过修改这个选项或重放初始化来迁移，须保留原内容身份和数据。
+
 1. **基础初始化**：沿上节启动一次性 `init` 和管理服务，取得原安装回执及首租户身份，使用真实业务管理员登录。后续维护从原 `installation-input.json` 派生独立输入，不修改首次安装输入。
 2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行原 `prepare-hosts`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
 3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0,"origin":"https://你的域名:9445"}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。

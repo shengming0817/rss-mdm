@@ -214,7 +214,7 @@ async fn provision_pending(
             // Reserve the runtime output position before writing files; retries retain the binding.
             reservations.insert(progress.host_id, index);
             journal.save("host-reservations.json", reservations)?;
-            match additional_runtime(runtime, slot, progress) {
+            match additional_runtime(&input.directory, runtime, slot, progress) {
                 Ok(candidate) => {
                     if activate(&input.directory, &slot.deployment, &candidate, progress)
                         .await
@@ -244,12 +244,21 @@ async fn provision_pending(
 
 // ref: compose-spec/compose-go loader/normalize.go (target service owns its volumes).
 pub(super) fn additional_runtime(
+    directory: &std::path::Path,
     runtime: &Value,
     slot: &Slot,
     progress: &super::model::Provisioning,
 ) -> Result<Value> {
+    let owner = Journal::open(&directory.join(format!("rss-mdm-{}", progress.host_id.simple())))?;
+    // Pending hosts may already have newer domain materials awaiting a process restart.
+    if let Some(requested) = owner.load("requested-runtime.json")? {
+        return Ok(requested);
+    }
+    drop(owner);
     let mut candidate = runtime.clone();
-    candidate["content"]["storage"] = slot.deployment.prepare_content_storage()?;
+    if !candidate["content"].is_null() {
+        candidate["content"]["storage"] = slot.deployment.prepare_content_storage()?;
+    }
     candidate["native_protocols"] = serde_json::json!({});
     candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
     candidate["device_pki"] = serde_json::json!([]);

@@ -30,6 +30,7 @@ services:
     environment:
       MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
       MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
+      MDM_CONTENT_STORAGE: ${MDM_CONTENT_STORAGE:-volume}
     volumes:
       - state:/var/lib/rss-mdm
       - content:/var/lib/rss-mdm-content
