@@ -84,3 +84,5 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 收到 409 后重新读取定义；提交结果未知或响应丢失时，以原 operationId 查询
 `GET /api/v1/user-attribute-operations/{operationId}`，不要自动重放写入。操作回执绑定租户、实例和调用主体，当前权限仍须有效。
 会话的 issuedAt 只表示签发时间；Apple/WNS/存储/邮件/任务签名/Webhook 和设置的近期认证判断均使用真实认证时间，未知、未来或过旧时拒绝。
+
+MDM 不暴露 Identity 的原始 `/api/v1/identity/tenants/{tenant}/profile` 观察读取；本人及他人资料统一经过 MDM 字段投影。本地资料管理仍使用受账户管理策略保护的 accounts 路径。`profiles[]` 的 `providerConfigVersion/sourceRevision` 是该观察接受时的来源版本（不适用为 null），不会替换为读取时的最新版本。

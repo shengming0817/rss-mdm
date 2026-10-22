@@ -133,7 +133,7 @@ pub(super) fn response(
         }
         fields.push(json!({"fieldId":definition.field_id,"revision":definition.revision,"key":d.key,"displayName":d.display_name,"source":d.source,"valueType":d.value_type,"sensitive":d.sensitive,"displayUse":d.display_use,"required":d.required,"status":state,"value":value}));
     }
-    let profiles=views.iter().map(|v|json!({"source":v.source.map(model::source_dto),"status":status(v.status),"snapshotId":v.snapshot_id,"observedAt":v.observed_at,"collectedAtMicros":v.collected_at_micros,"expiresAt":v.expires_at,"fixed":if !query.preview && v.status==ProfileStatus::Available {v.profile.as_ref().map(fixed)} else {None}})).collect::<Vec<_>>();
+    let profiles=views.iter().map(|v|json!({"source":v.source.map(model::source_dto),"status":status(v.status),"snapshotId":v.snapshot_id,"providerConfigVersion":v.provider_config_version,"sourceRevision":v.source_revision,"observedAt":v.observed_at,"collectedAtMicros":v.collected_at_micros,"expiresAt":v.expires_at,"fixed":if !query.preview && v.status==ProfileStatus::Available {v.profile.as_ref().map(fixed)} else {None}})).collect::<Vec<_>>();
     Ok(
         json!({"principalId":principal.as_uuid(),"view":query.view,"profiles":profiles,"fields":fields,"completeness":{"required":required,"complete":complete,"missing":required-complete}}),
     )

@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{
     Router,
-    extract::{Request, State},
+    extract::{MatchedPath, Request, State},
     http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -22,6 +22,24 @@ use rss_transactional_messaging::{
 };
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+
+// MDM owns attribute visibility. The component's raw observation endpoint must
+// not bypass that projection; account-local authority management remains available.
+async fn product_profile_boundary(request: Request, next: Next) -> Response {
+    if request
+        .extensions()
+        .get::<MatchedPath>()
+        .is_some_and(|path| path.as_str() == "/api/v1/identity/tenants/{tenant}/profile")
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            [("cache-control", "no-store")],
+            axum::Json(serde_json::json!({"code":"not_found"})),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
 
 pub(crate) fn deadline() -> OperationDeadline {
     OperationDeadline::from_remaining(Duration::from_secs(10))
@@ -141,8 +159,9 @@ impl Identity {
             Duration::from_secs(10),
         )
         .map_err(|_| invalid())?;
-        let mut routes =
-            rss_identity_http_axum::router(authority.clone(), http.clone()).map_err(failure)?;
+        let mut routes = rss_identity_http_axum::router(authority.clone(), http.clone())
+            .map_err(failure)?
+            .route_layer(axum::middleware::from_fn(product_profile_boundary));
         let bearer_routes = rss_identity_http_axum::bearer_router(authority.clone(), http.clone())
             .map_err(failure)?;
         let mut configured_federation = None;

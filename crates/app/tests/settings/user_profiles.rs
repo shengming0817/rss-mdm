@@ -114,6 +114,8 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                     == StatusCode::OK
             );
             let fresh = ok(&mut admin, &router, Method::GET, ME, None).await?;
+            ensure!(fresh["profiles"][0]["providerConfigVersion"].is_null());
+            ensure!(fresh["profiles"][0]["sourceRevision"]==1);
             ensure!(
                 fresh["fields"][0]["value"] == "E1001" && fresh["completeness"]["missing"] == 0
             );
@@ -133,6 +135,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 ok(&mut admin, &router, Method::GET, ME, None).await?["fields"][0]["value"]
                     == "E1001"
             );
+            ensure!(ok(&mut admin,&router,Method::GET,ME,None).await?["profiles"][0]["sourceRevision"]==1);
             admin = Browser::default();
             ensure!(
                 admin
@@ -144,6 +147,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 ok(&mut admin, &router, Method::GET, ME, None).await?["fields"][0]["value"]
                     == "E1002"
             );
+            ensure!(ok(&mut admin,&router,Method::GET,ME,None).await?["profiles"][0]["sourceRevision"]==2);
             let mut changed = definition();
             changed["displayName"] = json!("Employee");
             changed["sensitive"] = json!(true);
@@ -275,6 +279,30 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                     .0
                     == StatusCode::FORBIDDEN
             );
+            // Even a valid person's bound observation cannot bypass product field visibility.
+            let other_local=format!("/api/v1/identity/tenants/{}/accounts/{principal}/profile",case_tenant());
+            ok(&mut admin,&router,Method::PUT,&other_local,Some(local_change(0,Some("PRIVATE-OTHER")))).await?;
+            other=Browser::default();
+            ensure!(other.login_password(&router,"other",identity::PASSWORD).await?==StatusCode::OK);
+            let restricted_id=Uuid::new_v4();
+            let restricted_path=format!("{DEFINITIONS}/{restricted_id}");
+            let mut restricted=definition();
+            restricted["key"]=json!("restrictedNumber");
+            restricted["visibility"]=json!("profiles_read");
+            restricted["useExistingObservation"]=json!(true);
+            ok(&mut admin,&router,Method::PUT,&restricted_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":restricted}))).await?;
+            let visible=ok(&mut other,&router,Method::GET,ME,None).await?;
+            ensure!(visible["fields"].as_array().unwrap().iter().all(|v|v["fieldId"]!=restricted_id.to_string()));
+            let raw=format!("/api/v1/identity/tenants/{}/profile",case_tenant());
+            for revision in 1..=3 {
+                ensure!(other.call(&router,Method::GET,&raw,None).await?.0==StatusCode::NOT_FOUND);
+                ensure!(other.call(&router,Method::GET,&format!("{raw}?source=identity_local"),None).await?.0==StatusCode::NOT_FOUND);
+                if revision<3 {
+                    restricted["enabled"]=json!(false);
+                    let value=if revision==1 {restricted.clone()}else{Value::Null};
+                    ok(&mut admin,&router,Method::PUT,&restricted_path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"value":value}))).await?;
+                }
+            }
             // A mapping source/path/type change defaults to the next locally collected observation.
             changed["pointer"] = json!("/extensions/remote");
             changed["valueType"] = json!("boolean");
