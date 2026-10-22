@@ -262,19 +262,42 @@ state='signing'
         principal: Option<&AuthorizedPrincipal>,
     ) -> Result<wire::Candidate, Error> {
         a.operation(operation, "agent_certificate_result");
-        let digest = hex(certificate.csr_digest);
-        self.write(a, (self, grant, id, certificate, digest, principal), |ctx, c| {
+        let digest = if principal.is_some() {
+            digest(&("agent_issuance_recovery", id, &certificate.chain))?
+        } else {
+            hex(certificate.csr_digest)
+        };
+        self.write(a, (self, grant, id, certificate, digest, principal, operation, a), |ctx, c| {
             Box::pin(async move {
-                let (service, grant, id, certificate, digest, principal) = ctx;
+                let (service, grant, id, certificate, digest, principal, operation, a) = ctx;
                 let tenant = service.tenant.to_string();
                 if let Some(p)=principal {
                     p.check_live()?;
                     rss_mdm_authorization_service::lock_on(c,&tenant,p.instance_id()).await?;
                 }
+                // A reused certificate is not a replay of a new administrator operation.
+                let receipt = principal.map(|p| crate::operations::Operation {
+                    actor: crate::operations::Actor::from_authorized(p),
+                    key: *operation,
+                    digest,
+                });
+                let previous = if let Some(op) = &receipt {
+                    crate::operations::replay(c, op).await?
+                } else {
+                    None
+                };
                 let g = grant_row(c, &tenant, *grant).await?;
                 if let Some(p)=principal {
                     rss_mdm_authorization_service::snapshot_on(c,&tenant,p.instance_id()).await?
                         .require(p,rss_mdm_authorization_service::Permission::Credentials,Some(&g.try_get::<String,_>("device").map_err(db)?)).map_err(|_|Error::Forbidden)?;
+                }
+                a.target(&g.try_get::<String, _>("device").map_err(db)?);
+                if let Some(old) = previous {
+                    return Ok(Change {
+                        value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,
+                        replay: true,
+                        digest: digest.clone(),
+                    });
                 }
                 let old = sqlx::query(
                     r#"
@@ -347,9 +370,13 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
                 .fetch_one(c)
                 .await
                 .map_err(db)?;
+                let value = candidate(&g, &row)?;
+                if let Some(op) = &receipt {
+                    crate::operations::save(c, op, &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?, a).await?;
+                }
                 Ok(Change {
-                    value: candidate(&g, &row)?,
-                    replay,
+                    value,
+                    replay: receipt.is_none() && replay,
                     digest: digest.clone(),
                 })
             })
