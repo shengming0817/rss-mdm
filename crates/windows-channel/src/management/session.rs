@@ -525,6 +525,7 @@ async fn save(
     }
     if session.authenticated {
         rss_mdm_registration_service::enrollment::read::record_authenticated_in(c, p).await?;
+        crate::device::store::record_communication_in(c, p).await?;
     }
     let state = if package == PackageState::Aborted {
         "complete"
@@ -556,8 +557,8 @@ async fn save(
         PackageState::Complete => "complete",
         PackageState::Aborted => "aborted",
     };
-    sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response,request,package_state) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8)")
-        .bind(&tenant).bind(&registration).bind(&sid).bind(mid).bind(session.digest).bind(reply).bind(incoming).bind(status)
+    sqlx::query("INSERT INTO mdm_access.management_messages(tenant_id,registration,session_id,message_id,digest,response,request,package_state,authenticated) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,$9)")
+        .bind(&tenant).bind(&registration).bind(&sid).bind(mid).bind(session.digest).bind(reply).bind(incoming).bind(status).bind(session.authenticated)
         .execute(c).await.map_err(db)?;
     Ok(Reply {
         bytes,

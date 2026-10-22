@@ -33,6 +33,34 @@ pub async fn lock_channel(
         .map_err(db)?;
     Ok(())
 }
+/// Record a validated management exchange, Agent task poll or Agent report.
+/// The channel owner must first accept the protocol request. This function rechecks
+/// current authority under the registration fence and participates in its transaction.
+/// Subregistrations update their current primary registration; replacement starts empty.
+/// Only server receipt time is recorded, independently of Inventory and device clocks.
+pub async fn record_communication_in(
+    c: &mut sqlx::PgConnection,
+    principal: &DevicePrincipal,
+) -> Result<(), Error> {
+    revalidate_management(c, principal).await?;
+    let (registration, generation) = principal
+        .parent()
+        .unwrap_or((principal.registration(), principal.generation()));
+    let updated = sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=greatest(last_communication_received_at,clock_timestamp()) WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3 AND device=$4 AND channel=$5 AND purpose='primary' AND state='active'")
+        .bind(principal.tenant().to_string())
+        .bind(registration)
+        .bind(generation)
+        .bind(principal.device())
+        .bind(principal.channel().as_str())
+        .execute(c)
+        .await
+        .map_err(db)?;
+    if updated.rows_affected() != 1 {
+        return Err(Error::Unauthorized);
+    }
+    Ok(())
+}
+
 impl DeviceService {
     #[cfg(any(test, feature = "integration"))]
     pub(super) async fn bind_inner(
