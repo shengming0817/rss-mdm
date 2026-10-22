@@ -362,7 +362,7 @@ async fn native_accounts(
     );
     // Product planning policy asks the component for Recent(300s), including native accounts.
     pg(&format!(
-        "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
+        "UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at-301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
         ADMIN = case_admin(),
         TENANT = case_tenant()
     ))?;
@@ -383,7 +383,7 @@ async fn native_accounts(
         )
         .await;
     pg(&format!(
-        "UPDATE identity_authority.sessions SET auth_time=auth_time+301,absolute_expires_at=absolute_expires_at+301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
+        "UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at+301 WHERE tenant_id='{TENANT}' AND principal_id='{ADMIN}'",
         ADMIN = case_admin(),
         TENANT = case_tenant()
     ))?;

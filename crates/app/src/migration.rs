@@ -120,7 +120,7 @@ async fn migrate_units(
     // Replay never changes an installation addressed by different coordinates.
     if installed
         .iter()
-        .any(|(name, _, _)| name == "identity-authority-v13")
+        .any(|(name, _, _)| name == "identity-authority-v14")
     {
         verify_installation(conn, installation, instance).await?;
     }
@@ -166,7 +166,7 @@ async fn apply_unit(
             .execute(&mut *tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v13" {
+    } else if name == "identity-authority-v14" {
         install_identity_in(&mut tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
@@ -381,6 +381,7 @@ async fn install_identity_in(
     instance: rss_identity_core::InstanceId,
 ) -> std::result::Result<(), sqlx::Error> {
     rss_identity_postgres::install(tx, instance).await?;
+    rss_identity_postgres::grant_profile_source_admission(tx, "mdm_access").await?;
     rss_identity_postgres::grant_profile(
         tx,
         "mdm_identity_runtime",
@@ -457,6 +458,15 @@ async fn verify_profiles(
             .execute(&mut *conn)
             .await?;
     }
+    sqlx::raw_sql("SET LOCAL ROLE mdm_access")
+        .execute(&mut *conn)
+        .await?;
+    rss_identity_postgres::verify_profile_source_admission(conn, instance)
+        .await
+        .map_err(|_| sqlx::Error::Protocol("identity source admission profile rejected".into()))?;
+    sqlx::raw_sql("SET LOCAL ROLE NONE")
+        .execute(&mut *conn)
+        .await?;
     crate::identity_audit::verify_profile(conn, audit_mode)
         .await
         .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;

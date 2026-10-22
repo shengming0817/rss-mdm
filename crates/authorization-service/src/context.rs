@@ -72,6 +72,19 @@ impl AuthorizedPrincipal {
     pub fn check_live(&self) -> Result<(), Error> {
         self.identity.check_live()
     }
+    /// Recent authentication is an assurance fact, independent of session issuance/refresh.
+    pub fn recently_authenticated(&self, now: i64, max_age_seconds: i64) -> Result<bool, Error> {
+        let assurance = self
+            .session()?
+            .assurance()
+            .map_err(|_| Error::Unauthorized)?;
+        Ok(recent_authentication(
+            assurance.auth_time(),
+            now,
+            max_age_seconds,
+        ))
+    }
+
     pub fn instance_id(&self) -> &str {
         self.identity.instance_id()
     }
@@ -305,4 +318,32 @@ pub fn bind_native_audit(
         &proof.instance().to_string(),
     );
     Ok(())
+}
+
+fn recent_authentication(authenticated: Option<i64>, now: i64, max_age: i64) -> bool {
+    max_age > 0
+        && authenticated.is_some_and(|at| {
+            at > 0
+                && now
+                    .checked_sub(at)
+                    .is_some_and(|age| (0..=max_age).contains(&age))
+        })
+}
+#[cfg(test)]
+mod recent_tests {
+    #[test]
+    fn unknown_future_old_and_overflow_authentication_are_rejected() {
+        for time in [
+            None,
+            Some(0),
+            Some(-1),
+            Some(1001),
+            Some(699),
+            Some(i64::MIN),
+        ] {
+            assert!(!super::recent_authentication(time, 1000, 300));
+        }
+        assert!(super::recent_authentication(Some(700), 1000, 300));
+        assert!(super::recent_authentication(Some(1000), 1000, 300));
+    }
 }

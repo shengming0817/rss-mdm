@@ -435,9 +435,8 @@ impl Backend {
                 .await
                 .map_err(|_| unavailable())?
                 .require(p, Permission::WebhookWrite, None)?;
-            let session = p.session()?;
             let now = self.host.clock.unix_seconds().map_err(|_| unavailable())?;
-            if session.view().auth_time > now || now - session.view().auth_time > 300 {
+            if !p.recently_authenticated(now, 300)? {
                 return Err(HttpError::Forbidden);
             }
         }

@@ -19,6 +19,7 @@ fn route(id: &str) -> Option<&'static str> {
         "s3-key" | "storage" => "/api/v1/storage/connections",
         "registration" => "/api/v1/agent-enrollment-settings",
         "smtp" => "/api/v1/smtp",
+        "user-attributes" => "/api/v1/user-attribute-definitions",
         "wns" => "/api/v1/windows/wns",
         "task-key" => "/api/v1/task-signing/trust",
         "agent-package" => "/api/v1/agent-packages",
@@ -75,6 +76,21 @@ impl Source for Directory {
                 }
                 let mut projection = Projection::unknown(href);
                 match item.id {
+                    "user-attributes" if business => {
+                        let backend = crate::user_profiles::Backend {
+                            identity: self.state.identity.authority.clone(),
+                            tenant: self.state.identity.tenant,
+                            instance: self.state.identity.instance,
+                            audit: self.state.audit_store.clone(),
+                        };
+                        match backend.configured_count(&proof, &audit).await {
+                            Ok(count) => {
+                                configured(&mut projection, count);
+                                projection.ready = true;
+                            }
+                            Err(error) => unavailable(&mut projection, error)?,
+                        }
+                    }
                     "entry" | "postgres" | "instance" | "native" | "operation" => {
                         projection.status = Status::Loaded;
                         projection.reason =
@@ -703,14 +719,16 @@ impl Source for Directory {
                     "agent-package" => Some(Permission::SoftwareWrite),
                     "webhook-own" => Some(Permission::WebhookWrite),
                     "oidc" => Some(Permission::IdentityProvidersManage),
+                    "user-attributes" => Some(Permission::UserAttributeDefinitionsWrite),
                     _ => None,
                 };
-                let recent = proof.session().ok().is_some_and(|session| {
-                    self.state.clock.unix_seconds().ok().is_some_and(|now| {
-                        session.view().auth_time <= now && now - session.view().auth_time <= 300
-                    })
-                });
-                if recent
+                let recent = self
+                    .state
+                    .clock
+                    .unix_seconds()
+                    .ok()
+                    .is_some_and(|now| proof.recently_authenticated(now, 300).unwrap_or(false));
+                if (recent || item.id == "user-attributes")
                     && write.is_some_and(|permission| proof.require(permission, None).is_ok())
                     && let Some(entry) = projection.actions.first()
                 {

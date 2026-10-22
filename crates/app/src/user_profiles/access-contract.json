@@ -1,0 +1,9 @@
+{
+ "tables":[
+  {"schema":"mdm_user_profiles","table":"definitions","read_write":true,"updates":["revision","collected_after_micros","value"],"delete_policy":null},
+  {"schema":"mdm_user_profiles","table":"operations","read_write":true,"updates":[],"delete_policy":null}
+ ],
+ "functions":[],
+ "external_relations":[],
+ "verified_schemas":["identity_authority"]
+}

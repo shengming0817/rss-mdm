@@ -63,8 +63,16 @@ macro_rules! item {
         }
     };
 }
-/// The accepted 43-entry catalog. No material bytes, filesystem locations or deployment credentials.
+/// The product settings catalog. No material bytes, filesystem locations or deployment credentials.
 pub const CATALOG: &[Item] = &[
+    item!(
+        "user-attributes",
+        Tenant,
+        "app",
+        DomainService,
+        BusinessConfiguration,
+        UserAttributeDefinitionsRead
+    ),
     item!(
         "entry",
         Deployment,
@@ -610,12 +618,12 @@ mod tests {
     }
     #[test]
     fn catalog_keeps_fixed_ledger_and_device_custody_distinct() {
-        assert_eq!(CATALOG.len(), 43);
+        assert_eq!(CATALOG.len(), 44);
         let ids = CATALOG
             .iter()
             .map(|v| v.id)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(ids.len(), 43);
+        assert_eq!(ids.len(), 44);
         let package = CATALOG.iter().find(|v| v.id == "agent-package").unwrap();
         assert_eq!(package.lifecycle, Lifecycle::BusinessConfiguration);
         let ledger = CATALOG.iter().find(|v| v.id == "ledger").unwrap();

@@ -164,6 +164,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .map_err(db)?;
     let contracts = [
         crate::first_use::ACCESS_CONTRACT,
+        crate::user_profiles::ACCESS_CONTRACT,
         crate::tenant_registry::ACCESS_CONTRACT,
         rss_mdm_mail_service::ACCESS_CONTRACT,
         rss_mdm_content_service::connections::ACCESS_CONTRACT,
@@ -193,6 +194,19 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
     .await
     .map_err(db)?;
     crate::tenant_registry::verify_read_profile(&mut tx).await?;
+    let instance: String =
+        sqlx::query_scalar("SELECT instance_id::text FROM public.mdm_installation")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+    rss_identity_postgres::verify_profile_source_admission(
+        &mut tx,
+        rss_identity_core::InstanceId::parse(&instance)
+            .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?,
+    )
+    .await
+    .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
+
     rss_mdm_inventory_postgres::verify_collections(&mut tx)
         .await
         .map_err(|error| {

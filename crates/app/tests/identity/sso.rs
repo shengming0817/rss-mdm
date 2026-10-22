@@ -168,7 +168,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     identity::age_prepared_admin_session()?;
     ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
     let tenant = format!("/api/v1/identity/tenants/{TENANT}", TENANT = case_tenant());
-    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"subject":{"kind":"oidc"},"email":"email","groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":120}},"jit":true});
+    let settings = json!({"issuer":issuer,"clientId":"mdm","redirectUri":CALLBACK,"scopes":["openid","profile","email"],"claims":{"subject":{"kind":"oidc"},"profile":{"extensionsClaim":null,"maxAgeSeconds":14400},"groups":"groups","departmentSnapshot":{"claim":"organization_snapshot","maxAgeSeconds":120}},"jit":true});
     let (status,created)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
     ensure!(
         status == StatusCode::CREATED,
@@ -190,6 +190,18 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     );
     let mut alice = Browser::default();
     roundtrip(&router, &mut alice, provider, "alice").await?;
+    let field=uuid::Uuid::new_v4();
+    let definition=serde_json::json!({"key":"federatedEmail","displayName":"Federated email","source":{"kind":"idp","provider":provider},"pointer":"/email","valueType":"string","maxLength":320,"maxItems":null,"minimum":null,"maximum":null,"enabled":true,"sensitive":false,"visibility":"both","displayUse":"profile","required":false,"useExistingObservation":false});
+    ensure!(admin.call(&router,Method::PUT,&format!("/api/v1/user-attribute-definitions/{field}"),Some(serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"value":definition}))).await?.0==StatusCode::OK);
+    let pending=alice.call(&router,Method::GET,"/api/v1/user-profiles/me",None).await?;
+    ensure!(pending.0==StatusCode::OK && pending.1["fields"][0]["status"]=="pending_login");
+    let mut previous=alice.clone();
+    alice=Browser::default();
+    roundtrip(&router,&mut alice,provider,"alice").await?;
+    let profile=alice.call(&router,Method::GET,"/api/v1/user-profiles/me",None).await?;
+    ensure!(profile.0==StatusCode::OK && profile.1["fields"][0]["status"]=="available" && profile.1["fields"][0]["value"].is_string());
+    ensure!(previous.call(&router,Method::GET,"/api/v1/user-profiles/me",None).await?.1["fields"][0]["status"]=="unavailable");
+    let profile_principal=profile.1["principalId"].as_str().unwrap().to_owned();
     let mut bob = Browser::default();
     roundtrip(&router, &mut bob, provider, "bob").await?;
     authorization::trusted_facts_and_independent_expiry(
@@ -225,6 +237,8 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
             .0
             == StatusCode::OK
     );
+    let withdrawn=admin.call(&router,Method::GET,&format!("/api/v1/user-profiles/{profile_principal}?view=latest"),None).await?;
+    ensure!(withdrawn.0==StatusCode::OK && withdrawn.1["fields"][0]["status"]=="unavailable");
     println!("MDM_ENTERPRISE_SSO_MATRIX_PASSED");
     Ok(())
     }).await

@@ -10,6 +10,7 @@ use rss_mdm_audit_integration::RequestAudit;
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub user_profiles: Arc<dyn crate::user_profiles::Source>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub first_use: Arc<dyn crate::first_use::Source>,
     pub mail: Arc<rss_mdm_mail_service::authority::Authority>,
@@ -108,6 +109,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         windows: state.windows,
     });
     let core = Router::new()
+        .merge(crate::user_profiles::routes(state.user_profiles))
         .merge(crate::first_use::routes(state.first_use))
         .merge(crate::mail::routes(state.mail))
         .merge(crate::content::connections::routes().with_state(state.storage_connections))

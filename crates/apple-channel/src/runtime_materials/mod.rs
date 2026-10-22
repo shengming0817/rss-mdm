@@ -124,8 +124,7 @@ fn proof<'a>(
     )?;
     if write {
         let t = now(app)?;
-        let auth_time = p.session()?.view().auth_time;
-        if auth_time > t || t.saturating_sub(auth_time) > 300 {
+        if !p.recently_authenticated(t, 300)? {
             return Err(Error::Unauthorized);
         }
     }

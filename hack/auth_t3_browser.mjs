@@ -131,7 +131,7 @@ try{
   await member.context().clearCookies();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
-  const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{email:'email',groups:null},jit:false};
+  const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{subject:{kind:'oidc'},profile:{extensionsClaim:null,maxAgeSeconds:14400},groups:null,departmentSnapshot:null},jit:false};
   r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'provider create');const provider=r.value.id;
   assert((await post(admin,`${api}/providers/${provider}/enabled`,{expectedVersion:r.value.version,enabled:true})).status===200,'provider enable');
