@@ -53,7 +53,11 @@ async fn seed(
     tx.commit().await?;
     Ok(coordinates)
 }
-fn route(authority: &authority::Authority, keys: Arc<KeyRing>) -> Result<Router> {
+fn route(
+    authority: &authority::Authority,
+    keys: Arc<KeyRing>,
+    admission: Arc<rss_mdm_execution_service::ExecutionService>,
+) -> Result<Router> {
     authority.router(
         Router::new()
             .nest(
@@ -63,6 +67,7 @@ fn route(authority: &authority::Authority, keys: Arc<KeyRing>) -> Result<Router>
                         authority.access.archive_pool(),
                         authority.audit.clone(),
                         keys,
+                        admission,
                     ),
                 ))),
             )
@@ -106,6 +111,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                     instance: Uuid::new_v4(),
                     principal: Uuid::new_v4(),
                 },
+                origin: access::Origin::SelfEnrollment,
                 generation: 1,
                 revision: 1,
                 state: access::State::Active,
@@ -228,11 +234,15 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
+    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
+    authority
+        .resources
+        .extend(std::mem::take(&mut fixture.resources));
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
             let ring = keys("first", true);
-            let router = route(&authority, ring.clone())?;
+            let router = route(&authority, ring.clone(), fixture.execution.clone())?;
             let device = case::name("recovery-device");
             let secret = "recovery-http-canary-2789";
             let coordinates = seed(&authority, &ring, device, secret).await?;

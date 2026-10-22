@@ -713,14 +713,12 @@ pub(crate) fn from_state(
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
             recovery_credentials: state.execution.recovery_credentials().map(|p| {
-                Arc::new(
-                    rss_mdm_recovery_credentials::Credentials::new(
-                        state.access.archive_pool(),
-                        state.audit_store.clone(),
-                        p.keys.clone(),
-                    )
-                    .with_login_admission(state.execution.clone()),
-                )
+                Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                    state.access.archive_pool(),
+                    state.audit_store.clone(),
+                    p.keys.clone(),
+                    state.execution.clone(),
+                ))
             }),
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),

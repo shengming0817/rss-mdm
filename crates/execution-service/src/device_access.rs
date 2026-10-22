@@ -270,6 +270,22 @@ impl Plan {
                 if current.state == access::State::Revoked {
                     return Ok(Ok(true));
                 }
+                if let access::Origin::Administrator { authority } = &current.origin {
+                    let now: i64 = sqlx::query_scalar(
+                        "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
+                    )
+                    .fetch_one(&mut *c)
+                    .await?;
+                    if !authority
+                        .valid(c, crate::authorization::Permission::AccountWrite, now)
+                        .await
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("binding authority unavailable".into())
+                        })?
+                    {
+                        return Ok(Ok(false));
+                    }
+                }
                 match policy_on(source, scope, c, tenant, &current.device, current.policy).await {
                     Ok(p) => Ok(Ok(p.version == current.policy_version)),
                     Err(AccessError::Forbidden) => Ok(Ok(false)),
@@ -467,7 +483,20 @@ pub async fn reconcile_in(
         if outstanding {
             continue;
         }
-        let occurrence = format!("device-access:{}:{}", binding.id, binding.revision);
+        // Only a delivery that never obtained Start can be replaced after expiry.
+        // Started and uncertain attempts remain the authoritative recovery coordinate.
+        let revision = binding.revision;
+        let renewal: Option<i64> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT CASE WHEN count(*)=count(*) FILTER(WHERE deadline<=$4 AND state->>'execution'='not_started' AND state->>'startedAt' IS NULL) THEN count(*) ELSE NULL END FROM mdm_commands.action_runs WHERE tenant_id=$1 AND source_kind='device_access' AND access_binding->>'id'=$2 AND (access_binding->>'revision')::bigint=$3")
+                .bind(tenant).bind(id.to_string()).bind(revision).bind(now).fetch_one(c).await
+        })).await?;
+        let Some(renewal) = renewal else {
+            continue;
+        };
+        let occurrence = format!(
+            "device-access:{}:{}:{renewal}",
+            binding.id, binding.revision
+        );
         if !crate::actions::production::occurrence_available_in(
             tx,
             binding.policy_version,

@@ -10,25 +10,21 @@ pub struct Credentials {
     pool: PgPool,
     audit: Arc<AuditStore>,
     keys: Arc<KeyRing>,
-    login_admission: Option<Arc<dyn rss_mdm_registration_service::device_access::Admission>>,
+    login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
 }
 impl Credentials {
-    pub fn new(pool: PgPool, audit: Arc<AuditStore>, keys: Arc<KeyRing>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        audit: Arc<AuditStore>,
+        keys: Arc<KeyRing>,
+        login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
+    ) -> Self {
         Self {
             pool,
             audit,
             keys,
-            login_admission: None,
+            login_admission,
         }
-    }
-    /// Install the same product policy authority used for Device Access execution.
-    /// Without it, RSS-login disclosure fails closed; other native credential types are unchanged.
-    pub fn with_login_admission(
-        mut self,
-        admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
-    ) -> Self {
-        self.login_admission = Some(admission);
-        self
     }
     pub fn keys(&self) -> &Arc<KeyRing> {
         &self.keys
@@ -111,7 +107,7 @@ impl Credentials {
                                     if let Subject::RssLogin{binding,binding_generation,..}=&material.binding.subject {
                                         let tenant=Uuid::parse_str(principal.tenant_id()).map_err(|_|Error::Malformed)?;
                                         let current=rss_mdm_registration_service::device_access::storage::locked_in(c,tenant,*binding).await?;
-                                        let selection=service.login_admission.as_ref().ok_or(Error::Forbidden)?.policy(c,tenant,device,current.policy).await?;
+                                        let selection=service.login_admission.policy(c,tenant,device,current.policy).await?;
                                         if current.generation!=*binding_generation || !selection.configuration.enabled || selection.version!=current.policy_version {return Err(Error::Forbidden);}
                                     }
                                     let coordinates = Coordinates {

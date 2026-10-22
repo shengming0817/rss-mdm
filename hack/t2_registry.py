@@ -227,7 +227,7 @@ add('deployment.management-tenant', build=None, profile='empty', python='managem
     sources=('crates/app/src/identity.rs','crates/app/src/identity_audit.rs','crates/app/src/api.rs','crates/app/src/database.rs','crates/app/src/migration.rs','crates/app/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','crates/app/src/tenant_http.rs','crates/app/src/tenant_administrator.rs','crates/app/src/tenant_registry.rs','crates/app/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
 MODULES['deployment.management-tenant'] = replace(MODULES['deployment.management-tenant'], db_mode='fresh', scope='objects')
-add('recovery-credentials.http',fixtures=('identity',),selectors=('recovery_credentials_tests::',),
+add('recovery-credentials.http',fixtures=('identity','agent_pki'),selectors=('recovery_credentials_tests::',),
     sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs'),
     tests=('crates/app/tests/recovery_credentials/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/inventory.rs','crates/app/tests/support/planning_http.rs'))
 MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],scope='tenant',db_mode='fresh')
@@ -2079,3 +2079,7 @@ MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenan
 consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
 consume(('crates/agent-wire/src/device_access.rs','crates/execution-service/src/device_access.rs','crates/registration-service/src/device_access*','crates/registration-service/src/device_access/*'),'recovery-credentials.http execution.agent.delivery')
 T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)
+
+consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs','crates/execution-service/src/input_preparation.rs','crates/execution-service/src/input_preparation/*'), 'device-access.http')
+
+MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],support_inputs=tuple(dict.fromkeys((*MODULES['recovery-credentials.http'].support_inputs,*MODULES['agent.current_user'].support_inputs))))

@@ -84,6 +84,16 @@ pub enum State {
     Revoked,
 }
 
+/// The initiator of a binding generation, distinct from the policy publisher.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Origin {
+    SelfEnrollment,
+    Administrator {
+        authority: rss_mdm_authorization_service::OperationAuthority,
+    },
+}
+
 /// A configured business target. It does not authenticate an HTTP request or issue a session.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -94,6 +104,7 @@ pub struct Binding {
     pub registration: Uuid,
     pub registration_generation: i64,
     pub person: Person,
+    pub origin: Origin,
     pub generation: i64,
     pub revision: i64,
     pub state: State,
@@ -154,6 +165,7 @@ impl Binding {
                 self.generation,
                 self.revision,
                 &self.person,
+                &self.origin,
                 &self.intent,
                 self.policy,
                 self.policy_version,

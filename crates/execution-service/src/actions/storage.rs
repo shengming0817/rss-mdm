@@ -357,6 +357,9 @@ impl ScheduledPolicy {
         if let Self::Retirement(v) = self {
             return v.allowed_in(tx, &run.target, Some(run.id)).await;
         }
+        if let Self::DeviceAccess(v) = self {
+            return v.allowed_in(service, tx, &run.target).await;
+        }
         if let Self::Software(v) = self
             && let Some(retirement) = v.assignment.retirement
         {

@@ -214,9 +214,9 @@ pub async fn result_in(
         || report.revision != b.revision
         || report.definition_digest != b.definition_digest()?
     {
-        // A late creation can establish the cleanup target after an administrator has unbound
-        // the still-pending association. Preserve only that target, never its personnel grant.
-        if b.state == State::Revoked
+        // Preserve the stable creation fact across policy revisions or unlinking, without
+        // promoting the old configuration or personnel grant.
+        if (b.state == State::Revoked || report.binding_generation == b.generation)
             && b.created_by_rss
             && b.account.is_none()
             && let AccessEffect::Applied { account, .. } = &report.effect

@@ -164,6 +164,14 @@ impl Service {
             crate::device::store::revalidate_management(c,device).await?;
             crate::lifecycle::require_work_in(c,employee.tenant_id(),device.device()).await?;
             sessions.recheck(reference).await?;
+            let hash=digest(&("device_access_confirm", input.operation_id,input.challenge,nonce_digest(&input.nonce),&input.local_session,&*who))?;
+            let op=Operation { actor:Actor::from_authorized(employee),key:input.operation_id,digest:&hash };
+            if let Some(old)=crate::operations::replay(c,&op).await? {
+                let id:Uuid=serde_json::from_str(&old).map_err(|_|Error::Corrupt)?;
+                let saved=storage::get_in(c,tenant_uuid(device.tenant())?,id).await?;
+                if saved.device!=device.device() || saved.registration!=device.registration() || saved.registration_generation!=device.generation() || saved.person!=*who {return Err(Error::Forbidden);}
+                return Ok(AuditedChange{value:saved,digest:hash,replay:true});
+            }
             let time=now(c).await?;
             if !employee.recently_authenticated(time,300)? { return Err(Error::Unauthorized); }
             let local=admission.local_session(c,device).await?;
@@ -177,18 +185,12 @@ impl Service {
                 || row.try_get::<Uuid,_>("registration").map_err(db)?!=device.registration() || row.try_get::<i64,_>("generation").map_err(db)?!=device.generation()
                 || row.try_get::<String,_>("device").map_err(db)?!=device.device()
                 || row.try_get::<serde_json::Value,_>("session").map_err(db)?!=serde_json::to_value(&local).map_err(|_|Error::Malformed)? { return Err(Error::Forbidden); }
-            let hash=digest(&("device_access_confirm", input.operation_id,input.challenge,nonce_digest(&input.nonce),&local,&*who))?;
-            let op=Operation { actor:Actor::from_authorized(employee),key:input.operation_id,digest:&hash };
-            if let Some(old)=crate::operations::replay(c,&op).await? {
-                let id:Uuid=serde_json::from_str(&old).map_err(|_|Error::Corrupt)?;
-                return Ok(AuditedChange{value:storage::get_in(c,tenant_uuid(device.tenant())?,id).await?,digest:hash,replay:true});
-            }
             if row.try_get::<i64,_>("expires_unix").map_err(db)?<=time || row.try_get::<Option<Uuid>,_>("consumed").map_err(db)?.is_some() { return Err(Error::Conflict); }
             let policy:Uuid=row.try_get("policy").map_err(db)?;
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),device.registration(),who,&local.account).await? {return Err(Error::Conflict);}
-            let binding=Binding{id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,created_by_rss:false};
+            let binding=Binding{id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,created_by_rss:false};
             storage::insert_in(c,&binding).await?;
             sqlx::query("UPDATE mdm_access.device_access_ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,&serde_json::to_string(&binding.id).map_err(|_|Error::Corrupt)?,audit).await?;
@@ -328,6 +330,9 @@ impl Service {
                                 registration: registration.registration_id,
                                 registration_generation: registration.generation,
                                 person: person.clone(),
+                                origin: Origin::Administrator { authority: rss_mdm_authorization_service::OperationAuthority::from_proof(
+                                    &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,
+                                    actor,device,Permission::AccountWrite)? },
                                 generation,
                                 revision,
                                 state: State::Pending,
