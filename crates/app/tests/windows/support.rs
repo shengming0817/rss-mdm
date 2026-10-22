@@ -1299,7 +1299,7 @@ async fn provider(
             subject: rss_identity_core::entra::SubjectMapping::Entra {
                 tenant: profile.tenant,
             },
-            email: None,
+            profile: rss_identity_core::profile::ProfileSettings::default(),
             groups: None,
             department_snapshot: None,
         },

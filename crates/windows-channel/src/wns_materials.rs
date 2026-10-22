@@ -293,8 +293,7 @@ fn proof<'a>(
             .clock
             .unix_seconds()
             .ok_or(Error::Unavailable(Failure::Clock))?;
-        let authenticated = p.session()?.view().auth_time;
-        if authenticated > now || now - authenticated > 300 {
+        if !p.recently_authenticated(now, 300)? {
             return Err(Error::Unauthorized);
         }
     }

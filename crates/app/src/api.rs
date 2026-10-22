@@ -681,6 +681,12 @@ pub(crate) fn from_state(
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
             first_use,
+            user_profiles: Arc::new(crate::user_profiles::Backend {
+                identity: state.identity.authority.clone(),
+                tenant: state.identity.tenant,
+                instance: state.identity.instance,
+                audit: state.audit_store.clone(),
+            }),
             mail: Arc::new(rss_mdm_mail_service::authority::Authority {
                 tenant: state.identity.tenant,
                 protection: state.protection.clone(),

@@ -3399,7 +3399,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b#1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=5e979508bb963d39d168fdeb9cd862e64f5bb64a#5e979508bb963d39d168fdeb9cd862e64f5bb64a"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3407,6 +3407,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rss-request-context",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.20",
@@ -3420,7 +3421,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b#1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=5e979508bb963d39d168fdeb9cd862e64f5bb64a#5e979508bb963d39d168fdeb9cd862e64f5bb64a"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3442,10 +3443,11 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b#1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=5e979508bb963d39d168fdeb9cd862e64f5bb64a#5e979508bb963d39d168fdeb9cd862e64f5bb64a"
 dependencies = [
  "ipnet",
  "jsonwebtoken",
+ "oauth2",
  "openidconnect",
  "reqwest",
  "rss-identity-core",
@@ -3462,7 +3464,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b#1e42eab44847dd5d5d3dfc8b091e2f2e9cb80b7b"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=5e979508bb963d39d168fdeb9cd862e64f5bb64a#5e979508bb963d39d168fdeb9cd862e64f5bb64a"
 dependencies = [
  "futures",
  "rand_core 0.6.4",
@@ -5832,7 +5834,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

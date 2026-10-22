@@ -80,7 +80,16 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             let snapshot = crate::snapshot_on(connection, &tenant, &self.instance)
                 .await
                 .map_err(|_| ManagementDenied)?;
+            if context.operation() == Op::ReadLatestProfile
+                && context.target() == Some(context.actor())
+            {
+                return Ok(Auth::None);
+            }
             let permission = match context.operation() {
+                Op::ReadProfileSources => Permission::UserAttributeDefinitionsRead,
+                Op::ReadLatestProfile => Permission::UserProfilesRead,
+                Op::ReadLocalProfile | Op::UpdateLocalProfile => Permission::IdentityAccountsManage,
+
                 Op::ProvisionAccount(target) => {
                     let installation = snapshot.installation.as_ref().ok_or(ManagementDenied)?;
                     if installation.is_management(&target.to_string()) {
@@ -117,7 +126,11 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             }
             context.check_live()?;
             Ok(match context.operation() {
-                Op::ListAccounts | Op::ListProviders => Auth::None,
+                Op::ListAccounts
+                | Op::ListProviders
+                | Op::ReadProfileSources
+                | Op::ReadLatestProfile
+                | Op::ReadLocalProfile => Auth::None,
                 _ => Auth::Recent(std::time::Duration::from_secs(300)),
             })
         })

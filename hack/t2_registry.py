@@ -917,6 +917,17 @@ for name in ('apple.apns', 'apple.push', 'apple.host'):
 for name, path in (('apple.push','push_cycle'), ('apple.host','production')):
     MODULES[name] = replace(MODULES[name], test_inputs=(f'crates/app/tests/apple/{path}.rs',))
 
+add('settings.recent_auth', selectors=('user_profiles::recent_tests::',), fixtures=('identity','windows'),
+    sources=('crates/authorization-service/src/context.rs','crates/apple-channel/src/runtime_materials/mod.rs','crates/windows-channel/src/wns_materials.rs','crates/content-service/src/connections/authority.rs','crates/mail-service/src/authority.rs','crates/execution-service/src/task_signing/service.rs','crates/app/src/webhooks/mod.rs','crates/app/src/settings.rs'),
+    tests=('crates/app/tests/settings/recent_auth.rs',),
+    support=('crates/app/tests/support/identity.rs',))
+
+add('settings.user_profiles', selectors=('user_profiles::tests::',), fixtures=('identity',),
+    sources=('crates/app/src/user_profiles.rs','crates/app/src/user_profiles/*','crates/management-http/src/user_profiles.rs','crates/authorization-service/src/identity_management.rs'),
+    tests=('crates/app/tests/settings/user_profiles.rs',),
+    support=('crates/app/tests/support/authority.rs','crates/app/tests/support/identity.rs',))
+MODULES['settings.user_profiles'] = replace(MODULES['settings.user_profiles'], scope='pair')
+
 add('settings.first_use', selectors=('first_use::tests::',), fixtures=('identity','windows'),
     sources=('crates/app/src/first_use.rs','crates/app/src/first_use/*',
              'crates/app/src/settings.rs','crates/management-http/src/first_use.rs',
@@ -1576,7 +1587,7 @@ consume(('crates/registration-service/src/admission.rs','crates/registration-ser
 
 # Account requirements belong to the existing module description. Cases with no
 # identity dependency resolve to no actors, even when overriding module fixtures.
-_OTHER_ACTORS = frozenset('settings.first_use execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
+_OTHER_ACTORS = frozenset('settings.user_profiles settings.first_use execution.agent.task_trust authorization.programmatic recovery-credentials.http certificate-archive.http timeline.http identity.local authorization.rules authorization.membership authorization.capacity authorization.initialization authorization.admission enrollment.http enrollment.quotas enrollment.recovery device.binding device.revocation device.recovery agent.configurations agent.registration agent.reports api.identity_context diagnostics.http assets.http assets.queries planning.onboarding planning.group_scope planning.policy planning.http planning.agent_policy planning.frequency planning.software planning.self_service compliance.http execution.agent.delivery execution.agent.content execution.agent.history execution.agent.poll execution.agent.recovery execution.software.offer execution.software.content execution.software.recovery software.http execution.commands.admission execution.commands.windows'.split())
 for name, module in tuple(MODULES.items()):
     if 'identity' not in module.fixtures:
         continue
@@ -2050,3 +2061,5 @@ consume(('crates/app/src/baseline/*.rs','crates/app/schema/baseline.sql','crates
 consume(('crates/app/src/setup/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')
 
 MODULES['planning.group_scope']=replace(MODULES['planning.group_scope'],policies=(*MODULES['planning.group_scope'].policies,CasePolicy('planning::t2::group_scope::system_lifecycle_snapshot_pages_before_collection_and_preserves_old_authority','fresh','tenant')))
+
+consume(('crates/app/schema/user-profiles.sql',), 'settings.user_profiles installation.migration catalog.contract')

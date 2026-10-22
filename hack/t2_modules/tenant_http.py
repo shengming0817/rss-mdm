@@ -95,9 +95,9 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('POST',path,delegated_body,delegated_key) == (200,delegated_receipt), 'new authorized operator cannot query original replay')
     require(json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{delegated_key}'"))['principalId'] == delegated_principal,
             'replay rewrote original operator')
-    sql(f"UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
+    sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at-301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
     require(call('POST',path,request,admin_key)[0] == 403, 'expired recent authentication allowed replay')
-    sql(f"UPDATE identity_authority.sessions SET auth_time=auth_time+301,absolute_expires_at=absolute_expires_at+301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
+    sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at+301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
     # Optional block controls all registry routes, not a partial startup mode.
     target_host.close()
     absent = deepcopy(target_config)

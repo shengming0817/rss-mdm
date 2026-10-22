@@ -61,3 +61,28 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 资源审计查询 `/api/v1/audit-events` 支持 `targetId/targetType` 精确组合筛选，目标响应为 `{type,id}`。
 时间范围继续使用录入时间 recordedAt 的 `[from,until)`，observedAt 独立保留。
 游标绑定筛选、主体和有效授权依据；变更条件或权限后从首页开始，不接受旧游标。源事实中已有的 mdm 类型保持原值，不根据当前资源补猜历史类型。
+
+
+## 登录资料与业务字段
+
+资料由 Identity 保存，MDM 只持有字段定义并在读取时投影，不复制属性值。本人 `GET /api/v1/user-profiles/me`
+读取本次登录绑定的观察；同一来源后续登录替换观察后，旧会话仍可有效，但资料返回 unavailable。
+`?view=latest` 显式读取本人最近观察；`/api/v1/user-profiles/{principalId}` 使用 latest 语义并要求
+`user_profiles_read`。latest 按目标账户实际观察分页发现来源，不依赖查看者登录来源或先建立业务字段映射。API Key 不提供自然人资料上下文。固定资料、映射字段、来源、观察期限和完整性由这一个产品响应组合。
+必填只表示资料完整性，不阻止基础登录。过期或无效资料不沿用旧值，refresh 和 GET 不更新采集时间。
+
+设置中的用户字段入口由 `user_attribute_definitions_read/write` 独立控制；写定义不授予样本读取、账户管理或本地资料写入。
+定义及批准来源元数据通过 `GET /api/v1/user-attribute-definitions` 读取，分页继续使用响应 `nextCursor` 作为 `after`。
+详情与写入位于 `/{fieldId}`；PUT 携带 `operationId/expectedRevision/value`，value 为 null 表示删除。
+最多同时启用 128 个字段。来源、路径或类型约束变化默认等待下一次登录；明确选择使用已有观察仅重投影仍有效的观察，不延长其期限。
+纯展示修改保留采集门槛，停用和删除立即停止暴露。字段使用严格 JSON Pointer，不执行表达式、脚本或远程取值。
+
+普通字段配置可见范围为 self、profiles_read 或 both；敏感预览始终脱敏。`preview=true` 读取还要求
+`user_profiles_read`，定义写权限不能隐含读取样本。本地资料由共享账户管理入口维护，受独立账户管理策略、CAS 和回执约束，
+修改只更新本地来源，重新登录才产生新观察。
+
+收到 409 后重新读取定义；提交结果未知或响应丢失时，以原 operationId 查询
+`GET /api/v1/user-attribute-operations/{operationId}`，不要自动重放写入。操作回执绑定租户、实例和调用主体，当前权限仍须有效。
+会话的 issuedAt 只表示签发时间；Apple/WNS/存储/邮件/任务签名/Webhook 和设置的近期认证判断均使用真实认证时间，未知、未来或过旧时拒绝。
+
+MDM 不暴露 Identity 的原始 `/api/v1/identity/tenants/{tenant}/profile` 观察读取；本人及他人资料统一经过 MDM 字段投影。本地资料管理仍使用受账户管理策略保护的 accounts 路径。`profiles[]` 的 `providerConfigVersion/sourceRevision` 是该观察接受时的来源版本（不适用为 null），不会替换为读取时的最新版本。

@@ -78,7 +78,7 @@ pub(crate) fn credential_for(tenant: &str, login: &str) -> Result<SessionSecret>
 pub(crate) fn age_prepared_admin_session() -> Result<()> {
     // Model a case waiting in the run queue beyond Recent(300s), only for its own actor.
     super::process::pg(&format!(
-        "UPDATE identity_authority.sessions SET auth_time=auth_time-301,absolute_expires_at=absolute_expires_at-301 WHERE tenant_id='{}' AND principal_id='{}'",
+        "UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at-301 WHERE tenant_id='{}' AND principal_id='{}'",
         super::case::tenant(),
         super::case::admin()
     ))?;
@@ -329,7 +329,7 @@ async fn prepare_accounts(
     Ok(costs)
 }
 
-const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 10] = {
+const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 13] = {
     use crate::authorization::Permission::*;
     [
         RegistrationConfigurationRead,
@@ -342,6 +342,9 @@ const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 10] = {
         DepartmentRead,
         IdentityAccountsManage,
         IdentityProvidersManage,
+        UserAttributeDefinitionsRead,
+        UserAttributeDefinitionsWrite,
+        UserProfilesRead,
     ]
 };
 
@@ -446,7 +449,9 @@ async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json
                         )
                     })?;
                 let view = issued.view();
-                let until = (view.auth_time + 300)
+                let authenticated = authorities[&actor.tenant].authority.inspect_session(
+                    rss_request_context::TenantId::parse(&actor.tenant)?, SessionSecret::parse(issued.secret().expose().into())?, crate::identity::deadline()).await?;
+                let until = (authenticated.assurance()?.auth_time().context("local authentication time missing")? + 300)
                     .min(view.idle_expires_at)
                     .min(view.absolute_expires_at);
                 entry.insert((

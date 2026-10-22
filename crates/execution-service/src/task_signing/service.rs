@@ -152,8 +152,7 @@ impl ExecutionService {
             let mut context=(*service,*p,*operation,*change);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
-                let authenticated=p.session()?.view().auth_time;
-                if authenticated>now || now-authenticated>300 {return Err(Error::Unauthorized)}
+                if !p.recently_authenticated(now,300)? {return Err(Error::Unauthorized)}
                 rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
                 let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;

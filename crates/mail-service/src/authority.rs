@@ -154,8 +154,7 @@ impl Authority {
                 let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
                 rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
-                let authenticated=p.session()?.view().auth_time;
-                if authenticated>now || now-authenticated>300{return Err(Error::Forbidden);}
+                if !p.recently_authenticated(now,300)?{return Err(Error::Forbidden);}
                 let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_mail.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.tenant_id()).bind(*id).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=store::prepare(c,p.tenant_id(),*id,&actor,input,&service.protection).await.map_err(error)?;

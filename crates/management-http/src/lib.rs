@@ -61,3 +61,5 @@ pub mod mail;
 pub mod first_use;
 
 pub mod telemetry;
+
+pub mod user_profiles;
