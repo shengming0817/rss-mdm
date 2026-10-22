@@ -48,7 +48,8 @@
         "state",
         "next_command",
         "ready",
-        "first_authenticated_at"
+        "first_authenticated_at",
+        "last_communication_received_at"
       ],
       "delete_policy": null
     },

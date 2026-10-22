@@ -196,6 +196,22 @@ pub(crate) fn matches(endpoint: &Value, search: Option<&str>, platform: Option<P
                     .as_str()
                     .is_some_and(|s| s.to_lowercase().contains(&search))
             })
+            || ["registrationUser", "currentUser"].iter().any(|key| {
+                let display = &endpoint[*key]["display"];
+                display["login"]
+                    .as_str()
+                    .is_some_and(|s| s.to_lowercase().contains(&search))
+                    || display["profiles"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|profile| {
+                            profile["status"] == "available"
+                                && profile["displayName"]
+                                    .as_str()
+                                    .is_some_and(|s| s.to_lowercase().contains(&search))
+                        })
+            })
     })
 }
 

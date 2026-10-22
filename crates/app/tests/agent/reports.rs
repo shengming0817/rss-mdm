@@ -126,6 +126,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         .0 == StatusCode::NOT_FOUND,
         "unsupported input created a report"
     );
+    let communication = || pg(&format!("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{}'",case_tenant(),registration["registrationId"].as_str().unwrap()));
+    ensure!(communication()?.trim() == "f", "rejected reports must not record communication");
     let (status, ack) = agent_call(
         router,
         Method::POST,
@@ -150,6 +152,8 @@ async fn durable_reports_and_projection() -> Result<()> {
         .1 == ack,
         "report replay changed acknowledgement"
     );
+    ensure!(communication()?.trim() == "t", "accepted report and replay must record communication");
+    pg(&format!("UPDATE mdm_access.registrations SET last_communication_received_at=NULL WHERE tenant_id='{}' AND id='{}'",case_tenant(),registration["registrationId"].as_str().unwrap()))?;
     let concurrent_id = uuid::Uuid::new_v4();
     let concurrent = json!({"wireVersion":1,"collection":registration["collections"][0],"reportId":concurrent_id,"sequence":0,"observedAt":1,"body":{"kind":"failed","code":"temporarilyUnavailable"}});
     let mut same_id = tokio::task::JoinSet::new();
@@ -180,6 +184,7 @@ async fn durable_reports_and_projection() -> Result<()> {
             concurrent_ack = Some(result.1);
         }
     }
+    ensure!(communication()?.trim() == "t", "concurrent failed reports still prove communication");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'", TENANT = case_tenant()))?.trim() == "1", "concurrent replay duplicated durable intake");
     pg(&format!(
         "UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id='{TENANT}' AND id='{concurrent_id}'",

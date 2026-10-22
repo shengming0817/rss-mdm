@@ -12,6 +12,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub fn routes(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    identity: rss_identity_postgres::Authority,
 ) -> Router<Arc<Associations>> {
     Router::new()
         .route("/device-views", get(list))
@@ -32,6 +33,7 @@ pub fn routes(
         .route("/device-associations/{id}/revoke", post(revoke))
         .route("/devices/{device}/association-candidates", get(candidates))
         .layer(Extension(sessions))
+        .layer(Extension(identity))
 }
 fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
     match kind.as_str() {
@@ -44,20 +46,40 @@ fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
 }
 async fn list(
     State(s): State<Arc<Associations>>,
-    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
+        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+        Extension<rss_identity_postgres::Authority>,
+        Extension<crate::http_operation::RequestContinuation>,
+        Extension<crate::runtime_diagnostics::RequestDeadline>,
+    ),
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: Result<Query<ViewQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_view_read");
     Ok(Json(
-        s.views(&a.proof, &query.map_err(|_| Error::Malformed)?.0, &sessions)
-            .await?,
+        s.views(
+            &a.proof,
+            &query.map_err(|_| Error::Malformed)?.0,
+            &rss_mdm_device_service::personnel::Reader::new(
+                &identity,
+                continuation.secret(),
+                deadline.0,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                &sessions,
+            ),
+        )
+        .await?,
     ))
 }
 async fn detail(
     State(s): State<Arc<Associations>>,
-    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
+        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+        Extension<rss_identity_postgres::Authority>,
+        Extension<crate::http_operation::RequestContinuation>,
+        Extension<crate::runtime_diagnostics::RequestDeadline>,
+    ),
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
@@ -68,7 +90,20 @@ async fn detail(
         ViewRef::Endpoint(id) => audit.target_device(id),
         ViewRef::Association(id) => audit.target(&id.to_string()),
     }
-    Ok(Json(s.view(&a.proof, &reference, &sessions).await?))
+    Ok(Json(
+        s.view(
+            &a.proof,
+            &reference,
+            &rss_mdm_device_service::personnel::Reader::new(
+                &identity,
+                continuation.secret(),
+                deadline.0,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                &sessions,
+            ),
+        )
+        .await?,
+    ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,7 +117,12 @@ fn limit() -> usize {
 }
 async fn items(
     State(s): State<Arc<Associations>>,
-    Extension(sessions): Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
+        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+        Extension<rss_identity_postgres::Authority>,
+        Extension<crate::http_operation::RequestContinuation>,
+        Extension<crate::runtime_diagnostics::RequestDeadline>,
+    ),
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -97,7 +137,13 @@ async fn items(
             rss_mdm_inventory::FieldKey::parse(&field).map_err(|_| Error::Malformed)?,
             &q.cursor,
             q.limit,
-            &sessions,
+            &rss_mdm_device_service::personnel::Reader::new(
+                &identity,
+                continuation.secret(),
+                deadline.0,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                &sessions,
+            ),
         )
         .await?,
     ))

@@ -300,3 +300,107 @@ async fn credential_race(
     );
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=device.binding: current registration communication persistence and fencing"]
+async fn communication_is_transactional_and_bound_to_current_registration() -> anyhow::Result<()> {
+    use rss_mdm_registration_service::device::{directory::Query, store::record_communication_in};
+    let (access, service, viewer, mut root) = fixture().await?;
+    let device = crate::test_support::case::name("communication");
+    let credential = proof(case_a(), Channel::Mdm, 71);
+    let (_, first) = bind(&service, &viewer, &credential, device, 0).await?;
+    let principal = service.management_principal(&credential).await?;
+    let field = "lastCommunicationReceivedAt";
+    assert!(service.directory_device(&viewer, device).await?["channels"][0][field].is_null());
+    let mut c = PgConnection::connect_with(&options("mdm_access")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut c)
+        .await?;
+    let mut tx = c.begin().await?;
+    record_communication_in(&mut tx, &principal).await?;
+    tx.rollback().await?;
+    assert!(service.directory_device(&viewer, device).await?["channels"][0][field].is_null());
+    let watermark: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_a())
+    .fetch_one(&mut root)
+    .await?;
+    let mut tx = c.begin().await?;
+    record_communication_in(&mut tx, &principal).await?;
+    tx.commit().await?;
+    c.close().await?;
+    let detail = service.directory_device(&viewer, device).await?;
+    assert!(detail["channels"][0][field].as_i64().is_some_and(|v| v > 0));
+    let page = service
+        .directory(
+            &viewer,
+            &Query {
+                after: None,
+                limit: 1000,
+                descending: false,
+                status: None,
+                channel: None,
+                source: None,
+            },
+        )
+        .await?;
+    assert_eq!(
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == device)
+            .unwrap()["channels"],
+        detail["channels"]
+    );
+    let unchanged: i64 = sqlx::query_scalar(
+        "SELECT coalesce(max(revision),0) FROM mdm.asset_changes WHERE tenant_id=$1::uuid",
+    )
+    .bind(case_a())
+    .fetch_one(&mut root)
+    .await?;
+    assert_eq!(
+        watermark, unchanged,
+        "communication must not invalidate asset snapshots"
+    );
+    // A clock moving backwards must not erase a later persisted receipt.
+    sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=clock_timestamp()+interval '1 day' WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_a()).bind(first.registration).execute(&mut root).await?;
+    let future = service.directory_device(&viewer, device).await?["channels"][0][field].clone();
+    let mut c = PgConnection::connect_with(&options("mdm_access")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut c)
+        .await?;
+    let mut tx = c.begin().await?;
+    record_communication_in(&mut tx, &principal).await?;
+    tx.commit().await?;
+    assert_eq!(
+        service.directory_device(&viewer, device).await?["channels"][0][field],
+        future
+    );
+    let (_, replacement) = bind(
+        &service,
+        &viewer,
+        &proof(case_a(), Channel::Mdm, 72),
+        device,
+        1,
+    )
+    .await?;
+    let mut tx = c.begin().await?;
+    assert!(record_communication_in(&mut tx, &principal).await.is_err());
+    tx.rollback().await?;
+    let current = service.directory_device(&viewer, device).await?;
+    assert_eq!(
+        current["channels"][0]["registrationId"],
+        replacement.registration.to_string()
+    );
+    assert!(current["channels"][0][field].is_null());
+    let hidden = admin(case_b(), "admin-b").await?;
+    assert!(service.directory_device(&hidden, device).await.is_err());
+    c.close().await?;
+    access.close().await;
+    Ok(())
+}
