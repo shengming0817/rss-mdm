@@ -117,6 +117,10 @@ def inputs(root, example, gateway_file, *, database_host="postgres", hostname="m
     config=json.loads(example.read_text())
     config["native_protection"]=dict(active_file="/run/mdm/native-data.key",historical_files=[],fingerprint_file="/run/mdm/native-data.key")
     config["task_signing"]=None
+    config["content"]=dict(storage=dict(kind='volume',directory='/var/lib/mdm/content'),imports={},
+        max_artifact_bytes=32*1024*1024,max_temporary_bytes=64*1024*1024,max_uploads=4,
+        transfer_seconds=60,retention_seconds=3600,max_bundle_bytes=64*1024*1024,
+        max_bundle_entries=100,max_expansion_ratio=100)
     config["native_protocols"]={}
     config["device_pki"]=[]
     for field,role in [("access_database","mdm_access"),("runtime_database","mdm_runtime")]:
@@ -327,6 +331,33 @@ class Candidate:
         return info['Name'].lstrip('/')
     def operator(self,verb,config,stage):
         return self.compose("run","--rm","--no-deps","operator",verb,"--config","/run/mdm/"+config,stage=stage)
+    def prepare_telemetry(self):
+        """Prepare the required baseline through the production telemetry installer."""
+        from t2_environment import private
+        name='telemetry_'+uuid.UUID(self.tenant).hex
+        self.sql('CREATE DATABASE "'+name+'"')
+        password=os.urandom(24).hex();cursor=os.urandom(32)
+        self.private_values.extend([password,cursor.hex(),base64.b64encode(cursor).decode()])
+        for directory in (self.runtime,self.operator_root):
+            private(directory/'telemetry-password',password)
+            private(directory/'telemetry-cursor','').write_bytes(cursor)
+        private(self.operator_root/'telemetry-administrator','candidate-fixture')
+        database=dict(host=self.pg_host,port=5432,name=name,user='postgres',
+            password_file='/run/mdm/telemetry-administrator',ca_file='/run/mdm/ca.crt')
+        runtime=dict(database,user='r_'+uuid.uuid4().hex,password_file='/run/mdm/telemetry-password')
+        config=dict(backend=dict(kind='postgres',database=runtime),connections=2,
+            cursor_key_file='/run/mdm/telemetry-cursor',ingress=dict(requestBytes=1048576,pendingBatches=64,
+            batchesPerMinute=120,bytesPerMinute=8388608),limits=dict(max_points=4096,max_series=4096,
+            max_bytes=1048576,replay_micros=86400000000,cursor_micros=60000000))
+        day=int(time.time())//86400
+        private(self.operator_root/'telemetry-prepare.json',dict(operationId=str(uuid.uuid4()),
+            directory='/tmp/telemetry-installation',tenant=self.tenant,configuration=config,
+            administrator=database,owner='o_'+uuid.uuid4().hex,partitions=[dict(
+            startMicros=(day-1)*86400000000,endMicros=(day+2)*86400000000)],clickhouse=None))
+        self.copy_runtime()
+        self.operator('prepare-telemetry','telemetry-prepare.json',Stage.INITIALIZE)
+        self.config['telemetry']=config
+
     def copy_runtime(self):
         self.compose("run","--rm","--no-deps","inputs",stage=Stage.RUNTIME_INPUTS)
     def start_server(self):
@@ -466,13 +497,14 @@ class Candidate:
             self.copy_runtime()
             self.operator('initialize','management-initialize.json',Stage.INITIALIZE)
             self.operator('initialize-authorization','management-authorization.json',Stage.AUTHORIZATION_INITIALIZE)
+            self.prepare_telemetry()
             agent=self.config['agent_pki']
             self.config['agent_pki']={'mode':'disabled'}
             private(self.runtime/'config.json',self.config)
             self.copy_runtime()
             self.start_server();self.start_gateway()
             self.port=int(self.compose('port','gateway','8443',stage=Stage.PORT).rsplit(':',1)[1])
-            self.ready()
+            self.ready('/livez')
             # First signing authority is generated in its final encrypted owner through real HTTP.
             from candidate_smoke import Browser
             browser=Browser(self.port,self.root/'ca.crt',host=self.host)
@@ -516,13 +548,13 @@ class Candidate:
         self.compose('up','-d','--no-deps','gateway',stage=Stage.GATEWAY)
         self.gateway=self.container('gateway')
         if self.gateway not in self.created:self.created.append(self.gateway)
-    def ready(self):
+    def ready(self, path="/readyz"):
         def check():
             conn=http.client.HTTPSConnection("127.0.0.1",self.port,context=ssl.create_default_context(cafile=str(self.root/"ca.crt")),timeout=3)
             try:
                 import socket
                 conn.sock=ssl.create_default_context(cafile=str(self.root/"ca.crt")).wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=3),server_hostname=self.host)
-                conn.request("GET","/readyz",headers={"Host":self.host})
+                conn.request("GET",path,headers={"Host":self.host})
                 r=conn.getresponse();r.read();return r.status==200
             finally:conn.close()
         wait(check,"product readiness",seconds=60)

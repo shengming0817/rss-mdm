@@ -237,3 +237,21 @@ class CandidateInputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class BaselinePrivacy(unittest.TestCase):
+    def test_telemetry_preparation_registers_new_secrets_before_external_commands(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temporary:
+            owner=candidate.Candidate.__new__(candidate.Candidate)
+            owner.tenant=candidate.TENANT;owner.pg_host='postgres';owner.config={};owner.private_values=[]
+            owner.runtime=Path(temporary)/'runtime';owner.runtime.mkdir()
+            owner.operator_root=Path(temporary)/'operator';owner.operator_root.mkdir()
+            owner.sql=mock.Mock();owner.copy_runtime=mock.Mock()
+            def prepare(*args):
+                password=(owner.runtime/'telemetry-password').read_text()
+                cursor=(owner.runtime/'telemetry-cursor').read_bytes()
+                for secret in [password,cursor.hex(),base64.b64encode(cursor).decode()]:
+                    with self.assertRaises(RuntimeError):candidate.safe_evidence(secret,owner.private_values)
+            owner.operator=mock.Mock(side_effect=prepare)
+            owner.prepare_telemetry()
+            owner.operator.assert_called_once()
