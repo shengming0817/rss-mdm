@@ -16,7 +16,7 @@ async fn ok(
 ) -> Result<Value> {
     let (status, value) = browser.call(router, method, path, body).await?;
     ensure!(
-        status == StatusCode::OK,
+        (status == StatusCode::OK || status == StatusCode::CREATED),
         "personnel request {path}: {status}"
     );
     Ok(value)
@@ -29,7 +29,8 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let (access, service, admin, mut pg) = setup().await?;
-        let grants = identity::device_grants(None, &["inventory_read", "enrollment", "inventory_sensitive_read", "user_profiles_read", "identity_accounts_manage"])?;
+        let mut grants = identity::device_grants(None, &["inventory_read", "enrollment"])?;
+        grants.extend([crate::authorization::Permission::InventorySensitiveRead, crate::authorization::Permission::UserProfilesRead, crate::authorization::Permission::IdentityAccountsManage].map(|operation|crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant}));
         identity::set_grants(case_a(), admin.principal_id(), grants.clone()).await?;
         let router = authority.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_views::routes(
             Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant)),
@@ -41,6 +42,11 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let target = ok(&mut browser, &router, Method::POST, &accounts,
             Some(json!({"login":login,"password":identity::PASSWORD}))).await?;
         let principal = target["principalId"].as_str().context("new account")?;
+        let viewer=ok(&mut browser,&router,Method::POST,&accounts,Some(json!({"login":crate::test_support::case::login("directory-reader"),"password":identity::PASSWORD}))).await?;
+        let viewer_id=viewer["principalId"].as_str().context("directory reader")?;
+        identity::set_grants(case_a(),viewer_id,grants.clone()).await?;
+        let mut reader=Browser::default();
+        ensure!(reader.login_password(&router,"directory-reader",identity::PASSWORD).await?==StatusCode::OK);
         let local = format!("{accounts}/{principal}/profile");
         ok(&mut browser, &router, Method::PUT, &local, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":{"displayName":"Directory Person","username":"source-alias","email":null,"extensions":{},"maxAgeSeconds":14400}}))).await?;
         let first = crate::test_support::case::name("aaa-personnel");
@@ -59,32 +65,32 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
             .bind(case_a()).execute(&mut pg).await?;
         sqlx::query("INSERT INTO identity_authority.memberships(tenant_id,principal_id) SELECT tenant_id,principal_id FROM identity_authority.accounts WHERE tenant_id=$1::uuid ON CONFLICT DO NOTHING")
             .bind(case_a()).execute(&mut pg).await?;
-        let page = ok(&mut browser,&router,Method::GET,&format!("/api/v1/device-views?limit=1&search={login}"),None).await?;
+        let page = ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&search={login}"),None).await?;
         ensure!(page["statistics"]["deviceViewCount"]==1 && page["items"][0]["endpoints"][0]["id"]==last);
         let display = &page["items"][0]["endpoints"][0]["registrationUser"]["display"];
         ensure!(display["login"]==login && display["profiles"]==json!([]), "never-logged-in account lost its login");
         let mut person = Browser::default();
         ensure!(person.login_password(&router,"directory-person",identity::PASSWORD).await?==StatusCode::OK);
         let path = format!("/api/v1/device-views/endpoint/{last}");
-        let detail = ok(&mut browser,&router,Method::GET,&path,None).await?;
+        let detail = ok(&mut reader,&router,Method::GET,&path,None).await?;
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["displayName"]=="Directory Person");
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["username"]=="source-alias");
-        let found=ok(&mut browser,&router,Method::GET,"/api/v1/device-views?limit=1&search=pErSoN",None).await?;
+        let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&search=pErSoN",None).await?;
         ensure!(found["statistics"]["deviceViewCount"]==1, "name search ran after pagination");
-        let page=ok(&mut browser,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
+        let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("two devices")?;
         // Unrelated account changes must not bind device pagination.
         sqlx::query("UPDATE identity_authority.accounts SET enabled=false WHERE tenant_id=$1::uuid AND principal_id='00000000-0000-0000-0000-000000000001'").bind(case_a()).execute(&mut pg).await?;
-        ok(&mut browser,&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
+        ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
         ok(&mut browser,&router,Method::PUT,&local,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":{"displayName":"Renamed Person","username":null,"email":null,"extensions":{},"maxAgeSeconds":14400}}))).await?;
         person=Browser::default();
         ensure!(person.login_password(&router,"directory-person",identity::PASSWORD).await?==StatusCode::OK);
-        ensure!(browser.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
 
         for removed in ["user_profiles_read", "identity_accounts_manage", "inventory_sensitive_read"] {
             let remaining=grants.iter().filter(|g| serde_json::to_value(g.operation).ok()!=Some(json!(removed))).cloned().collect();
-            identity::set_grants(case_a(),admin.principal_id(),remaining).await?;
-            let detail=ok(&mut browser,&router,Method::GET,&path,None).await?;
+            identity::set_grants(case_a(),viewer_id,remaining).await?;
+            let detail=ok(&mut reader,&router,Method::GET,&path,None).await?;
             let display=&detail["endpoints"][0]["registrationUser"]["display"];
             match removed {
                 "user_profiles_read" => ensure!(display["profiles"]==json!([]) && display["login"]==login),
@@ -92,14 +98,14 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
                 _ => ensure!(display.is_null()),
             }
         }
-        identity::set_grants(case_a(),admin.principal_id(),grants).await?;
+        identity::set_grants(case_a(),viewer_id,grants).await?;
         sqlx::query("UPDATE identity_authority.profile_observations SET observed_at=1,expires_at=2 WHERE tenant_id=$1::uuid AND principal_id=$2::uuid").bind(case_a()).bind(principal).execute(&mut pg).await?;
-        let detail=ok(&mut browser,&router,Method::GET,&path,None).await?;
+        let detail=ok(&mut reader,&router,Method::GET,&path,None).await?;
         let profile=&detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0];
         ensure!(profile["status"]=="expired" && profile["displayName"].is_null() && profile["username"].is_null());
-        ensure!(ok(&mut browser,&router,Method::GET,"/api/v1/device-views?search=renamed",None).await?["statistics"]["deviceViewCount"]==0);
+        ensure!(ok(&mut reader,&router,Method::GET,"/api/v1/device-views?search=renamed",None).await?["statistics"]["deviceViewCount"]==0);
         ok(&mut browser,&router,Method::POST,&format!("{accounts}/{principal}/enabled"),Some(json!({"enabled":false}))).await?;
-        ensure!(ok(&mut browser,&router,Method::GET,&path,None).await?["endpoints"][0]["registrationUser"]["display"].is_null());
+        ensure!(ok(&mut reader,&router,Method::GET,&path,None).await?["endpoints"][0]["registrationUser"]["display"].is_null());
         // Source-page responses retain their own DTO; personnel enriches endpoints only.
         access.close().await;
         Ok(())

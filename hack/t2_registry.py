@@ -2066,3 +2066,5 @@ consume(('crates/app/schema/user-profiles.sql',), 'settings.user_profiles instal
 
 # Personnel is consumed only by the authorized device directory/detail and its session seam.
 consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current_user')
+
+MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))

@@ -148,7 +148,18 @@ impl<'a> Reader<'a> {
         if logins_read {
             self.logins(proof, &targets, &mut displays).await?;
         }
-        for (target, profiles) in observations {
+        for (target, mut profiles) in observations {
+            if profiles.iter().any(|profile| profile.view().is_err()) {
+                self.authenticate(proof).await?;
+                // A target observation can expire while other targets/account pages are read.
+                // Reload once to obtain its current expired/unavailable state; never emit a
+                // caller authentication error merely because an observation aged out.
+                let Some(fresh) = self.profiles(proof, target).await? else {
+                    displays.remove(&target);
+                    continue;
+                };
+                profiles = fresh;
+            }
             if let Some(display) = displays.get_mut(&target) {
                 display.profiles = profiles.iter().map(profile).collect::<Result<_>>()?;
             }
@@ -259,7 +270,7 @@ impl<'a> Reader<'a> {
 }
 
 fn profile(value: &TrustedProfile) -> Result<Profile> {
-    let value = value.view().map_err(identity_error)?;
+    let value = value.view().map_err(|_| Error::Deadline)?;
     let available = matches!(value.status, ProfileStatus::Available);
     let text = |attr: &Attribute<String>| {
         if available {

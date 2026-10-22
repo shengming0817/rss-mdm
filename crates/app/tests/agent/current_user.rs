@@ -159,7 +159,8 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         let detail=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
         ensure!(detail.0==StatusCode::OK && detail.1["endpoints"][0]["currentUser"]==projected);
         let initial=call(&f,Method::GET,None,true,false).await?;
-        ensure!(initial.1==projected);
+        for key in ["revision","state","user","confirmedAt"] {ensure!(initial.1[key]==projected[key]);}
+        ensure!(projected.get("display").is_some() && initial.1.get("display").is_none());
         // A stale binding cannot borrow the validity of the current registration generation.
         crate::test_support::process::pg(&format!("UPDATE mdm_access.current_users SET generation=generation+1 WHERE tenant_id='{}' AND device='{}'",case_tenant(),device))?;
         let invalid=f.author.call(&f.router,Method::GET,&search,None).await?;
