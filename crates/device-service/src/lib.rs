@@ -5,6 +5,7 @@ mod cursor;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
+pub mod personnel;
 pub mod planning;
 mod presentation;
 mod views;
