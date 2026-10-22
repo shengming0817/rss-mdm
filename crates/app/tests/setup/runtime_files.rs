@@ -225,6 +225,11 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
         application: None,
     };
     for explicit in [true, false] {
+        let installation = root.join(if explicit {
+            "explicit-installation"
+        } else {
+            "default-installation"
+        });
         let slot = Slot {
             origin: "https://secondary.example.test".into(),
             listen: "127.0.0.1:8082".parse().unwrap(),
@@ -240,10 +245,10 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
         };
         let mut deferred = runtime.clone();
         deferred["content"] = Value::Null;
-        let waiting = additional_runtime(&deferred, &slot, &progress).unwrap();
-        let decoded: crate::config::Config = serde_json::from_value(waiting).unwrap();
+        let waiting = additional_runtime(&installation, &deferred, &slot, &progress).unwrap();
+        let decoded: crate::config::Config = serde_json::from_value(waiting.clone()).unwrap();
         assert!(decoded.content.is_none());
-        let candidate = additional_runtime(&runtime, &slot, &progress).unwrap();
+        let candidate = additional_runtime(&installation, &runtime, &slot, &progress).unwrap();
         let volume = slot.deployment.content_snapshot(&candidate).unwrap();
         assert_ne!(volume, primary.content_directory());
         assert_eq!(candidate["content"]["max_uploads"], 8);
@@ -269,6 +274,23 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
             std::fs::read(primary.content_directory().join("artifact")).unwrap(),
             b"primary"
         );
+        // Domain reconciliation has exported S3 while this host is still pending.
+        // A restart/retry must observe that exact application, not reset to revision 1.
+        let mut prepared = waiting;
+        prepared["content"] = json!({"storage":{"kind":"s3","revision":1,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":1000,"max_expansion_ratio":100});
+        prepared["runtime_binding"] = json!({"host_id":progress.host_id,"operation_id":Uuid::new_v4(),"revision":2,"material_digest":super::super::application::fingerprint(&prepared).unwrap()});
+        {
+            let owner =
+                Journal::open(&installation.join(format!("rss-mdm-{}", progress.host_id.simple())))
+                    .unwrap();
+            owner.save("requested-runtime.json", &prepared).unwrap();
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                additional_runtime(&installation, &deferred, &slot, &progress).unwrap(),
+                prepared
+            );
+        }
         let mut shared = slot;
         shared.deployment.content_volume = primary.content_volume.clone();
         assert_eq!(
