@@ -458,15 +458,8 @@ async fn verify_profiles(
             .execute(&mut *conn)
             .await?;
     }
-    sqlx::raw_sql("SET LOCAL ROLE mdm_access")
-        .execute(&mut *conn)
-        .await?;
-    rss_identity_postgres::verify_profile_source_admission(conn, instance)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("identity source admission profile rejected".into()))?;
-    sqlx::raw_sql("SET LOCAL ROLE NONE")
-        .execute(&mut *conn)
-        .await?;
+    // mdm_access deliberately has no role memberships. Its source-admission profile is
+    // checked by database::admission using an actual access-role connection at startup.
     crate::identity_audit::verify_profile(conn, audit_mode)
         .await
         .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;

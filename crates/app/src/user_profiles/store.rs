@@ -12,16 +12,20 @@ async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     permission: Option<Permission>,
+    writing: bool,
 ) -> Result<bool, Error> {
-    // Establish the component guard before the MDM advisory lock, including deletes/replays.
-    rss_identity_postgres::admit_profile_source_on(
-        c,
-        rss_identity_core::InstanceId::parse(p.instance_id()).map_err(|_| Error::Forbidden)?,
-        tenant(p)?,
-        rss_identity_postgres::ProfileSource::IdentityLocal,
-    )
-    .await
-    .map_err(admission)?;
+    // Only writes need the source guard. Audit reads are READ ONLY and consume
+    // Identity views validated before entering this host-only transaction.
+    if writing {
+        rss_identity_postgres::admit_profile_source_on(
+            c,
+            rss_identity_core::InstanceId::parse(p.instance_id()).map_err(|_| Error::Forbidden)?,
+            tenant(p)?,
+            rss_identity_postgres::ProfileSource::IdentityLocal,
+        )
+        .await
+        .map_err(admission)?;
+    }
     rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
     let rules =
         rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
@@ -101,7 +105,7 @@ pub(super) async fn definitions(
     let budget = AuditBudget::new(Duration::from_secs(8));
     let attempt=store.read(tenant(p)?,&budget.control(),(p,permission,enabled_only,after),|ctx,tx|Box::pin(async move {
         tx.with_connection_context(ctx,|(p,permission,enabled,after),c|Box::pin(async move {
-            let profiles_read=authorize(c,p,*permission).await?;
+            let profiles_read=authorize(c,p,*permission,false).await?;
             let rows=sqlx::query("SELECT * FROM mdm_user_profiles.definitions WHERE tenant_id=$1::uuid AND value IS NOT NULL AND (NOT $2 OR value->>'enabled'='true') AND ($3::uuid IS NULL OR field_id>$3) ORDER BY field_id LIMIT 129")
                 .bind(p.tenant_id()).bind(*enabled).bind(*after).fetch_all(c).await.map_err(database)?;
             Ok::<_,Error>((rows.into_iter().map(decode).collect::<Result<Vec<_>,Error>>()?,profiles_read))
@@ -134,6 +138,7 @@ pub(super) async fn one(
                                 } else {
                                     Permission::UserAttributeDefinitionsRead
                                 }),
+                                false,
                             )
                             .await?;
                             if *operation {
@@ -188,7 +193,7 @@ pub(super) async fn change(
         let (store,p,audit,id,input,fingerprint)=*ctx;
         let mut context=(p,id,input,fingerprint);
         let (result,replayed)=tx.with_connection_context(&mut context,|(p,id,input,fingerprint),c|Box::pin(async move {
-            authorize(c,p,Some(Permission::UserAttributeDefinitionsWrite)).await?;
+            authorize(c,p,Some(Permission::UserAttributeDefinitionsWrite),true).await?;
             if let Some((previous,result))=receipt(c,p,input.operation_id).await? {if previous.as_slice()!=fingerprint.as_slice(){return Err(Error::Conflict);}return Ok::<_,Error>((result,true));}
             let old=get(c,p,*id).await?;
             if old.as_ref().map_or(0,|d|d.revision)!=input.expected_revision {return Err(Error::Conflict);}

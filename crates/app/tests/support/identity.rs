@@ -329,7 +329,7 @@ async fn prepare_accounts(
     Ok(costs)
 }
 
-const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 10] = {
+const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 13] = {
     use crate::authorization::Permission::*;
     [
         RegistrationConfigurationRead,
@@ -342,6 +342,9 @@ const MANAGEMENT_PERMISSIONS: [crate::authorization::Permission; 10] = {
         DepartmentRead,
         IdentityAccountsManage,
         IdentityProvidersManage,
+        UserAttributeDefinitionsRead,
+        UserAttributeDefinitionsWrite,
+        UserProfilesRead,
     ]
 };
 

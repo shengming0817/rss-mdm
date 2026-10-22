@@ -30,7 +30,8 @@ def verify_startup_deadlines(binary, root, env):
         result=subprocess.run([binary,'serve','--config',str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)
         verify(result,start,'startup.access_store')
     # Keep the same physical PG identity required by production configuration.
-    # This table is probed only by Identity; the earlier product stores remain healthy.
+    # Source admission now probes the Identity deployment through the access role first.
+    # A stalled Identity contract must fail that actual startup owner within budget.
     container=env['MDM_TEST_PG_CONTAINER']
     def sql(statement):
         return run(['docker','exec',container,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d',config['access_database']['name'],'-c',statement],capture_output=True,timeout=5).stdout.strip()
@@ -48,11 +49,11 @@ def verify_startup_deadlines(binary, root, env):
         start=time.monotonic()
         child=subprocess.Popen([binary,'serve','--config',str(root/'runtime.json')],pass_fds=lease_fds(), cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         end=time.monotonic()+8
-        while sql("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_identity_runtime' AND wait_event_type='Lock'") != '1':
+        while sql("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_access' AND wait_event_type='Lock'") != '1':
             require(child.poll() is None and time.monotonic()<end,'startup did not reach the blocked Identity probe')
             time.sleep(.1)
         output,error=child.communicate(timeout=22)
-        verify(subprocess.CompletedProcess(child.args,child.returncode,output,error),start,'startup.identity')
+        verify(subprocess.CompletedProcess(child.args,child.returncode,output,error),start,'startup.access_store')
     finally:
         sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=current_database() AND ({holder_pid}=0 OR pid={holder_pid}) AND application_name='{holder_name}'")
         holder.wait(timeout=5)

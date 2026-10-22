@@ -69,11 +69,11 @@ pub(super) async fn event_driven_delivery(
         login(identity).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
-            wait_delivered(observer, &readiness, expected + 1),
+            wait_delivered(observer, &readiness, expected + 2),
         )
         .await??;
         wait_idle(&worker).await?;
-        durable_retry(identity, observer, &readiness, expected + 1).await?;
+        durable_retry(identity, observer, &readiness, expected + 2).await?;
         wait_idle(&worker).await?;
         // Lose the wake hint entirely: reconnect must discover durable work.
         manipulate(observer, "UPDATE rss_transactional_messaging.outbox SET status='pending',retry_after=clock_timestamp() WHERE seq=(SELECT max(seq) FROM rss_transactional_messaging.outbox WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND domain='identity.security')").await?;
@@ -94,14 +94,14 @@ pub(super) async fn event_driven_delivery(
         .await?;
         tokio::time::timeout(
             Duration::from_secs(5),
-            wait_delivered(observer, &readiness, expected + 1),
+            wait_delivered(observer, &readiness, expected + 2),
         )
         .await??;
         wait_idle(&worker).await?;
         login(identity).await?;
         tokio::time::timeout(
             Duration::from_secs(5),
-            wait_delivered(observer, &readiness, expected + 2),
+            wait_delivered(observer, &readiness, expected + 4),
         )
         .await??;
         Ok::<(), anyhow::Error>(())

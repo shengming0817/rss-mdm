@@ -870,6 +870,12 @@ impl Fixture {
         let (device, der) = self.seed_local_identity().await?;
         let peer = self.authenticate_peer(&device, &der).await?;
         peer.token().await?;
+        // Complete the independent trust exchange before tests publish their policies.
+        // Otherwise its extra signed check-ins can dispatch a run during queue preparation.
+        let reply = peer.manage("Idle", None, None).await?;
+        if !reply.is_empty() {
+            peer.pending_replies.lock().await.push_back(reply);
+        }
         Ok((peer, device))
     }
     async fn ready_scep_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {

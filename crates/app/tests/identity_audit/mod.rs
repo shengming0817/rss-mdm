@@ -144,7 +144,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .fetch_one(&observer)
         .await?;
     ensure!(before == management_records);
-    let expected = management_records + 2;
+    let expected = management_records + 3;
     run_worker(&config, &observer, expected, !ledger).await?;
     let original: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY position")
@@ -174,7 +174,7 @@ async fn exercise(ledger: bool) -> Result<()> {
                     event.facts().resource().id().as_str() == crate::test_support::case::admin()
                 );
             }
-            "identity.session.created" => {
+            "identity.session.created" | "identity.profile.observed" => {
                 ensure!(
                     event.facts().actor().kind().as_str() == "principal"
                         && event.facts().actor().id().as_str()
@@ -189,7 +189,8 @@ async fn exercise(ledger: bool) -> Result<()> {
         actions
             == std::collections::BTreeSet::from([
                 "identity.account.account_created".to_owned(),
-                "identity.session.created".to_owned()
+                "identity.session.created".to_owned(),
+                "identity.profile.observed".to_owned()
             ])
     );
 

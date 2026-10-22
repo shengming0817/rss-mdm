@@ -214,7 +214,19 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
             )
             .await?;
             let mut other = f.browser("other")?;
-            let principal = browser_subject(&other, &router).await?;
+            let principal = f
+                .identity
+                .authority
+                .inspect_session(
+                    f.identity.tenant,
+                    identity::credential(&f.identity, "other")?,
+                    crate::identity::deadline(),
+                )
+                .await?
+                .account()
+                .principal
+                .as_uuid()
+                .to_string();
             identity::set_grants(
                 case_tenant(),
                 &principal,
@@ -512,10 +524,14 @@ async fn enabled_capacity_and_cross_tenant_storage_are_enforced() -> Result<()> 
         ensure!(existing.len()==128);
         let mut first=existing[0].value.clone().unwrap();first.enabled=false;
         let stopped=Change{operation_id:Uuid::new_v4(),expected_revision:1,value:Some(first)};
-        audit.operation(stopped.operation_id,"user_attribute_definition_change");
-        store::change(&f.audit,&p,&audit,existing[0].field_id,&stopped).await?;
-        audit.operation(input.operation_id,"user_attribute_definition_change");
-        store::change(&f.audit,&p,&audit,Uuid::new_v4(),&input).await?;
+        let stop_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&stop_audit)?;
+        stop_audit.operation(stopped.operation_id,"user_attribute_definition_change");
+        store::change(&f.audit,&p,&stop_audit,existing[0].field_id,&stopped).await?;
+        stop_audit.finalize(None);
+        let create_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&create_audit)?;
+        create_audit.operation(input.operation_id,"user_attribute_definition_change");
+        store::change(&f.audit,&p,&create_audit,Uuid::new_v4(),&input).await?;
+        create_audit.finalize(None);
         use sqlx::Connection;
         let config:Config=serde_json::from_value(f.base.clone())?;
         let mut c=sqlx::PgConnection::connect_with(&config.access_options()?).await?;
