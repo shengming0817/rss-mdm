@@ -16,7 +16,7 @@ pub struct DirectoryQuery {
     /// Reverse canonical ID order.
     #[serde(default)]
     pub descending: bool,
-    /// Exact software, script or configuration kind.
+    /// Exact published resource kind.
     pub kind: Option<String>,
     /// Whether an active version must currently exist.
     pub active: Option<bool>,
@@ -42,6 +42,7 @@ impl ResourceStore {
             Some("configuration") => Some(2),
             Some("native_collection") => Some(3),
             Some("agent_collection") => Some(4),
+            Some("telemetry_profile") => Some(5),
             _ => return Ok(Err(Rejection::InvalidInput)),
         };
         let tenant = tx.tenant_id();
