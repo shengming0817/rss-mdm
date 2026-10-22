@@ -23,11 +23,7 @@ impl Inputs {
         let Some(input) = input else {
             return Ok(None);
         };
-        if matches!(
-            input,
-            ResourcePreparation::Script { .. } | ResourcePreparation::AgentCollection { .. }
-        ) && !self.signing_enabled
-        {
+        if matches!(input, ResourcePreparation::Script { .. }) && !self.signing_enabled {
             return Err(Error::Conflict);
         }
         let artifact = inspect(&self.runtime, self.tenant, (self, input), |ctx, tx| {
