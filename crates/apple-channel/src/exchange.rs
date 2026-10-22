@@ -49,7 +49,9 @@ impl ports::AppleExchange for Exchange {
             if let Some(access) = &self.user_access {
                 access.current_in(c).await?;
             }
-            crate::device::store::record_communication_in(c, p).await?;
+            crate::device::store::record_communication_in(c, p)
+                .await
+                .map_err(Error::from)?;
             Ok(())
         })
     }
