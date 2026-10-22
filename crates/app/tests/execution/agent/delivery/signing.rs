@@ -2,6 +2,7 @@
 use super::*;
 use rss_mdm_agent_wire::runtime as w;
 use rss_mdm_resource as r;
+use sha2::Digest;
 
 #[tokio::test]
 #[ignore = "MODULE=execution.agent.delivery: unsigned claim rolls back real collection admission"]
@@ -27,22 +28,45 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
             let principal=agent.authenticate(&evidence(case_credential()).unwrap()).await?;
             let mut config:Config=serde_json::from_value(f.base.clone())?;
             config.task_signing=None;
-            let (unsigned_resources,unsigned)=Resources::build(|resources|Box::pin(async {
+            let content=f.content.clone();
+            let audit_store=authority.audit.clone();
+            let sessions=Arc::new(crate::authorization::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
+            let (unsigned_resources,unsigned)=Resources::build(move |resources|Box::pin(async move {
                 let unsigned=crate::execution_assembly::open(
-                    &config,config.native_protector()?,authority.audit.clone(),f.content.clone(),
+                    &config,config.native_protector()?,audit_store,content,
                     std::collections::BTreeMap::new(),rss_device_command_postgres::CommandClock::Postgres,
-                    Arc::new(crate::authorization::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),
+                    sessions,
                 ).await?;
                 resources.resource(rss_mdm_execution_service::Resource(unsigned.service.clone()));
                 Ok(unsigned)
             })).await?;
             unsigned_resources.finish(async {
                 ensure!(unsigned.service.loaded_task_signing_key().is_none());
-                let before=effects()?;
+                // Lazy admission first persists a queued run. The real worker must accept it
+                // before a poll can reach the signer, rather than merely returning no work.
                 let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim");
-                let rejected=unsigned.service.claim_action(&principal,&input,&audit).await;
-                ensure!(matches!(rejected,Err(rss_mdm_execution_service::Error::Unsupported)),"claim did not reach missing signer: {rejected:?}");
-                ensure!(effects()?==before,"unsigned claim persisted execution or collection effects");
+                let queued=unsigned.service.claim_action(&principal,&input,&audit).await?;
+                ensure!(queued["task"].is_null());
+                ensure!(run_count(policy)?.trim()=="1","matching collection was not admitted");
+                let stack=worker(&f.base).await?;
+                let result=async {
+                    tokio::time::timeout(Duration::from_secs(30),async {
+                        loop {
+                            let ready=pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND gateway_accepted",case_tenant()))?;
+                            if ready.trim()=="1" {break;}
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                        Ok::<_,anyhow::Error>(())
+                    }).await??;
+                    let before=effects()?;
+                    let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim");
+                    let rejected=unsigned.service.claim_action(&principal,&input,&audit).await;
+                    ensure!(matches!(rejected,Err(rss_mdm_execution_service::Error::Unsupported)),"claim did not reach missing signer: {rejected:?}");
+                    ensure!(effects()?==before,"unsigned offer persisted execution or collection effects");
+                    Ok::<_,anyhow::Error>(())
+                }.await;
+                stop_worker(stack).await?;
+                result?;
                 Ok(())
             }).await?;
             // The same policy and operation must now reach a real, correctly signed offer.
