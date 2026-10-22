@@ -2082,4 +2082,4 @@ T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)
 
 consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs','crates/execution-service/src/input_preparation.rs','crates/execution-service/src/input_preparation/*'), 'device-access.http')
 
-MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],support_inputs=tuple(dict.fromkeys((*MODULES['recovery-credentials.http'].support_inputs,*MODULES['agent.current_user'].support_inputs))))
+MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],support_inputs=tuple(dict.fromkeys((*MODULES['recovery-credentials.http'].support_inputs,*(p for p in MODULES['agent.current_user'].support_inputs if p != 'crates/app/tests/agent/mod.rs')))))

@@ -2,6 +2,7 @@
 use crate::test_support::{
     agent::*,
     agent_execution::{self as execution, Fixture},
+    http::{Browser, browser_subject},
     process::*,
     runtime::*,
     *,
