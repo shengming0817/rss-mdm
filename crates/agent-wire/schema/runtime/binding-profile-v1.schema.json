@@ -4,11 +4,6 @@
       "description": "Closed V1 capability set.",
       "oneOf": [
         {
-          "const": "device_access.v1",
-          "description": "Typed local-account Device Access operations.",
-          "type": "string"
-        },
-        {
           "const": "inventory.collect.v1",
           "description": "Full/partial/failed reports for the two basic inventory fields.",
           "type": "string"
@@ -131,6 +126,11 @@
         {
           "const": "telemetry.counter.local.v1",
           "description": "Durable local baselines for explicitly signed native cumulative counters.",
+          "type": "string"
+        },
+        {
+          "const": "device_access.v1",
+          "description": "Typed local-account Device Access operations.",
           "type": "string"
         }
       ]

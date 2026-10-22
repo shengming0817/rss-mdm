@@ -51,7 +51,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "7bd709790961a4ed54b8ffac6cd6a8cda17acbfcc08c4c85b283e99a9ab09c86";
+    "bcce34c638dddd60d7c66deeac79aea3a43b16911c4f8f7426f5f03d337603c4";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,9 +132,6 @@ impl<'de> Deserialize<'de> for Secret {
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 pub enum Capability {
-    /// Typed local-account Device Access operations.
-    #[serde(rename = "device_access.v1")]
-    DeviceAccessV1,
     /// Full/partial/failed reports for the two basic inventory fields.
     #[serde(rename = "inventory.collect.v1")]
     InventoryCollectionV1,
@@ -210,6 +207,9 @@ pub enum Capability {
     /// Durable local baselines for explicitly signed native cumulative counters.
     #[serde(rename = "telemetry.counter.local.v1")]
     TelemetryCounterLocalV1,
+    /// Typed local-account Device Access operations.
+    #[serde(rename = "device_access.v1")]
+    DeviceAccessV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
@@ -262,7 +262,7 @@ impl Capability {
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 25
+        && value.len() <= 26
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 

@@ -145,3 +145,22 @@ fn mac_application_requires_its_own_secure_token_observation() {
     }
     assert!(!AccessEffect::Unknown.complete());
 }
+
+#[test]
+fn device_access_can_register_with_the_canonical_capability_order() {
+    use rss_mdm_agent_wire::enroll::RuntimeProfile;
+    let profile: RuntimeProfile=serde_json::from_value(serde_json::json!({
+        "capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],
+        "platform":"windows","architecture":"x86_64",
+        "executionContext":{"revision":1,"osVersion":[10,0,22621,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}
+    })).unwrap();
+    assert!(profile.validate().is_ok());
+    assert!(!supported_capabilities(&[
+        Capability::DeviceAccessV1,
+        Capability::InventoryCollectionV1
+    ]));
+    assert!(supported_capabilities(&[
+        Capability::InventoryCollectionV1,
+        Capability::DeviceAccessV1
+    ]));
+}

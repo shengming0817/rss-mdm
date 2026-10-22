@@ -1532,7 +1532,15 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             }}).await??;
             let scope=json!({"kind":"native_certificates","platform":platform,"store":store,"owner":if !user {Value::Null}else if macos {json!({"kind":"macos","uid":n,"generated_uid":guid})}else{json!({"kind":"windows","sid":sid})}});
             let escaped=scope.to_string().replace('\'',"''");
-            let saved=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+            // Observation delivery precedes asynchronous inventory projection.
+            let saved=tokio::time::timeout(Duration::from_secs(20),async {loop {
+                let value=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+                if !value.trim().is_empty() {
+                    let parsed:Value=serde_json::from_str(value.trim())?;
+                    if parsed["value"].as_array().context("certificate projection")?.len()==if stage==5 {0}else{1} {break Ok::<_,anyhow::Error>(value);}
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }}).await??;
             let parsed:Value=serde_json::from_str(saved.trim())?;
             ensure!(parsed["value"].as_array().unwrap().len()==if stage==5 {0}else{1},"wrong store replacement: {parsed}");
             if stage==1 {prior_user=saved.clone();}
@@ -1835,7 +1843,12 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let binding=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",case_device_id());
         let associated=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","sid":sid}}}}))).await?;
         ensure!(associated.0==StatusCode::OK,"associate {associated:?}");
-        let claim=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
+        let claim=tokio::time::timeout(Duration::from_secs(30),async {loop {
+            let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
+            ensure!(response.0==StatusCode::OK,"access claim {response:?}");
+            if !response.1["task"].is_null() {break Ok::<_,anyhow::Error>(response);}
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }}).await??;
         ensure!(claim.0==StatusCode::OK,"access claim {claim:?}");
         let spec=&claim.1["task"]["payload"]["task"];
         for event in [json!({"kind":"received"}),json!({"kind":"start"}),json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null}})] {

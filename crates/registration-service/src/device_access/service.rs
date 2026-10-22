@@ -310,8 +310,8 @@ impl Service {
                                 return Err(Error::Conflict);
                             }
                             if old.as_ref().is_some_and(|b| {
-                                matches!(intent, AccountIntent::Create { .. })
-                                    && (b.account.is_some() || b.intent != *intent)
+                                (b.account.is_none() && b.intent != *intent)
+                                    || (matches!(intent, AccountIntent::Create { .. }) && b.account.is_some())
                             }) {
                                 return Err(Error::Conflict);
                             }

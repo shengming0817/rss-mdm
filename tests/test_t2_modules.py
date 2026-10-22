@@ -270,6 +270,7 @@ class ModuleImpactTests(unittest.TestCase):
     def test_device_access_direct_execution_consumers_select_http_evidence(self):
         for path in ('crates/execution-service/src/actions/agent.rs',
                      'crates/execution-service/src/actions/storage.rs',
+                     'crates/authorization-service/src/authority.rs',
                      'crates/execution-service/src/input_preparation.rs'):
             self.assertIn('device-access.http', self.selected(path), path)
 

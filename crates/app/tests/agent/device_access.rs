@@ -21,6 +21,33 @@ fn context(revision: u64, session: Uuid, account: Uuid) -> Value {
 async fn claim(f: &Fixture, c: &Value) -> Result<(StatusCode, Value)> {
     agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(execution::case_credential()),Some(json!({"wireVersion":1,"executionContext":c,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[],"operationId":Uuid::new_v4()}))).await
 }
+async fn offer(f: &Fixture, c: &Value) -> Result<(StatusCode, Value)> {
+    let result = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let response = claim(f, c).await?;
+            ensure!(response.0 == StatusCode::OK, "offer {response:?}");
+            if !response.1["task"].is_null() {
+                return Ok(response);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    match result {
+        Ok(value) => value,
+        Err(error) => {
+            let bindings = pg(&format!(
+                "SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'state',state,'revision',revision,'document',document)),'[]') FROM mdm_access.device_access_bindings WHERE tenant_id='{}'",
+                case_tenant()
+            ))?;
+            let runs = pg(&format!(
+                "SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'gatewayAccepted',gateway_accepted,'state',state,'source',source_kind)),'[]') FROM mdm_commands.action_runs WHERE tenant_id='{}'",
+                case_tenant()
+            ))?;
+            anyhow::bail!("offer timeout: {error}; bindings={bindings}; runs={runs}")
+        }
+    }
+}
 async fn user_call(
     f: &Fixture,
     path: &str,
@@ -67,7 +94,7 @@ async fn setup(f: &mut Fixture) -> Result<Uuid> {
     let scope = Uuid::new_v4();
     f.scope(
         scope,
-        json!([{"kind":"endpoint","id":execution::case_device_id()}]),
+        json!([{"kind":"device","id":execution::case_device_id()}]),
     )
     .await?;
     let policy = Uuid::new_v4();
@@ -113,7 +140,7 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
         ensure!(f.author.call(&f.router,Method::PUT,&path,Some(command)).await?.1==unbound.1);
         ensure!(user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?.0==StatusCode::CONFLICT);
         let count=pg(&format!("SELECT count(*) FROM mdm_access.device_access_bindings WHERE tenant_id='{}' AND device='{}'",case_tenant(),execution::case_device_id()))?;
-        ensure!(count=="1");Ok(())
+        ensure!(count.trim()=="1");Ok(())
     }).await
 }
 
@@ -129,7 +156,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         ensure!(started.0==StatusCode::OK,"begin: {started:?}");
         let accepted=user_call(&f,"confirm",json!({"operationId":Uuid::new_v4(),"challenge":started.1["id"],"nonce":started.1["nonce"],"localSession":started.1["localSession"]}),true).await?;
         ensure!(accepted.0==StatusCode::OK,"confirm: {accepted:?}");
-        let claimed=claim(&f,&c).await?;ensure!(claimed.0==StatusCode::OK,"claim {claimed:?}");
+        let claimed=offer(&f,&c).await?;ensure!(claimed.0==StatusCode::OK,"claim {claimed:?}");
         let task=claimed.1["task"].clone();ensure!(task["payload"]["kind"]=="device_access","task {task}");
         ensure!(event(&f,&task,&c,json!({"kind":"received"})).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{}/device-access",execution::case_device_id());
@@ -168,9 +195,12 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         let created=f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?;
         ensure!(created.0==StatusCode::OK && created.1["serverState"]=="pending" && created.1["account"].is_null(),"create {created:?}");
         ensure!(f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?.1==created.1);
+        let mut replacement=input.clone();replacement["operationId"]=json!(Uuid::new_v4());replacement["expectedRevision"]=json!(1);
+        replacement["action"]["account"]=json!({"kind":"existing","account":{"platform":"macos","generatedUid":Uuid::new_v4()}});
+        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(replacement)).await?.0==StatusCode::CONFLICT);
         let op=format!("/api/v1/devices/{device}/device-access/operations/{}",input["operationId"].as_str().context("operation")?);
         ensure!(f.author.call(&f.router,Method::GET,&op,None).await?.1==created.1);
-        let claimed=claim(&f,&c).await?;ensure!(claimed.0==StatusCode::OK,"claim {claimed:?}");let task=claimed.1["task"].clone();
+        let claimed=offer(&f,&c).await?;ensure!(claimed.0==StatusCode::OK,"claim {claimed:?}");let task=claimed.1["task"].clone();
         ensure!(task["payload"]["task"]["action"]["kind"]=="create");
         ensure!(event(&f,&task,&c,json!({"kind":"received"})).await?.0==StatusCode::OK);
         ensure!(event(&f,&task,&c,json!({"kind":"start"})).await?.0==StatusCode::OK);
@@ -185,7 +215,7 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         let late=event(&f,&task,&c,result).await?;ensure!(late.0==StatusCode::OK,"late receipt {late:?}");
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/device-access"),None).await?;
         ensure!(listed.1[0]["serverState"]=="revoked" && listed.1[0]["appliedRevision"].is_null());
-        let cleanup=claim(&f,&c).await?;ensure!(cleanup.0==StatusCode::OK,"cleanup {cleanup:?}");
+        let cleanup=offer(&f,&c).await?;ensure!(cleanup.0==StatusCode::OK,"cleanup {cleanup:?}");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["account"]["generatedUid"]==account.to_string());
         Ok(())
@@ -205,10 +235,10 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let path=format!("/api/v1/devices/{device}/device-access/bindings/{id}");
         let created=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
         ensure!(created.0==StatusCode::OK,"create {created:?}");
-        let offered=claim(&f,&c).await?;ensure!(offered.0==StatusCode::OK);
+        let offered=offer(&f,&c).await?;ensure!(offered.0==StatusCode::OK);
         let expired=offered.1["task"]["payload"]["task"]["taskId"].as_str().context("offered")?;
         pg(&format!("UPDATE mdm_commands.action_runs SET available_at=0,deadline=1,state=jsonb_set(state,'{{deadline}}','1') WHERE tenant_id='{}' AND id='{expired}'",case_tenant()))?;
-        let renewed=claim(&f,&c).await?;ensure!(renewed.0==StatusCode::OK,"renew {renewed:?}");
+        let renewed=offer(&f,&c).await?;ensure!(renewed.0==StatusCode::OK,"renew {renewed:?}");
         let task=renewed.1["task"].clone();ensure!(task["payload"]["task"]["taskId"]!=expired && !task.is_null());
         for kind in ["received","start"] {ensure!(event(&f,&task,&c,json!({"kind":kind})).await?.0==StatusCode::OK);}
         let url=format!("/api/v1/policies/{policy}");
@@ -217,13 +247,15 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let mut definition=old.1["definition"].clone();definition["action"]["role"]=json!("administrator");
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.1["task"].is_null(),"started creation must block another delivery");
+        let revised=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
+        ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==2,"new binding generation {revised:?}");
         let account=Uuid::new_v4();let spec=&task["payload"]["task"];
         let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,result).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{device}/device-access");
         let pending=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(pending.1[0]["account"]["generatedUid"]==account.to_string() && pending.1[0]["appliedRevision"].is_null());
-        let apply=claim(&f,&c).await?;let task=apply.1["task"].clone();
+        let apply=offer(&f,&c).await?;let task=apply.1["task"].clone();
         ensure!(task["payload"]["task"]["action"]["kind"]=="apply","apply existing account {apply:?}");
         for kind in ["received","start"] {ensure!(event(&f,&task,&c,json!({"kind":kind})).await?.0==StatusCode::OK);}
         // Changing scope to a fresh empty scope exercises exclusion, not just Policy.enabled.
@@ -237,7 +269,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         ensure!(event(&f,&task,&c,late).await?.0==StatusCode::OK);
         let revoked=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(revoked.1[0]["serverState"]=="revoked" && revoked.1[0]["appliedRevision"].is_null());
-        let cleanup=claim(&f,&c).await?;
+        let cleanup=offer(&f,&c).await?;
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind","scope-exit cleanup {cleanup:?}");
         Ok(())
     }).await
@@ -257,7 +289,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         let id=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let created=manager.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"delegated"}}}))).await?;
         ensure!(created.0==StatusCode::OK,"manager create {created:?}");
-        let offer=claim(&f,&c).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
+        let offer=offer(&f,&c).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
         ensure!(event(&f,&task,&c,json!({"kind":"received"})).await?.0==StatusCode::OK);
         crate::test_support::identity::set_grants(case_tenant(),&manager_id,vec![]).await?;
         ensure!(event(&f,&task,&c,json!({"kind":"start"})).await?.0==StatusCode::FORBIDDEN);

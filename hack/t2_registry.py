@@ -2072,7 +2072,7 @@ MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 
 # Device Access owns the joint human/device ceremony and exact application receipts.
-add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki'),
+add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','shared_worker'),
     sources=('crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
@@ -2083,3 +2083,7 @@ T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)
 consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs','crates/execution-service/src/input_preparation.rs','crates/execution-service/src/input_preparation/*'), 'device-access.http')
 
 MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],support_inputs=tuple(dict.fromkeys((*MODULES['recovery-credentials.http'].support_inputs,*(p for p in MODULES['agent.current_user'].support_inputs if p != 'crates/app/tests/agent/mod.rs')))))
+
+consume(('crates/authorization-service/src/authority.rs','crates/registration-service/src/operations.rs','crates/policy/src/*','crates/flow-service/src/planning/policies/*','crates/flow-service/src/planning/execution_source.rs','crates/flow-service/src/planning/targets.rs'), 'device-access.http')
+
+consume(('crates/agent-channel/schema/install.sql',), 'device-access.http')
