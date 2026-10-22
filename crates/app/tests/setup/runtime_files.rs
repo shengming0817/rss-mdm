@@ -238,6 +238,11 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
                 ..primary.clone()
             },
         };
+        let mut deferred = runtime.clone();
+        deferred["content"] = Value::Null;
+        let waiting = additional_runtime(&deferred, &slot, &progress).unwrap();
+        let decoded: crate::config::Config = serde_json::from_value(waiting).unwrap();
+        assert!(decoded.content.is_none());
         let candidate = additional_runtime(&runtime, &slot, &progress).unwrap();
         let volume = slot.deployment.content_snapshot(&candidate).unwrap();
         assert_ne!(volume, primary.content_directory());

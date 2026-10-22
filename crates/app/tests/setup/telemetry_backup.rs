@@ -67,6 +67,7 @@ pub(crate) async fn roundtrip(
                 additional_hosts: vec![],
                 storage_profiles: vec![],
                 mail_profiles: vec![],
+                content_storage: Default::default(),
                 database: super::super::installation::DatabaseInput {
                     name: administrator.name.clone(),
                     administrator: administrator.clone(),

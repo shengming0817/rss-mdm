@@ -249,7 +249,9 @@ pub(super) fn additional_runtime(
     progress: &super::model::Provisioning,
 ) -> Result<Value> {
     let mut candidate = runtime.clone();
-    candidate["content"]["storage"] = slot.deployment.prepare_content_storage()?;
+    if !candidate["content"].is_null() {
+        candidate["content"]["storage"] = slot.deployment.prepare_content_storage()?;
+    }
     candidate["native_protocols"] = serde_json::json!({});
     candidate["agent_pki"] = serde_json::json!({"mode":"disabled"});
     candidate["device_pki"] = serde_json::json!([]);
