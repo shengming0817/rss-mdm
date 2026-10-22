@@ -398,9 +398,12 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             post(&mut f.author,&router,&format!("/api/v1/devices/{}/registrations/{registration}/revoke",case_device_id()),json!({})).await?;
             f.author.operation=None;
             if let Some(evidence)=&gap_evidence { gaps::revoked(&router,evidence).await?; }
-            let mut administrator = Browser::default();
-            ensure!(administrator.login(&router, "admin").await? == StatusCode::OK);
-            let (status, summary) = administrator.call(&router, Method::GET,
+            let mut reader_grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
+            for operation in [crate::authorization::Permission::PolicyRead, crate::authorization::Permission::ResourceRead] {
+                reader_grants.push(crate::authorization::Grant { operation, scope:crate::authorization::Scope::Tenant });
+            }
+            identity::set_grants(case_tenant(), &f.author_id, reader_grants).await?;
+            let (status, summary) = f.author.call(&router, Method::GET,
                 &format!("/api/v1/devices/{}/telemetry-configurations", case_device_id()), None).await?;
             ensure!(status == StatusCode::OK && summary["registration"].is_null()
                 && summary["configurations"].as_array().is_some_and(Vec::is_empty),
