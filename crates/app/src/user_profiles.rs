@@ -136,44 +136,38 @@ impl Backend {
         if let Some(permission) = permission {
             p.require(permission, None)?;
         }
-        let (definitions, _) =
-            store::definitions(&self.audit, p, audit, permission, true, None).await?;
-        let current = self
-            .identity
-            .current_profile(session, deadline())
-            .await
-            .map_err(identity_error)?;
+        let account = rss_identity_core::account::AccountKey {
+            tenant: self.tenant,
+            principal: target,
+        };
         let mut views = vec![];
         match query.view {
-            View::Current => views.push(current),
+            View::Current => views.push(
+                self.identity
+                    .current_profile(session, deadline())
+                    .await
+                    .map_err(identity_error)?,
+            ),
             View::Latest => {
-                let mut sources = vec![ProfileSource::IdentityLocal];
-                if let Some(source) = current.view().map_err(identity_error)?.source {
-                    sources.push(model::source_dto(source));
-                }
-                for definition in &definitions {
-                    if let Some(value) = &definition.value
-                        && !sources.contains(&value.source)
-                    {
-                        sources.push(value.source.clone());
+                let mut cursor = None;
+                loop {
+                    let page = self
+                        .identity
+                        .latest_profile_sources(session, account, cursor, deadline())
+                        .await
+                        .map_err(identity_error)?;
+                    for source in page.sources {
+                        views.push(
+                            self.identity
+                                .latest_profile(session, account, source, deadline())
+                                .await
+                                .map_err(identity_error)?,
+                        );
                     }
-                }
-                sources.dedup();
-                for source in sources {
-                    views.push(
-                        self.identity
-                            .latest_profile(
-                                session,
-                                rss_identity_core::account::AccountKey {
-                                    tenant: self.tenant,
-                                    principal: target,
-                                },
-                                model::source(&source)?,
-                                deadline(),
-                            )
-                            .await
-                            .map_err(identity_error)?,
-                    );
+                    match page.next_cursor {
+                        Some(next) => cursor = Some(next),
+                        None => break,
+                    }
                 }
             }
         }

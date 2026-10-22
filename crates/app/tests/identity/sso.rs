@@ -190,6 +190,11 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     );
     let mut alice = Browser::default();
     roundtrip(&router, &mut alice, provider, "alice").await?;
+    let alice_principal=browser_subject(&alice,&router).await?;
+    let without_mapping=admin.call(&router,Method::GET,&format!("/api/v1/user-profiles/{alice_principal}?view=latest"),None).await?;
+    ensure!(without_mapping.0==StatusCode::OK);
+    ensure!(without_mapping.1["fields"].as_array().unwrap().is_empty());
+    ensure!(without_mapping.1["profiles"].as_array().unwrap().iter().any(|v|v["source"]["provider"]==provider && v["fixed"]["email"]["status"]=="available"));
     let field=uuid::Uuid::new_v4();
     let definition=serde_json::json!({"key":"federatedEmail","displayName":"Federated email","source":{"kind":"idp","provider":provider},"pointer":"/email","valueType":"string","maxLength":320,"maxItems":null,"minimum":null,"maximum":null,"enabled":true,"sensitive":false,"visibility":"both","displayUse":"profile","required":false,"useExistingObservation":false});
     ensure!(admin.call(&router,Method::PUT,&format!("/api/v1/user-attribute-definitions/{field}"),Some(serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"value":definition}))).await?.0==StatusCode::OK);

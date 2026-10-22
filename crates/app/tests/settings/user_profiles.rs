@@ -64,6 +64,20 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
             let input = json!({"operationId":operation,"expectedRevision":0,"value":definition()});
             let receipt = ok(&mut admin, &router, Method::PUT, &path, Some(input.clone())).await?;
             ensure!(receipt["definition"]["revision"] == 1);
+            ensure!(
+                admin
+                    .call(
+                        &router,
+                        Method::PUT,
+                        &path,
+                        Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1}))
+                    )
+                    .await?
+                    .0
+                    == StatusCode::BAD_REQUEST
+            );
+            ensure!(ok(&mut admin, &router, Method::GET, &path, None).await?["revision"] == 1);
+
             let initial = ok(&mut admin, &router, Method::GET, ME, None).await?;
             ensure!(
                 initial["fields"][0]["status"] == "pending_login"
@@ -151,6 +165,54 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 preview["fields"][0]["status"] == "redacted"
                     && preview["fields"][0]["value"].is_null()
             );
+            ensure!(
+                preview["profiles"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|v| v["fixed"].is_null())
+            );
+            let email_id = Uuid::new_v4();
+            let mut email = definition();
+            email["key"] = json!("privateEmail");
+            email["pointer"] = json!("/email");
+            email["sensitive"] = json!(true);
+            email["useExistingObservation"] = json!(true);
+            email["maxLength"] = json!(320);
+            ok(
+                &mut admin,
+                &router,
+                Method::PUT,
+                &format!("{DEFINITIONS}/{email_id}"),
+                Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":email})),
+            )
+            .await?;
+            let masked = ok(
+                &mut admin,
+                &router,
+                Method::GET,
+                &format!("{ME}?preview=true"),
+                None,
+            )
+            .await?;
+            ensure!(!masked.to_string().contains("profile@example.test"));
+            ensure!(
+                masked["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["fieldId"] == email_id.to_string())
+                    .unwrap()["status"]
+                    == "redacted"
+            );
+            ok(
+                &mut admin,
+                &router,
+                Method::PUT,
+                &format!("{DEFINITIONS}/{email_id}"),
+                Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":null})),
+            )
+            .await?;
             let mut other = f.browser("other")?;
             let principal = browser_subject(&other, &router).await?;
             identity::set_grants(

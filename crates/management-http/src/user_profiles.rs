@@ -69,6 +69,7 @@ pub struct DefinitionValue {
 pub struct Change {
     pub operation_id: Uuid,
     pub expected_revision: i64,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub value: Option<DefinitionValue>,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]

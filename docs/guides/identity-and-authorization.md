@@ -68,7 +68,7 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 资料由 Identity 保存，MDM 只持有字段定义并在读取时投影，不复制属性值。本人 `GET /api/v1/user-profiles/me`
 读取本次登录绑定的观察；同一来源后续登录替换观察后，旧会话仍可有效，但资料返回 unavailable。
 `?view=latest` 显式读取本人最近观察；`/api/v1/user-profiles/{principalId}` 使用 latest 语义并要求
-`user_profiles_read`。API Key 不提供自然人资料上下文。固定资料、映射字段、来源、观察期限和完整性由这一个产品响应组合。
+`user_profiles_read`。latest 按目标账户实际观察分页发现来源，不依赖查看者登录来源或先建立业务字段映射。API Key 不提供自然人资料上下文。固定资料、映射字段、来源、观察期限和完整性由这一个产品响应组合。
 必填只表示资料完整性，不阻止基础登录。过期或无效资料不沿用旧值，refresh 和 GET 不更新采集时间。
 
 设置中的用户字段入口由 `user_attribute_definitions_read/write` 独立控制；写定义不授予样本读取、账户管理或本地资料写入。
