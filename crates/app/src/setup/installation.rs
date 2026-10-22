@@ -359,7 +359,7 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
         super::default_telemetry::prepare(input, journal, saved.receipt.tenant_id).await?;
     runtime["telemetry"] = serde_json::to_value(telemetry).map_err(invalid)?;
     let content = input.deployment.prepare_content_storage()?;
-    runtime["content"] = serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":65535,"max_expansion_ratio":100});
+    runtime["content"] = serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":4096,"max_expansion_ratio":100});
     let _: crate::config::Config = serde_json::from_value(runtime.clone()).map_err(invalid)?;
     journal.save("runtime.json", &runtime)?;
     super::runtime_files::prepare(&input.directory, &input.deployment, &runtime).await?;
