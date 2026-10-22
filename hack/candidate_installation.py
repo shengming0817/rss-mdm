@@ -59,7 +59,7 @@ def qualify_candidate(candidate):
         def env(path,values):path.write_text(''.join(key+'='+str(value)+'\n' for key,value in values.items()));path.chmod(0o600)
         env(root/'.env',values)
         env(root/'second.env',dict(values,MDM_PRODUCT_ORIGIN=other,MDM_BACKEND_ADDRESS=second_backend,MDM_INGRESS_NETWORK=project+'_ingress',
-            MDM_RUNTIME_SUBPATH='runtime/second',MDM_STATE_VOLUME=project+'_state',MDM_NETWORK=project+'_default',MDM_SERVER_ALIAS='second-server'))
+            MDM_RUNTIME_SUBPATH='runtime/second',MDM_CONTENT_VOLUME=project+'_content',MDM_STATE_VOLUME=project+'_state',MDM_NETWORK=project+'_default',MDM_SERVER_ALIAS='second-server'))
         for name in ('production.compose.yaml','tenant.compose.yaml'):shutil.copy(candidate/'deployment'/name,root/name)
         owner=Installation(root,root/'production.compose.yaml',project)
         try:

@@ -362,7 +362,7 @@ class Candidate:
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
         self.agent_external_origin=next(item['origin'] for item in providers if item['purpose']=='agent')
-        self.compose('create','--no-deps','server',stage=Stage.SERVER)
+        self.compose('create','server',stage=Stage.SERVER)
         for config, provider in zip(providers, [windows_provider, self.agent_provider], strict=True):
             from urllib.parse import urlsplit
             from t2_environment import PKI_CA

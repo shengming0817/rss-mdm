@@ -8,12 +8,14 @@ services:
       default:
         aliases: !override ["${MDM_SERVER_ALIAS:?}"]
     volumes: !override
+      - content:/var/lib/rss-mdm-content
       - type: volume
         source: state
         target: /run/mdm
         read_only: true
         volume: {subpath: "${MDM_RUNTIME_SUBPATH:?}/server", nocopy: true}
 volumes:
+  content: {external: true, name: "${MDM_CONTENT_VOLUME:?}"}
   state: {external: true, name: "${MDM_STATE_VOLUME:?}"}
 networks:
   ingress: {external: true, name: "${MDM_INGRESS_NETWORK:?}"}

@@ -157,10 +157,10 @@ Apple 原生 MDM 纳入完整部署清单：通过 channels 配置保存 Apple �
 
 在独立维护输入中沿用原安装配置，追加 `additional_hosts`，每项提供 `origin`、内部 `listen` 和 `deployment`：后者包含运行输出 `directory`、共享 `gateway_directory`、可选 `probe_address`、TLS 文件及可选内容目录，不含镜像、网络或容器参数。例如输出目录 `/var/lib/rss-mdm/runtime/second`，probe 为 `gateway:8443`，`gateway_directory` 与主宿主相同。将维护 JSON 导入安装卷后执行一次 `prepare-hosts`，生成运行文件；无需改首次安装输入，也不重做种子初始化。命令及秘密导入方式见[维护材料](operations.md#compose-维护材料与数据库-tls-续期)。
 
-运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state 卷和数据库网络，设置：
+运维使用候选中的 `tenant.compose.yaml` 直接声明新租户实例，沿用主安装的 state、content 卷和数据库网络，设置：
 
 ```sh
-export MDM_STATE_VOLUME=rss-mdm_state MDM_NETWORK=rss-mdm_default
+export MDM_STATE_VOLUME=rss-mdm_state MDM_CONTENT_VOLUME=rss-mdm_content MDM_NETWORK=rss-mdm_default
 export MDM_RUNTIME_SUBPATH=runtime/second MDM_SERVER_ALIAS=second-server
 export MDM_INGRESS_NETWORK=rss-mdm_ingress
 export MDM_BACKEND_ADDRESS=172.30.86.4
