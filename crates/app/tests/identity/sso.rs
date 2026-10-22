@@ -1,5 +1,6 @@
 //! Product callback facts and provider isolation with real HTTPS Keycloak.
 use crate::test_support::{http::*, runtime::*, *};
+use anyhow::Context;
 #[path = "sso/authorization.rs"]
 mod authorization;
 const CALLBACK: &str = "https://mdm.example.test/api/v1/identity/oidc/callback";
@@ -197,6 +198,53 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(without_mapping.1["profiles"].as_array().unwrap().iter().any(|v|v["source"]["provider"]==provider && v["fixed"]["email"]["status"]=="available"));
     let observed=without_mapping.1["profiles"].as_array().unwrap().iter().find(|v|v["source"]["provider"]==provider).unwrap();
     ensure!(observed["providerConfigVersion"]==enabled["version"] && observed["sourceRevision"].is_null());
+    // The device consumer must show multiple real login sources without choosing a hidden
+    // authority, and withdraw values when a provider is disabled.
+    let (created_status, second)=admin.call(&router,Method::POST,&format!("{tenant}/providers"),Some(json!({"settings":settings,"clientSecret":"fixture-secret","caPem":std::fs::read_to_string(std::env::var("MDM_TEST_SSO_CA")?)?}))).await?;
+    ensure!(created_status==StatusCode::CREATED);
+    let second_id=second["id"].as_str().context("second provider")?;
+    let second_path=format!("{tenant}/providers/{second_id}/enabled");
+    let second_enabled=admin.call(&router,Method::POST,&second_path,Some(json!({"expectedVersion":second["version"],"enabled":true}))).await?;
+    ensure!(second_enabled.0==StatusCode::OK);
+    let admin_id=browser_subject(&admin,&router).await?;
+    let admin_profile=format!("{tenant}/accounts/{admin_id}/profile");
+    let local=admin.call(&router,Method::GET,&admin_profile,None).await?;
+    ensure!(local.0==StatusCode::OK);
+    ensure!(admin.call(&router,Method::PUT,&admin_profile,Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":local.1["revision"],"value":{"displayName":"Local Device Owner","username":"local-display-alias","email":null,"extensions":{},"maxAgeSeconds":14400}}))).await?.0==StatusCode::OK);
+    admin=Browser::default();
+    ensure!(admin.login_password(&router,"admin",PASSWORD).await?==StatusCode::OK);
+    let link=admin.call(&router,Method::POST,&format!("{tenant}/oidc/{second_id}/link"),Some(json!({"returnTarget":"home","password":PASSWORD}))).await?;
+    ensure!(link.0==StatusCode::OK,"second source link was rejected");
+    let callback=provider_login(link.1["authorizationUrl"].as_str().context("link URL")?,"bob").await?;
+    ensure!(admin.call(&router,Method::GET,&format!("{}?{}",callback.path(),callback.query().context("callback query")?),None).await?.0==StatusCode::SEE_OTHER);
+    let mut linked=Browser::default();
+    roundtrip(&router,&mut linked,second_id,"bob").await?;
+    ensure!(browser_subject(&linked,&router).await?==admin_id,"linked login changed the relationship principal");
+    admin=Browser::default();
+    ensure!(admin.login_password(&router,"admin",PASSWORD).await?==StatusCode::OK);
+    ensure!(browser_subject(&admin,&router).await?==admin_id,"link changed the relationship principal");
+    let device=crate::test_support::case::name("sso-personnel");
+    let directory_rule=json!({"subject":{"kind":"user","user":{"tenantId":case_tenant(),"instanceId":INSTANCE,"principalId":admin_id}},"grants":[{"operation":"inventory_read","scope":{"kind":"all_devices"}},{"operation":"enrollment","scope":{"kind":"all_devices"}},{"operation":"inventory_sensitive_read","scope":{"kind":"tenant"}},{"operation":"user_profiles_read","scope":{"kind":"tenant"}}]});
+    crate::test_support::process::pg(&format!("BEGIN; SET LOCAL rss.tenant_id='{}'; INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}'); INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{}','{}','{}',1,'{}'::jsonb); COMMIT;",case_tenant(),case_tenant(),device,case_tenant(),INSTANCE,uuid::Uuid::new_v4(),directory_rule))?;
+    admin.operation=Some(uuid::Uuid::new_v4());
+    let owner=admin.call(&router,Method::PUT,&format!("/api/v1/devices/{device}/registration-user"),Some(json!({"expectedRevision":0,"user":{"tenantId":case_tenant(),"instanceId":INSTANCE,"principalId":admin_id}}))).await?;
+    admin.operation=None;
+    ensure!(owner.0==StatusCode::OK);
+    let device_path=format!("/api/v1/device-views/endpoint/{device}");
+    let device_view=admin.call(&router,Method::GET,&device_path,None).await?;
+    ensure!(device_view.0==StatusCode::OK);
+    let people=device_view.1["endpoints"][0]["registrationUser"]["display"]["profiles"].as_array().context("device sources")?;
+    ensure!(people.iter().any(|p|p["source"]["kind"]=="identity_local" && p["status"]=="available" && p["displayName"]=="Local Device Owner"));
+    ensure!(people.iter().any(|p|p["source"]["provider"]==second_id && p["status"]=="available" && p["username"]=="bob"),"missing linked source: {people:?}");
+    for name in ["Local%20Device%20Owner","bob%20Fixture"] {
+        let found=admin.call(&router,Method::GET,&format!("/api/v1/device-views?search={name}"),None).await?;
+        ensure!(found.0==StatusCode::OK && found.1["statistics"]["deviceViewCount"]==1,"a visible source name was not searchable");
+    }
+    ensure!(admin.call(&router,Method::POST,&second_path,Some(json!({"expectedVersion":second_enabled.1["version"],"enabled":false}))).await?.0==StatusCode::OK);
+    let device_view=admin.call(&router,Method::GET,&device_path,None).await?;
+    ensure!(device_view.0==StatusCode::OK);
+    let withdrawn=device_view.1["endpoints"][0]["registrationUser"]["display"]["profiles"].as_array().context("withdrawn device sources")?;
+    ensure!(withdrawn.iter().any(|p|p["source"]["provider"]==second_id && p["status"]=="unavailable" && p["displayName"].is_null() && p["username"].is_null()));
     let field=uuid::Uuid::new_v4();
     let definition=serde_json::json!({"key":"federatedEmail","displayName":"Federated email","source":{"kind":"idp","provider":provider},"pointer":"/email","valueType":"string","maxLength":320,"maxItems":null,"minimum":null,"maximum":null,"enabled":true,"sensitive":false,"visibility":"both","displayUse":"profile","required":false,"useExistingObservation":false});
     ensure!(admin.call(&router,Method::PUT,&format!("/api/v1/user-attribute-definitions/{field}"),Some(serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"value":definition}))).await?.0==StatusCode::OK);

@@ -2068,3 +2068,5 @@ consume(('crates/app/schema/user-profiles.sql',), 'settings.user_profiles instal
 consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current_user')
 
 MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))
+
+consume(('crates/device-service/src/personnel.rs',), 'identity.sso')

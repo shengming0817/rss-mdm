@@ -16,6 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::Instant,
 };
+use uuid::Uuid;
 
 const RELATIONS: [&str; 2] = ["registrationUser", "currentUser"];
 
@@ -25,6 +26,7 @@ pub struct Reader<'a> {
     credential: &'a RequestCredential,
     deadline: Instant,
     clock: &'a dyn Clock,
+    pub(crate) sessions: &'a rss_mdm_authorization_service::session::SessionAuthority,
 }
 
 #[derive(Serialize)]
@@ -47,12 +49,14 @@ impl<'a> Reader<'a> {
         credential: &'a RequestCredential,
         deadline: Instant,
         clock: &'a dyn Clock,
+        sessions: &'a rss_mdm_authorization_service::session::SessionAuthority,
     ) -> Self {
         Self {
             authority,
             credential,
             deadline,
             clock,
+            sessions,
         }
     }
     fn budget(&self) -> Result<OperationDeadline> {
@@ -121,7 +125,8 @@ impl<'a> Reader<'a> {
                         }
                         targets.insert(
                             PrincipalId::parse(user["principalId"].as_str().ok_or(Error::Storage)?)
-                                .map_err(|_| Error::Storage)?,
+                                .map_err(|_| Error::Storage)?
+                                .as_uuid(),
                         );
                     }
                 }
@@ -135,7 +140,7 @@ impl<'a> Reader<'a> {
         let logins_read = permits(proof, Permission::IdentityAccountsManage)?;
         let mut displays = BTreeMap::new();
         let mut observations = BTreeMap::new();
-        let own = proof.session()?.account().principal;
+        let own = proof.session()?.account().principal.as_uuid();
         for target in &targets {
             if profiles_read || *target == own {
                 let profiles = self.profiles(proof, *target).await?;
@@ -173,7 +178,9 @@ impl<'a> Reader<'a> {
                 if let Some(relation) = endpoint.get_mut(key)
                     && let Some(id) = relation["user"]["principalId"].as_str()
                 {
-                    let id = PrincipalId::parse(id).map_err(|_| Error::Storage)?;
+                    let id = PrincipalId::parse(id)
+                        .map_err(|_| Error::Storage)?
+                        .as_uuid();
                     relation["display"] =
                         serde_json::to_value(displays.get(&id)).map_err(|_| Error::Storage)?;
                 }
@@ -184,11 +191,11 @@ impl<'a> Reader<'a> {
     async fn profiles(
         &self,
         proof: &AuthorizedPrincipal,
-        target: PrincipalId,
+        target: Uuid,
     ) -> Result<Option<Vec<TrustedProfile>>> {
         let account = AccountKey {
             tenant: TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
-            principal: target,
+            principal: PrincipalId::parse(&target.to_string()).map_err(|_| Error::Storage)?,
         };
         let mut cursor = None;
         let mut profiles = Vec::new();
@@ -235,8 +242,8 @@ impl<'a> Reader<'a> {
     async fn logins(
         &self,
         proof: &AuthorizedPrincipal,
-        targets: &BTreeSet<PrincipalId>,
-        displays: &mut BTreeMap<PrincipalId, Display>,
+        targets: &BTreeSet<Uuid>,
+        displays: &mut BTreeMap<Uuid, Display>,
     ) -> Result<()> {
         let mut remaining = targets.clone();
         let mut cursor = None;
@@ -248,13 +255,16 @@ impl<'a> Reader<'a> {
                 .await
                 .map_err(identity_error)?;
             for account in page.accounts {
-                if !remaining.remove(&account.principal_id) {
+                if !remaining.remove(&account.principal_id.as_uuid()) {
                     continue;
                 }
                 if account.enabled && account.member_active {
-                    displays.entry(account.principal_id).or_default().login = account.login;
+                    displays
+                        .entry(account.principal_id.as_uuid())
+                        .or_default()
+                        .login = account.login;
                 } else {
-                    displays.remove(&account.principal_id);
+                    displays.remove(&account.principal_id.as_uuid());
                 }
             }
             match page.next_cursor {

@@ -125,7 +125,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     seed(agent, "agent", "00-TEST.SERIAL")?;
     assert_eq!(s.reconcile().await.context("reconcile changed")?, 1);
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
-    let page = s.views(&admin, &query(64), &sessions, &people(&authority, &credential)?).await.context("device views")?;
+    let page = s.views(&admin, &query(64), &people(&authority, &credential, &sessions)?).await.context("device views")?;
     assert_eq!(
         page["statistics"],
         json!({"endpointCount":2,"deviceViewCount":1})
@@ -159,7 +159,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     assert_eq!(
-        s.views(&admin, &query(64), &sessions, &people(&authority, &credential)?).await.context("device views")?["statistics"]["deviceViewCount"],
+        s.views(&admin, &query(64), &people(&authority, &credential, &sessions)?).await.context("device views")?["statistics"]["deviceViewCount"],
         3
     );
     let restore = Confirm {
@@ -217,7 +217,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let old = seed(agent, "agent", "GENERATION-SERIAL")?;
     s.reconcile().await?;
     let page = s
-        .views(&admin, &query(64), &sessions, &people(&authority, &credential)?)
+        .views(&admin, &query(64), &people(&authority, &credential, &sessions)?)
         .await
         .context("device views")?;
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
@@ -238,7 +238,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let pending = s.get(&admin, id).await?;
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
-        s.views(&admin, &query(64), &sessions, &people(&authority, &credential)?)
+        s.views(&admin, &query(64), &people(&authority, &credential, &sessions)?)
             .await
             .context("device views")?["statistics"]["deviceViewCount"],
         1

@@ -75,7 +75,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let detail = ok(&mut reader,&router,Method::GET,&path,None).await?;
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["displayName"]=="Directory Person");
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["username"]=="source-alias");
-        let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&search=pErSoN",None).await?;
+        let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&search=dIrEcToRy%20pErSoN",None).await?;
         ensure!(found["statistics"]["deviceViewCount"]==1, "name search ran after pagination");
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("two devices")?;

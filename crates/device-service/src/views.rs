@@ -1,6 +1,5 @@
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
-use rss_mdm_authorization_service::session::SessionAuthority;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_inventory::{
     EndpointSourceFact, FieldKey, Scalar, Sensitivity, State as FieldState, ValueType,
@@ -146,7 +145,6 @@ impl Associations {
         &self,
         proof: &AuthorizedPrincipal,
         query: &ViewQuery,
-        sessions: &SessionAuthority,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
@@ -221,7 +219,7 @@ impl Associations {
             crate::presentation::current_users(
                 &mut group.endpoints,
                 &bindings,
-                sessions,
+                personnel.sessions,
                 &mut cache,
             )
             .await?;
@@ -277,11 +275,9 @@ impl Associations {
         &self,
         proof: &AuthorizedPrincipal,
         reference: &ViewRef,
-        sessions: &SessionAuthority,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
-        self.read_view(proof, reference, None, sessions, personnel)
-            .await
+        self.read_view(proof, reference, None, personnel).await
     }
     pub async fn list_items(
         &self,
@@ -290,27 +286,19 @@ impl Associations {
         field: FieldKey,
         cursor: &str,
         limit: usize,
-        sessions: &SessionAuthority,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if !(1..=200).contains(&limit) {
             return Err(Error::Malformed);
         }
-        self.read_view(
-            proof,
-            reference,
-            Some((field, cursor, limit)),
-            sessions,
-            personnel,
-        )
-        .await
+        self.read_view(proof, reference, Some((field, cursor, limit)), personnel)
+            .await
     }
     async fn read_view(
         &self,
         proof: &AuthorizedPrincipal,
         reference: &ViewRef,
         list: Option<(FieldKey, &str, usize)>,
-        sessions: &SessionAuthority,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
@@ -364,8 +352,13 @@ impl Associations {
             })).await
         })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
         if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
-            crate::presentation::current_users(rows, &bindings, sessions, &mut BTreeMap::new())
-                .await?;
+            crate::presentation::current_users(
+                rows,
+                &bindings,
+                personnel.sessions,
+                &mut BTreeMap::new(),
+            )
+            .await?;
             personnel.project(proof, rows.iter_mut()).await?;
         }
         self.confirm_scope(proof, &grants, &budget).await?;
