@@ -57,9 +57,7 @@ impl Inputs {
             lifetime,
         } = action
         {
-            if !self.signing_enabled {
-                return Err(Error::Conflict.into());
-            }
+            // Persist definitions before channel setup; preview and task issuance require signing.
             let definition = agent_collection(&version, binding, verified)?.clone();
             let selected = variant(&version, binding)?;
             let fields =
