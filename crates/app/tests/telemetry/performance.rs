@@ -742,22 +742,41 @@ async fn network_readings(
     Ok(())
 }
 
-// A separate publisher retains its authority while the reader has only one device.
+// A separate reader's rule changes cannot invalidate published configuration authority.
 async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
-    let mut publisher = Browser::default();
-    ensure!(publisher.login(&f.router, "admin").await? == StatusCode::OK);
-    let path = format!("/api/v1/policies/{}", policy["id"].as_str().unwrap());
-    let published = post(
-        &mut publisher,
-        &f.router,
-        &path,
-        json!({
-            "operationId":Uuid::new_v4(), "expectedRevision":policy["revision"],
-            "input":{"action":"put","enabled":true,"definition":policy["definition"]}
-        }),
-    )
-    .await?;
+    let mut administrator = Browser::default();
+    ensure!(administrator.login(&f.router, "admin").await? == StatusCode::OK);
+    let login = format!("telemetry-reader-{}", Uuid::new_v4());
+    let accounts = format!("/api/v1/identity/tenants/{}/accounts", case_tenant());
+    let (status, account) = administrator
+        .call(
+            &f.router,
+            Method::POST,
+            &accounts,
+            Some(json!({"login":login,"password":identity::PASSWORD})),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::CREATED,
+        "independent configuration reader creation failed"
+    );
+    let subject = account["principalId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("reader principal missing"))?;
+    let mut reader = Browser::default();
+    let (status, _) = reader
+        .call(
+            &f.router,
+            Method::POST,
+            &format!("/api/v1/identity/tenants/{}/login", case_tenant()),
+            Some(json!({"login":login,"password":identity::PASSWORD})),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "independent configuration reader login failed"
+    );
     let mut grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
     for operation in [Permission::PolicyRead, Permission::ResourceRead] {
         grants.push(Grant {
@@ -765,25 +784,21 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
             scope: Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &f.author_id, grants.clone()).await?;
+    identity::set_grants(case_tenant(), subject, grants.clone()).await?;
     let endpoint = format!(
         "/api/v1/devices/{}/telemetry-configurations",
         case_device_id()
     );
-    let (status, summary) = f
-        .author
-        .call(&f.router, Method::GET, &endpoint, None)
-        .await?;
+    let (status, summary) = reader.call(&f.router, Method::GET, &endpoint, None).await?;
     ensure!(
         status == StatusCode::OK
-            && summary["configurations"].as_array().is_some_and(|rows| rows
-                .iter()
-                .any(|row| row["policyId"] == published["id"]
-                    && row["policyVersionId"] == published["versionId"])),
+            && summary["configurations"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row["policyId"] == policy["id"]
+                    && row["policyVersionId"] == policy["versionId"])),
         "device-scoped reader could not see configuration: {status} {summary}"
     );
-    let (status, denied) = f
-        .author
+    let (status, denied) = reader
         .call(
             &f.router,
             Method::GET,
@@ -799,7 +814,7 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
     ] {
         identity::set_grants(
             case_tenant(),
-            &f.author_id,
+            subject,
             grants
                 .iter()
                 .filter(|g| g.operation != permission)
@@ -807,36 +822,47 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
                 .collect(),
         )
         .await?;
-        let (status, denied) = f
-            .author
-            .call(&f.router, Method::GET, &endpoint, None)
-            .await?;
+        let (status, denied) = reader.call(&f.router, Method::GET, &endpoint, None).await?;
         ensure!(
             status == StatusCode::FORBIDDEN && denied.get("configurations").is_none(),
             "configuration metadata survived {permission:?} revocation"
         );
     }
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::set_grants(case_tenant(), subject, grants).await?;
+    let path = format!("/api/v1/policies/{}", policy["id"].as_str().unwrap());
     let disabled = post(
-        &mut publisher,
+        &mut f.author,
         &f.router,
         &path,
         json!({
-            "operationId":Uuid::new_v4(), "expectedRevision":published["revision"],
-            "input":{"action":"put","enabled":false,"definition":published["definition"]}
+            "operationId":Uuid::new_v4(), "expectedRevision":policy["revision"],
+            "input":{"action":"put","enabled":false,"definition":policy["definition"]}
         }),
     )
     .await?;
-    let (status, summary) = f
-        .author
-        .call(&f.router, Method::GET, &endpoint, None)
-        .await?;
+    let (status, summary) = reader.call(&f.router, Method::GET, &endpoint, None).await?;
     ensure!(
         status == StatusCode::OK
             && summary["configurations"]
                 .as_array()
                 .is_some_and(|rows| rows.iter().all(|row| row["policyId"] != disabled["id"])),
         "disabled policy remained current"
+    );
+    // The original publisher's untouched rule still authorizes its other configurations.
+    let (status, directory) = agent_call(
+        &f.router,
+        Method::GET,
+        "/api/v1/agent/runtime/telemetry/configurations",
+        Some(case_credential()),
+        None,
+    )
+    .await?;
+    ensure!(
+        status == StatusCode::OK
+            && directory["assignments"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+        "reader revocation invalidated the publisher's other assignments"
     );
     Ok(())
 }
