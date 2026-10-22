@@ -272,10 +272,15 @@ Agent 在现有 mTLS runtime 边界读取
 
 | 接口 | 用途 |
 | --- | --- |
+| GET /api/v1/devices/{device}/telemetry-configurations | 当前主 Agent 可下发配置摘要及采集能力，不代表设备已接收 |
 | POST /api/v1/telemetry/history | 精确设备、字段、资源的历史或 latest；历史续页重新授权 |
 | POST /api/v1/telemetry/aggregate | 精确字段历史版本、来源代际、维度及窗口的聚合 |
 | POST /api/v1/telemetry/health | 接收时间窗口内的批次状态及 valid/missing/failed 计数 |
 | POST /api/v1/telemetry/maintenance | 原身份下执行有界重算、保留边界、清理、删除或恢复步骤 |
+
+配置摘要要求当前设备的 `inventory_read` 和租户 `policy_read`、`resource_read`，不要求全部设备读取权限。
+摘要与 Agent 目录复用当前发布者授权、Scope、注册来源、字段准入和能力判定，不返回脚本、参数、签名或采样值。
+无可用采集注册时返回空注册与空配置；候选方案超过目录预算时明确失败，不返回部分集合。
 
 查询观察时间使用 UTC Unix 微秒，窗口为左闭右开。latest 按活跃注册、来源优先级及观察
 顺序选择；相同优先级的冲突被显式报告。latest 需要在有界资源范围内完成来源比较，预算

@@ -167,6 +167,7 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
     );
     cpu_reading(f, &policy, &config, &field).await?;
     published_network(f, config.registration_id).await?;
+    scoped_configuration_reader(f, &policy).await?;
     announce(f, json!({})).await?;
     Ok(())
 }
@@ -272,6 +273,62 @@ async fn directory(f: &Fixture, policy: &Value, supported: bool) -> Result<()> {
                 ),
         "native capability directory: {status} {result}"
     );
+    let (status, summary) = f
+        .author
+        .clone()
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "/api/v1/devices/{}/telemetry-configurations",
+                case_device_id()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "management configurations: {status} {summary}"
+    );
+    let rows = summary["configurations"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing configuration summaries"))?;
+    let assignments = result["assignments"].as_array().unwrap();
+    ensure!(
+        rows.len() == assignments.len(),
+        "management/Agent directory count differs"
+    );
+    for assignment in assignments {
+        ensure!(
+            rows.iter()
+                .any(|row| row["policyId"] == assignment["policy"]
+                    && row["policyVersionId"] == assignment["version"]
+                    && row["supported"] == assignment["supported"]),
+            "management/Agent admission differs"
+        );
+    }
+    ensure!(
+        summary["device"] == case_device_id()
+            && summary["registration"]["id"].is_string()
+            && summary["registration"]["generation"]
+                .as_i64()
+                .is_some_and(|v| v > 0)
+            && summary["evaluatedAtMicros"].as_i64().is_some_and(|v| v > 0)
+    );
+    for row in rows {
+        let keys = row.as_object().unwrap();
+        ensure!(
+            keys.len() == 10
+                && keys.contains_key("resource")
+                && keys.contains_key("source")
+                && keys.contains_key("projection")
+                && keys.contains_key("sampleMillis")
+                && keys.contains_key("normalSampleMillis")
+                && keys.contains_key("boostExpiresAt")
+                && keys.contains_key("uploadMillis"),
+            "unexpected summary fields: {keys:?}"
+        );
+    }
     Ok(())
 }
 
@@ -681,6 +738,105 @@ async fn network_readings(
             rss_timeseries::AggregateValue::Sum(rss_timeseries::Sum::I128(15))
         ),
         "network increase: {aggregate}"
+    );
+    Ok(())
+}
+
+// A separate publisher retains its authority while the reader has only one device.
+async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    let mut publisher = Browser::default();
+    ensure!(publisher.login(&f.router, "admin").await? == StatusCode::OK);
+    let path = format!("/api/v1/policies/{}", policy["id"].as_str().unwrap());
+    let published = post(
+        &mut publisher,
+        &f.router,
+        &path,
+        json!({
+            "operationId":Uuid::new_v4(), "expectedRevision":policy["revision"],
+            "input":{"action":"put","enabled":true,"definition":policy["definition"]}
+        }),
+    )
+    .await?;
+    let mut grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
+    for operation in [Permission::PolicyRead, Permission::ResourceRead] {
+        grants.push(Grant {
+            operation,
+            scope: Scope::Tenant,
+        });
+    }
+    identity::set_grants(case_tenant(), &f.author_id, grants.clone()).await?;
+    let endpoint = format!(
+        "/api/v1/devices/{}/telemetry-configurations",
+        case_device_id()
+    );
+    let (status, summary) = f
+        .author
+        .call(&f.router, Method::GET, &endpoint, None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK
+            && summary["configurations"].as_array().is_some_and(|rows| rows
+                .iter()
+                .any(|row| row["policyId"] == published["id"]
+                    && row["policyVersionId"] == published["versionId"])),
+        "device-scoped reader could not see configuration: {status} {summary}"
+    );
+    let (status, denied) = f
+        .author
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/devices/not-authorized/telemetry-configurations",
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::FORBIDDEN && denied.get("configurations").is_none());
+    for permission in [
+        Permission::PolicyRead,
+        Permission::ResourceRead,
+        Permission::InventoryRead,
+    ] {
+        identity::set_grants(
+            case_tenant(),
+            &f.author_id,
+            grants
+                .iter()
+                .filter(|g| g.operation != permission)
+                .cloned()
+                .collect(),
+        )
+        .await?;
+        let (status, denied) = f
+            .author
+            .call(&f.router, Method::GET, &endpoint, None)
+            .await?;
+        ensure!(
+            status == StatusCode::FORBIDDEN && denied.get("configurations").is_none(),
+            "configuration metadata survived {permission:?} revocation"
+        );
+    }
+    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    let disabled = post(
+        &mut publisher,
+        &f.router,
+        &path,
+        json!({
+            "operationId":Uuid::new_v4(), "expectedRevision":published["revision"],
+            "input":{"action":"put","enabled":false,"definition":published["definition"]}
+        }),
+    )
+    .await?;
+    let (status, summary) = f
+        .author
+        .call(&f.router, Method::GET, &endpoint, None)
+        .await?;
+    ensure!(
+        status == StatusCode::OK
+            && summary["configurations"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(|row| row["policyId"] != disabled["id"])),
+        "disabled policy remained current"
     );
     Ok(())
 }
