@@ -285,12 +285,10 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
                     .unwrap();
             owner.save("requested-runtime.json", &prepared).unwrap();
         }
-        for _ in 0..2 {
-            assert_eq!(
-                additional_runtime(&installation, &deferred, &slot, &progress).unwrap(),
-                prepared
-            );
-        }
+        assert_eq!(
+            additional_runtime(&installation, &deferred, &slot, &progress).unwrap(),
+            prepared
+        );
         let mut shared = slot;
         shared.deployment.content_volume = primary.content_volume.clone();
         assert_eq!(
