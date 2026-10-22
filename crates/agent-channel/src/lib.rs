@@ -195,7 +195,7 @@ async fn report_inner(
         (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
-                |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;crate::collection::agent::accept_in(c,principal,scope,batch,input).await.map_err(Error::from)})).await?;
+                |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;let accepted=crate::collection::agent::accept_in(c,principal,scope,batch,input).await.map_err(Error::from)?;crate::device::store::record_communication_in(c,principal).await?;Ok::<_,Error>(accepted)})).await?;
             let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
             let fact = rss_mdm_audit_integration::Fact::business(audit,
                 &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)

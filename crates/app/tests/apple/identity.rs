@@ -340,7 +340,22 @@ async fn token_is_required_before_management() -> Result<()> {
     let (device, der) = f.seed_local_identity().await?;
     let peer = f.authenticate_peer(&device, &der).await?;
     f.before_token(&peer).await?;
+    let receipt = || {
+        crate::test_support::process::pg(&format!(
+            "SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND state='active' AND purpose='primary'",
+            case_tenant(),
+            case_device()
+        ))
+    };
+    ensure!(
+        receipt()?.trim() == "f",
+        "rejected management must not record communication"
+    );
     peer.token().await?;
+    ensure!(
+        receipt()?.trim() == "f",
+        "TokenUpdate is outside the selected communication sources"
+    );
     let reply = peer
         .send(
             "/mdm",
@@ -354,6 +369,10 @@ async fn token_is_required_before_management() -> Result<()> {
         )
         .await?;
     ensure!(reply.0 == StatusCode::OK);
+    ensure!(
+        receipt()?.trim() == "t",
+        "valid Idle must record communication"
+    );
     ensure!(
         crate::audit_test_support::audit_count(|r| r.action() == "apple_management"
             && r.status() == 200

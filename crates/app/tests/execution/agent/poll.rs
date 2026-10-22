@@ -88,3 +88,19 @@ async fn cancellation_backlog_does_not_starve_live_offer() -> Result<()> {
     Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=execution.agent.poll: an empty authenticated poll records communication"]
+async fn empty_poll_records_current_registration_communication() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let registration = fixture.register().await?;
+        let contact = || pg(&format!("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{}'", case_tenant(), registration["registrationId"].as_str().unwrap()));
+        ensure!(contact()?.trim() == "f", "activation alone is not a task poll");
+        let (status, response) = claim_request(&fixture.router, Uuid::new_v4()).await?;
+        ensure!(status == StatusCode::OK && response["task"].is_null(), "expected an empty valid poll");
+        ensure!(contact()?.trim() == "t", "an empty poll still proves communication");
+        Ok(())
+    }).await
+}

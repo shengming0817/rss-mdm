@@ -397,6 +397,7 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
         .into_iter()
         .map(serde_json::from_value::<Rule>)
         .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(rules.len() == 3);
     anyhow::ensure!(protected_management_rule(&rules[0]));
     anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
     anyhow::ensure!(

@@ -355,6 +355,20 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         detail["endpoints"][0]["channels"][0]["registrationId"],
         parent.to_string()
     );
+    assert!(detail["endpoints"][0]["channels"][0]["lastCommunicationReceivedAt"].is_null());
+    let locator = [31_u8; 32];
+    sqlx::query("INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES($1::uuid,$2,$3,'mdm',$4,'active')")
+        .bind(case_a()).bind(Uuid::new_v4()).bind(child).bind("1f".repeat(32)).execute(&mut c).await?;
+    let channel_credential = rss_mdm_registration_service::ChannelMount::new(TenantId::parse(case_a())?, rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::WindowsDeclared).credential(locator)?;
+    let principal = registration.management_principal(&channel_credential).await?;
+    let mut tx = c.begin().await?;
+    rss_mdm_registration_service::device::store::record_communication_in(&mut tx, &principal).await?;
+    tx.commit().await?;
+    let contacted = s.view(&admin, &ViewRef::Endpoint(registered.into()), &people(&authority, &credential, &sessions)?).await?;
+    assert!(contacted["endpoints"][0]["channels"][0]["lastCommunicationReceivedAt"].as_i64().is_some_and(|v| v > 0));
+    let child_has_contact: bool = sqlx::query_scalar("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_a()).bind(child).fetch_one(&mut c).await?;
+    assert!(!child_has_contact, "child communication belongs to its primary registration");
     let child_state = &detail["endpoints"][0]["channels"][0]["children"][0];
     assert_eq!(child_state["registrationId"], child.to_string());
     assert_eq!(child_state["generation"], 99);
