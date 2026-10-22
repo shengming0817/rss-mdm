@@ -1,6 +1,8 @@
 use anyhow::Context;
 #[path = "windows_assets.rs"]
 mod windows_assets;
+#[path = "delivery/signing.rs"]
+mod signing;
 use crate::test_support::agent_execution::*;
 use crate::test_support::{agent::*, process::*, runtime::*, *};
 use ring::signature::KeyPair;
