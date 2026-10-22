@@ -470,7 +470,7 @@ async fn session_decision(
         .bind(&tenant).bind(&registration).bind(&session).fetch_optional(&mut *tx).await.map_err(db)?;
     if let Some(row) = &stored {
         verify_session_identity(row, principal)?;
-        if let Some(old)=sqlx::query("SELECT digest,response,package_state FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
+        if let Some(old)=sqlx::query("SELECT digest,response,package_state,authenticated FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
             audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
@@ -482,6 +482,9 @@ async fn session_decision(
                 "complete" => PackageState::Complete, "partial" => PackageState::Partial, "aborted" => PackageState::Aborted,
                 _ => return Err(Error::Unavailable(Failure::Protocol)),
             };
+            if old.try_get::<bool, _>("authenticated").map_err(db)? {
+                crate::device::store::record_communication_in(tx, principal).await?;
+            }
             return Ok(SessionDecision::Replay(Reply { bytes: plain.expose().to_vec(), facts: vec![] }, package));
         }
         if !matches!(

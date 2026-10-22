@@ -758,6 +758,12 @@ async fn admission_pause_blocks_first_authentication_but_preserves_authenticated
     let first = post().send().await?;
     ensure!(first.status() == StatusCode::OK);
     let bytes = first.bytes().await?;
+    let no_contact: bool = sqlx::query_scalar("SELECT last_communication_received_at IS NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(
+        no_contact,
+        "the authentication challenge is not communication"
+    );
     let authenticated = peer
         .mutual
         .post(&peer.url)
@@ -768,9 +774,39 @@ async fn admission_pause_blocks_first_authentication_but_preserves_authenticated
     ensure!(authenticated.status() == StatusCode::OK);
 
     let capability_reply = syncml::decode(&authenticated.bytes().await?, &CodecLimits::default())?;
+    let recorded: bool = sqlx::query_scalar("SELECT last_communication_received_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(
+        recorded,
+        "authenticated management must record communication"
+    );
+    sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=to_timestamp(1) WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).execute(&mut pg).await?;
+
     sqlx::query("UPDATE mdm_access.registration_admission SET paused=true,revision=3 WHERE tenant_id=$1::uuid AND channel='windows_mdm'").bind(case_tenant()).execute(&mut pg).await?;
     let replay = post().send().await?;
     ensure!(replay.status() == StatusCode::OK && replay.bytes().await? == bytes);
+    let unchanged: bool = sqlx::query_scalar("SELECT last_communication_received_at=to_timestamp(1) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(
+        unchanged,
+        "an old challenge replay must not count as authenticated communication"
+    );
+    let replay = peer
+        .mutual
+        .post(&peer.url)
+        .header("content-type", "application/vnd.syncml.dm+xml")
+        .body(syncml::encode(&peer.ack, &CodecLimits::default())?)
+        .send()
+        .await?;
+    ensure!(replay.status() == StatusCode::OK);
+    let advanced: bool = sqlx::query_scalar("SELECT last_communication_received_at>to_timestamp(1) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(registration).fetch_one(&mut pg).await?;
+    ensure!(
+        advanced,
+        "a valid authenticated replay is a new communication"
+    );
+
     let gets = capability_reply
         .commands
         .iter()

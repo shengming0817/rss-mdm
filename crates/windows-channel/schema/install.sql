@@ -101,6 +101,7 @@ CREATE TABLE mdm_access.management_messages (
     digest text NOT NULL,
     response bytea NOT NULL,
     request bytea NOT NULL CHECK(octet_length(request) BETWEEN 68 AND 524356),
+    authenticated boolean NOT NULL,
     package_state text NOT NULL CHECK(package_state IN ('partial','complete','aborted')),
     CONSTRAINT management_messages_digest_check CHECK ((digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT management_messages_response_check CHECK (((octet_length(response) >= 68) AND (octet_length(response) <= 524356)))

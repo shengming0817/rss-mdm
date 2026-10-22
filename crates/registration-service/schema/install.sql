@@ -209,7 +209,8 @@ CREATE TABLE mdm_access.registrations (
  CONSTRAINT registrations_channel_check CHECK ((channel = ANY (ARRAY['agent'::text, 'mdm'::text]))),
  CONSTRAINT registrations_generation_check CHECK ((generation > 0)),
  CONSTRAINT registrations_state_check CHECK ((state = ANY (ARRAY['active'::text, 'superseded'::text, 'revoked'::text]))),
- first_authenticated_at timestamptz
+ first_authenticated_at timestamptz,
+ last_communication_received_at timestamptz
 
 );
 
