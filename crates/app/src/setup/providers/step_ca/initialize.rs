@@ -219,10 +219,11 @@ pub(in crate::setup) async fn prepare(
         Purpose::Windows,
         Purpose::Apple,
         Purpose::AgentBootstrap,
-    ] {
-        if channel(runtime, purpose).is_none() {
-            continue;
-        }
+    ]
+    .into_iter()
+    .filter(|purpose| channel(runtime, *purpose).is_some())
+    .collect::<Vec<_>>()
+    {
         let owner = Journal::open(&journal.path(purpose_name(purpose))?)?;
         let existing = runtime["device_pki"]
             .as_array()

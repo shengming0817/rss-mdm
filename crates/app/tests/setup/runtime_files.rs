@@ -303,7 +303,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
 #[test]
 fn optional_channel_files_do_not_block_projection_or_reuse_stale_secrets() {
     let temporary = tempfile::tempdir().unwrap();
-    let journal = Journal::open(temporary.path()).unwrap();
+    let journal = Journal::open(&temporary.path().canonicalize().unwrap().join("runtime")).unwrap();
     let absent = temporary.path().join("absent-key");
     let mut channel =
         json!({"native_protocols":{"apple":{"management":{"private_key_file":absent}}}});

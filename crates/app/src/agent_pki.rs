@@ -50,7 +50,7 @@ pub(crate) struct AgentPki {
     pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     pub listen: std::net::SocketAddr,
     pub origin: String,
-    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub tls: Arc<crate::native::tls::Configuration>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
@@ -130,23 +130,21 @@ impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
     }
 }
 impl AgentPki {
-    pub(crate) fn remove_bootstrap(
-        &mut self,
-        endpoint: &crate::native::TlsEndpoint,
-    ) -> Result<(), Error> {
+    pub(crate) fn remove_bootstrap(&mut self) -> Result<(), Error> {
         let verifier =
             rss_mdm_device_trust::enrollment_verifier(vec![self.issuer.trust().trust.clone()])
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
-        self.tls = crate::native::tls::configuration(endpoint, Some(verifier))?;
+        self.tls = self.tls.with_client_verifier(verifier)?;
         self.bootstrap = None;
         Ok(())
     }
 
     pub(crate) fn issuance_ready(&self, now: i64) -> bool {
-        !matches!(
-            health(self.issuer.trust().expires(), now, self.required_seconds),
-            "expired" | "issuance_unavailable"
-        )
+        self.tls.valid_at(now)
+            && !matches!(
+                health(self.issuer.trust().expires(), now, self.required_seconds),
+                "expired" | "issuance_unavailable"
+            )
     }
 
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {

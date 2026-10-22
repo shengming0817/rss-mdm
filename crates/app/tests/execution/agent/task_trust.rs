@@ -151,3 +151,35 @@ async fn settings_catalog_projects_authority_without_cross_session_or_secret_exp
         })
         .await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=execution.agent.task_trust: selected persisted material binds tenant, revision and digest"]
+async fn selected_material_corruption_is_fatal_even_with_a_matching_active_key() -> Result<()> {
+    use rss_mdm_execution_service::task_signing::trust;
+    use sqlx::Connection;
+    let mut fixture = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let config: crate::config::Config = serde_json::from_value(fixture.base.clone())?;
+        let tenant = fixture.identity.tenant;
+        let protection = config.native_protector()?;
+        let mut connection = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut tx = connection.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+        let original = trust::current(&mut tx, tenant).await?;
+        trust::prepare(&mut tx, tenant, Uuid::new_v4(), 1, &original.origin, &protection, "fixture").await?;
+        trust::check_revision(&mut tx, tenant, 1).await?;
+        for mode in 0..3 {
+            let mut changed = original.clone();
+            if mode == 0 { changed.tenant = Uuid::new_v4(); }
+            if mode == 1 { changed.revision = 99; }
+            let digest = if mode == 2 { "0".repeat(64) } else { changed.installation_digest()? };
+            sqlx::query("UPDATE mdm_task_signing.versions SET body=$2,digest=$3 WHERE tenant_id=$1::uuid AND revision=1")
+                .bind(tenant.to_string()).bind(serde_json::to_value(&changed)?).bind(digest).execute(&mut *tx).await?;
+            ensure!(matches!(trust::check_revision(&mut tx,tenant,1).await, Err(rss_mdm_execution_service::Error::Unavailable(rss_mdm_execution_service::Failure::CommandInvariant))));
+        }
+        tx.rollback().await?;
+        connection.close().await?;
+        Ok(())
+    }).await
+}

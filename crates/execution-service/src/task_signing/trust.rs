@@ -32,17 +32,27 @@ async fn lock(c: &mut PgConnection, tenant: TenantId) -> Result<i64, Error> {
     .await
     .map_err(db)
 }
-pub async fn current(c: &mut PgConnection, tenant: TenantId) -> Result<Trust, Error> {
-    let body:serde_json::Value=sqlx::query_scalar("SELECT v.body FROM mdm_task_signing.versions v JOIN mdm_task_signing.heads h USING(tenant_id,revision) WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
-    let trust: Trust = serde_json::from_value(body)
-        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
-    trust
-        .validate()
-        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
-    if trust.tenant.to_string() != tenant.to_string() {
-        return Err(Error::Unavailable(crate::Failure::CommandInvariant));
+fn stored_trust(
+    body: serde_json::Value,
+    revision: i64,
+    digest: &str,
+    tenant: TenantId,
+) -> Result<Trust, Error> {
+    let invalid = || Error::Unavailable(crate::Failure::CommandInvariant);
+    let trust: Trust = serde_json::from_value(body).map_err(|_| invalid())?;
+    trust.validate().map_err(|_| invalid())?;
+    if trust.tenant.to_string() != tenant.to_string()
+        || trust.revision != u64::try_from(revision).map_err(|_| invalid())?
+        || trust.installation_digest().map_err(|_| invalid())? != digest
+    {
+        return Err(invalid());
     }
     Ok(trust)
+}
+pub async fn current(c: &mut PgConnection, tenant: TenantId) -> Result<Trust, Error> {
+    let (body, revision, digest): (serde_json::Value,i64,String) = sqlx::query_as("SELECT v.body,v.revision,v.digest FROM mdm_task_signing.versions v JOIN mdm_task_signing.heads h USING(tenant_id,revision) WHERE tenant_id=$1::uuid")
+        .bind(tenant.to_string()).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
+    stored_trust(body, revision, &digest, tenant)
 }
 async fn replay(
     c: &mut PgConnection,
@@ -319,20 +329,13 @@ async fn selected_trust(
     revision: u64,
 ) -> Result<Trust, Error> {
     let current = current(c, tenant).await?;
-    let body: serde_json::Value = sqlx::query_scalar(
-        "SELECT body FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND revision=$2",
+    let (body, stored_revision, digest): (serde_json::Value,i64,String) = sqlx::query_as(
+        "SELECT body,revision,digest FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND revision=$2",
     )
     .bind(tenant.to_string())
     .bind(i64::try_from(revision).map_err(|_| Error::Malformed)?)
-    .fetch_optional(&mut *c)
-    .await
-    .map_err(db)?
-    .ok_or(Error::Conflict)?;
-    let trust: Trust = serde_json::from_value(body)
-        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
-    trust
-        .validate()
-        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
+    .fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
+    let trust = stored_trust(body, stored_revision, &digest, tenant)?;
     let active = trust
         .keys
         .iter()

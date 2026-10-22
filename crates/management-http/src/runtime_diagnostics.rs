@@ -118,6 +118,7 @@ pub enum Reason {
     MaterialNotSelected,
     MaterialUnreadable,
     MaterialInvalid,
+    TrustConflict,
     MaterialRevoked,
     MaterialVersionMismatch,
     ListenerUnavailable,

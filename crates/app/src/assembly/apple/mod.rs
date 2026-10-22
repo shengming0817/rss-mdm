@@ -8,7 +8,7 @@ mod certificate;
 pub(crate) struct Apple {
     pub(crate) channel: Arc<rss_mdm_apple_channel::Apple>,
     pub(crate) config: config::Config,
-    pub(crate) tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub(crate) tls: Arc<crate::native::tls::Configuration>,
 }
 impl Apple {
     pub(crate) fn load(

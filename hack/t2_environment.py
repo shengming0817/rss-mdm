@@ -363,7 +363,7 @@ class Environment:
             private(self.root/'images.json',images)
             self.compose('--profile','product','stop','server','gateway')
             https_port=urlsplit(tls['origin']).port or 443 if tls['origin'] else self.host_ports()['https']
-            tls['publish']=f'127.0.0.1:{https_port}:8443'
+            if not tls['origin']:tls['publish']=f'127.0.0.1:{https_port}:8443'
             private(self.root/'container-gateway.json',tls)
             backend_port=8081
         else:

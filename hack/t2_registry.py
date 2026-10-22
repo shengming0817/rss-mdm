@@ -2088,3 +2088,6 @@ for name, module in tuple(MODULES.items()):
 
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies,
     CasePolicy('agent_pki_tests::corrupt_persisted_root_crl_is_fatal_to_admission', 'fresh', 'tenant')))
+
+MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_trust'], policies=(*MODULES['execution.agent.task_trust'].policies,
+    CasePolicy('execution::t2::agent::task_trust::selected_material_corruption_is_fatal_even_with_a_matching_active_key', 'fresh', 'tenant')))

@@ -351,10 +351,41 @@ impl RuntimeDiagnostics {
         }
         audit
     }
+    fn observe_trust(&self, channel: &mut ChannelStatus) -> Option<Reason> {
+        use rss_mdm_agent_wire::pki::Purpose;
+        let purpose = match channel.name {
+            ChannelName::Apple => Purpose::Apple,
+            ChannelName::Windows => Purpose::Windows,
+            ChannelName::Agent => Purpose::Agent,
+            ChannelName::AgentBootstrap => Purpose::AgentBootstrap,
+            ChannelName::Signing | ChannelName::WindowsPush => return None,
+        };
+        // Registry rotation updates this running verifier. Report that loaded fact, not desired files.
+        let revision = self
+            .pki
+            .trust(purpose)
+            .ok()
+            .and_then(|trust| i64::try_from(trust.revision).ok());
+        match revision {
+            Some(revision) => {
+                channel.loaded_materials.insert("trust".into(), revision);
+                None
+            }
+            None => {
+                channel.loaded_materials.remove("trust");
+                Some(Reason::MaterialInvalid)
+            }
+        }
+    }
     async fn channel_health(&self, cutoff: Instant) -> Vec<ChannelStatus> {
         let mut channels = self.channels.snapshot();
         for channel in &mut channels {
             if channel.state != ChannelState::Ready {
+                continue;
+            }
+            if let Some(reason) = self.observe_trust(channel) {
+                channel.state = ChannelState::Degraded;
+                channel.reasons = vec![reason];
                 continue;
             }
             let failure = match self.clock.unix_seconds() {
@@ -402,7 +433,7 @@ impl RuntimeDiagnostics {
     async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
         let apple = self.apple.as_ref()?;
         let health = apple.channel.health(now);
-        if health.certificates_expired() {
+        if health.certificates_expired() || !apple.tls.valid_at(now) {
             return Some(Reason::CertificateExpired);
         }
         if !health.push_available {

@@ -221,16 +221,16 @@ impl StepCa {
                 .get(url)
                 .send()
                 .await
-                .map_err(|_| Error::Storage)?;
+                .map_err(|_| Error::Request)?;
             if !response.status().is_success()
                 || response.content_length().is_some_and(|n| n > 131072)
             {
-                return Err(Error::Storage);
+                return Err(Error::Request);
             }
             let mut body = zeroize::Zeroizing::new(Vec::new());
-            while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+            while let Some(chunk) = response.chunk().await.map_err(|_| Error::Request)? {
                 if body.len() + chunk.len() > 131072 {
-                    return Err(Error::Storage);
+                    return Err(Error::Request);
                 }
                 body.extend_from_slice(&chunk);
             }
@@ -290,15 +290,15 @@ impl StepCa {
             .get(self.url("/intermediates"))
             .send()
             .await
-            .map_err(|_| Error::Storage)?;
+            .map_err(|_| Error::Request)?;
         if !response.status().is_success() || response.content_length().is_some_and(|n| n > 131072)
         {
-            return Err(Error::Storage);
+            return Err(Error::Request);
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Request)? {
             if bytes.len() + chunk.len() > 131072 {
-                return Err(Error::Storage);
+                return Err(Error::Request);
             }
             bytes.extend_from_slice(&chunk);
         }
@@ -323,18 +323,18 @@ impl StepCa {
             .get(self.url("/crl"))
             .send()
             .await
-            .map_err(|_| Error::Storage)?;
+            .map_err(|_| Error::Request)?;
         if !response.status().is_success()
             || response
                 .content_length()
                 .is_some_and(|n| n > 16 * 1024 * 1024)
         {
-            return Err(Error::Storage);
+            return Err(Error::Request);
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Storage)? {
+        while let Some(chunk) = response.chunk().await.map_err(|_| Error::Request)? {
             if bytes.len() + chunk.len() > 16 * 1024 * 1024 {
-                return Err(Error::Storage);
+                return Err(Error::Request);
             }
             bytes.extend_from_slice(&chunk);
         }

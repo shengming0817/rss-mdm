@@ -84,11 +84,19 @@ impl WindowsConfig {
 pub(crate) struct Windows {
     pub(crate) config: WindowsConfig,
     pub(crate) channel: Arc<rss_mdm_windows_channel::Windows>,
-    pub(crate) enrollment_tls: Arc<tokio_rustls::rustls::ServerConfig>,
-    pub(crate) management_tls: Arc<tokio_rustls::rustls::ServerConfig>,
-    additional_management_tls: Vec<Arc<tokio_rustls::rustls::ServerConfig>>,
+    pub(crate) enrollment_tls: Arc<crate::native::tls::Configuration>,
+    pub(crate) management_tls: Arc<crate::native::tls::Configuration>,
+    additional_management_tls: Vec<Arc<crate::native::tls::Configuration>>,
 }
 impl Windows {
+    pub(crate) fn tls_valid_at(&self, now: i64) -> bool {
+        self.enrollment_tls.valid_at(now)
+            && self.management_tls.valid_at(now)
+            && self
+                .additional_management_tls
+                .iter()
+                .all(|tls| tls.valid_at(now))
+    }
     #[allow(
         clippy::disallowed_methods,
         reason = "App composition root injects the system monotonic clock into the WNS transport"

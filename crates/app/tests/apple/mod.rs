@@ -264,6 +264,13 @@ impl Fixture {
         ).await?;
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
+        // This handler fixture owns its real transport outside production assembly.
+        if let Some(agent) = &agent_pki {
+            execution.channels.set(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent,
+                rss_mdm_management_http::runtime_diagnostics::ChannelState::Ready, None)?;
+            execution.channels.listening(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent)?;
+            execution.channels.installation(agent.clone(), pki.clone())?;
+        }
         let app = Arc::new(Assembly {
             channels: execution.channels.clone(),
             telemetry: None,
@@ -688,7 +695,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let original: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
-        ("/trust_file", "AgentPki"),
+        ("/trust_file", "FileAccess"),
         ("/webhooks/0/challenge/secret_file", "AppleChallengeWebhook"),
         ("/webhooks/0/notify/secret_file", "AppleNotifyWebhook"),
     ] {

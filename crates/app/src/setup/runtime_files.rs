@@ -210,7 +210,7 @@ fn project_file(
     optional: bool,
 ) -> Result<()> {
     let source = Path::new(value.as_str().ok_or(Error::Input)?);
-    if !source.is_absolute() && !(optional && source.as_os_str().is_empty()) {
+    if !(source.is_absolute() || optional && source.as_os_str().is_empty()) {
         return Err(Error::Input);
     }
     let bytes = match crate::config::read(source, 64 * 1024 * 1024, private) {

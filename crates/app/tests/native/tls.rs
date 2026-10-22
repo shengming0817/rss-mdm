@@ -244,3 +244,63 @@ async fn listener_connections_and_bounded_shutdown() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn loaded_server_certificate_requires_hostname_and_current_validity() {
+    use openssl::{
+        asn1::Asn1Time,
+        bn::BigNum,
+        hash::MessageDigest,
+        pkey::PKey,
+        x509::{X509, X509NameBuilder, extension::SubjectAlternativeName},
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let key = PKey::generate_ed25519().unwrap();
+    let key_file = directory.path().join("server.pk8");
+    std::fs::write(&key_file, key.private_key_to_pkcs8().unwrap()).unwrap();
+    std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let certificate_file = directory.path().join("server.pem");
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let certificate = |end| {
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        cert.set_serial_number(&BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap())
+            .unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "device.example.test")
+            .unwrap();
+        let name = name.build();
+        cert.set_subject_name(&name).unwrap();
+        cert.set_issuer_name(&name).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        cert.set_not_before(&Asn1Time::from_unix(now - 120).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::from_unix(end).unwrap())
+            .unwrap();
+        let san = SubjectAlternativeName::new()
+            .dns("device.example.test")
+            .build(&cert.x509v3_context(None, None))
+            .unwrap();
+        cert.append_extension(san).unwrap();
+        cert.sign(&key, MessageDigest::null()).unwrap();
+        std::fs::write(&certificate_file, cert.build().to_pem().unwrap()).unwrap();
+    };
+    let mut endpoint = TlsEndpoint {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        origin: "https://device.example.test".into(),
+        certificate_file: certificate_file.clone(),
+        private_key_file: key_file,
+    };
+    certificate(now + 3600);
+    let loaded = configuration(&endpoint, None).unwrap();
+    assert!(loaded.valid_at(now));
+    assert!(!loaded.valid_at(now + 3600));
+    endpoint.origin = "https://other.example.test".into();
+    assert!(configuration(&endpoint, None).is_err());
+    endpoint.origin = "https://device.example.test".into();
+    certificate(now - 60);
+    assert!(configuration(&endpoint, None).is_err());
+    // Loaded material remains the process fact until controlled replacement.
+    assert!(loaded.valid_at(now));
+}

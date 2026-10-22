@@ -55,7 +55,7 @@ impl Source for Channels {
             Channel::WindowsMdm => self
                 .windows
                 .as_ref()
-                .is_some_and(|w| w.channel.ca.issuance_end(now).is_ok()),
+                .is_some_and(|w| w.tls_valid_at(now) && w.channel.ca.issuance_end(now).is_ok()),
             Channel::MacosMdm => true,
         };
         if !issuance_ready {
@@ -68,7 +68,14 @@ impl Source for Channels {
                 .expect("configured Apple")
                 .channel
                 .health(now);
-            if health.certificates_expired() {
+            if health.certificates_expired()
+                || !self
+                    .apple
+                    .as_ref()
+                    .expect("configured Apple")
+                    .tls
+                    .valid_at(now)
+            {
                 return fault(Reason::CertificateUnavailable);
             }
             if !health.push_available {

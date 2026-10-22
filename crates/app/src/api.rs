@@ -443,191 +443,45 @@ pub(crate) async fn from_compiled(
             ),
         )?
         .flatten();
-    let mut trusts = Vec::new();
-    if let Some(w) = &windows {
-        trusts.push(w.channel.ca.trust.clone());
-    }
-    if let Some(a) = &apple {
-        trusts.push(a.channel.device_trust().clone());
-    }
-    if let Some(a) = &agent_pki {
-        trusts.push(a.issuer.trust().trust.clone());
-        if let Some(bootstrap) = &a.bootstrap {
-            trusts.push(bootstrap.trust.clone());
-        }
-    }
+    let trusts = native_trusts(&windows, &apple, &agent_pki);
     let admission = rss_mdm_pki_service::registry::Registry::new(
         access.archive_pool(),
         audit_store.clone(),
         trusts,
         providers.clone(),
     );
-    use rss_mdm_agent_wire::pki::Purpose;
-    for (purpose, name) in [
-        (Purpose::Windows, ChannelName::Windows),
-        (Purpose::Apple, ChannelName::Apple),
-        (Purpose::Agent, ChannelName::Agent),
-        (Purpose::AgentBootstrap, ChannelName::AgentBootstrap),
-    ] {
-        match admission
-            .admit_purpose(identity.tenant, clock.unix_seconds()?, purpose)
-            .await
-        {
-            Ok(()) => (),
-            Err(error) => {
-                use rss_mdm_pki_service::Error as P;
-                let reason = match error {
-                    P::Configuration | P::Conflict => Reason::MaterialInvalid,
-                    P::Request => Reason::DependencyUnavailable,
-                    P::Audit(error) => return Err(error.into()),
-                    P::Storage => return Err(Error::Unavailable(crate::Failure::Database)),
-                    P::Unknown { .. } => return Err(Error::CommitUnknown),
-                    P::Forbidden => return Err(Error::Forbidden),
-                };
-                channels.set(name, ChannelState::Degraded, Some(reason))?;
-                match purpose {
-                    Purpose::Windows => windows = None,
-                    Purpose::Apple => apple = None,
-                    Purpose::Agent => agent_pki = None,
-                    Purpose::AgentBootstrap => {
-                        if let (Some(pki), crate::agent_pki::Config::StepCa { endpoint, .. }) =
-                            (&mut agent_pki, &config.agent_pki)
-                        {
-                            let pki = Arc::get_mut(pki).ok_or(Error::Conflict)?;
-                            pki.remove_bootstrap(endpoint)?;
-                        }
-                    }
-                }
-            }
-        }
-    }
     #[cfg(not(test))]
     let bind_listeners = true;
-    if let Some(a) = &apple {
-        channels.loaded(
-            ChannelName::Apple,
-            a.config
-                .materials
-                .apns
-                .map(|v| ("apns".into(), v))
-                .into_iter()
-                .chain(a.config.materials.profile.map(|v| ("profile".into(), v))),
-        )?;
-    }
-    if let Some(w) = &windows {
-        if w.channel.push.is_some() {
-            channels.loaded(
-                ChannelName::WindowsPush,
-                w.config.push.as_ref().map(|p| ("wns".into(), p.revision)),
-            )?;
-        }
-    }
-    let mut bound = Vec::new();
     if bind_listeners {
-        if let Some(w) = &windows {
-            let mut endpoints = vec![
-                (
-                    crate::native::NativeListenerKind::WindowsEnrollment,
-                    w.config.enrollment.listen,
-                ),
-                (
-                    crate::native::NativeListenerKind::WindowsManagement,
-                    w.config.management.listen,
-                ),
-            ];
-            endpoints.extend(w.config.additional_management.iter().map(|e| {
-                (
-                    crate::native::NativeListenerKind::WindowsManagement,
-                    e.listen,
-                )
-            }));
-            match bind_native(&endpoints).await {
-                Ok(listeners) => {
-                    bound.extend(listeners);
-                    channels.listening(ChannelName::Windows)?;
-                }
-                Err(_) => {
-                    channels.set(
-                        ChannelName::Windows,
-                        ChannelState::Degraded,
-                        Some(Reason::ListenerUnavailable),
-                    )?;
-                    windows = None;
-                }
-            }
-        }
-        if let Some(a) = &apple {
-            match bind_native(&[(
-                crate::native::NativeListenerKind::AppleManagement,
-                a.config.management.listen,
-            )])
-            .await
-            {
-                Ok(listeners) => {
-                    bound.extend(listeners);
-                    channels.listening(ChannelName::Apple)?;
-                }
-                Err(_) => {
-                    channels.set(
-                        ChannelName::Apple,
-                        ChannelState::Degraded,
-                        Some(Reason::ListenerUnavailable),
-                    )?;
-                    apple = None;
-                }
-            }
-        }
-        if let Some(a) = &agent_pki {
-            match bind_native(&[(crate::native::NativeListenerKind::Agent, a.listen)]).await {
-                Ok(listeners) => {
-                    bound.extend(listeners);
-                    channels.listening(ChannelName::Agent)?;
-                }
-                Err(_) => {
-                    channels.set(
-                        ChannelName::Agent,
-                        ChannelState::Degraded,
-                        Some(Reason::ListenerUnavailable),
-                    )?;
-                    agent_pki = None;
-                }
-            }
-        }
+        admit_native(
+            &mut windows,
+            &mut apple,
+            &mut agent_pki,
+            &channels,
+            &admission,
+            identity.tenant,
+            clock.unix_seconds()?,
+        )
+        .await?;
     }
-    let mut trusts = Vec::new();
-    if let Some(w) = &windows {
-        trusts.push(w.channel.ca.trust.clone());
-    }
-    if let Some(a) = &apple {
-        trusts.push(a.channel.device_trust().clone());
-    }
-    if let Some(a) = &agent_pki {
-        trusts.push(a.issuer.trust().trust.clone());
-        if let Some(bootstrap) = &a.bootstrap {
-            trusts.push(bootstrap.trust.clone());
-        }
-    }
+    loaded_native_materials(&windows, &apple, &channels)?;
+    let bound = if bind_listeners {
+        bind_native_channels(&mut windows, &mut apple, &mut agent_pki, &channels).await?
+    } else {
+        vec![]
+    };
+    let trusts = native_trusts(&windows, &apple, &agent_pki);
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
         access.archive_pool(),
         audit_store.clone(),
         trusts,
         providers,
     ));
-    if let Some(agent) = &agent_pki {
-        channels.installation(agent.clone(), pki.clone())?;
-    }
+    observe_native_trust(&pki, &agent_pki, &channels)?;
     // Handler fixtures own their transport outside this assembly.
     #[cfg(test)]
     if !bind_listeners {
-        for (name, present) in [
-            (ChannelName::Windows, windows.is_some()),
-            (ChannelName::Apple, apple.is_some()),
-            (ChannelName::Agent, agent_pki.is_some()),
-        ] {
-            if present {
-                channels.listening(name)?;
-            }
-        }
+        fixture_native_listening(&windows, &apple, &agent_pki, &channels)?;
     }
     let agent_enrollment = agent_pki
         .as_ref()
@@ -1310,6 +1164,228 @@ async fn load_windows_push(
 mod tests;
 
 /// Locally owned sockets are dropped together if any bind in this channel fails.
+fn observe_native_trust(
+    pki: &Arc<rss_mdm_pki_service::registry::Registry>,
+    agent: &Option<Arc<crate::agent_pki::AgentPki>>,
+    channels: &crate::channel_status::Channels,
+) -> Result<(), Error> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
+    for binding in pki.bindings() {
+        let trust = binding
+            .public()
+            .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?;
+        let name = match trust.purpose {
+            Purpose::Windows => ChannelName::Windows,
+            Purpose::Apple => ChannelName::Apple,
+            Purpose::Agent => ChannelName::Agent,
+            Purpose::AgentBootstrap => ChannelName::AgentBootstrap,
+        };
+        channels.loaded(
+            name,
+            [(
+                "trust".into(),
+                i64::try_from(trust.revision).map_err(|_| Error::Conflict)?,
+            )],
+        )?;
+    }
+    if let Some(agent) = agent {
+        channels.installation(agent.clone(), pki.clone())?;
+    }
+    Ok(())
+}
+#[cfg(test)]
+fn fixture_native_listening(
+    windows: &Option<Arc<crate::windows::Windows>>,
+    apple: &Option<Arc<crate::apple::Apple>>,
+    agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
+    channels: &crate::channel_status::Channels,
+) -> Result<(), Error> {
+    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
+    for (name, present) in [
+        (ChannelName::Windows, windows.is_some()),
+        (ChannelName::Apple, apple.is_some()),
+        (ChannelName::Agent, agent_pki.is_some()),
+    ] {
+        if present {
+            channels.listening(name)?;
+        }
+    }
+    Ok(())
+}
+fn native_trusts(
+    windows: &Option<Arc<crate::windows::Windows>>,
+    apple: &Option<Arc<crate::apple::Apple>>,
+    agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
+) -> Vec<rss_mdm_device_trust::DeviceTrust> {
+    let mut trusts = Vec::new();
+    if let Some(w) = windows {
+        trusts.push(w.channel.ca.trust.clone());
+    }
+    if let Some(a) = apple {
+        trusts.push(a.channel.device_trust().clone());
+    }
+    if let Some(a) = agent_pki {
+        trusts.push(a.issuer.trust().trust.clone());
+        if let Some(bootstrap) = &a.bootstrap {
+            trusts.push(bootstrap.trust.clone());
+        }
+    }
+    trusts
+}
+async fn admit_native(
+    windows: &mut Option<Arc<crate::windows::Windows>>,
+    apple: &mut Option<Arc<crate::apple::Apple>>,
+    agent_pki: &mut Option<Arc<crate::agent_pki::AgentPki>>,
+    channels: &crate::channel_status::Channels,
+    admission: &rss_mdm_pki_service::registry::Registry,
+    tenant: rss_request_context::TenantId,
+    now: i64,
+) -> Result<(), Error> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    for (purpose, name) in [
+        (Purpose::Windows, ChannelName::Windows),
+        (Purpose::Apple, ChannelName::Apple),
+        (Purpose::Agent, ChannelName::Agent),
+        (Purpose::AgentBootstrap, ChannelName::AgentBootstrap),
+    ] {
+        match admission.admit_purpose(tenant, now, purpose).await {
+            Ok(()) => (),
+            Err(error) => {
+                use rss_mdm_pki_service::Error as P;
+                let reason = match error {
+                    P::Configuration => Reason::MaterialInvalid,
+                    P::Conflict => Reason::TrustConflict,
+                    P::Request => Reason::DependencyUnavailable,
+                    P::Audit(error) => return Err(error.into()),
+                    P::Storage => return Err(Error::Unavailable(crate::Failure::Database)),
+                    P::Unknown { .. } => return Err(Error::CommitUnknown),
+                    P::Forbidden => return Err(Error::Forbidden),
+                };
+                channels.set(name, ChannelState::Degraded, Some(reason))?;
+                match purpose {
+                    Purpose::Windows => *windows = None,
+                    Purpose::Apple => *apple = None,
+                    Purpose::Agent => *agent_pki = None,
+                    Purpose::AgentBootstrap => {
+                        if let Some(pki) = agent_pki.as_mut() {
+                            let pki = Arc::get_mut(pki).ok_or(Error::Conflict)?;
+                            pki.remove_bootstrap()?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+fn loaded_native_materials(
+    windows: &Option<Arc<crate::windows::Windows>>,
+    apple: &Option<Arc<crate::apple::Apple>>,
+    channels: &crate::channel_status::Channels,
+) -> Result<(), Error> {
+    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
+    if let Some(a) = apple {
+        channels.loaded(
+            ChannelName::Apple,
+            a.config
+                .materials
+                .apns
+                .map(|v| ("apns".into(), v))
+                .into_iter()
+                .chain(a.config.materials.profile.map(|v| ("profile".into(), v))),
+        )?;
+    }
+    if let Some(w) = windows
+        && w.channel.push.is_some()
+    {
+        channels.loaded(
+            ChannelName::WindowsPush,
+            w.config.push.as_ref().map(|p| ("wns".into(), p.revision)),
+        )?;
+    }
+    Ok(())
+}
+async fn bind_native_channels(
+    windows: &mut Option<Arc<crate::windows::Windows>>,
+    apple: &mut Option<Arc<crate::apple::Apple>>,
+    agent_pki: &mut Option<Arc<crate::agent_pki::AgentPki>>,
+    channels: &crate::channel_status::Channels,
+) -> Result<Vec<(crate::native::NativeListenerKind, tokio::net::TcpListener)>, Error> {
+    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    let mut bound = Vec::new();
+    if let Some(w) = windows.as_ref() {
+        let mut endpoints = vec![
+            (
+                crate::native::NativeListenerKind::WindowsEnrollment,
+                w.config.enrollment.listen,
+            ),
+            (
+                crate::native::NativeListenerKind::WindowsManagement,
+                w.config.management.listen,
+            ),
+        ];
+        endpoints.extend(w.config.additional_management.iter().map(|e| {
+            (
+                crate::native::NativeListenerKind::WindowsManagement,
+                e.listen,
+            )
+        }));
+        match bind_native(&endpoints).await {
+            Ok(listeners) => {
+                bound.extend(listeners);
+                channels.listening(ChannelName::Windows)?;
+            }
+            Err(_) => {
+                channels.set(
+                    ChannelName::Windows,
+                    ChannelState::Degraded,
+                    Some(Reason::ListenerUnavailable),
+                )?;
+                *windows = None;
+            }
+        }
+    }
+    if let Some(a) = apple.as_ref() {
+        match bind_native(&[(
+            crate::native::NativeListenerKind::AppleManagement,
+            a.config.management.listen,
+        )])
+        .await
+        {
+            Ok(listeners) => {
+                bound.extend(listeners);
+                channels.listening(ChannelName::Apple)?;
+            }
+            Err(_) => {
+                channels.set(
+                    ChannelName::Apple,
+                    ChannelState::Degraded,
+                    Some(Reason::ListenerUnavailable),
+                )?;
+                *apple = None;
+            }
+        }
+    }
+    if let Some(a) = agent_pki.as_ref() {
+        match bind_native(&[(crate::native::NativeListenerKind::Agent, a.listen)]).await {
+            Ok(listeners) => {
+                bound.extend(listeners);
+                channels.listening(ChannelName::Agent)?;
+            }
+            Err(_) => {
+                channels.set(
+                    ChannelName::Agent,
+                    ChannelState::Degraded,
+                    Some(Reason::ListenerUnavailable),
+                )?;
+                *agent_pki = None;
+            }
+        }
+    }
+    Ok(bound)
+}
 async fn bind_native(
     endpoints: &[(crate::native::NativeListenerKind, std::net::SocketAddr)],
 ) -> std::io::Result<Vec<(crate::native::NativeListenerKind, tokio::net::TcpListener)>> {

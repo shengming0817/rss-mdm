@@ -23,7 +23,7 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let origin = format!("https://localhost:{}", address.port());
-    let mut tls = (*crate::native::tls::configuration(&config.management, None)?).clone();
+    let mut tls = crate::native::tls::configuration(&config.management, None)?.fixture_server();
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stored = Arc::new(Mutex::new(None::<serde_json::Value>));
@@ -437,9 +437,17 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
     for index in 0..2 {
         let tenant = Uuid::new_v4();
         let journal = Journal::open(&directory.join(format!("operation-{index}")))?;
-        let mut runtime = json!({"product_origin":format!("https://mdm.example.test:{}",8445+index),
+        let agent_origin = format!("https://agent-{index}.example.test");
+        let windows_origin = format!("https://windows-{index}.example.test");
+        let agent: crate::agent_pki::Config = serde_json::from_value(json!({"mode":"step_ca",
+            "endpoint":{"origin":agent_origin,"listen":"127.0.0.1:9445","certificate_file":"/unused.crt","private_key_file":"/unused.pk8"},
+            "bootstrap":{}}))?;
+        let mut runtime = json!({"product_origin":format!("https://tenant-{index}.example.test"),
             "identity":{"tenant_id":tenant},"runtime_binding":{"host_id":Uuid::new_v4()},
-            "device_pki":[],"native_protocols":{},"agent_pki":{"mode":"disabled"}});
+            "device_pki":[],"native_protocols":{
+                "windows":{"trust_file":"","management":{"origin":windows_origin}},
+                "apple":{"trust_file":"","webhooks":[],"management":{"origin":format!("https://apple-{index}.example.test")}}
+            },"agent_pki":agent});
         initialize::prepare(&root, &journal, &mut connection, &mut runtime, &settings)
             .await
             .context("initial CA preparation")?;
@@ -453,11 +461,7 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
         } else {
             None
         };
-        // Actual deployment input omits all CA and callback details, including bootstrap materials.
-        let agent: crate::agent_pki::Config = serde_json::from_value(json!({"mode":"step_ca",
-            "endpoint":{"origin":"https://mdm.example.test:10445","listen":"0.0.0.0:10445","certificate_file":"/unused.crt","private_key_file":"/unused.pk8"},
-            "bootstrap":{}}))?;
-        runtime["agent_pki"] = serde_json::to_value(agent)?;
+        // Reapplying the same explicit intent renews only eligible materials.
         let late = Journal::open(&directory.join(format!("late-{index}")))?;
         initialize::attach(&root, &late, &mut connection, &mut runtime)
             .await
@@ -485,7 +489,7 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
             remote
                 .webhooks
                 .iter()
-                .all(|h| h.url.starts_with("https://mdm.example.test:10445/"))
+                .all(|h| h.url.starts_with(&format!("{agent_origin}/")))
         );
         let original = runtime.clone();
         if index == 0 {
@@ -528,7 +532,7 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
         ensure!(bootstrap["webhooks"].as_array().unwrap().len() == 1);
         let trust: Trust =
             serde_json::from_slice(&std::fs::read(bootstrap["trust_file"].as_str().unwrap())?)?;
-        ensure!(trust.origin == "https://mdm.example.test:10445");
+        ensure!(trust.origin == agent_origin);
 
         ensure!(runtime["device_pki"].as_array().unwrap().len() == 4);
         let names = runtime["device_pki"]
@@ -548,9 +552,7 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
                     == vec![&"rss-agent".to_owned()]
             );
         }
-        // Enabling Windows after CA setup takes the real management origin, not its enrollment port.
-        runtime["native_protocols"]["windows"] =
-            json!({"trust_file":"","management":{"origin":"https://mdm.example.test:10444"}});
+        // Windows retains its explicit management hostname across material preparation.
         let windows = Journal::open(&directory.join(format!("windows-{index}")))?;
         initialize::attach(&root, &windows, &mut connection, &mut runtime)
             .await
@@ -560,7 +562,7 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
                 .as_str()
                 .unwrap(),
         )?)?;
-        ensure!(trust.origin == "https://mdm.example.test:10444");
+        ensure!(trust.origin == windows_origin);
     }
     connection.close().await?;
     Ok(())

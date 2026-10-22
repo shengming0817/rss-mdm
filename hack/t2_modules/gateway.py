@@ -234,10 +234,10 @@ def verify_sni(context):
         root=Path(directory)
         def openssl(*args):
             subprocess.run(['openssl',*map(str,args)],cwd=root,check=True,capture_output=True,timeout=30)
-        openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Gateway test CA','-keyout','ca.key','-out','ca.crt','-addext','basicConstraints=critical,CA:TRUE')
+        openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Gateway test CA','-keyout','ca.key','-out','ca.crt','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash')
         for name,usage in [('server','serverAuth'),('client','clientAuth')]:
             openssl('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+name,'-keyout',name+'.key','-out',name+'.csr')
-            (root/'leaf.ext').write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage='+usage+'\nsubjectAltName=DNS:mdm.example.test,DNS:device.example.test\n')
+            (root/'leaf.ext').write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage='+usage+'\nsubjectAltName=DNS:mdm.example.test,DNS:device.example.test\n')
             openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-days','1','-extfile','leaf.ext','-out',name+'.crt')
         server_context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         server_context.load_cert_chain(root/'server.crt',root/'server.key')
@@ -274,13 +274,18 @@ def verify_sni(context):
                 config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
                 config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "browser"; } }}'
                 files={name:(root/name).read_text() for name in ['server.crt','server.key']}
-                with context.gateway(config,files) as (_,port):
-                    def request(host,identity=None):
+                with context.gateway(config,files) as (name,port):
+                    import ipaddress
+                    addresses=subprocess.run(['docker','exec',name,'getent','ahostsv4','host.docker.internal'],check=True,capture_output=True,text=True,timeout=10).stdout
+                    host_address=str(ipaddress.ip_address(addresses.split()[0]))
+                    (context.gateway_owner.root/'probe/nginx.conf').write_text(config.replace('host.docker.internal:',host_address+':'))
+                    subprocess.run(['docker','exec',name,'nginx','-c','/tmp/input.conf','-s','reload'],check=True,capture_output=True,timeout=10)
+                    def request(host,identity=None,authority=None):
                         tls=ssl.create_default_context(cafile=str(root/'ca.crt'))
                         if identity:tls.load_cert_chain(root/(identity+'.crt'),root/(identity+'.key'))
                         with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
                             with tls.wrap_socket(raw,server_hostname=host) as stream:
-                                stream.sendall(('GET /api/probe HTTP/1.1\r\nHost: '+host+'\r\nX-Client-Cert: forged\r\nConnection: close\r\n\r\n').encode())
+                                stream.sendall(('GET /api/probe HTTP/1.1\r\nHost: '+(authority or host)+'\r\nX-Client-Cert: forged\r\nConnection: close\r\n\r\n').encode())
                                 chunks=[]
                                 while True:
                                     chunk=stream.recv(8192)
@@ -288,12 +293,14 @@ def verify_sni(context):
                                     chunks.append(chunk)
                                 return b''.join(chunks)
                     until=time.monotonic()+30
+                    last='no response'
                     while True:
                         try:
                             if request('mdm.example.test').endswith(b'browser'):break
-                        except OSError:pass
-                        if time.monotonic()>until:raise RuntimeError('SNI gateway startup deadline')
+                        except OSError as error:last=str(error)
+                        if time.monotonic()>until:raise RuntimeError('SNI gateway startup deadline: '+last)
                         time.sleep(.1)
+                    if b'421' not in request('mdm.example.test',authority='wrong.example.test').split(b'\r\n',1)[0]:raise RuntimeError('SNI/Host mismatch accepted')
                     if not request('device.example.test','client').endswith(b'verified-client'):raise RuntimeError('mTLS passthrough failed')
                     for host,identity in [('device.example.test',None),('device.example.test','server'),('unknown.example.test','client')]:
                         try:reply=request(host,identity)

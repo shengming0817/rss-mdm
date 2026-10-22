@@ -13,7 +13,7 @@ import candidate_runtime as candidate
 class SmokeCompletion(unittest.TestCase):
     def test_readiness_retries_temporary_html_gateway_error(self):
         browser = smoke.Browser.__new__(smoke.Browser)
-        browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
+        browser.port, browser.context, browser.cookie, browser.csrf = 443, mock.Mock(), "", ""
         browser.host="mdm.example.test"
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
@@ -23,7 +23,7 @@ class SmokeCompletion(unittest.TestCase):
         ready.getheaders.return_value = []
         ready.getheader.side_effect = lambda name, default=None: {"Content-Type":"application/json"}.get(name, default)
         ready.read.return_value = b'{"ready":true}'
-        with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect:
+        with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect, mock.patch.object(smoke.socket, "create_connection"):
             connect.return_value.getresponse.side_effect = [unavailable, ready]
             candidate.wait(lambda: browser.call("GET", "/readyz") == (200, {"ready":True}), "readiness", seconds=1)
             self.assertEqual(connect.call_count, 2)
@@ -125,7 +125,7 @@ class RuntimeOwnership(unittest.TestCase):
 
     def test_gateway_and_operator_use_canonical_compose_services(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
-        owner.gateway='gateway';owner.created=[]
+        owner.gateway='gateway';owner.created=[];owner.web=None
         owner.compose=mock.Mock(return_value='');owner.container=mock.Mock(return_value='owned-gateway')
         owner.start_gateway()
         owner.compose.assert_called_once_with('up','-d','--no-deps','gateway',stage=candidate.Stage.GATEWAY)

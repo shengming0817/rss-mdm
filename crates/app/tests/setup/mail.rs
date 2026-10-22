@@ -20,7 +20,7 @@ async fn real_tls_authentication_and_unknown_submission_are_distinct() -> Result
         let config: crate::windows::WindowsConfig =
             serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
         let mut server_config =
-            (*crate::native::tls::configuration(&config.management, None)?).clone();
+            crate::native::tls::configuration(&config.management, None)?.fixture_server();
         server_config.alpn_protocols.clear();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;

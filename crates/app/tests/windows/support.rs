@@ -288,7 +288,7 @@ impl Host {
         value["content"] = original["content"].clone();
         value["webhooks"] = original["webhooks"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
-        if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
+        if mdm_software || original["agent_pki"]["mode"] == "step_ca" { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection"] = original["native_protection"].clone();
         if push {value["native_protocols"]["windows"]["push"] = serde_json::json!({"revision":1});}
@@ -460,6 +460,13 @@ impl Host {
         ).await?;
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
+        // This handler fixture owns its real transport outside production assembly.
+        if let Some(agent) = &agent_pki {
+            execution.channels.set(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent,
+                rss_mdm_management_http::runtime_diagnostics::ChannelState::Ready, None)?;
+            execution.channels.listening(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent)?;
+            execution.channels.installation(agent.clone(), pki.clone())?;
+        }
         let app = Arc::new(Assembly {
             channels: execution.channels.clone(),
             telemetry: None,

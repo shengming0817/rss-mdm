@@ -20,7 +20,7 @@ flow、command、software、租户注册、管理员初始化和 Identity audit 
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
-经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready` 和 `components`。
+经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready`、`components` 和 `channels`。
 管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
 查询为被动会话活动，经现有请求审计结算；认证、授权库或审计不可用时仍拒绝请求，没有匿名诊断旁路。
 公开健康探针只返回存活或就绪布尔值，详情和 `/readyz` 消费同一宿主聚合。
@@ -29,7 +29,8 @@ flow、command、software、租户注册、管理员初始化和 Identity audit 
 readiness 仍表达公开探针的既定条件，两者不能互相推断。入口暂停与依赖读取失败分开；
 任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复只有受控任务仍运行、恢复扫描和派发首轮均确认成功且未停止时才就绪；确认空扫描/空领取也有效。
 依赖扫描或派发轮次故障撤销就绪，后续成功轮次可恢复；停止信号或任一分支退出立即撤销就绪，在途事务仍按原预算结算。
-未启用的 Apple 组件显示 not_applicable。
+可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际 `listening`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表 listener 或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
+`trust_conflict` 表示配置与既有信任发生冲突，属于阻断状态；保留数据库、密钥和信任历史，核对 hostname、租户、用途与材料，不通过清空持久信任绕过冲突。
 
 Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
 两者各自携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内

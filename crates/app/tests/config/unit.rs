@@ -274,7 +274,7 @@ fn standard_agent_lifetime_rejects_extra_fields() {
 }
 
 #[test]
-fn agent_registration_requires_task_signing_before_assembly() {
+fn optional_signing_is_admitted_by_consumers_not_core_configuration() {
     let mut value: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     let root = independent_secrets(&mut value);
@@ -294,14 +294,7 @@ fn agent_registration_requires_task_signing_before_assembly() {
             let result = serde_json::from_value::<Config>(value.clone())
                 .unwrap()
                 .compile();
-            if enabled && !signed {
-                assert!(matches!(
-                    result,
-                    Err(Error::Configuration(ConfigIssue::AgentPki))
-                ));
-            } else {
-                assert!(result.is_ok(), "enabled={enabled}, signed={signed}");
-            }
+            assert!(result.is_ok(), "enabled={enabled}, signed={signed}");
         }
     }
     std::fs::remove_dir_all(root).unwrap();

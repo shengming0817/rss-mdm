@@ -39,10 +39,19 @@ fn startup_file_failures_keep_safe_categories() {
         load(),
         Err(Error::Configuration(ConfigIssue::ProtocolKey))
     ));
+}
+
+#[test]
+fn startup_trust_file_failures_keep_safe_categories() {
+    let scratch = tempfile::tempdir().unwrap();
     let value: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     let path = scratch.path().join("sensitive-trust");
-    for bytes in [None, Some(vec![9; 31]), Some(vec![9; 64 * 1024 * 1024 + 1])] {
+    for (bytes, category) in [
+        (None, ConfigIssue::FileAccess),
+        (Some(vec![9; 31]), ConfigIssue::AgentPki),
+        (Some(vec![9; 64 * 1024 * 1024 + 1]), ConfigIssue::FileSize),
+    ] {
         if let Some(bytes) = bytes {
             std::fs::write(&path, bytes).unwrap();
         }
@@ -54,10 +63,9 @@ fn startup_file_failures_keep_safe_categories() {
             Err(error) => error,
             Ok(_) => panic!("invalid trust accepted"),
         };
-        assert!(matches!(
-            error,
-            Error::Configuration(ConfigIssue::EnrollmentCa)
-        ));
+        assert!(
+            matches!(error, Error::Configuration(actual) if format!("{actual:?}") == format!("{category:?}"))
+        );
         assert!(!format!("{error:?} {error}").contains("sensitive-trust"));
     }
 }

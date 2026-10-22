@@ -55,7 +55,7 @@ impl NativeListenerKind {
 pub(crate) struct TlsRouter {
     pub(crate) admission: Arc<admission::Admission>,
     pub listen: SocketAddr,
-    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub tls: Arc<crate::native::tls::Configuration>,
     pub router: Router,
 }
 pub(crate) struct Routers {

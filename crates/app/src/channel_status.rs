@@ -104,7 +104,7 @@ impl Channels {
             .iter_mut()
             .find(|v| v.name == name)
             .ok_or(crate::Error::Malformed)?;
-        value.loaded_materials = materials.into_iter().collect();
+        value.loaded_materials.extend(materials);
         Ok(())
     }
     pub(crate) fn snapshot(&self) -> Vec<ChannelStatus> {
@@ -167,9 +167,7 @@ impl Channels {
 impl rss_mdm_execution_service::AgentInstallationAdmission for Channels {
     fn ready_signing_revision(&self, now: i64) -> Option<u64> {
         use rss_mdm_agent_wire::pki::Purpose;
-        let Some((agent, pki)) = self.installation.get() else {
-            return None;
-        };
+        let (agent, pki) = self.installation.get()?;
         let states = self.snapshot();
         let ready = [
             ChannelName::Agent,
@@ -217,18 +215,17 @@ pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
             .find(|v| v.name == parent)
             .filter(|v| v.state != ChannelState::Ready || !v.listening)
             .map(|v| v.reasons.clone());
-        if let Some(reasons) = failed {
-            if let Some(value) = values
+        if let Some(reasons) = failed
+            && let Some(value) = values
                 .iter_mut()
                 .find(|v| v.name == child && v.state == ChannelState::Ready)
-            {
-                value.state = ChannelState::Degraded;
-                value.reasons = if reasons.is_empty() {
-                    vec![Reason::ListenerUnavailable]
-                } else {
-                    reasons
-                };
-            }
+        {
+            value.state = ChannelState::Degraded;
+            value.reasons = if reasons.is_empty() {
+                vec![Reason::ListenerUnavailable]
+            } else {
+                reasons
+            };
         }
     }
 }

@@ -152,6 +152,11 @@ impl Fixture {
             "production APNs worker never delivered pending work"
         );
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
+        crate::test_support::http::set_management_grants(
+            crate::test_support::case::admin(),
+            json!(["runtime_diagnostics_read"]),
+        )
+        .await?;
         // APNs failure degrades only the channel; core readiness stays available.
         sqlx::query("REVOKE SELECT ON mdm_apple.channels FROM mdm_command_runtime")
             .execute(&mut pg)
@@ -336,7 +341,34 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=apple.host: real host starts with Apple intent but no selected organizational materials"]
 async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> Result<()> {
+    blocked_apple_host(StartupFault::MissingSelection).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: unavailable optional CA leaves management alive and closes Apple transport"]
+async fn unavailable_apple_provider_keeps_management_ready_and_listener_closed() -> Result<()> {
+    blocked_apple_host(StartupFault::ProviderUnavailable).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: conflicting origin closes only the channel and preserves persistent trust"]
+async fn conflicting_apple_trust_preserves_history_and_keeps_management_ready() -> Result<()> {
+    blocked_apple_host(StartupFault::TrustConflict).await
+}
+#[derive(Clone, Copy)]
+enum StartupFault {
+    MissingSelection,
+    ProviderUnavailable,
+    TrustConflict,
+}
+
+async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
     let fixture = Fixture::start().await?;
+    let (expected_state, expected_reason) = match fault {
+        StartupFault::MissingSelection => ("waiting", "material_not_selected"),
+        StartupFault::ProviderUnavailable => ("degraded", "dependency_unavailable"),
+        StartupFault::TrustConflict => ("degraded", "trust_conflict"),
+    };
     let mut config = crate::test_support::identity::config(case_tenant())?;
     let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = browser.local_addr()?;
@@ -350,7 +382,27 @@ async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> 
     let mut apple: config::Config =
         serde_json::from_slice(&std::fs::read(fixture.root.join("apple.json"))?)?;
     apple.management.listen = native_address;
-    apple.materials = Default::default();
+    if !matches!(fault, StartupFault::TrustConflict) {
+        apple.management.origin = fixture.app.apple()?.config.management.origin.clone();
+        apple.trust_file = fixture.app.apple()?.config.trust_file.clone();
+    }
+    if !matches!(fault, StartupFault::MissingSelection) {
+        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
+        for provider in &mut config.device_pki {
+            if matches!(fault, StartupFault::ProviderUnavailable)
+                && provider.purpose == rss_mdm_agent_wire::pki::Purpose::Apple
+            {
+                provider.origin = "https://localhost:1".into();
+            }
+        }
+    } else {
+        apple.materials = Default::default();
+    }
+    crate::test_support::http::set_management_grants(
+        crate::test_support::case::admin(),
+        json!(["runtime_diagnostics_read"]),
+    )
+    .await?;
     config.native_protocols.apple = Some(apple);
     config.apple_material_roots = vec![fixture.root.join("apple-root.pem")];
     let stop = tokio_util::sync::CancellationToken::new();
@@ -375,10 +427,9 @@ async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> 
                     .header("host", "mdm.example.test")
                     .send()
                     .await
+                    && response.status() == StatusCode::OK
                 {
-                    if response.status() == StatusCode::OK {
-                        break;
-                    }
+                    break;
                 }
                 ensure!(
                     !server.is_finished(),
@@ -414,8 +465,25 @@ async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> 
             .as_array()
             .and_then(|rows| rows.iter().find(|row| row["name"] == "apple"))
             .ok_or_else(|| anyhow::anyhow!("missing Apple state"))?;
-        ensure!(apple["state"] == "waiting" && apple["listening"] == false);
-        ensure!(apple["reasons"] == json!(["material_not_selected"]));
+        ensure!(
+            apple["state"] == expected_state && apple["listening"] == false,
+            "{apple}"
+        );
+        ensure!(apple["reasons"] == json!([expected_reason]), "{apple}");
+        let mut tx = fixture.app.access.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let body: Vec<u8> = sqlx::query_scalar(
+            "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='apple'",
+        )
+        .bind(case_tenant())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.rollback().await?;
+        let retained: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&body)?;
+        ensure!(retained.origin == fixture.app.apple()?.config.management.origin);
         ensure!(
             tokio::net::TcpStream::connect(native_address)
                 .await

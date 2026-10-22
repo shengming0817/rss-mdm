@@ -200,14 +200,14 @@ impl Binding {
     }
     pub async fn check(&self, store: &crate::Store, tenant: &str, now: i64) -> Result<(), Error> {
         if !self.valid_at(now) {
-            return Err(Error::Conflict.into());
+            return Err(Error::Conflict);
         }
         let mut tx = store.material_snapshot(tenant).await?;
         for (purpose, revision, digest) in &self.records {
             let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3 AND certificate_digest=$4 AND selected AND NOT revoked AND expires_at>$5)")
                 .bind(tenant).bind(purpose.name()).bind(revision).bind(digest).bind(now).fetch_one(&mut *tx).await.map_err(db)?;
             if !valid {
-                return Err(Error::Conflict.into());
+                return Err(Error::Conflict);
             }
         }
         tx.rollback().await.map_err(db)?;

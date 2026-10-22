@@ -97,7 +97,8 @@ impl Participant {
             Arc::new(rustls::crypto::ring::default_provider()),
         )
         .build()?;
-        let mut tls = (*crate::native::tls::configuration(&endpoint, Some(verifier))?).clone();
+        let mut tls =
+            crate::native::tls::configuration(&endpoint, Some(verifier))?.fixture_server();
         tls.alpn_protocols = vec![b"h2".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(tls));
         let expected_token = token

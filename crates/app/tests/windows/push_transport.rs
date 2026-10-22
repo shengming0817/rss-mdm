@@ -12,7 +12,7 @@ async fn raw_push_transport_refreshes_tokens_and_returns_receipts() -> Result<()
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     config.management.listen = listener.local_addr()?;
     config.management.origin = format!("https://localhost:{}", listener.local_addr()?.port());
-    let mut tls = (*crate::native::tls::configuration(&config.management, None)?).clone();
+    let mut tls = crate::native::tls::configuration(&config.management, None)?.fixture_server();
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();
