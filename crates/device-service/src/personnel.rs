@@ -97,11 +97,12 @@ impl<'a> Reader<'a> {
     pub(crate) async fn project<'b>(
         &self,
         proof: &AuthorizedPrincipal,
+        sensitive: bool,
         rows: impl Iterator<Item = &'b mut Value>,
     ) -> Result<()> {
         tokio::time::timeout_at(
             self.deadline.into(),
-            self.project_inner(proof, rows.collect()),
+            self.project_inner(proof, sensitive, rows.collect()),
         )
         .await
         .map_err(|_| Error::Deadline)?
@@ -109,10 +110,10 @@ impl<'a> Reader<'a> {
     async fn project_inner(
         &self,
         proof: &AuthorizedPrincipal,
+        sensitive: bool,
         mut rows: Vec<&mut Value>,
     ) -> Result<()> {
         let mut targets = BTreeSet::new();
-        let sensitive = permits(proof, Permission::InventorySensitiveRead)?;
         for endpoint in &mut rows {
             for key in RELATIONS {
                 if let Some(relation) = endpoint.get_mut(key) {

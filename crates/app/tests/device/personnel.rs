@@ -32,10 +32,11 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let mut grants = identity::device_grants(None, &["inventory_read", "enrollment"])?;
         grants.extend([crate::authorization::Permission::InventorySensitiveRead, crate::authorization::Permission::UserProfilesRead, crate::authorization::Permission::IdentityAccountsManage].map(|operation|crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant}));
         identity::set_grants(case_a(), admin.principal_id(), grants.clone()).await?;
+        let service=Arc::new(service);
+        let sessions=Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
         let router = authority.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_views::routes(
-            Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant)),
-            authority.identity.authority.clone(),
-        ).with_state(Arc::new(service))))?;
+            sessions.clone(), authority.identity.authority.clone(),
+        ).with_state(service.clone())))?;
         let mut browser = authority.browser("admin")?;
         let accounts = format!("/api/v1/identity/tenants/{}/accounts", case_a());
         let login = crate::test_support::case::login("directory-person");
@@ -77,6 +78,25 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["username"]=="source-alias");
         let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&search=dIrEcToRy%20pErSoN",None).await?;
         ensure!(found["statistics"]["deviceViewCount"]==1, "name search ran after pagination");
+        // Middleware proof predates revocation, while both product reads start afterwards.
+        // Keep Enrollment and Identity read permissions so only the sensitive fence can hide names.
+        let credential=rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(reader.cookies["__Host-identity-session"].clone())?);
+        let stale=sessions.authenticate(access.authorization(),credential.duplicate()?).await?;
+        stale.require(crate::authorization::Permission::InventorySensitiveRead,None)?;
+        identity::set_grants(case_a(),viewer_id,grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventorySensitiveRead).cloned().collect()).await?;
+        let people=people(&authority,&credential,&sessions)?;
+        let hidden=service.view(&stale,&ViewRef::Endpoint(last.into()),&people).await?;
+        ensure!(hidden["endpoints"][0]["registrationUser"]["user"]["principalId"]==principal);
+        ensure!(hidden["endpoints"][0]["registrationUser"]["display"].is_null(),"stale proof disclosed revoked personnel");
+        let directory=service.views(&stale,&query(64),&people).await?;
+        ensure!(directory["statistics"]["deviceViewCount"]==2);
+        ensure!(directory["items"].as_array().context("directory items")?.iter().flat_map(|v|v["endpoints"].as_array().into_iter().flatten()).all(|e|e["registrationUser"]["display"].is_null()));
+        for term in ["Directory Person",login] {
+            let mut search=query(1);search.search=Some(term.into());
+            let hidden=service.views(&stale,&search,&people).await?;
+            ensure!(hidden["statistics"]["deviceViewCount"]==0 && hidden["items"]==json!([]),"stale proof made revoked personnel searchable");
+        }
+        identity::set_grants(case_a(),viewer_id,grants.clone()).await?;
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("two devices")?;
         // Unrelated account changes must not bind device pagination.

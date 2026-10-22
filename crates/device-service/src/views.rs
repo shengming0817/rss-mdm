@@ -173,7 +173,7 @@ impl Associations {
             return Err(Error::Malformed);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let (mut groups, bindings, grants) = self
+        let (mut groups, bindings, sensitive, grants) = self
             .audit
             .write(
                 self.tenant,
@@ -186,7 +186,7 @@ impl Associations {
                             |(service, proof), c| {
                                 Box::pin(async move {
                                     let snapshot = read::authorization(c, proof).await?;
-                                    let (_, grants) = scope(&snapshot, proof)?;
+                                    let (sensitive, grants) = scope(&snapshot, proof)?;
                                     let world = identity::world(c, service.tenant).await?;
                                     let (groups, bindings) = groups(
                                         c,
@@ -197,7 +197,7 @@ impl Associations {
                                         proof,
                                     )
                                     .await?;
-                                    Ok((groups, bindings, grants))
+                                    Ok((groups, bindings, sensitive, grants))
                                 })
                             },
                         )
@@ -227,6 +227,7 @@ impl Associations {
         personnel
             .project(
                 proof,
+                sensitive,
                 groups
                     .iter_mut()
                     .flat_map(|group| group.endpoints.iter_mut()),
@@ -305,7 +306,7 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let (mut value, bindings, grants) = self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
+        let (mut value, bindings, sensitive, grants) = self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*reference,*list),|(service,proof,reference,list),c|Box::pin(async move {
                 let snapshot=read::authorization(c,proof).await?;
                 let (sensitive,grants)=scope(&snapshot,proof)?;
@@ -339,7 +340,7 @@ impl Associations {
                             let items=values.iter().skip(cursor.offset).take(*limit).collect::<Vec<_>>();
                             let next=if cursor.offset+items.len()<values.len(){Some(service.encode(cursor.context,cursor.offset+items.len())?)}else{None};
                             proof.check_live()?;
-                            return Ok((json!({"reference":reference,"field":field,"source":source.fact.evidence,"endpoint":source.endpoint,"total":values.len(),"items":items,"nextCursor":next}),bindings,grants));
+                            return Ok((json!({"reference":reference,"field":field,"source":source.fact.evidence,"endpoint":source.endpoint,"total":values.len(),"items":items,"nextCursor":next}),bindings,sensitive,grants));
                         }
                         let sources=resolved.sources.iter().enumerate().map(|(i,s)|Ok(json!({"endpoint":s.endpoint,"evidence":s.fact.evidence,"state":list_state(&s.fact.state)?,"lastKnown":s.fact.last_known.as_ref().map(|v|json!({"state":list_state(&FieldState::Known(v.value.clone())).ok(),"evidence":v.evidence})),"cursor":service.encode(json!({"view":context,"field":definition.key,"source":i}),0)?}))).collect::<Result<Vec<_>>>()?;
                         lists.insert(definition.key,json!({"state":list_state(&resolved.state)?,"sources":sources,"itemKey":definition.item_key}));
@@ -348,7 +349,7 @@ impl Associations {
                 if list.is_some(){return Err(Error::NotFound);}
                 let provenance=raw.iter().map(|e|json!({"endpoint":e.device,"quality":e.quality,"revisions":e.revisions})).collect::<Vec<_>>();
                 let mut value=group.summary();value["fields"]=serde_json::to_value(fields).map_err(|_|Error::Storage)?;value["lists"]=serde_json::to_value(lists).map_err(|_|Error::Storage)?;value["inventorySources"]=json!(provenance);
-                proof.check_live()?;Ok((value,bindings,grants))
+                proof.check_live()?;Ok((value,bindings,sensitive,grants))
             })).await
         })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
         if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
@@ -359,7 +360,7 @@ impl Associations {
                 &mut BTreeMap::new(),
             )
             .await?;
-            personnel.project(proof, rows.iter_mut()).await?;
+            personnel.project(proof, sensitive, rows.iter_mut()).await?;
         }
         self.confirm_scope(proof, &grants, &budget).await?;
         Ok(value)
