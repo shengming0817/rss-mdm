@@ -15,6 +15,7 @@ import tempfile
 import time
 import uuid
 from contextlib import ExitStack
+from ingress_network import Ingress
 from release import oci_identity, platform, sha, image_metadata, immutable_image, DEPLOYMENT_FILES, ROLE_NAMES, RUNTIME_TOOLS
 from candidate_fixture import INSTANCE, ADMIN, TENANTS, installation
 
@@ -285,6 +286,7 @@ class Candidate:
         self.created,self.volumes=[],[]
         self.temporary=None
         self.network_created=False
+        self.ingress=None
         self.private_values=[PASSWORD,"candidate-fixture"]
     def command(self,*args,stage,**kwargs):
         return docker(*args,stage=stage,**kwargs)
@@ -383,9 +385,10 @@ class Candidate:
             import socket
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1',0));self.port=reservation.getsockname()[1]
-            segment=int(hashlib.sha256(self.name.encode()).hexdigest()[:2],16)
+            self.ingress=Ingress(self.root,self.name,self.worktree_identity)
+            ingress=self.ingress.allocate()
             self.compose_environment={**{key:value for key,value in os.environ.items() if not key.startswith('COMPOSE_')},
-                'MDM_INGRESS_SUBNET':f'172.29.{segment}.0/24','MDM_GATEWAY_ADDRESS':f'172.29.{segment}.2','MDM_BACKEND_ADDRESS':f'172.29.{segment}.3',
+                **ingress,
                 'MDM_ENV_ROOT':str(self.root),'MDM_WORKTREE_ID':self.worktree_identity,
                 'MDM_SERVER_IMAGE':self.image,'MDM_WEB_IMAGE':self.web['id'] if self.web else self.providers['nginx'],
                 'MDM_POSTGRES_IMAGE':self.providers['postgres'],'MDM_RUNTIME_IMAGE':self.providers['runtime'],
@@ -531,6 +534,9 @@ class Candidate:
         try:
             if self.compose_environment:
                 try:self.compose('down','--volumes','--remove-orphans',stage=Stage.REMOVE_CONTAINER,timeout=120)
+                except BaseException as failure:failures.append(failure)
+            if self.ingress is not None:
+                try:self.ingress.release()
                 except BaseException as failure:failures.append(failure)
             try:self.pki_stack.close()
             except BaseException as failure:failures.append(failure)

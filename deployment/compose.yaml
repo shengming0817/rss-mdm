@@ -140,7 +140,7 @@ services:
     labels: *owner
     networks:
       default: {}
-      ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:?}"}
+      ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:-}"}
     volumes: ["runtime:/run/mdm:ro", "content:/var/lib/mdm/content"]
     command: [serve, --config, "/run/mdm/${MDM_SERVER_CONFIG:-runtime.json}"]
   gateway:
@@ -150,7 +150,7 @@ services:
     labels: *owner
     networks:
       default: {aliases: ["${MDM_PRODUCT_HOST:-mdm.example.test}"]}
-      ingress: {ipv4_address: "${MDM_GATEWAY_ADDRESS:?}"}
+      ingress: {ipv4_address: "${MDM_GATEWAY_ADDRESS:-}"}
       frontend: {}
     ports: ["${MDM_GATEWAY_PUBLISH:-127.0.0.1::8443}"]
     volumes: ["gateway:/certs:ro"]
@@ -180,7 +180,7 @@ networks:
   ingress:
     internal: true
     ipam:
-      config: [{subnet: "${MDM_INGRESS_SUBNET:-172.29.86.0/24}"}]
+      config: [{subnet: "${MDM_INGRESS_SUBNET:-}"}]
     labels: *owner
   frontend:
     internal: true

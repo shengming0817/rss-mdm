@@ -311,7 +311,7 @@ class ExternalGatewayTests(unittest.TestCase):
         def compose(*args):
             if 'public-host-config' in args:return json.dumps(generated)
             return '0.0.0.0:443' if args[0]=='port' else ''
-        with patch.object(self.env,'gateway_settings',return_value=tls),patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
+        with patch('t2_environment.Ingress.allocate',return_value={'MDM_INGRESS_SUBNET':'172.29.0.0/24','MDM_GATEWAY_ADDRESS':'172.29.0.2','MDM_BACKEND_ADDRESS':'172.29.0.3'}),patch.object(self.env,'gateway_settings',return_value=tls),patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
              patch.object(self.env,'compose',side_effect=compose), \
              patch('t2_environment.run',return_value=SimpleNamespace(stdout='[{"Id":"sha256:reviewed"}]')):
             self.env.initialize('container','server','web')
@@ -334,7 +334,7 @@ class ExternalGatewayTests(unittest.TestCase):
         self.env.root.mkdir(parents=True)
         (self.env.root/'container-initialized.json').write_text(json.dumps(dict(origin='https://mdm.example.test',https_port=443)))
         (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.example.test')))
-        with patch.object(self.env,'verify_ownership'), \
+        with patch('t2_environment.Ingress.validate'),patch.object(self.env,'verify_ownership'), \
              patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else '') as compose, \
              patch('t2_environment.ssl.create_default_context') as context,patch.object(self.env,'probe_product') as probe:
             self.env.start_product()
@@ -383,7 +383,7 @@ class ExternalGatewayTests(unittest.TestCase):
         (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.example.test')))
         error=ssl.SSLCertVerificationError('untrusted private input');error.verify_code=20
         output=io.StringIO()
-        with patch.object(self.env,'verify_ownership'), \
+        with patch('t2_environment.Ingress.validate'),patch.object(self.env,'verify_ownership'), \
              patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else ''), \
              patch.object(self.env,'probe_product',side_effect=error), \
              patch('t2_environment.time.monotonic',side_effect=[0,0,61,62]),contextlib.redirect_stdout(output):

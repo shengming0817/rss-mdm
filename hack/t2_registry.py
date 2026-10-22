@@ -1176,6 +1176,7 @@ MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'],
     'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
+    'hack/ingress_network.py': ('test_ingress_network','test_t2_environment','test_candidate_smoke','test_release'),
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
     'hack/t2_database.py': ('test_t2_fixtures',),
     'hack/t2_hosts.py': ('test_t2_hosts',),
@@ -2091,3 +2092,5 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.p
 
 MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_trust'], policies=(*MODULES['execution.agent.task_trust'].policies,
     CasePolicy('execution::t2::agent::task_trust::selected_material_corruption_is_fatal_even_with_a_matching_active_key', 'fresh', 'tenant')))
+
+consume(('hack/ingress_network.py',), 'gateway.admission')

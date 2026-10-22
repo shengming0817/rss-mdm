@@ -3,6 +3,7 @@
 ref: compose-spec/compose-spec spec.md (project isolation and explicit networks).
 """
 from __future__ import annotations
+from ingress_network import Ingress
 import argparse
 import base64
 import contextlib
@@ -74,9 +75,9 @@ class Environment:
         tls=json.loads(record.read_text()) if record.exists() else self.local_gateway()
         settings={'MDM_PRODUCT_ORIGIN':tls['origin'] or '', 'MDM_GATEWAY_PUBLISH':tls['publish'],
                   'MDM_GATEWAY_TLS_CERT_FILE':tls['certificate_file'], 'MDM_GATEWAY_TLS_KEY_FILE':tls['key_file']} if gateway else {}
-        segment = int(hashlib.sha256(self.project.encode()).hexdigest()[:2], 16)
+        ingress = Ingress(self.root,self.project,self.identity).values()
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
-                'MDM_INGRESS_SUBNET':f'172.29.{segment}.0/24', 'MDM_GATEWAY_ADDRESS':f'172.29.{segment}.2', 'MDM_BACKEND_ADDRESS':f'172.29.{segment}.3',
+                **ingress,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': self.providers['postgres'], 'MDM_RUNTIME_IMAGE': self.providers['runtime'],
                 'MDM_KEYCLOAK_IMAGE':self.providers['keycloak'],'MDM_NGINX_IMAGE':self.providers['nginx'],
@@ -300,6 +301,8 @@ class Environment:
                 raise RuntimeError('refusing foreign or damaged environment owner record')
         self.verify_ownership()
         self.compose('--profile','*','down','--volumes','--remove-orphans',timeout=30)
+        ingress=Ingress(self.root,self.project,self.identity)
+        if ingress.record.exists():ingress.release()
         self.host_ports(release=True)
         if self.root.exists(): shutil.rmtree(self.root)
 
@@ -353,6 +356,7 @@ class Environment:
             tls=self.gateway_settings(env_file)
             self.prepare_inputs(certificates=False)
             private(self.root/'container-gateway.json',tls)
+            ingress=Ingress(self.root,self.project,self.identity).allocate()
         self.up()
         with self.phase('roles',reused=self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):self.roles()
         if mode=='container':
@@ -388,7 +392,7 @@ class Environment:
             private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
         config['native_protection']=dict(active_file=path(runtime,'native-data.key'),historical_files=[],fingerprint_file=path(runtime,'native-data.key'))
-        config.update(listen=(self.variables()['MDM_BACKEND_ADDRESS'] if mode=='container' else '127.0.0.1')+f':{backend_port}',product_origin=origin,trusted_gateway=self.variables()['MDM_GATEWAY_ADDRESS'] if mode=='container' else '127.0.0.1',native_protocols={},device_pki=[])
+        config.update(listen=(ingress['MDM_BACKEND_ADDRESS'] if mode=='container' else '127.0.0.1')+f':{backend_port}',product_origin=origin,trusted_gateway=ingress['MDM_GATEWAY_ADDRESS'] if mode=='container' else '127.0.0.1',native_protocols={},device_pki=[])
         config['agent_pki']={'mode':'disabled'}
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
@@ -459,6 +463,7 @@ class Environment:
         initialized=json.loads((self.root/'container-initialized.json').read_text())
         expected=initialized['origin']
         if actual!=initialized.get('https_port',urlsplit(expected).port):raise RuntimeError('product port changed; run init --mode container again')
+        Ingress(self.root,self.project,self.identity).validate()
         running=self.compose('ps','-q','server','gateway').splitlines()
         with self.phase('start-product',reused=len(running)==2):
             self.compose('--profile','product','stop','server','gateway')

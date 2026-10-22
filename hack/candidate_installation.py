@@ -9,6 +9,8 @@ import socket
 import subprocess
 import tempfile
 import uuid
+from ingress_network import Ingress
+from contextlib import ExitStack
 from candidate_runtime import verify_candidate, load_ui, image_identity, sha
 from candidate_installation_driver import Installation, qualify
 
@@ -40,18 +42,20 @@ def qualify_candidate(candidate):
         architecture_relation='same' if manifest['platform']==daemon['OSType']+'/'+architecture else 'different')
     ui=load_ui(candidate,manifest['ui'])
     project='mdm-seed-'+uuid.uuid4().hex[:12]
-    with tempfile.TemporaryDirectory(prefix='mdm-compose-seed-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='mdm-compose-seed-') as temporary, ExitStack() as cleanup:
         root=Path(temporary);inputs=root/'inputs';inputs.mkdir(mode=0o700)
         tls(inputs)
         with socket.socket() as listener:
             listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
         origin='https://mdm.example.test';other='https://second.example.test'
-        segment=int(uuid.uuid4().hex[:2],16)
-        backend=f'172.28.{segment}.3';second_backend=f'172.28.{segment}.4'
+        network=Ingress(root,project,project)
+        cleanup.callback(network.release)
+        allocation=network.allocate()
+        backend=allocation['MDM_BACKEND_ADDRESS'];second_backend=network.address(2)
         values=dict(MDM_POSTGRES_IMAGE=manifest['providers']['postgres'],MDM_GATEWAY_IMAGE=manifest['providers']['nginx'],
             MDM_SERVER_IMAGE=image_identity(manifest['image'])['id'],MDM_INSTALLER_IMAGE=image_identity(manifest['installer']['image'])['id'],
             MDM_WEB_IMAGE=ui['id'],MDM_INPUT_DIRECTORY=str(inputs),MDM_PRODUCT_ORIGIN=origin,
-            MDM_INGRESS_SUBNET=f'172.28.{segment}.0/24',MDM_BACKEND_ADDRESS=backend,MDM_GATEWAY_ADDRESS=f'172.28.{segment}.2',MDM_PUBLISH_ADDRESS=f'127.0.0.1:{port}')
+            **allocation,MDM_PUBLISH_ADDRESS=f'127.0.0.1:{port}')
         def env(path,values):path.write_text(''.join(key+'='+str(value)+'\n' for key,value in values.items()));path.chmod(0o600)
         env(root/'.env',values)
         env(root/'second.env',dict(values,MDM_PRODUCT_ORIGIN=other,MDM_BACKEND_ADDRESS=second_backend,MDM_INGRESS_NETWORK=project+'_ingress',
