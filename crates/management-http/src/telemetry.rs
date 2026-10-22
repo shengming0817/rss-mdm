@@ -1,6 +1,10 @@
 //! Telemetry management stays inside the existing account/session HTTP boundary.
 use crate::{Error, Failure, authorization::context::RequestAuth};
-use axum::{Extension, Json, Router, extract::State, routing::post};
+use axum::{
+    Extension, Json, Router,
+    extract::{Path, State},
+    routing::{get, post},
+};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_telemetry_service::{
     Service,
@@ -10,6 +14,10 @@ use std::sync::Arc;
 type App = Arc<Option<Arc<Service>>>;
 pub fn routes(service: Option<Arc<Service>>) -> Router {
     Router::new()
+        .route(
+            "/devices/{device}/telemetry-configurations",
+            get(configurations),
+        )
         .route("/telemetry/resources", post(resources))
         .route("/telemetry/history", post(history))
         .route("/telemetry/aggregate", post(aggregate))
@@ -17,6 +25,22 @@ pub fn routes(service: Option<Arc<Service>>) -> Router {
         .route("/telemetry/health", post(health))
         .route("/telemetry/gaps/query", post(gaps))
         .with_state(Arc::new(service))
+}
+async fn configurations(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+) -> Result<Json<rss_mdm_telemetry_service::configurations::Configurations>, Error> {
+    audit.set_action("telemetry_configurations_read");
+    audit.target_device(&device);
+    app.as_ref()
+        .as_ref()
+        .ok_or(Error::Unsupported)?
+        .configurations(&auth.proof, &device, &audit)
+        .await
+        .map(Json)
+        .map_err(error)
 }
 pub(crate) fn error(e: rss_mdm_telemetry_service::Error) -> Error {
     use rss_mdm_telemetry_service::Error as T;

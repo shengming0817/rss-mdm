@@ -67,6 +67,7 @@ impl From<serde_json::Error> for Error {
 
 mod admission;
 mod configuration;
+pub mod configurations;
 mod definitions;
 mod delivery;
 mod gaps;

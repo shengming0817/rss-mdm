@@ -361,33 +361,13 @@ async fn directory_on(
     {
         return Err(Error::Denied);
     }
-    // Resolve author/Policy locks before taking the registration fence, matching upload ordering.
-    let candidates:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT p.id,p.current_version FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.state='enabled' AND v.action_kind='telemetry_profile' ORDER BY p.id LIMIT 257")
-        .bind(service.tenant.to_string()).fetch_all(&mut *c).await?;
-    if candidates.len() > 256 {
-        return Err(Error::Capacity);
-    }
-    let mut eligible = Vec::new();
-    for (policy, version) in candidates {
-        match rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
-            &service.planning,
-            c,
-            principal.device(),
-            policy,
-            version,
-        )
-        .await
-        {
-            Ok(frozen) => eligible.push((policy, version, frozen)),
-            Err(rss_mdm_flow_service::Error::Forbidden) => {}
-            Err(_) => return Err(Error::Storage),
-        }
-    }
+    let eligible = crate::configurations::eligible_on(service, c, principal.device()).await?;
     rss_mdm_registration_service::device::store::revalidate_management(c, principal)
         .await
         .map_err(|_| Error::Denied)?;
     let mut assignments = Vec::new();
-    for (policy, version, frozen) in eligible {
+    for candidate in eligible {
+        let frozen = &candidate.frozen;
         if rss_mdm_registration_service::device::store::revalidate_collection_source(
             c,
             principal,
@@ -398,26 +378,15 @@ async fn directory_on(
         {
             continue;
         }
-        let keys = frozen
-            .fields
-            .iter()
-            .map(|f| rss_mdm_inventory::FieldKey::parse(f.key.as_str()).map_err(|_| Error::Storage))
-            .collect::<Result<Vec<_>, _>>()?;
-        if !rss_mdm_inventory_postgres::admit_time_series_fields_in(c, service.tenant, &keys)
-            .await
-            .map_err(|_| Error::Storage)?
-        {
+        let Some(supported) =
+            crate::configurations::supported_on(service, c, principal.registration(), frozen)
+                .await?
+        else {
             continue;
-        }
-        let supported = match capable_on(c, service.tenant, principal.registration(), &frozen).await
-        {
-            Ok(()) => true,
-            Err(Error::Unsupported) => false,
-            Err(e) => return Err(e),
         };
         assignments.push(TelemetryAssignment {
-            policy,
-            version,
+            policy: candidate.policy,
+            version: candidate.version,
             supported,
         });
     }
