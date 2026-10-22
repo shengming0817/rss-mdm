@@ -19,6 +19,7 @@ impl ExecutionService {
         installation: Uuid,
         audit: &RequestAudit,
     ) -> Result<()> {
+        self.inputs.admit_agent_installation_in(tx).await?;
         let endpoints = self.inputs.bootstrap.as_ref().ok_or(Error::Unsupported)?;
         let tenant = tx.tenant_id();
         // Freeze the active DB generation under the same fence used by activation and retirement.

@@ -194,7 +194,29 @@ impl Fixture {
         );
         let mut recovered = false;
         for _ in 0..180 {
-            if ready(client.clone()).await.ok() == Some(StatusCode::OK) {
+            let snapshot: serde_json::Value = client
+                .get(format!("http://{address}/api/v1/runtime/diagnostics"))
+                .header("host", "mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
+                .header(
+                    "cookie",
+                    self.browser
+                        .cookies
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if snapshot["channels"].as_array().is_some_and(|channels| {
+                channels
+                    .iter()
+                    .any(|c| c["name"] == "apple" && c["state"] == "ready")
+            }) {
                 recovered = true;
                 break;
             }
@@ -409,4 +431,29 @@ async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> 
     result?;
     closed???;
     fixture_closed
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: persisted Apple corruption must remain a fatal material error"]
+async fn corrupt_persisted_apple_certificate_is_not_optional_unavailability() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let result: Result<()> = async {
+        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
+        let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        sqlx::query("UPDATE mdm_apple_runtime.versions SET certificate='corrupt persisted PEM' WHERE tenant_id=$1::uuid AND purpose='apns' AND revision=1")
+            .bind(case_tenant()).execute(&mut c).await?;
+        let selection = rss_mdm_apple_channel::runtime_materials::runtime::Selection {
+            apns: Some(1), profile: Some(1), accounts: Default::default(),
+        };
+        let result = rss_mdm_apple_channel::runtime_materials::runtime::load(
+            &fixture.app.access.apple_store(), rss_request_context::TenantId::parse(case_tenant())?,
+            &fixture.app.protection, &[std::fs::read(fixture.root.join("apple-root.pem"))?],
+            &selection, time::OffsetDateTime::now_utc().unix_timestamp(),
+        ).await;
+        ensure!(matches!(result, Err(rss_mdm_apple_channel::runtime_materials::runtime::LoadError::Fatal(_))));
+        Ok(())
+    }.await;
+    let closed = fixture.close().await;
+    result?;
+    closed
 }

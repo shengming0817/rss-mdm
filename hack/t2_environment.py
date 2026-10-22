@@ -425,7 +425,8 @@ class Environment:
             nginx=nginx.replace('/tmp/mdm-',str(gateway)+'/mdm-')
             mime=os.environ.get('MDM_NGINX_MIME_TYPES','/opt/homebrew/etc/nginx/mime.types' if sys.platform=='darwin' else '/etc/nginx/mime.types')
             nginx=nginx.replace('/etc/nginx/mime.types',mime)
-            nginx=nginx.replace('/usr/share/nginx/html',os.environ.get('MDM_WEB_ROOT',str(gateway/'html')))
+            web_root=Path(os.environ.get('MDM_WEB_ROOT',str(gateway/'html'))).resolve()
+            nginx=nginx.replace('location / { return 404; }', 'location / { root "'+str(web_root)+'"; try_files $uri $uri/ /index.html; }')
         private(gateway/'nginx.conf',nginx)
         if mode=='container':self.compose('--profile','product','run','--rm','inputs')
         else:

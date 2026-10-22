@@ -6,6 +6,8 @@ use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
     pub channels: Arc<crate::channel_status::Channels>,
+    pub registration: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub apple_store: Arc<rss_mdm_apple_channel::Store>,
     pub access: sqlx::PgPool,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
@@ -361,7 +363,31 @@ impl RuntimeDiagnostics {
                     ChannelName::Signing | ChannelName::WindowsPush => {
                         self.selected_material_failure(channel, cutoff).await
                     }
-                    _ => None,
+                    ChannelName::Windows | ChannelName::Agent => {
+                        use rss_mdm_management_http::enrollment::channels::Availability;
+                        use rss_mdm_registration_service::quotas::Channel;
+                        let name = if channel.name == ChannelName::Windows {
+                            Channel::WindowsMdm
+                        } else {
+                            Channel::Agent
+                        };
+                        (!matches!(
+                            self.registration.status(name).availability,
+                            Availability::Ready
+                        ))
+                        .then_some(Reason::MaterialInvalid)
+                    }
+                    ChannelName::AgentBootstrap => {
+                        let purpose = rss_mdm_agent_wire::pki::Purpose::AgentBootstrap;
+                        self.pki
+                            .trust(purpose)
+                            .ok()
+                            .and_then(|trust| {
+                                rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).ok()
+                            })
+                            .is_none()
+                            .then_some(Reason::MaterialInvalid)
+                    }
                 },
                 Err(_) => Some(Reason::ClockUnavailable),
             };
@@ -370,6 +396,7 @@ impl RuntimeDiagnostics {
                 channel.reasons = vec![reason];
             }
         }
+        crate::channel_status::project_dependents(&mut channels);
         channels
     }
     async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {

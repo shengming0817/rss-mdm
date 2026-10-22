@@ -69,7 +69,8 @@ class Browser:
             raw=response.read()
             try:value=json.loads(raw) if raw else None
             except json.JSONDecodeError:
-                if response.status in (502,503):value=None
+                if path=='/' and response.status==200:value=raw.decode('utf-8')
+                elif response.status in (502,503):value=None
                 else:raise
             if isinstance(value,dict) and value.get('csrfToken'):self.csrf=value['csrfToken']
             return response.status,value
@@ -134,7 +135,10 @@ def qualify(owner,origin,other_origin,port,second_backend):
     check(all(not any(m['Destination'].endswith('docker.sock') for m in c['Mounts']) for c in actual),'no Docker socket')
     published=[binding['HostPort'] for c in actual for bindings in (c.get('NetworkSettings',{}).get('Ports') or {}).values() for binding in (bindings or [])]
     check(published==[str(port)],'only gateway entry is published')
+    status,static=business.call('GET','/')
+    check(status==200 and isinstance(static,str) and '<html' in static.lower(),'real console static response')
     for service in ('web','server','gateway'):
         owner.compose('up','-d','--no-deps','--force-recreate',service)
         until(lambda:business.call('GET','/readyz')[0]==200)
+        until(lambda:business.call('GET','/')==(200,static))
     return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services'])

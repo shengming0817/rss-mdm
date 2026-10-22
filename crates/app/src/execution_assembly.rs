@@ -233,6 +233,7 @@ pub(crate) async fn open(
                 tenant,
                 content: content.clone(),
                 signing_enabled: signer.is_some(),
+                agent_installation: channels.clone(),
             },
         ));
         let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(

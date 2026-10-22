@@ -18,7 +18,7 @@ def tls(directory):
         subprocess.run(['openssl',*args],cwd=directory,check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','2','-subj','/CN=Compose qualification CA',
         '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash','-keyout','ca.key','-out','ca.crt')
-    for name,hostname in [('postgres','postgres'),('gateway','localhost')]:
+    for name,hostname in [('postgres','postgres'),('gateway','mdm.example.test,DNS:second.example.test')]:
         (directory/'leaf.ext').write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:'+hostname+'\n')
         openssl('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+hostname,'-keyout',name+'.key','-out',name+'.csr')
         openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-days','2',

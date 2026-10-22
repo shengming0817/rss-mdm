@@ -172,18 +172,18 @@ impl Registry {
                     for g in &mut stored.issuers {
                         if let Some(c) = configured.issuers.iter().find(|c| c.digest == g.digest) {
                             let root = x509_cert::Certificate::from_der(
-                                &decode(&g.root, 32768).map_err(|_| Error::Configuration)?,
+                                &decode(&g.root, 32768).map_err(|_| Error::Storage)?,
                             )
-                            .map_err(|_| Error::Configuration)?;
+                            .map_err(|_| Error::Storage)?;
                             let previous = rss_mdm_device_trust::crl(
                                 &decode(&g.root_crl, 16 * 1024 * 1024)
-                                    .map_err(|_| Error::Configuration)?,
+                                    .map_err(|_| Error::Storage)?,
                                 &root,
                                 crate::maintenance::publication_time(
                                     &serde_json::from_slice(bytes).map_err(|_| Error::Storage)?,
                                 )?,
                             )
-                            .map_err(|_| Error::Configuration)?;
+                            .map_err(|_| Error::Storage)?;
                             if let Ok(replacement) = rss_mdm_device_trust::crl(
                                 &decode(&c.root_crl, 16 * 1024 * 1024)
                                     .map_err(|_| Error::Configuration)?,

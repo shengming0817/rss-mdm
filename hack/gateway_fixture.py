@@ -20,7 +20,9 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
     http = http.replace('/private/mdm-tls.crt', certificates + '/server.crt').replace('/private/mdm-tls.key', certificates + '/server.key')
     http = http.replace('/run/config/ui.json', certificates + '/ui.json').replace('/run/config/mdm.json', certificates + '/mdm.json')
     if not web:
-        http = http.replace('location / { proxy_pass http://web:8080; }', 'location / { return 404; }')
+        start = http.index('        location / {')
+        end = http.index('\n        }', start) + len('\n        }')
+        http = http[:start] + '        location / { return 404; }' + http[end:]
     if plain:
         start = main.index('stream {')
         main = main[:start] + main[main.index('\nhttp {', start) + 1:]

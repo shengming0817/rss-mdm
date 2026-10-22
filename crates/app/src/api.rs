@@ -613,6 +613,22 @@ pub(crate) async fn from_compiled(
         trusts,
         providers,
     ));
+    if let Some(agent) = &agent_pki {
+        channels.installation(agent.clone(), pki.clone())?;
+    }
+    // Handler fixtures own their transport outside this assembly.
+    #[cfg(test)]
+    if !bind_listeners {
+        for (name, present) in [
+            (ChannelName::Windows, windows.is_some()),
+            (ChannelName::Apple, apple.is_some()),
+            (ChannelName::Agent, agent_pki.is_some()),
+        ] {
+            if present {
+                channels.listening(name)?;
+            }
+        }
+    }
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -774,8 +790,19 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         windows: state.windows.as_ref().map(|w| w.channel.clone()),
     });
+    let channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source> =
+        Arc::new(crate::registration_channels::Channels {
+            preparation: state.channels.clone(),
+            windows: state.windows.clone(),
+            agent: state.agent_pki.clone(),
+            apple: state.apple.clone(),
+            pki: state.pki.clone(),
+            clock: state.clock.clone(),
+        });
     let diagnostics = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
         channels: state.channels.clone(),
+        registration: channels.clone(),
+        pki: state.pki.clone(),
         apple_store: state.access.apple_store(),
         access: state.access.archive_pool(),
         telemetry: state.telemetry.clone(),
@@ -839,15 +866,6 @@ pub(crate) fn from_state(
         apple: apple_state.clone(),
     };
     let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
-    let channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source> =
-        Arc::new(crate::registration_channels::Channels {
-            preparation: state.channels.clone(),
-            windows: state.windows.clone(),
-            agent: state.agent_pki.clone(),
-            apple: state.apple.clone(),
-            pki: state.pki.clone(),
-            clock: state.clock.clone(),
-        });
     let first_use = Arc::new(crate::first_use::FirstUse {
         directory,
         channels: channels.clone(),

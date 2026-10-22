@@ -154,6 +154,19 @@ async fn read(
     use sqlx::Row;
     let row=sqlx::query("SELECT v.* FROM mdm_apple_runtime.versions v JOIN mdm_apple_runtime.heads h USING(tenant_id,purpose) WHERE v.tenant_id=$1::uuid AND v.purpose=$2 AND v.revision=$3 ")
         .bind(tenant).bind(purpose.name()).bind(revision).fetch_optional(c).await.map_err(db)?.ok_or(LoadError::Blocked(MaterialFailure::Missing))?;
+    let key: Uuid = row.try_get("key_id").map_err(db)?;
+    let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;
+    let private = protection
+        .open_bytes(&sealed, &aad(tenant, purpose, revision, key)?)
+        .map_err(|_| Error::Conflict)?;
+    let pem: Option<String> = row.try_get("certificate").map_err(db)?;
+    let digest: Option<String> = row.try_get("certificate_digest").map_err(db)?;
+    let (pem, digest) = pem
+        .zip(digest)
+        .ok_or(LoadError::Blocked(MaterialFailure::Missing))?;
+    if digest != crypto::persisted_digest(&pem, private.expose())? {
+        return Err(Error::Conflict.into());
+    }
     if row.try_get::<bool, _>("revoked").map_err(db)? {
         return Err(LoadError::Blocked(MaterialFailure::Revoked));
     }
@@ -164,18 +177,8 @@ async fn read(
     if expires.is_some_and(|expires| expires <= now) {
         return Err(LoadError::Blocked(MaterialFailure::Expired));
     }
-    let key: Uuid = row.try_get("key_id").map_err(db)?;
-    let sealed: Vec<u8> = row.try_get("private_key").map_err(db)?;
-    let private = protection
-        .open_bytes(&sealed, &aad(tenant, purpose, revision, key)?)
-        .map_err(|_| Error::Conflict)?;
-    let pem: String = row.try_get("certificate").map_err(db)?;
     let validated = crypto::certificate(purpose, &pem, private.expose(), roots, now)
         .map_err(|_| LoadError::Blocked(MaterialFailure::Invalid))?;
-    let digest: String = row.try_get("certificate_digest").map_err(db)?;
-    if digest != validated.digest {
-        return Err(Error::Conflict.into());
-    }
     Ok((pem, private, validated))
 }
 

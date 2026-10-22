@@ -2128,3 +2128,32 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: persisted trust corruption cannot become a closed optional channel"]
+async fn corrupt_persisted_root_crl_is_fatal_to_admission() -> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    let service = service(deployment()).await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![service.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    let tenant = rss_request_context::TenantId::parse(case_a())?;
+    let mut trust = registry.trust(Purpose::Agent)?;
+    trust.issuers[0].root_crl = "corrupt".into();
+    let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("UPDATE mdm_pki.trust SET body=$2 WHERE tenant_id=$1::uuid AND purpose='agent'")
+        .bind(tenant.to_string())
+        .bind(serde_json::to_vec(&trust)?)
+        .execute(&mut c)
+        .await?;
+    anyhow::ensure!(matches!(
+        registry.admit_purpose(tenant, now(), Purpose::Agent).await,
+        Err(rss_mdm_pki_service::Error::Storage)
+    ));
+    db.close().await;
+    Ok(())
+}

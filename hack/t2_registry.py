@@ -2075,5 +2075,16 @@ consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 consume(('crates/app/src/native/proxy.rs',), 'native.tls gateway.admission apple.host')
 consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')
 
-for name in ('native.tls','apple.host'):
-    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'crates/app/tests/support/gateway.rs'))
+# The transport fixture is consumed by these test/helper owners, including indirect fixtures.
+gateway_consumers = {
+    'crates/app/tests/agent_pki/mod.rs', 'crates/app/tests/agent/configurations.rs',
+    'crates/app/tests/apple/ade.rs', 'crates/app/tests/windows/support.rs',
+    'crates/app/tests/apple/mod.rs', 'crates/app/tests/support/bootstrap.rs',
+    'crates/app/tests/apple/production.rs',
+}
+for name, module in tuple(MODULES.items()):
+    if gateway_consumers.intersection((*module.test_inputs, *module.support_inputs)):
+        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'crates/app/tests/support/gateway.rs'))
+
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies,
+    CasePolicy('agent_pki_tests::corrupt_persisted_root_crl_is_fatal_to_admission', 'fresh', 'tenant')))

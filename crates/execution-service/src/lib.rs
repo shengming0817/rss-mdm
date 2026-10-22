@@ -263,6 +263,12 @@ pub const DEPENDENCIES_JSON: &str = include_str!("dependencies.json");
 
 pub mod queries;
 
+/// Host-owned admission for operations that require a working Agent bootstrap listener.
+/// Material and transaction authorities are still checked by each operation.
+pub trait AgentInstallationAdmission: Send + Sync {
+    fn ready_signing_revision(&self, now: i64) -> Option<u64>;
+}
+
 /// Policy publication receives immutable input preparation, never execution readers or workers.
 pub struct Inputs {
     pub(crate) software_distribution: SoftwareDistribution,
@@ -277,6 +283,7 @@ pub struct Inputs {
     pub(crate) tenant: TenantId,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) signing_enabled: bool,
+    pub(crate) agent_installation: Arc<dyn AgentInstallationAdmission>,
 }
 pub struct InputDependencies {
     pub software_distribution: SoftwareDistribution,
@@ -291,6 +298,7 @@ pub struct InputDependencies {
     pub tenant: TenantId,
     pub content: Option<Arc<rss_mdm_content_service::Store>>,
     pub signing_enabled: bool,
+    pub agent_installation: Arc<dyn AgentInstallationAdmission>,
 }
 impl Inputs {
     pub fn new(dependencies: InputDependencies) -> Self {
@@ -307,6 +315,7 @@ impl Inputs {
             tenant: dependencies.tenant,
             content: dependencies.content,
             signing_enabled: dependencies.signing_enabled,
+            agent_installation: dependencies.agent_installation,
         }
     }
     pub async fn verify_artifact(

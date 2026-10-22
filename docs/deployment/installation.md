@@ -76,7 +76,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 平台开通回执中的首租户必须从 `host_pending` 变为 `enabled`，再进行业务通道设置、轮换材料、备份和开始 T3；此命令只观察已启动服务，不管理容器。平台登录名为 `platform`，业务登录名为 `administrator`，密码分别取自部署 secrets。将 `gateway-ca.crt` 的公共证书加入专用浏览器/设备信任；CA 私钥不交付客户端。
 
-用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建、重启与升级都使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
+用相同 secrets、相同卷重复 `docker compose ... run --rm init` 保持原 tenant/principal/instance/operation、密码和密钥。安装已完成时不覆盖后续配置。停止、重建与重启使用普通 Compose 命令；`down` 保留卷，`down -v` 删除数据，不能用来恢复故障。没有常驻 operator 或自动创建子 Compose 的进程。
 
 ### 服务端 SIT 部署
 
