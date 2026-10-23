@@ -32,10 +32,10 @@ pub(crate) struct Readiness {
     task: OnceLock<TaskStatus>,
 }
 impl Readiness {
-    fn progress(&self, claimed: usize, retried: usize) {
-        if retried > 0 {
+    fn progress(&self, projected: usize, deferred: usize) {
+        if deferred > 0 {
             self.retrying.store(true, Ordering::Release);
-        } else if claimed > 0 {
+        } else if projected > 0 {
             self.retrying.store(false, Ordering::Release);
         }
         *self.phase.lock().expect("audit health") = if self.retrying.load(Ordering::Acquire) {
@@ -73,7 +73,7 @@ impl AuditHealth {
     }
 }
 pub(crate) struct Worker {
-    delivery: AuditDelivery,
+    delivery: AuditDelivery<rss_mdm_native_protection::Protector>,
     readiness: Arc<Readiness>,
     wake: Arc<Notify>,
     #[cfg(test)]
@@ -190,6 +190,7 @@ impl Worker {
             instance,
             vec![tenant, management_tenant],
             budget,
+            config.native_protector()?,
         )
         .await
         .map_err(|error| {
@@ -256,8 +257,9 @@ impl Worker {
                     .expect("bounded batch"),
             )
             .await?;
-        let wait = should_wait(report.claimed(), report.retried(), report.fenced())?;
-        self.readiness.progress(report.claimed(), report.retried());
+        let wait = report.projected() == 0 || report.deferred() > 0;
+        self.readiness
+            .progress(report.projected(), report.deferred());
         if !wait {
             idle.rescanned = false;
             return Ok(());
@@ -316,12 +318,6 @@ impl Idle {
             .unwrap_or(cap)
             .min(cap)
     }
-}
-fn should_wait(claimed: usize, retried: usize, fenced: usize) -> Result<bool, AuditDeliveryError> {
-    if fenced > 0 {
-        return Err(AuditDeliveryError::OwnershipLost);
-    }
-    Ok(claimed == 0 || retried > 0)
 }
 fn diagnose(error: AuditDeliveryError) {
     eprintln!(

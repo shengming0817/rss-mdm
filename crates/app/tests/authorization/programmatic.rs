@@ -137,8 +137,12 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &secret)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router, Method::GET, "/api/v1/api-keys", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
         ensure!(call(&router, Method::GET, "/api/v1/policies", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
-        let (status, token) = call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?;
-        ensure!(status == StatusCode::OK, "bearer login: {status}");
+        let mut token = Value::Null;
+        for _ in 0..7 {
+            let (status, issued) = call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?;
+            ensure!(status == StatusCode::OK, "correct bearer password consumed failure allowance: {status}");
+            token = issued;
+        }
         let bearer = format!("Bearer {}", token["accessToken"].as_str().ok_or_else(|| anyhow::anyhow!("missing bearer"))?);
         ensure!(call(&router, Method::GET, &inventory, &[("authorization", &bearer)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router,Method::GET,"/api/v1/apple/organizations",&[("authorization",&bearer)],None).await?.0==StatusCode::OK);
