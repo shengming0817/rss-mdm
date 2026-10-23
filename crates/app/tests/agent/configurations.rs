@@ -1831,12 +1831,22 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(retired.0==StatusCode::OK && retired.1["configuration"]["origins"]==json!([b]),"confirmed B retirement {retired:?}");
         let current=client_b.get(url(tls_b.address,"/api/v1/agent/enroll/connections")).header("host",b.trim_start_matches("https://")).send().await?;
         ensure!(current.status()==StatusCode::OK && current.json::<Value>().await?==retired.1);
+        let failed_new=json!({"operationId":Uuid::new_v4(),"revision":3,"reason":"persistence_failed"});
+        ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/failures")).header("host",b.trim_start_matches("https://")).json(&failed_new).send().await?.status()==StatusCode::NO_CONTENT);
+        ack["operationId"]=json!(Uuid::new_v4());
+        ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);
+        let observed=user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
+        ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==2 && observed.1["failure"]["report"]["revision"]==3,"late old ACK hid new failure: {observed:?}");
         ack["operationId"]=json!(Uuid::new_v4());ack["revision"]=json!(3);ack["digest"]=json!(serde_json::from_value::<rss_mdm_agent_wire::connections::SignedConfiguration>(retired.1)?.configuration.digest()?);
         ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);
         let converged=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
         ensure!(converged.1["convergence"]["activeDevices"]==1 && converged.1["convergence"]["confirmedDevices"]==1,"actual convergence {converged:?}");
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
+        identity::set_grants(case_tenant(), &f.subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
+        let observed=user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
+        ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==3 && observed.1["failure"].is_null(),"inventory reader could not see target and installed facts: {observed:?}");
+        ensure!(user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?.0==StatusCode::FORBIDDEN);
         ensure!(tls_a.owner.shutdown().join().await?.is_clean());ensure!(tls_b.owner.shutdown().join().await?.is_clean());
         Ok(())
     }).await?;

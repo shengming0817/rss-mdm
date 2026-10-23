@@ -173,7 +173,7 @@ Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 
 
 设备 CA 在正式 SIT 使用 `deployment/sit.compose.yaml` 的 `step-ca`；开发/T2 使用 `deployment/compose.yaml` 的 `pki` profile。SIT 使用一个 CA 实例及数据库，各 purpose 保留独立 provisioner 和产品记录；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
 
-每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 暴露原生 enrollment/management/Agent 的独立 TLS 端口，网关承载控制台及精确配置的 SCEP 路径，不代理其它 CA API 或设备 mTLS 通道。
+每份 CA 数据库同一时间只允许一个写入者。冷备接管先停止并移除旧 `step-ca` 容器，核对 `compose ps --all --quiet step-ca` 为空并确认旧主机被隔离，再以同一绝对存储路径和 `MDM_PKI_PUBLISH` 原端口启动独立 standby project。持久 provider origin、issuer、kid、数据库和 token 记录保持原身份；无法证明旧主隔离时不能启动新写入者。候选验证复用这份 Compose，产品 profile 仅公开 Nginx 网关端口，网关终止控制台与 enrollment/management/Agent 的 TLS/mTLS，并代理精确配置的 SCEP 路径；其它 CA API 和 Rust 内部 HTTP 端口不公开。
 
 Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。新 CA 代次须沿用该 purpose 的受控 webhook 身份、回调地址和签名模板，先验证原生回调再准备/激活；不能直接采用新建 provisioner 随机产生的 webhook 身份替换已有部署配置。HTTPS、SCEP 解密、Profile 签名及 APNs 密钥仍各归原 owner。
 
@@ -263,7 +263,17 @@ Apple 的 `identity_seed` 永久保留原 challenge/notify ID，实际凭据放�
 
 `restore-installation` 使用备份目录、独立保存的 manifest 摘要、新恢复操作 ID、目标管理员数据库连接，以及平台和每个已启用业务租户的 `accounts`（tenant_id、原 principal_id/login/password_file）。这是同址恢复：数据库名称/地址、安装路径、材料路径和内容路径保持原值；目标库必须为空（用 `TEMPLATE template0` 创建，避免继承 Timescale 对象），受限角色及原凭据须已恢复，外置材料父目录须存在。拒绝覆盖不同文件内容或已有业务库。恢复数据库使用单事务和持久操作标记，原角色授权在验证完成后恢复；原账户执行真实认证及授权核对，不以密码重置代替验证。
 
-CA 的镜像、网络、卷、启停与恢复由原运维 Compose/Kubernetes 声明负责。产品命令只校验所提供的在线/离线材料、恢复数据和身份，不读取 Docker inspect，不重建容器。恢复数据和原材料后，由运维启动服务并检查实际认证、readyz 和用途 CA。
+CA 的镜像、网络、卷、启停与恢复由原运维 Compose/Kubernetes 声明负责。产品命令只校验所提供的在线/离线材料、恢复数据和身份，不读取 Docker inspect，不重建容器。`restore-installation` 完成后，先用交付的部署 renderer 重新生成网关配置。安装工具仅恢复 `deployment.json`、TLS 材料和公开配置，不生成 Nginx 语法。按原部署环境先恢复 CA，再运行以下命令。这里使用标准安装卷路径；自定义安装须替换为原 `deployment.gateway_directory`：
+
+```bash
+docker compose -f deployment/production.compose.yaml up -d --no-deps server web
+docker compose -f deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint python3 init /usr/local/lib/rss-mdm/render_gateway.py --root /var/lib/rss-mdm/runtime/gateway
+docker compose -f deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint cat init /var/lib/rss-mdm/runtime/gateway/gateway-ports.compose.yaml > ./gateway-ports.compose.yaml
+docker compose -f deployment/production.compose.yaml -f gateway-ports.compose.yaml run --rm --no-deps --entrypoint nginx gateway -t -c /run/gateway/nginx.conf
+docker compose -f deployment/production.compose.yaml -f gateway-ports.compose.yaml up -d --no-deps gateway
+```
+
+Compose 仍需原部署环境及秘密文件。网关默认绑定 `0.0.0.0`；原部署使用其它绑定 IP 时，渲染命令必须显式传入相同的 `--publish-address`。然后沿原维护输入执行 `prepare-hosts`，核对每个公开入口的真实 HTTPS 观察及原身份，再检查实际认证和用途 CA。
 
 `configure-host` 的 `channels` 变更接受严格的 Windows/Apple/Agent 配置、完整 provider 集合及 Apple 导入信任根。通道尚未就绪时保持关闭；可以先仅安装材料校验根，再由原材料 API 导入证书，最后启用通道。Windows 部署输入省略 `protocol_protection` 时，首次启用生成独立材料，已有通道沿用原材料；更换写钥必须走 `rotate-protection`。Apple 已建立的 `identity_seed` 不可被通道更新替换。所有文件输入在副作用前复制到按内容摘要命名的私有文件，应用摘要绑定实际材料字节；原输入文件随后变化不能改变已冻结的候选。
 
@@ -318,7 +328,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
 ```
 
-`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察，不启动或重启服务。材料应用时保存原 operation，导出配置后受控重建 server，再重放原操作或运行 prepare-hosts；实际版本未加载时保持 pending。所有原生设备流量都从 gateway 的 443/SNI 进入。
+`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察，不启动或重启服务。材料应用时保存原 operation，导出配置后受控重建 server，再重放原操作或运行 prepare-hosts；实际版本未加载时保持 pending。所有原生设备流量都从 gateway 已配置的 HTTPS 域名和端口进入。
 
 `rotate-protection` 的 distributing/activating 阶段同样先导出文件，保持原 operation；运维分阶段重建服务，再重复原命令取得真实观察，全部宿主确认后才切换写钥及重加密。不会自动恢复旧容器；需要回退时由运维恢复先前已确认的配置和 Compose 版本，保留原密钥。
 
@@ -352,7 +362,7 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 ### 可选通道状态
 
-`/livez` 表示进程存活，`/readyz` 只判定核心管理服务。授权的 `/api/v1/runtime/diagnostics` 在 `channels` 中报告 Apple、Windows、Agent、WNS、Agent bootstrap 和 signing 的 disabled/waiting/ready/degraded、监听状态、闭合原因和已加载材料版本。通道故障不会自动摘除管理面；数据库、共享保护根、身份绑定及核心完整性失败仍按硬依赖处理。
+`/livez` 表示进程存活，`/readyz` 只判定核心管理服务。授权的 `/api/v1/runtime/diagnostics` 在 `channels` 中报告 Apple、Windows、Agent、WNS、Agent bootstrap 和 signing 的 disabled/waiting/ready/degraded、路由挂载状态、闭合原因和已加载材料版本。通道故障不会自动摘除管理面；数据库、共享保护根、身份绑定及核心完整性失败仍按硬依赖处理。
 
 缺组织 APNs/Profile 时，先在 Apple 材料页申请/导入并选择版本，然后 prepare-hosts、重建 server、再次核对实际观察。过期或撤销材料拒绝相关操作；缺 TLS/设备信任网关拒绝相关入口。WNS 不可用时 Windows 轮询可继续，bootstrap 或签名不可用时仅拒绝依赖这些能力的操作。真实设备结果与宿主 ready 分别验收。
 

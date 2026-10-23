@@ -8,7 +8,7 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 ## 启用意图与材料就绪
 
-完整部署为 Apple 配置独立 hostname 的 443/SNI 入口，设备 TLS 由 Rust 验证。可以先保存通道配置，APNs/Profile 版本暂为空；此时管理面正常运行，Apple 显示 waiting 及缺失原因。TLS、设备信任、SCEP webhook 或材料无效时状态为 degraded，相关设备操作拒绝，不能通过省略证书验证获得 ready。
+完整部署为 Apple 配置公开 HTTPS origin，可与其它能力共享域名和端口。Nginx 终止 TLS/mTLS，Rust 校验受信网关提供的证书证据及业务权限。可以先保存通道配置，APNs/Profile 版本暂为空；此时管理面正常运行，Apple 显示 waiting 及缺失原因。TLS、设备信任、SCEP webhook 或材料无效时状态为 degraded，相关设备操作拒绝，不能通过省略证书验证获得 ready。
 
 复用现有材料申请、导入、选择与撤销 API。选择后仍须 prepare-hosts、受控重建 server，并通过当前进程的加载版本与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
 
@@ -116,13 +116,13 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 
 ## 产品配置
 
-完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则启动各自监听。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection`（显式加密写钥、历史读钥与稳定比较钥，每份恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
+完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则挂载各自协议路由。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection`（显式加密写钥、历史读钥与稳定比较钥，每份恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
 
-将 native_protocols 替换为以下 Apple-only 配置，内部监听地址须与 server 的 ingress 地址一致，公开 origin 使用最终 443 hostname；地址与路径由部署环境提供：
+将 native_protocols 替换为以下 Apple-only 配置，公开 origin 使用最终域名和端口，Nginx 与受信内部 HTTP 接线由部署环境提供：
 
 ```json
 {"apple":{
-  "management":{"listen":"172.30.86.3:8445","origin":"https://apple.example.test","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
+  "management":{"origin":"https://apple.example.test"},
   "trust_file":"/run/mdm/apple-trust.json",
   "materials":{"apns":2,"profile":2,"accounts":{}},
   "identity_seed":{"challengeId":"ORIGINAL-challenge-id","notifyId":"ORIGINAL-notify-id"},
@@ -132,7 +132,7 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 }}
 ```
 
-TLS 私钥为 owner-only PKCS8 DER；webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。Profile、APNs 和 Managed Apple Account 的私钥不再从启动文件读取；旧字段被拒绝。顶层 `apple_material_roots` 指定部署认可的证书根，租户不能通过材料上传增加信任根。APNs topic 从验证后的证书 UID 派生，同一租户已选材料不能更换 topic。产品管理监听直接完成 mTLS，不接受代理头作为设备身份。
+网关 TLS 材料与渲染见[安装](../deployment/installation.md)。webhook secret 文件保存 CA 发放的 base64 字符串，解码至少 32 字节。两个 webhook ID/secret 分开配置。Profile、APNs 和 Managed Apple Account 的私钥不再从启动文件读取；旧字段被拒绝。顶层 `apple_material_roots` 指定部署认可的证书根，租户不能通过材料上传增加信任根。APNs topic 从验证后的证书 UID 派生，同一租户已选材料不能更换 topic。产品只接受实际 TCP peer 为受信网关的内部 HTTP 请求；继续独立核验证书用途、撤销、租户与注册，拒绝公网伪造身份头。
 
 使用 `/api/v1/apple/materials/{purpose}` 查询版本，purpose 为 `apns`、`profile` 或 `managed_account`。向其 `/keys` 提交生成或导入请求，取得 CSR；向 `/certificates` 提交证书链与确切 key revision；向 `/apply` 提交已验证的 material revision，再由部署侧受控重启加载。写操作都要求近期真实会话、`Idempotency-Key` 和 `expectedRevision`；响应丢失时查询 `/api/v1/apple/material-operations/{operation}`，重试沿用原操作与参数。保存、证书验证和选择版本均不代表宿主已应用，也不证明 Apple 供应方资格。
 
@@ -156,7 +156,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不能再次授权。签发完成通知不是唯一绑定通道，真实 mTLS 叶证书可恢复丢失通知；签发响应本身丢失须新口令、新 attempt、新密钥，不能静默重签。
 ## 健康、告警与排障
 
-`/readyz` 判断核心服务，Apple 材料故障不单独使核心 readiness 失败。通过授权 `/api/v1/runtime/diagnostics` 的 Apple channel 核对实际状态、监听、材料版本与阻断原因；证书过期或撤销时相应依赖操作拒绝。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
+`/readyz` 判断核心服务，Apple 材料故障不单独使核心 readiness 失败。通过授权 `/api/v1/runtime/diagnostics` 的 Apple channel 核对实际状态、路由挂载、材料版本与阻断原因；证书过期或撤销时相应依赖操作拒绝。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 

@@ -170,8 +170,7 @@ def verify_business(context, fixture):
             relay.timeout=15
             thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
             try:
-                config=render(ROOT/'deployment', backend='127.0.0.1:8082', public_port=8080, certificates='/run/config', web=False, plain=True)
-                config=config.replace('server 127.0.0.1:8081;',f'server host.docker.internal:{relay.server_port};')
+                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}', public_port=8080, certificates='/run/config', web=False, plain=True)
                 with context.gateway(config) as (_,port):
                     browser=Browser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
                     end=time.monotonic()+30

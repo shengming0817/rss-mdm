@@ -125,7 +125,7 @@ docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行原 `prepare-hosts`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
 3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。
 4. **设备 CA**：只准备下方的一份 `step-ca.json`。先通过 channels 保存需要启用的通道及最终 443 origin（缺材料可为空）；随后 SIT 的独立 `ca-init` 调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
-5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Agent、Windows 注册、Windows 管理和 Apple 分别使用不同的 HTTPS 域名，公网端口均为 443；各自服务器证书覆盖对应域名，设备 listener 的私钥提供 PKCS#8 DER。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。内部监听使用 server 在 ingress 网络中的明确地址，由 gateway 按 SNI 透传；设备流量不进入浏览器 HTTP 代理。
+5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Agent、Windows 注册、Windows 管理和 Apple 默认共享 HTTPS 域名及端口，也可分别配置；网关服务器证书覆盖全部公开名称。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。Rust 仅使用隔离网络内的单个 HTTP 地址，Nginx 终止 TLS/mTLS、分流协议路径并覆盖证书证据；内部端口不公开。
 6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
 
 配置导出后，运维重建服务，再复验原操作：
@@ -173,7 +173,7 @@ docker compose -p rss-mdm-second -f /absolute/candidate/deployment/tenant.compos
 
 Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及按所选设备能力准备的对象存储和设备 CA。Identity 嵌入后端，Windows/Mac 与 Agent 在设备侧。本次正式交付为 Compose；Kubernetes/HA 未提供交付或验收承诺。
 
-公网只发布 gateway 的 TCP 443（容器内无特权监听 8443）。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
+默认公网只发布 gateway 的 TCP 443（容器内无特权监听 8443）；分离端口须应用 renderer 生成的 ports override。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
 
 | 默认同域入口（HTTPS 443） | 流向与身份核验 |
 |---|---|
@@ -314,7 +314,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 服务端向桌面客户端部署方提供 HTTPS `product_origin`、绑定的 `identity.tenant_id` 和签发网关证书的 CA 公共证书。桌面构建与组织信任配置由 [rss-mdm-agent 桌面开发指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/desktop-development.md&version=GBdevelop) 维护。
 
-服务端向 Agent 部署方提供独立的 HTTPS `agent_pki.endpoint.origin`、绑定的 `identity.tenant_id`、签发该 TLS 入口服务器证书的 CA 公共证书，以及受保护渠道交付的设备 purpose trust。桌面网关和 Agent 入口分别核对对应的服务器证书信任；由同一 CA 签发时可以分发同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
+服务端通过受保护安装渠道向 Agent 部署方交付绑定 `instance_id` 与 tenant 的注册文件、当前签名连接配置及验证公钥、HTTPS 服务器 CA 公共证书和设备 purpose trust。Agent 依据已发布连接配置使用首选和候选入口，地址变化不改变服务身份，也不扩展已授权 CA。控制台与 Agent 入口分别核对对应服务器证书；同 CA 签发时可交付同一公共证书。HTTPS 信任与设备 purpose trust 分别校验，不能相互替代，也不跳过证书链或主机名校验。Agent 的配置生成、安装、升级与恢复由 [rss-mdm-agent 服务部署指南](https://dev.azure.com/shengming0923/rss/_git/rss-mdm-agent?path=/docs/guides/local-service-lab.md&version=GBdevelop) 唯一维护。
 
 服务端网关配置服务器证书链和私钥；向客户端交付的信任材料只含公共证书。
 
@@ -358,7 +358,7 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 本次只支持新格式全新安装，不接受旧格式双读、升级或迁移。
 
-资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 监听配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
+资源/计划/执行使用当前全新安装结构。产品配置中的 `flow.storage` 持有数据库连接及 target/lineage/epoch，`flow.publication` 持有发布数据库与 sources，`execution.database` 持有执行数据库连接；具体字段以[配置示例](../../fixtures/mdm-config.example.json)为准。旧综合 `management` 和混合 `tasks` 配置不再接受。`content.storage` 显式选择 `volume` 或启用版本控制的 HTTPS `s3`（[S3 配置示例](../../fixtures/mdm-content-s3.example.json)）；PostgreSQL 持有内容控制状态，`content` 配置共享内容仓，`task_signing` 单独配置任务签名；脚本任务要求两者齐备，软件入库/启用不需要任务私钥，原生协议的 `management` 公开 origin 配置保持独立。本版本按全新安装交付，安装清单只持有当前完整 schema。
 
 内容与网关的大小及时间预算必须一致配置。随附 nginx 配置仅为精确上传路由关闭 request buffering，示例正文上限 8GiB；普通请求继续保留 16KiB。管理专属路由的网关上限对应 `management-http/src/body_policy.rs`：Policy/Resource 8MiB、设备 operations 16MiB、PKI rotation/CRL 64MiB、signing recovery 256KiB、Entra policy 128KiB、证书导入及授权规则/用户组 2MiB、软件目录及 Agent 包写入口 1MiB；应用继续按方法执行精确预算与 DTO 校验。内容目录须以可写持久卷提供给服务，签名秘密仍使用独立只读挂载。
 
@@ -420,7 +420,7 @@ docker compose --env-file /absolute/sit/compose.env up -d --force-recreate serve
 
 统一初始化自动处理 Agent、Windows、Apple 和可选 Agent bootstrap 所需资源。首次为缺失资源生成受限密钥；已有资源从当前部署材料及认证 CA 管理接口核对、复用。产品内部仍保留各通道授权、证书用途和租户隔离。其他租户由维护命令 `initialize-ca` 指定原 `host_id` 绑定同一份 settings，需要租户回调的资源名称按租户自动隔离；Agent 沿原客户端契约共用受限签发入口，以证书 SAN 和注册授权绑定租户，不覆盖首租户材料。原逐用途准备入口已移除，初始化只使用这一套输入；旧维护记录与材料继续保留。
 
-通道启用时只提供该通道自身的监听、TLS 和必要业务材料，省略 `providers`、CA `trust_file` 和回调配置。首次启用时按实际 endpoint/management 地址绑定信任，并在同一维护操作内同步尚未使用的 bootstrap 回调，支持非默认公开端口；不把 CA 准备阶段的默认端口当作最终地址。原有已启用通道的协议密钥与信任历史保持不变。Apple 的 APNs/Profile 属于独立业务材料，未提供时只完成 CA 准备，不伪造 Apple MDM 就绪。
+通道启用时只提供该通道公开 origin 和必要业务材料；公网 TLS 由部署网关统一持有，省略 `providers`、CA `trust_file` 和回调配置。首次启用时按实际 endpoint/management 地址绑定信任，并在同一维护操作内同步尚未使用的 bootstrap 回调，支持非默认公开端口；不把 CA 准备阶段的默认端口当作最终地址。原有已启用通道的协议密钥与信任历史保持不变。Apple 的 APNs/Profile 属于独立业务材料，未提供时只完成 CA 准备，不伪造 Apple MDM 就绪。
 
 ### Apple SCEP 与内部 CA 地址
 

@@ -105,6 +105,7 @@ pub struct DeviceStatus {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Observation {
+    pub target_revision: Option<u64>,
     pub registration: Uuid,
     pub generation: u64,
     pub acknowledgement: Option<w::Acknowledgement>,
@@ -626,11 +627,17 @@ impl Service {
             .await?
             .require(p, Permission::InventoryRead, Some(device))
             .map_err(|_| Error::Forbidden)?;
-        let row=sqlx::query("SELECT r.id AS registration,r.generation,a.document,a.received_at,f.document AS failure_document,f.origin AS failure_origin,f.received_at AS failure_received_at FROM mdm_access.registrations r LEFT JOIN LATERAL(SELECT document,received_at,recorded_at FROM mdm_access.agent_connection_observations WHERE tenant_id=r.tenant_id AND registration=r.id AND generation=r.generation ORDER BY revision DESC,recorded_at DESC LIMIT 1) a ON true LEFT JOIN LATERAL(SELECT document,origin,received_at FROM mdm_access.agent_connection_failures WHERE tenant_id=r.tenant_id AND registration=r.id AND generation=r.generation AND recorded_at>coalesce(a.recorded_at,'-infinity'::timestamptz) ORDER BY recorded_at DESC LIMIT 1) f ON true WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active'")
+        let row=sqlx::query("SELECT (SELECT max(revision) FROM mdm_access.agent_connection_versions WHERE tenant_id=r.tenant_id) AS target_revision,r.id AS registration,r.generation,a.document,a.received_at,f.document AS failure_document,f.origin AS failure_origin,f.received_at AS failure_received_at FROM mdm_access.registrations r LEFT JOIN LATERAL(SELECT revision,document,received_at,recorded_at FROM mdm_access.agent_connection_observations WHERE tenant_id=r.tenant_id AND registration=r.id AND generation=r.generation ORDER BY revision DESC,recorded_at DESC LIMIT 1) a ON true LEFT JOIN LATERAL(SELECT document,origin,received_at FROM mdm_access.agent_connection_failures WHERE tenant_id=r.tenant_id AND registration=r.id AND generation=r.generation AND (revision>coalesce(a.revision,0) OR (revision=a.revision AND recorded_at>a.recorded_at)) ORDER BY revision DESC,recorded_at DESC LIMIT 1) f ON true WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.channel='agent' AND r.state='active'")
             .bind(p.tenant_id()).bind(device).fetch_optional(&mut *tx).await.map_err(db)?;
         let out = row
             .map(|r| {
                 Ok::<_, Error>(Observation {
+                    target_revision: r
+                        .try_get::<Option<i64>, _>("target_revision")
+                        .map_err(db)?
+                        .map(u64::try_from)
+                        .transpose()
+                        .map_err(|_| Error::Corrupt)?,
                     registration: r.try_get("registration").map_err(db)?,
                     generation: u64::try_from(r.try_get::<i64, _>("generation").map_err(db)?)
                         .map_err(|_| Error::Corrupt)?,
