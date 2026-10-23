@@ -9,6 +9,26 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 impl Inputs {
+    pub(crate) async fn admit_agent_installation_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+    ) -> Result<()> {
+        if self.agent_origin.is_empty() || self.bootstrap.is_none() {
+            return Err(Error::Unsupported.into());
+        }
+        let revision = self
+            .agent_installation
+            .ready_signing_revision(crate::storage::now(tx).await?)
+            .ok_or(Error::Unsupported)?;
+        let tenant = tx.tenant_id();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(crate::task_signing::trust::check_revision(c, tenant, revision).await)
+            })
+        })
+        .await??;
+        Ok(())
+    }
     pub(crate) async fn freeze_agent_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -18,9 +38,7 @@ impl Inputs {
         schedule: &Schedule,
         lifetime: u32,
     ) -> Result<FrozenInstall> {
-        if self.agent_origin.is_empty() || self.bootstrap.is_none() {
-            return Err(Error::Unsupported.into());
-        }
+        self.admit_agent_installation_in(tx).await?;
         let mut packages = BTreeMap::new();
         for (target, id) in releases {
             let tenant = tx.tenant_id();

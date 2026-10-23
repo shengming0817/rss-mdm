@@ -480,7 +480,7 @@ add('catalog.contract', build=None, python='catalog',
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
 # Gateway owns a complete product host and therefore its tenant projection claim.
 add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity','local_worker'),
-    sources=('deployment/nginx.conf',), support=('hack/t2_modules/gateway.py',))
+    sources=('deployment/nginx.conf','deployment/http.conf'), support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
 MODULES['gateway.admission'] = replace(MODULES['gateway.admission'], scope='tenant')
 
 
@@ -1176,6 +1176,7 @@ MODULES['execution.agent.history'] = replace(MODULES['execution.agent.history'],
     'crates/execution-service/src/directory.rs', 'crates/management-http/src/execution/http.rs'))
 
 TOOL_INPUTS = {
+    'hack/ingress_network.py': ('test_ingress_network','test_t2_environment','test_candidate_smoke','test_release'),
     'hack/t2_context.py': ('test_t2_context', 'test_t2_fixtures'),
     'hack/t2_database.py': ('test_t2_fixtures',),
     'hack/t2_hosts.py': ('test_t2_hosts',),
@@ -2072,9 +2073,30 @@ MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 
+consume(('crates/app/src/native/proxy.rs',), 'native.tls gateway.admission apple.host')
+consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')
+
+# The transport fixture is consumed by these test/helper owners, including indirect fixtures.
+gateway_consumers = {
+    'crates/app/tests/agent_pki/mod.rs', 'crates/app/tests/agent/configurations.rs',
+    'crates/app/tests/apple/ade.rs', 'crates/app/tests/windows/support.rs',
+    'crates/app/tests/apple/mod.rs', 'crates/app/tests/support/bootstrap.rs',
+    'crates/app/tests/apple/production.rs',
+}
+for name, module in tuple(MODULES.items()):
+    if gateway_consumers.intersection((*module.test_inputs, *module.support_inputs)):
+        MODULES[name] = replace(module, support_inputs=(*module.support_inputs, 'crates/app/tests/support/gateway.rs'))
+
+MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies,
+    CasePolicy('agent_pki_tests::corrupt_persisted_root_crl_is_fatal_to_admission', 'fresh', 'tenant')))
+
+MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_trust'], policies=(*MODULES['execution.agent.task_trust'].policies,
+    CasePolicy('execution::t2::agent::task_trust::selected_material_corruption_is_fatal_even_with_a_matching_active_key', 'fresh', 'tenant')))
+
+consume(('hack/ingress_network.py',), 'gateway.admission')
 # Device Access owns the joint human/device ceremony and exact application receipts.
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','shared_worker'),
-    sources=('crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
+    sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
 consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
@@ -2091,3 +2113,5 @@ consume(('crates/agent-channel/schema/install.sql',), 'device-access.http')
 
 consume(('crates/registration-service/src/lifecycle.rs',), 'device-access.http')
 MODULES['device-access.http']=replace(MODULES['device-access.http'],support_inputs=tuple(dict.fromkeys((*MODULES['device-access.http'].support_inputs,'crates/app/tests/support/task_signature.rs'))))
+
+consume(('crates/execution-service/src/actions/production.rs','crates/execution-service/src/actions/dispatch-v1.json'), 'planning.onboarding execution.agent.delivery device-access.http')

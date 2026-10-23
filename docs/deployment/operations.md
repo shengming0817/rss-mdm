@@ -20,7 +20,7 @@ flow、command、software、租户注册、管理员初始化和 Identity audit 
 
 /livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
-经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready` 和 `components`。
+经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready`、`components` 和 `channels`。
 管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
 查询为被动会话活动，经现有请求审计结算；认证、授权库或审计不可用时仍拒绝请求，没有匿名诊断旁路。
 公开健康探针只返回存活或就绪布尔值，详情和 `/readyz` 消费同一宿主聚合。
@@ -29,7 +29,8 @@ flow、command、software、租户注册、管理员初始化和 Identity audit 
 readiness 仍表达公开探针的既定条件，两者不能互相推断。入口暂停与依赖读取失败分开；
 任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复只有受控任务仍运行、恢复扫描和派发首轮均确认成功且未停止时才就绪；确认空扫描/空领取也有效。
 依赖扫描或派发轮次故障撤销就绪，后续成功轮次可恢复；停止信号或任一分支退出立即撤销就绪，在途事务仍按原预算结算。
-未启用的 Apple 组件显示 not_applicable。
+可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际 `listening`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表 listener 或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
+`trust_conflict` 表示配置与既有信任发生冲突，属于阻断状态；保留数据库、密钥和信任历史，核对 hostname、租户、用途与材料，不通过清空持久信任绕过冲突。
 
 Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
 两者各自携带观测时间，转发成功不能证明 runner 健康。`runner.unresolvedAttempts` 保留本进程内
@@ -291,11 +292,11 @@ rss-mdm.webhook-key/v1
 
 ## 单机部署的重启与恢复边界
 
-Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。正式 server 使用 bridge，gateway 共享该租户 server 的网络命名空间；运维重建 server 时同时重建 gateway，保留内部回环管理边界。进程生命周期由 Compose 管理，宿主不安装 systemd unit 或部署二进制。宿主配置变更沿原 `configure-host` 导出配置、运维重建服务、原操作复验执行，核对 requested/applied revision、材料摘要、宿主/租户/operation 以及新的进程观察；直接改生成文件或仅重启进程不构成应用成功。
+Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设计与配置归属)。gateway、web、server 独立部署，只有 gateway 发布 443。配置变更沿原 configure-host 导出运行输入；运维只重建受影响服务，再核对 requested/applied revision、材料摘要和实际进程观察。材料保存不代表运行生效。
 
 完整服务端 SIT 使用[安装指南的 SIT 流程](installation.md#服务端-sit-部署)与 `production.compose.yaml` + `sit.compose.yaml`；基础四服务启动不代表 CA、内容存储与设备通道已接通。CA/RustFS 已存在时保留其卷、身份、桶与凭据，不重新生成。测试设备准备和设备效果不纳入服务端部署完成判据。
 
-不要并行执行 `docker compose restart server gateway`：gateway 可能在 server 尚未重新运行时加入其网络命名空间而失败。使用 `docker compose ... up -d --no-deps --force-recreate server gateway` 按依赖关系重建这一对服务，随后执行原 `prepare-hosts`。PostgreSQL、CA、RustFS 重启后先确认各自健康，再重建这一对服务；不通过反复执行初始化或修改密钥来处理启动顺序。
+静态资源更新只重建 web；后端材料应用只重建对应 server；SNI、HTTP 路由或 TLS 配置变更先执行 gateway 的 `nginx -t -c /run/gateway/nginx.conf`，再 reload 或独立重建 gateway。通过 configure-host 提交的变更若更新了 runtime binding，还须重建对应 server 加载新 binding 并核对应用回执。三个服务不存在共享网络命名空间的成对重建要求。
 
 服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
 
@@ -317,11 +318,11 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init prepare-hosts --config /var/lib/rss-mdm/maintenance.json
 ```
 
-`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察；不会启动或重启服务。`configure-host` 保存确切配置版本并导出文件后，运维执行 `docker compose ... up -d --force-recreate server gateway`；随后重放原配置操作或运行一次 prepare-hosts，核对当前进程加载版本。未加载时保持未应用，不能把文件保存当成成功。Windows/Apple/Agent 的原生监听仍由配置决定，对外端口在运维 Compose override 中显式发布。
+`prepare-hosts` 只执行一次供应方核验、材料版本投影与真实 HTTPS 观察，不启动或重启服务。材料应用时保存原 operation，导出配置后受控重建 server，再重放原操作或运行 prepare-hosts；实际版本未加载时保持 pending。所有原生设备流量都从 gateway 的 443/SNI 进入。
 
 `rotate-protection` 的 distributing/activating 阶段同样先导出文件，保持原 operation；运维分阶段重建服务，再重复原命令取得真实观察，全部宿主确认后才切换写钥及重加密。不会自动恢复旧容器；需要回退时由运维恢复先前已确认的配置和 Compose 版本，保留原密钥。
 
-PostgreSQL 和网关服务器证书由部署方签发、保管与续期。替换 PostgreSQL 输入后用 Compose 重建 postgres，保留原 CA 信任及数据库秘密。网关使用 `configure-host` 的 `change.kind=gateway_tls`，提交新证书、匹配私钥和信任文件；运维重建 server/gateway，再用原操作核验实际 HTTPS。没有内置证书签发器或续期后台任务。
+PostgreSQL 和网关服务器证书由部署方签发、保管与续期。替换 PostgreSQL 输入后用 Compose 重建 postgres，保留原 CA 信任及数据库秘密。网关使用 `configure-host` 的 `change.kind=gateway_tls`，提交新证书、匹配私钥和信任文件；运维重建 gateway 加载新证书，并重建对应 server 加载本次变更的 runtime binding，再用原操作核验实际 HTTPS 与应用回执。容器网络独立不改变当前回执对 server binding 的核对要求。没有内置证书签发器或续期后台任务。
 
 CA 联合备份的每个 authority 提供 purpose、issuer、configuration_file、online_directory、offline_directory、root_private_key_file、root_password_file；所有路径是维护容器中明确挂载的文件。运维先停止相应 CA，再运行备份/恢复；产品校验实际 issuer 与根钥关系并归档文件，不持有容器 ID、镜像、网络或 Docker 卷元数据。离线根材料只交给受控维护，不进入在线 CA 或业务服务。
 
@@ -348,3 +349,9 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 `initialization_authorization` 表示原账户授权依据失效；`initialization_content` 表示内容供应未就绪；`initialization_conflict` 表示未完成对象已发生变更；`initialization_telemetry_backend` 表示遥测依赖缺失。服务每分钟恢复已保存意图，内容部分上传和未知提交通过原 upload/operation 回执继续。先恢复依赖或处理已变更对象，再观察运行诊断；不删除基线行或回执来重置部署。
 
 原生设备验收仍依赖 #2862 Agent capability 修复候选和 #2728 平台矩阵。服务端 T1/T2 结果不能代替设备证据，也不能手工补 capability 声称通过。
+
+### 可选通道状态
+
+`/livez` 表示进程存活，`/readyz` 只判定核心管理服务。授权的 `/api/v1/runtime/diagnostics` 在 `channels` 中报告 Apple、Windows、Agent、WNS、Agent bootstrap 和 signing 的 disabled/waiting/ready/degraded、监听状态、闭合原因和已加载材料版本。通道故障不会自动摘除管理面；数据库、共享保护根、身份绑定及核心完整性失败仍按硬依赖处理。
+
+缺组织 APNs/Profile 时，先在 Apple 材料页申请/导入并选择版本，然后 prepare-hosts、重建 server、再次核对实际观察。过期或撤销材料拒绝相关操作；缺 TLS/设备信任不开放不安全 listener。WNS 不可用时 Windows 轮询可继续，bootstrap 或签名不可用时仅拒绝依赖这些能力的操作。真实设备结果与宿主 ready 分别验收。

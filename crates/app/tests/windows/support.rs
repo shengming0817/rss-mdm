@@ -288,7 +288,7 @@ impl Host {
         value["content"] = original["content"].clone();
         value["webhooks"] = original["webhooks"].clone();
         value["agent_pki"] = original["agent_pki"].clone();
-        if mdm_software { value["task_signing"] = original["task_signing"].clone(); }
+        if mdm_software || original["agent_pki"]["mode"] == "step_ca" { value["task_signing"] = original["task_signing"].clone(); }
         value["device_pki"] = original["device_pki"].clone();
         value["native_protection"] = original["native_protection"].clone();
         if push {value["native_protocols"]["windows"]["push"] = serde_json::json!({"revision":1});}
@@ -375,6 +375,7 @@ impl Host {
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
+            config.agent_pki.bootstrap_materials(crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
         let agent_enrollment = agent_pki
             .as_ref()
@@ -459,7 +460,15 @@ impl Host {
         ).await?;
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
+        // This handler fixture owns its real transport outside production assembly.
+        if let Some(agent) = &agent_pki {
+            execution.channels.set(crate::channel_status::ChannelName::Agent,
+                crate::channel_status::ChannelState::Ready, None)?;
+            execution.channels.listening(crate::channel_status::ChannelName::Agent)?;
+            execution.channels.installation(agent.clone(), pki.clone())?;
+        }
         let app = Arc::new(Assembly {
+            channels: execution.channels.clone(),
             telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
             apple_material_roots: Arc::new(Vec::new()),
@@ -575,13 +584,14 @@ impl Host {
                 .pop()
                 .expect("additional management listener");
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     listener,
                     router,
                     self.app.audit_store.clone(),
                     case_tenant().into(),
                     kind,
                 )
+                .await?
                 .critical(),
             );
         }
@@ -598,13 +608,14 @@ impl Host {
             ),
         ] {
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     listener,
                     router,
                     self.app.audit_store.clone(),
                     case_tenant().into(),
                     kind,
                 )
+                .await?
                 .critical(),
             );
         }

@@ -12,13 +12,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from types import SimpleNamespace
 from build_run import require_lease
+from gateway_fixture import render
 ROOT=Path(__file__).resolve().parents[2]
 
 def verify(context):
+    verify_sni(context)
     # Only TLS/file/listener locations are adapted for this loopback protocol seam.
     # The source-key, budget, burst, error and location rules are the production file.
-    config=(ROOT/'deployment/nginx.conf').read_text()
-    config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
+    config=render(ROOT/'deployment', public_port=8080, certificates='/run/config', web=False, plain=True)
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     locations = ''
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
@@ -169,8 +170,7 @@ def verify_business(context, fixture):
             relay.timeout=15
             thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
             try:
-                config=(ROOT/'deployment/nginx.conf').read_text()
-                config=config.replace('listen 443 ssl;','listen 8080;').replace('ssl_certificate /private/mdm-tls.crt;','').replace('ssl_certificate_key /private/mdm-tls.key;','')
+                config=render(ROOT/'deployment', public_port=8080, certificates='/run/config', web=False, plain=True)
                 config=config.replace('server 127.0.0.1:8081;',f'server host.docker.internal:{relay.server_port};')
                 with context.gateway(config) as (_,port):
                     browser=Browser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
@@ -222,5 +222,165 @@ def verify_business(context, fixture):
     finally:host.close()
 
 def main(context, fixture):
+    verify_network_allocation(context)
     verify(context)
     verify_business(context, fixture)
+
+
+def verify_sni(context):
+    """Real nginx SNI passthrough, PROXY framing and mutual TLS in one connection."""
+    import ssl
+    import socketserver
+    with tempfile.TemporaryDirectory(prefix='mdm-gateway-tls-') as directory:
+        root=Path(directory)
+        def openssl(*args):
+            subprocess.run(['openssl',*map(str,args)],cwd=root,check=True,capture_output=True,timeout=30)
+        openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Gateway test CA','-keyout','ca.key','-out','ca.crt','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash')
+        for name,usage in [('server','serverAuth'),('client','clientAuth')]:
+            openssl('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+name,'-keyout',name+'.key','-out',name+'.csr')
+            (root/'leaf.ext').write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage='+usage+'\nsubjectAltName=DNS:mdm.example.test,DNS:device.example.test,DNS:unknown.example.test\n')
+            openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-days','1','-extfile','leaf.ext','-out',name+'.crt')
+        server_context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.load_cert_chain(root/'server.crt',root/'server.key')
+        server_context.load_verify_locations(root/'ca.crt');server_context.verify_mode=ssl.CERT_REQUIRED
+        seen=[]
+        class Device(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.settimeout(5)
+                header=b''
+                while len(header)<107 and not header.endswith(b'\r\n'):
+                    byte=self.request.recv(1)
+                    if not byte:return
+                    header+=byte
+                if not header.startswith(b'PROXY TCP4 ') or not header.endswith(b'\r\n'):return
+                try:
+                    with server_context.wrap_socket(self.request,server_side=True) as stream:
+                        request=b''
+                        while b'\r\n\r\n' not in request and len(request)<8192:
+                            data=stream.recv(1024)
+                            if not data:return
+                            request+=data
+                        subject=stream.getpeercert()['subject']
+                        seen.append((header,subject))
+                        body=b'verified-client'
+                        stream.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\n'+body)
+                except (ssl.SSLError,OSError):pass
+        class ManagedServer(socketserver.ThreadingTCPServer):
+            daemon_threads=False
+        with ManagedServer(('0.0.0.0',0),Device) as device:
+            thread=threading.Thread(target=device.serve_forever,daemon=True);thread.start()
+            try:
+                config=render(ROOT/'deployment',public_port=8080,targets={'device.example.test':f'host.docker.internal:{device.server_address[1]}'},web=False,certificates='/run/probe')
+                # The browser route is independently identified; its backend remains a bounded fixture.
+                config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
+                config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "browser"; } }}'
+                files={name:(root/name).read_text() for name in ['server.crt','server.key']}
+                with context.gateway(config,files) as (name,port):
+                    import ipaddress
+                    addresses=subprocess.run(['docker','exec',name,'getent','ahostsv4','host.docker.internal'],check=True,capture_output=True,text=True,timeout=10).stdout
+                    host_address=str(ipaddress.ip_address(addresses.split()[0]))
+                    resolved=config.replace('host.docker.internal:',host_address+':')
+                    (context.gateway_owner.root/'probe/nginx.conf').write_text(resolved)
+                    subprocess.run(['docker','exec',name,'nginx','-c','/tmp/input.conf','-s','reload'],check=True,capture_output=True,timeout=10)
+                    def request(host,identity=None,authority=None):
+                        tls=ssl.create_default_context(cafile=str(root/'ca.crt'))
+                        if identity:tls.load_cert_chain(root/(identity+'.crt'),root/(identity+'.key'))
+                        with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
+                            with tls.wrap_socket(raw,server_hostname=host) as stream:
+                                stream.sendall(('GET /api/probe HTTP/1.1\r\nHost: '+(authority or host)+'\r\nX-Client-Cert: forged\r\nConnection: close\r\n\r\n').encode())
+                                chunks=[]
+                                while True:
+                                    chunk=stream.recv(8192)
+                                    if not chunk:break
+                                    chunks.append(chunk)
+                                return b''.join(chunks)
+                    until=time.monotonic()+30
+                    last='no response'
+                    while True:
+                        try:
+                            if request('mdm.example.test').endswith(b'browser'):break
+                        except OSError as error:last=str(error)
+                        if time.monotonic()>until:raise RuntimeError('SNI gateway startup deadline: '+last)
+                        time.sleep(.1)
+                    if b'421' not in request('mdm.example.test',authority='wrong.example.test').split(b'\r\n',1)[0]:raise RuntimeError('SNI/Host mismatch accepted')
+                    if not request('device.example.test','client').endswith(b'verified-client'):raise RuntimeError('mTLS passthrough failed')
+                    def rejected(reply):
+                        if b'200 OK' in reply:raise RuntimeError('SNI or client certificate rejection bypassed')
+                    for host,identity in [('device.example.test',None),('device.example.test','server'),('unknown.example.test','client')]:
+                        try:reply=request(host,identity)
+                        except (OSError,ssl.SSLError):continue
+                        rejected(reply)
+                    if len(seen)!=1 or ('commonName','client') not in seen[0][1][0]:raise RuntimeError('gateway replaced the authenticated device identity')
+                    with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
+                        raw.sendall(b'PROXY TCP4 203.0.113.9 203.0.113.10 1234 443\r\n')
+                        raw.shutdown(socket.SHUT_WR)
+                        if raw.recv(1024):raise RuntimeError('public gateway accepted caller PROXY framing')
+                    # Negative control: a wrong default must complete trusted TLS and fail this same assertion.
+                    bad=resolved.replace('default "";',f'default {host_address}:{device.server_address[1]};',1)
+                    (context.gateway_owner.root/'probe/nginx.conf').write_text(bad)
+                    subprocess.run(['docker','exec',name,'nginx','-c','/tmp/input.conf','-s','reload'],check=True,capture_output=True,timeout=10)
+                    until=time.monotonic()+15
+                    while True:
+                        try:
+                            reply=request('unknown.example.test','client')
+                            if b'200 OK' in reply:break
+                        except (OSError,ssl.SSLError):pass
+                        if time.monotonic()>until:raise RuntimeError('wrong-default negative control did not reach backend')
+                        time.sleep(.1)
+                    try:rejected(reply)
+                    except RuntimeError:pass
+                    else:raise RuntimeError('unknown SNI assertion missed the injected wrong route')
+            finally:
+                device.shutdown();thread.join(timeout=10)
+                if thread.is_alive():raise RuntimeError('gateway TLS participant did not stop')
+
+
+def verify_network_allocation(context):
+    """Two formerly colliding owners coexist; Compose adopts the reserved networks and frees their pools."""
+    import hashlib
+    import ipaddress
+    from concurrent.futures import ThreadPoolExecutor
+    from ingress_network import Ingress
+    prefix='mdm-ipam-'+uuid.uuid4().hex[:12]
+    buckets={}
+    for index in range(257):
+        project=f'{prefix}-{index}'
+        bucket=hashlib.sha256(project.encode()).hexdigest()[:2]
+        if bucket in buckets:
+            projects=[buckets[bucket],project];break
+        buckets[bucket]=project
+    with tempfile.TemporaryDirectory(prefix='mdm-ingress-proof-') as temporary:
+        root=Path(temporary)
+        owners=[Ingress(root/str(i),project,project) for i,project in enumerate(projects)]
+        recycle=Ingress(root/'recycle',prefix+'-recycle',prefix+'-recycle')
+        definitions=[]
+        try:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                values=list(pool.map(lambda owner:owner.allocate(),owners))
+            a,b=[ipaddress.ip_network(value['MDM_INGRESS_SUBNET']) for value in values]
+            if a.overlaps(b):raise RuntimeError('concurrent ingress allocations overlap')
+            for owner,value in zip(owners,values,strict=True):
+                if Ingress(owner.root,owner.project,owner.owner).allocate()!=value:raise RuntimeError('ingress resume changed addresses')
+                definition=owner.root/'compose.json'
+                definition.write_text(json.dumps({'services':{'probe':{'image':context.gateway_owner.providers['nginx'],'entrypoint':['/bin/sh','-c','exit 0'],'networks':{'ingress':{'ipv4_address':value['MDM_BACKEND_ADDRESS']}}}},'networks':{'ingress':{'internal':True,'ipam':{'config':[{'subnet':value['MDM_INGRESS_SUBNET']}]},'labels':{'rss.mdm.worktree':owner.owner}}}}))
+                command=['docker','compose','--env-file','/dev/null','-p',owner.project,'-f',str(definition)]
+                definitions.append(command)
+                subprocess.run([*command,'run','--rm','--no-deps','probe'],check=True,capture_output=True,text=True,timeout=60)
+                if owner.allocate()!=value:raise RuntimeError('Compose replaced the reserved network')
+            subprocess.run([*definitions[0],'down','--remove-orphans'],check=True,capture_output=True,text=True,timeout=30)
+            owners[0].release()
+            if owners[0]._inspect() is not None:raise RuntimeError('released ingress remains allocated')
+            arguments=['network','create','--driver','bridge','--internal','--subnet',str(a)]
+            for key,value in recycle.labels.items():arguments+=['--label',key+'='+value]
+            recycle._run(*arguments,recycle.name)
+            recycle.allocate()
+            if recycle.values()['MDM_INGRESS_SUBNET']!=str(a):raise RuntimeError('released pool was not reclaimed')
+        finally:
+            failures=[]
+            for command in reversed(definitions):
+                try:subprocess.run([*command,'down','--remove-orphans'],check=True,capture_output=True,text=True,timeout=30)
+                except BaseException as error:failures.append(error)
+            for owner in [recycle,*owners]:
+                try:owner.release()
+                except BaseException as error:failures.append(error)
+            if failures:raise RuntimeError('owned ingress proof cleanup failed') from failures[0]

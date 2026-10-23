@@ -196,22 +196,40 @@ pub(super) fn certificate(
         }
         None
     };
+    Ok(Certificate {
+        expires,
+        topic,
+        digest: chain_digest(&chain)?,
+    })
+}
+
+/// Persisted identity binding is checked before time-dependent trust eligibility.
+pub(super) fn persisted_digest(pem: &str, private: &[u8]) -> Result<String, Error> {
+    let chain = X509::stack_from_pem(pem.as_bytes()).map_err(|_| Error::Conflict)?;
+    let leaf = chain.first().ok_or(Error::Conflict)?;
+    let key = PKey::private_key_from_pkcs8(private).map_err(|_| Error::Conflict)?;
+    if !leaf
+        .public_key()
+        .map_err(|_| Error::Conflict)?
+        .public_eq(&key)
+    {
+        return Err(Error::Conflict);
+    }
+    chain_digest(&chain)
+}
+fn chain_digest(chain: &[X509]) -> Result<String, Error> {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     // DER lengths frame the entire supplied chain, so exchanging an intermediate changes
     // the exact candidate identity even when the leaf remains the same.
-    for certificate in &chain {
+    for certificate in chain {
         let der = certificate
             .to_der()
             .map_err(|_| Error::CertificateRequest)?;
         digest.update((der.len() as u64).to_be_bytes());
         digest.update(der);
     }
-    Ok(Certificate {
-        expires,
-        topic,
-        digest: format!("{:x}", digest.finalize()),
-    })
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 #[cfg(test)]
@@ -330,6 +348,39 @@ mod tests {
         let changed =
             certificate(Purpose::Profile, &with_chain, &key.private, &roots, NOW).unwrap();
         assert_ne!(original.digest, changed.digest);
+    }
+    #[test]
+    fn persisted_identity_rejects_corruption_without_confusing_expiry_with_integrity() {
+        let key = prepare("tenant", Purpose::Profile, None).unwrap();
+        let (signer, root) = root();
+        let cert = leaf(&root, &signer, &key, None, NOW + 60);
+        let digest = persisted_digest(&cert, &key.private).unwrap();
+        assert_eq!(
+            digest,
+            certificate(
+                Purpose::Profile,
+                &cert,
+                &key.private,
+                &[root.to_pem().unwrap()],
+                NOW
+            )
+            .unwrap()
+            .digest
+        );
+        assert!(
+            certificate(
+                Purpose::Profile,
+                &cert,
+                &key.private,
+                &[root.to_pem().unwrap()],
+                NOW + 60
+            )
+            .is_err()
+        );
+        assert_eq!(persisted_digest(&cert, &key.private).unwrap(), digest);
+        assert!(persisted_digest("corrupt persisted PEM", &key.private).is_err());
+        let other = prepare("tenant", Purpose::Profile, None).unwrap();
+        assert!(persisted_digest(&cert, &other.private).is_err());
     }
     #[test]
     fn apns_requires_one_mdm_topic_and_ca_private_material_is_never_a_leaf() {

@@ -91,7 +91,12 @@ async fn service_with_provider(
     };
     let config: crate::agent_pki::Config = serde_json::from_value(value)?;
     let pki = config
-        .load(audit.clone(), Arc::new(SystemClock), providers.clone())?
+        .load(
+            audit.clone(),
+            Arc::new(SystemClock),
+            providers.clone(),
+            None,
+        )?
         .unwrap();
     let registry = rss_mdm_pki_service::registry::Registry::new(
         db.archive_pool(),
@@ -109,7 +114,7 @@ async fn service_with_provider(
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
         origin: pki.origin.clone(),
-        configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
+        configuration_signer: Some(Arc::new(crate::test_support::agent::fixture_signer()?)),
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
@@ -194,6 +199,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             audit_store.clone(),
             Arc::new(SystemClock),
             fixture_providers()?,
+            None,
         )?
         .unwrap();
     let time = Arc::new(Time(AtomicI64::new(now())));
@@ -205,7 +211,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             issuer: pki.issuer.clone(),
             clock: time.clone(),
             origin: pki.origin.clone(),
-            configuration_signer: Arc::new(crate::test_support::agent::fixture_signer()?),
+            configuration_signer: Some(Arc::new(crate::test_support::agent::fixture_signer()?)),
             installations: Arc::new(crate::agent_configurations::Installations),
             bootstrap: None,
             binding: Arc::new(crate::agent::Bindings),
@@ -670,15 +676,16 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
-    owner
-        .startup()?
-        .stage_task_with_token(crate::native::tls::registration(
+    owner.startup()?.stage_task_with_token(
+        crate::test_support::gateway::registration(
             listener,
             router,
             host.app.audit_store.clone(),
             case_a().into(),
             crate::native::NativeListenerKind::Agent,
-        ));
+        )
+        .await?,
+    );
     let g = grant()?;
     let mut anonymous = connect_agent(address, None).await?;
     let (status, body) = agent_http(
@@ -2119,6 +2126,35 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
                 && issuer.mode == Mode::VerifyOnly)
     );
     host.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: persisted trust corruption cannot become a closed optional channel"]
+async fn corrupt_persisted_root_crl_is_fatal_to_admission() -> anyhow::Result<()> {
+    use rss_mdm_agent_wire::pki::Purpose;
+    let service = service(deployment()).await?;
+    let db = Database::connect(options("mdm_access")?).await?;
+    let registry = rss_mdm_pki_service::registry::Registry::new(
+        db.archive_pool(),
+        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        vec![service.trust().trust.clone()],
+        fixture_providers()?,
+    );
+    let tenant = rss_request_context::TenantId::parse(case_a())?;
+    let mut trust = registry.trust(Purpose::Agent)?;
+    trust.issuers[0].root_crl = "corrupt".into();
+    let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("UPDATE mdm_pki.trust SET body=$2 WHERE tenant_id=$1::uuid AND purpose='agent'")
+        .bind(tenant.to_string())
+        .bind(serde_json::to_vec(&trust)?)
+        .execute(&mut c)
+        .await?;
+    anyhow::ensure!(matches!(
+        registry.admit_purpose(tenant, now(), Purpose::Agent).await,
+        Err(rss_mdm_pki_service::Error::Storage)
+    ));
+    db.close().await;
     Ok(())
 }
 

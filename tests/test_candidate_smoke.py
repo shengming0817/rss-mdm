@@ -13,7 +13,7 @@ import candidate_runtime as candidate
 class SmokeCompletion(unittest.TestCase):
     def test_readiness_retries_temporary_html_gateway_error(self):
         browser = smoke.Browser.__new__(smoke.Browser)
-        browser.port, browser.context, browser.cookie, browser.csrf = 443, None, "", ""
+        browser.port, browser.context, browser.cookie, browser.csrf = 443, mock.Mock(), "", ""
         browser.host="mdm.example.test"
         unavailable = mock.Mock(status=502)
         unavailable.getheaders.return_value = []
@@ -23,7 +23,7 @@ class SmokeCompletion(unittest.TestCase):
         ready.getheaders.return_value = []
         ready.getheader.side_effect = lambda name, default=None: {"Content-Type":"application/json"}.get(name, default)
         ready.read.return_value = b'{"ready":true}'
-        with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect:
+        with mock.patch.object(candidate.http.client, "HTTPSConnection") as connect, mock.patch.object(smoke.socket, "create_connection"):
             connect.return_value.getresponse.side_effect = [unavailable, ready]
             candidate.wait(lambda: browser.call("GET", "/readyz") == (200, {"ready":True}), "readiness", seconds=1)
             self.assertEqual(connect.call_count, 2)
@@ -125,7 +125,7 @@ class RuntimeOwnership(unittest.TestCase):
 
     def test_gateway_and_operator_use_canonical_compose_services(self):
         owner=candidate.Candidate.__new__(candidate.Candidate)
-        owner.gateway='gateway';owner.created=[]
+        owner.gateway='gateway';owner.created=[];owner.web=None
         owner.compose=mock.Mock(return_value='');owner.container=mock.Mock(return_value='owned-gateway')
         owner.start_gateway()
         owner.compose.assert_called_once_with('up','-d','--no-deps','gateway',stage=candidate.Stage.GATEWAY)
@@ -237,3 +237,21 @@ class CandidateInputs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class BaselinePrivacy(unittest.TestCase):
+    def test_telemetry_preparation_registers_new_secrets_before_external_commands(self):
+        import base64
+        with tempfile.TemporaryDirectory() as temporary:
+            owner=candidate.Candidate.__new__(candidate.Candidate)
+            owner.tenant=candidate.TENANT;owner.pg_host='postgres';owner.config={};owner.private_values=[]
+            owner.runtime=Path(temporary)/'runtime';owner.runtime.mkdir()
+            owner.operator_root=Path(temporary)/'operator';owner.operator_root.mkdir()
+            owner.sql=mock.Mock();owner.copy_runtime=mock.Mock()
+            def prepare(*args):
+                password=(owner.runtime/'telemetry-password').read_text()
+                cursor=(owner.runtime/'telemetry-cursor').read_bytes()
+                for secret in [password,cursor.hex(),base64.b64encode(cursor).decode()]:
+                    with self.assertRaises(RuntimeError):candidate.safe_evidence(secret,owner.private_values)
+            owner.operator=mock.Mock(side_effect=prepare)
+            owner.prepare_telemetry()
+            owner.operator.assert_called_once()

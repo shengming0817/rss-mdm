@@ -93,7 +93,7 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
     );
     tx.rollback().await?;
     runtime.close().await?;
-    let mut tls = (*crate::native::tls::configuration(&windows.management, None)?).clone();
+    let mut tls = crate::native::tls::configuration(&windows.management, None)?.fixture_server();
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let expected = first.clone();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));

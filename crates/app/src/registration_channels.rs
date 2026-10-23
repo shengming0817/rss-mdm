@@ -4,6 +4,7 @@ use rss_mdm_management_http::enrollment::channels::{Availability, Reason, Source
 use rss_mdm_registration_service::quotas::Channel;
 use std::sync::Arc;
 pub(crate) struct Channels {
+    pub preparation: Arc<crate::channel_status::Channels>,
     pub windows: Option<Arc<crate::windows::Windows>>,
     pub agent: Option<Arc<crate::agent_pki::AgentPki>>,
     pub apple: Option<Arc<crate::apple::Apple>>,
@@ -18,6 +19,20 @@ impl Source for Channels {
             Channel::MacosMdm => (self.apple.is_some(), Purpose::Apple),
         };
         if !configured {
+            use crate::channel_status::{ChannelName, ChannelState};
+            let name = match channel {
+                Channel::Agent => ChannelName::Agent,
+                Channel::WindowsMdm => ChannelName::Windows,
+                Channel::MacosMdm => ChannelName::Apple,
+            };
+            if self
+                .preparation
+                .snapshot()
+                .iter()
+                .any(|c| c.name == name && c.state != ChannelState::Disabled)
+            {
+                return fault(Reason::CertificateUnavailable);
+            }
             return Status {
                 availability: Availability::Unconfigured,
                 reason: Some(Reason::NotConfigured),
@@ -40,7 +55,7 @@ impl Source for Channels {
             Channel::WindowsMdm => self
                 .windows
                 .as_ref()
-                .is_some_and(|w| w.channel.ca.issuance_end(now).is_ok()),
+                .is_some_and(|w| w.tls_valid_at(now) && w.channel.ca.issuance_end(now).is_ok()),
             Channel::MacosMdm => true,
         };
         if !issuance_ready {
@@ -53,7 +68,14 @@ impl Source for Channels {
                 .expect("configured Apple")
                 .channel
                 .health(now);
-            if health.certificates_expired() {
+            if health.certificates_expired()
+                || !self
+                    .apple
+                    .as_ref()
+                    .expect("configured Apple")
+                    .tls
+                    .valid_at(now)
+            {
                 return fault(Reason::CertificateUnavailable);
             }
             if !health.push_available {

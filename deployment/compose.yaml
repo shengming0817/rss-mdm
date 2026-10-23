@@ -2,7 +2,7 @@
 # Deployment-specific values are supplied by an ignored .env or explicit --env-file.
 x-gateway:
   origin: ${MDM_PRODUCT_ORIGIN:-}
-  publish: ${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}
+  publish: ${MDM_GATEWAY_PUBLISH:-127.0.0.1::8443}
   certificate_file: ${MDM_GATEWAY_TLS_CERT_FILE:-}
   key_file: ${MDM_GATEWAY_TLS_KEY_FILE:-}
 services:
@@ -36,7 +36,7 @@ services:
     labels: *owner
     ports: ["127.0.0.1::8080"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro"]
+    volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro", "${MDM_ENV_ROOT:?}/probe:/run/probe:ro"]
     command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
     networks:
@@ -92,20 +92,6 @@ services:
     volumes: ["idp:/opt/keycloak/data/import:ro"]
     command: [start-dev, --import-realm, --http-enabled=false, "--hostname=${MDM_IDP_ORIGIN:-https://localhost:8443}", --https-certificate-file=/opt/keycloak/data/import/server.crt, --https-certificate-key-file=/opt/keycloak/data/import/server.key]
     depends_on: [idp-netns]
-  runtime-netns:
-    profiles: [product]
-    image: ${MDM_RUNTIME_IMAGE:?}
-    labels: *owner
-    command: [sh, -c, 'exec sleep infinity']
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    networks:
-      default:
-        aliases: ["${MDM_PRODUCT_HOST:-mdm.example.test}"]
-    ports:
-      - "${MDM_GATEWAY_PUBLISH:-127.0.0.1::8445}"
-      - "${MDM_WINDOWS_ENROLLMENT_PUBLISH:-127.0.0.1::8443}"
-      - "${MDM_WINDOWS_MANAGEMENT_PUBLISH:-127.0.0.1::8444}"
-      - "${MDM_AGENT_PUBLISH:-127.0.0.1::9445}"
   inputs:
     profiles: [product]
     image: ${MDM_RUNTIME_IMAGE:?}
@@ -152,20 +138,31 @@ services:
     profiles: [product]
     image: ${MDM_SERVER_IMAGE:-rss-mdm-local:unbuilt}
     labels: *owner
-    network_mode: service:runtime-netns
+    networks:
+      default: {}
+      ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:-}"}
     volumes: ["runtime:/run/mdm:ro", "content:/var/lib/mdm/content"]
     command: [serve, --config, "/run/mdm/${MDM_SERVER_CONFIG:-runtime.json}"]
-    depends_on: [runtime-netns]
   gateway:
+    profiles: [product]
+    image: ${MDM_NGINX_IMAGE:?}
+    user: "10001:10001"
+    labels: *owner
+    networks:
+      default: {aliases: ["${MDM_PRODUCT_HOST:-mdm.example.test}"]}
+      ingress: {ipv4_address: "${MDM_GATEWAY_ADDRESS:-}"}
+      frontend: {}
+    ports: ["${MDM_GATEWAY_PUBLISH:-127.0.0.1::8443}"]
+    volumes: ["gateway:/certs:ro"]
+    entrypoint: [nginx]
+    command: [-e, stderr, -c, /certs/nginx.conf, -g, 'daemon off;']
+  web:
     profiles: [product]
     image: ${MDM_WEB_IMAGE:-rss-mdm-web:unavailable}
     user: "10001:10001"
     labels: *owner
-    network_mode: service:runtime-netns
-    volumes: ["gateway:/certs:ro"]
-    entrypoint: [nginx]
-    command: [-e, stderr, -c, /certs/nginx.conf, -g, 'daemon off;']
-    depends_on: [runtime-netns]
+    networks: [frontend]
+
 volumes:
   idp:
     labels: *owner
@@ -180,6 +177,14 @@ volumes:
   content:
     labels: *owner
 networks:
+  ingress:
+    internal: true
+    ipam:
+      config: [{subnet: "${MDM_INGRESS_SUBNET:-}"}]
+    labels: *owner
+  frontend:
+    internal: true
+    labels: *owner
   default:
     name: ${MDM_NETWORK_NAME:-${COMPOSE_PROJECT_NAME}_default}
     labels: *owner

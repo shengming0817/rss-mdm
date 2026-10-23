@@ -50,7 +50,7 @@ pub(crate) struct AgentPki {
     pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     pub listen: std::net::SocketAddr,
     pub origin: String,
-    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub tls: Arc<crate::native::tls::Configuration>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
@@ -61,6 +61,7 @@ impl Config {
         _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
+        bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
@@ -93,8 +94,6 @@ impl Config {
             rss_mdm_device_trust::agent::AgentTrust::from_trust(device_trust, days)
                 .map_err(|_| invalid())?,
         );
-        let prepared_bootstrap = self.bootstrap_materials(&providers, clock.unix_seconds()?)?;
-        let bootstrap = prepared_bootstrap;
         let issuer = AgentIssuer::new(
             providers,
             days,
@@ -131,11 +130,21 @@ impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
     }
 }
 impl AgentPki {
+    pub(crate) fn remove_bootstrap(&mut self) -> Result<(), Error> {
+        let verifier =
+            rss_mdm_device_trust::enrollment_verifier(vec![self.issuer.trust().trust.clone()])
+                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
+        self.tls = self.tls.with_client_verifier(verifier)?;
+        self.bootstrap = None;
+        Ok(())
+    }
+
     pub(crate) fn issuance_ready(&self, now: i64) -> bool {
-        !matches!(
-            health(self.issuer.trust().expires(), now, self.required_seconds),
-            "expired" | "issuance_unavailable"
-        )
+        self.tls.valid_at(now)
+            && !matches!(
+                health(self.issuer.trust().expires(), now, self.required_seconds),
+                "expired" | "issuance_unavailable"
+            )
     }
 
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {

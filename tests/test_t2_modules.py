@@ -9,6 +9,14 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_action_dispatch_schema_selects_its_actual_consumers(self):
+        selected = set(select_inputs(['crates/execution-service/src/actions/dispatch-v1.json']).modules)
+        self.assertEqual(selected, {'planning.onboarding', 'execution.agent.delivery', 'device-access.http'})
+        self.assertEqual(selected, set(select_inputs(['crates/execution-service/src/actions/production.rs']).modules))
+        self.assertIn('execution.commands.dispatch', select_inputs(['crates/execution-service/src/dispatch-v1.json']).modules)
+        for name in ('begin', 'challenge', 'confirm', 'recovery-use'):
+            self.assertEqual(select_inputs([f'crates/agent-wire/schema/runtime/access-{name}-v1.schema.json']).modules, ('device-access.http',))
+
     def test_descriptive_objects_select_their_storage_and_http_consumers(self):
         cases = {
             'crates/policy/src/presentation.rs': {'policy.persistence', 'planning.self_service'},

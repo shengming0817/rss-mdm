@@ -402,6 +402,7 @@ impl Tls {
                 crate::device_pki::providers(&serde_json::from_value::<
                     Vec<crate::device_pki::Provider>,
                 >(base["device_pki"].clone())?)?,
+                None,
             )?
             .unwrap();
         let envelope = rss_mdm_agent_channel::boundary::Envelope {
@@ -432,15 +433,16 @@ impl Tls {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        owner
-            .startup()?
-            .stage_task_with_token(crate::native::tls::registration(
+        owner.startup()?.stage_task_with_token(
+            crate::test_support::gateway::registration(
                 listener,
                 tls,
                 authority.audit.clone(),
                 case_tenant().into(),
                 crate::native::NativeListenerKind::Agent,
-            ));
+            )
+            .await?,
+        );
         Ok(Self { address, owner })
     }
     async fn activate(&self, candidate: &Value, n: usize) -> Result<Value> {

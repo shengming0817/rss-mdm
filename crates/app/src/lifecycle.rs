@@ -95,6 +95,7 @@ pub async fn serve(
                         archive,
                         associations,
                         notifications,
+                        gateway,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
                             crate::Database::connect(compiled.config.access_options().map_err(
@@ -327,6 +328,8 @@ pub async fn serve(
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
+                                #[cfg(test)]
+                                bind_listeners: true,
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
@@ -346,16 +349,6 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::webhooks::Resource(app.webhooks.clone()),
                         ));
-                        app.pki
-                            .admit(
-                                rss_request_context::TenantId::parse(&tenant).map_err(|_| {
-                                    assembly_error(Error::Configuration(crate::ConfigIssue::Tenant))
-                                })?,
-                                crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
-                                    .map_err(assembly_error)?,
-                            )
-                            .await
-                            .map_err(|_| assembly_error(Error::Unavailable(Failure::Database)))?;
                         app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
                             gateway,
                             crate::identity::ingress,
@@ -367,14 +360,21 @@ pub async fn serve(
                                     kind: e.kind(),
                                 }
                             })?;
+                        if app.bound.len() != app.listeners.len() {
+                            return Err(assembly_error(Error::Conflict));
+                        }
                         let mut native_listeners = Vec::new();
-                        for (kind, router) in app.listeners.drain(..) {
-                            let listener = tokio::net::TcpListener::bind(router.listen)
-                                .await
-                                .map_err(|e| ProcessError::Io {
-                                    stage: kind.name(),
-                                    kind: e.kind(),
-                                })?;
+                        for ((kind, listener), (router_kind, router)) in
+                            app.bound.drain(..).zip(app.listeners.drain(..))
+                        {
+                            let address = listener.local_addr().map_err(|_| {
+                                assembly_error(Error::Configuration(crate::ConfigIssue::Listen))
+                            })?;
+                            if kind != router_kind
+                                || (router.listen.port() != 0 && address != router.listen)
+                            {
+                                return Err(assembly_error(Error::Conflict));
+                            }
                             native_listeners.push((kind, listener, router));
                         }
                         listener_receipt(&listener, &mut std::io::stdout().lock()).map_err(
@@ -398,6 +398,7 @@ pub async fn serve(
                             archive,
                             associations,
                             notifications,
+                            gateway,
                         ))
                     })
                     .await
@@ -519,6 +520,7 @@ pub async fn serve(
                                 audit_store.clone(),
                                 tenant.clone(),
                                 kind,
+                                gateway,
                             )
                             .critical(),
                         );

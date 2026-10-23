@@ -1,8 +1,9 @@
 """Worktree-owned Compose lifecycle; build target allocation remains in build_run.
 
-ref: compose-spec/compose-spec spec.md (project isolation and service network_mode).
+ref: compose-spec/compose-spec spec.md (project isolation and explicit networks).
 """
 from __future__ import annotations
+from ingress_network import Ingress
 import argparse
 import base64
 import contextlib
@@ -74,7 +75,9 @@ class Environment:
         tls=json.loads(record.read_text()) if record.exists() else self.local_gateway()
         settings={'MDM_PRODUCT_ORIGIN':tls['origin'] or '', 'MDM_GATEWAY_PUBLISH':tls['publish'],
                   'MDM_GATEWAY_TLS_CERT_FILE':tls['certificate_file'], 'MDM_GATEWAY_TLS_KEY_FILE':tls['key_file']} if gateway else {}
+        ingress = Ingress(self.root,self.project,self.identity).values()
         return {**{k:v for k,v in os.environ.items() if not k.startswith('COMPOSE_') and k not in ('MDM_SERVER_IMAGE','MDM_WEB_IMAGE')}, **images,
+                **ingress,
                 'MDM_ENV_ROOT': str(self.root), 'MDM_WORKTREE_ID': self.identity,
                 'MDM_POSTGRES_IMAGE': self.providers['postgres'], 'MDM_RUNTIME_IMAGE': self.providers['runtime'],
                 'MDM_KEYCLOAK_IMAGE':self.providers['keycloak'],'MDM_NGINX_IMAGE':self.providers['nginx'],
@@ -85,7 +88,7 @@ class Environment:
 
     def local_gateway(self):
         directory=self.root/'container/gateway'
-        return dict(origin=None,publish='127.0.0.1::8445',
+        return dict(origin=None,publish='127.0.0.1::8443',
                     certificate_file=str(directory/'server.crt'),key_file=str(directory/'server.key'))
 
     def gateway_settings(self, env_file=None):
@@ -119,9 +122,9 @@ class Environment:
             if origin!=canonical or any(character.isspace() for character in origin) or endpoint.scheme!='https' or not valid_host or endpoint.username is not None or endpoint.password is not None or endpoint.path or endpoint.query or endpoint.fragment or not 1<=port<=65535:
                 raise ValueError()
         except ValueError:raise ValueError('MDM_PRODUCT_ORIGIN must be a canonical HTTPS origin without credentials, path, query or fragment') from None
-        ports=model['services']['runtime-netns']['ports']
-        if len(ports)!=1 or ports[0]['target']!=8445 or ports[0].get('protocol','tcp')!='tcp' or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
-            raise ValueError('gateway publish must use TCP, bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8445')
+        ports=model['services']['gateway']['ports']
+        if len(ports)!=1 or ports[0]['target']!=8443 or ports[0].get('protocol','tcp')!='tcp' or str(ports[0].get('published',''))!=str(port) or ports[0].get('host_ip','0.0.0.0') not in ('0.0.0.0','127.0.0.1'):
+            raise ValueError('gateway publish must use TCP, bind 127.0.0.1 or 0.0.0.0 and match the origin port, targeting 8443')
         mounts={volume['target']:Path(volume['source']) for volume in model['services']['inputs']['volumes'] if volume['type']=='bind'}
         certificate=mounts['/tls-input/server.crt'];key=mounts['/tls-input/server.key']
         if any(path.is_symlink() or not path.is_file() for path in (certificate,key)):
@@ -298,6 +301,8 @@ class Environment:
                 raise RuntimeError('refusing foreign or damaged environment owner record')
         self.verify_ownership()
         self.compose('--profile','*','down','--volumes','--remove-orphans',timeout=30)
+        ingress=Ingress(self.root,self.project,self.identity)
+        if ingress.record.exists():ingress.release()
         self.host_ports(release=True)
         if self.root.exists(): shutil.rmtree(self.root)
 
@@ -351,6 +356,7 @@ class Environment:
             tls=self.gateway_settings(env_file)
             self.prepare_inputs(certificates=False)
             private(self.root/'container-gateway.json',tls)
+            ingress=Ingress(self.root,self.project,self.identity).allocate()
         self.up()
         with self.phase('roles',reused=self.sql("SELECT count(*) FROM pg_roles WHERE rolname='mdm_owner'")=='1'):self.roles()
         if mode=='container':
@@ -360,8 +366,9 @@ class Environment:
                 images[key]=json.loads(run(['docker','image','inspect',value],capture_output=True).stdout)[0]['Id']
             private(self.root/'images.json',images)
             self.compose('--profile','product','stop','server','gateway')
-            self.compose('--profile','product','up','-d','runtime-netns')
-            https_port=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
+            https_port=urlsplit(tls['origin']).port or 443 if tls['origin'] else self.host_ports()['https']
+            if not tls['origin']:tls['publish']=f'127.0.0.1:{https_port}:8443'
+            private(self.root/'container-gateway.json',tls)
             backend_port=8081
         else:
             ports=self.host_ports()
@@ -385,7 +392,8 @@ class Environment:
             private(native_key,'').write_bytes(secrets.token_bytes(32))
         config=json.loads((ROOT/'fixtures/mdm-config.example.json').read_text())
         config['native_protection']=dict(active_file=path(runtime,'native-data.key'),historical_files=[],fingerprint_file=path(runtime,'native-data.key'))
-        config.update(listen=f'127.0.0.1:{backend_port}',product_origin=origin,trusted_gateway='127.0.0.1',native_protocols={},device_pki=[])
+        config.update(listen=(ingress['MDM_BACKEND_ADDRESS'] if mode=='container' else '127.0.0.1')+f':{backend_port}',product_origin=origin,trusted_gateway=ingress['MDM_GATEWAY_ADDRESS'] if mode=='container' else '127.0.0.1',native_protocols={},device_pki=[])
+        config['agent_pki']={'mode':'disabled'}
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
         config['execution']['database']=database(runtime,'mdm_command_runtime')
@@ -411,16 +419,18 @@ class Environment:
         if mode!='container' or not tls['origin']:
             self.issue_leaf(self.root/'gateway-cert'/mode,['localhost','mdm.example.test'])
             for name in ('server.crt','server.key'):private(gateway/name,(self.root/'gateway-cert'/mode/name).read_text())
-        nginx=(ROOT/'deployment/nginx.conf').read_text().replace('listen 443 ssl;',f'listen {8445 if mode=="container" else https_port} ssl;')
-        nginx=nginx.replace('server 127.0.0.1:8081;',f'server 127.0.0.1:{backend_port};').replace('server_name mdm.example.test;','server_name localhost;').replace('proxy_set_header Host mdm.example.test;','proxy_set_header Host $http_host;')
-        nginx=nginx.replace('server_name localhost;',f'server_name {urlsplit(origin).hostname};')
+        from gateway_fixture import render
         prefix='/certs' if mode=='container' else str(gateway)
-        nginx=nginx.replace('/private/mdm-tls.crt',prefix+'/server.crt').replace('/private/mdm-tls.key',prefix+'/server.key').replace('/run/config/ui.json',prefix+'/ui.json').replace('/run/config/mdm.json',prefix+'/mdm.json')
+        nginx=render(ROOT/'deployment', origin=origin,
+                     backend=config['listen'], public_port=8443 if mode=='container' else https_port,
+                     http_port=8445 if mode=='container' else backend_port+1,
+                     certificates=prefix, web=mode=='container')
         if mode=='host':
             nginx=nginx.replace('/tmp/mdm-',str(gateway)+'/mdm-')
             mime=os.environ.get('MDM_NGINX_MIME_TYPES','/opt/homebrew/etc/nginx/mime.types' if sys.platform=='darwin' else '/etc/nginx/mime.types')
             nginx=nginx.replace('/etc/nginx/mime.types',mime)
-            nginx=nginx.replace('/usr/share/nginx/html',os.environ.get('MDM_WEB_ROOT',str(gateway/'html')))
+            web_root=Path(os.environ.get('MDM_WEB_ROOT',str(gateway/'html'))).resolve()
+            nginx=nginx.replace('location / { return 404; }', 'location / { root "'+str(web_root)+'"; try_files $uri $uri/ /index.html; }')
         private(gateway/'nginx.conf',nginx)
         if mode=='container':self.compose('--profile','product','run','--rm','inputs')
         else:
@@ -449,17 +459,16 @@ class Environment:
     def start_product(self):
         if not (self.root/'container-initialized.json').exists():raise RuntimeError('run init --mode container first')
         self.verify_ownership()
-        self.compose('--profile','product','up','-d','runtime-netns')
-        # A recreated namespace gets new ports; require init to regenerate bound origins.
-        actual=int(self.compose('port','runtime-netns','8445').rsplit(':',1)[1])
+        actual=json.loads((self.root/'container-initialized.json').read_text())['https_port']
         initialized=json.loads((self.root/'container-initialized.json').read_text())
         expected=initialized['origin']
         if actual!=initialized.get('https_port',urlsplit(expected).port):raise RuntimeError('product port changed; run init --mode container again')
+        Ingress(self.root,self.project,self.identity).validate()
         running=self.compose('ps','-q','server','gateway').splitlines()
         with self.phase('start-product',reused=len(running)==2):
             self.compose('--profile','product','stop','server','gateway')
             self.compose('--profile','product','run','--rm','inputs')
-            self.compose('--profile','product','up','-d','--force-recreate','server','gateway')
+            self.compose('--profile','product','up','-d','--force-recreate','server','web','gateway')
             external=json.loads((self.root/'container-gateway.json').read_text())['origin'] if (self.root/'container-gateway.json').exists() else None
             context=ssl.create_default_context(cafile=None if external else str(self.root/'ca.crt'))
             deadline=time.monotonic()+60

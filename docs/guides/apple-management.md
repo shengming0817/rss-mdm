@@ -6,6 +6,12 @@
 
 Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 SCEP 签发。原生命令、查询、回执和多 payload Profile 复用现有 Execution、注册及采集 owner。DDM 的声明发布与状态证据由 Apple 原生 owner 持有；账户驱动注册和 ADE 使用独立组织授权，ADE 同步与分配状态不代表设备已经完成注册。受控 T2 不代替真实 Apple 组织、APNs 和 Mac 验收，T3 证据另行登记。
 
+## 启用意图与材料就绪
+
+完整部署为 Apple 配置独立 hostname 的 443/SNI 入口，设备 TLS 由 Rust 验证。可以先保存通道配置，APNs/Profile 版本暂为空；此时管理面正常运行，Apple 显示 waiting 及缺失原因。TLS、设备信任、SCEP webhook 或材料无效时状态为 degraded，相关设备操作拒绝，不能通过省略证书验证获得 ready。
+
+复用现有材料申请、导入、选择与撤销 API。选择后仍须 prepare-hosts、受控重建 server，并通过当前进程的加载版本与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
+
 ## 注册与凭据
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
@@ -112,11 +118,11 @@ operation observation 分别返回 expected、synchronization、nativeStatus、e
 
 完整配置仍由 [mdm-config.example.json](../../fixtures/mdm-config.example.json) 展示数据库与 Identity 装配。必填 `native_protocols` 是闭合对象：`{}` 为 Agent-only；只有 windows 为 Windows-only；只有 apple 为 Apple-only；两者同时存在则启动各自监听。成员缺席表示关闭，显式 null 和旧顶层 windows 均拒绝。Apple-only 不需要 Windows issuer 或 Windows 专用协议保护密钥，但仍必须提供顶层 `native_protection`（显式加密写钥、历史读钥与稳定比较钥，每份恰好 32 原始字节）。全局密钥保护 Apple 原生输入、回执与内容，多实例必须一致；生成、权限和配套恢复见 [安装](../deployment/installation.md) 与 [运维](../deployment/operations.md)。
 
-将 native_protocols 替换为以下 Apple-only 配置，路径由部署环境提供：
+将 native_protocols 替换为以下 Apple-only 配置，内部监听地址须与 server 的 ingress 地址一致，公开 origin 使用最终 443 hostname；地址与路径由部署环境提供：
 
 ```json
 {"apple":{
-  "management":{"listen":"0.0.0.0:8445","origin":"https://apple.example.test:8445","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
+  "management":{"listen":"172.30.86.3:8445","origin":"https://apple.example.test","certificate_file":"/run/mdm/apple-tls.pem","private_key_file":"/run/mdm/apple-tls.pk8"},
   "trust_file":"/run/mdm/apple-trust.json",
   "materials":{"apns":2,"profile":2,"accounts":{}},
   "identity_seed":{"challengeId":"ORIGINAL-challenge-id","notifyId":"ORIGINAL-notify-id"},
@@ -150,7 +156,7 @@ SCEP provisioner 名为 rss，最小 RSA 公钥 2048、禁用 renewal，默认�
 challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不能再次授权。签发完成通知不是唯一绑定通道，真实 mTLS 叶证书可恢复丢失通知；签发响应本身丢失须新口令、新 attempt、新密钥，不能静默重签。
 ## 健康、告警与排障
 
-启用 Apple 后，`/readyz` 同时检查 SCEP issuer、Profile signer 和 APNs 证书有效期；任一过期即返回 503。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
+`/readyz` 判断核心服务，Apple 材料故障不单独使核心 readiness 失败。通过授权 `/api/v1/runtime/diagnostics` 的 Apple channel 核对实际状态、监听、材料版本与阻断原因；证书过期或撤销时相应依赖操作拒绝。后台输出 `apple_certificate_health`：用途为 `scep_issuer`、`profile_signer`、`apns`，剩余 30 日进入 `renew_soon`、7 日进入 `critical`、到期为 `expired`。每次进程运行仅在等级变化时输出；应由部署日志告警系统接收。Profile signer 与 APNs 材料替换后重启以装载新证书，同一用途轮换不改变注册身份。SCEP issuer 按[设备 PKI 运维](../deployment/operations.md#设备-pki-轮换与撤销)完成受控 CA 轮换，无须重新注册；管理 origin、APNs topic 或 webhook ID 等稳定注册配置变化才要求重新注册。
 
 启动失败按闭合类别定位：`AppleListeners`、`AppleScep`、`AppleProfileSigner`、`AppleApns`、`AppleChallengeWebhook`、`AppleNotifyWebhook`；不会输出路径、密钥、口令或 provider 原文。
 
@@ -161,7 +167,7 @@ challenge 是一次性事务，先消费提交再 allow；CA 的重复传输不�
 
 APNs 响应体最多读取 4096 字节，仅记录闭合原因类别和可选时间戳，不输出 provider 原始文本。失效 token 退回 pending_token；证书、topic、请求或 payload 错误暂停该配置；限流/网络/服务端错误退避，5xx 至少等待 15 分钟。未知或畸形响应按可重试协议错误处理。
 
-后台 `apple_push_health` 记录连续内部失败数和配置故障。连续三次内部失败使 readiness 返回 503；数据库恢复后自动解除。配置拒绝保持不健康直到有效发送恢复或更换配置并重启。临时 APNs 网络错误使用设备级持久退避，不伪造命令进度。
+后台 `apple_push_health` 记录连续内部失败数和配置故障。连续三次内部失败使 Apple channel 显示 degraded、原因为 push_unavailable；成功处理后清除连续失败计数。共享数据库故障由核心依赖独立判断，不由 Apple 推送健康直接决定核心 readiness。配置拒绝保持不健康直到有效发送恢复或更换配置并重启。临时 APNs 网络错误使用设备级持久退避，不伪造命令进度。
 
 Mac 的 Legacy 接管以关联的 `ProfileList(ManagedOnly=true)` 证明 MDM 所有权，不依赖 iOS 的 IsManaged 字段。资源读取权限按租户作用域冻结，与设备配置权限分别验证。
 

@@ -25,6 +25,34 @@ pub struct Snapshot {
     pub alive: bool,
     pub ready: bool,
     pub components: Vec<Component>,
+    pub channels: Vec<ChannelStatus>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelName {
+    Apple,
+    Windows,
+    Agent,
+    WindowsPush,
+    AgentBootstrap,
+    Signing,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelState {
+    Disabled,
+    Waiting,
+    Ready,
+    Degraded,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelStatus {
+    pub name: ChannelName,
+    pub state: ChannelState,
+    pub reasons: Vec<Reason>,
+    pub listening: bool,
+    pub loaded_materials: std::collections::BTreeMap<String, i64>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +84,6 @@ pub enum ComponentName {
     Telemetry,
     Inventory,
     IdentityAudit,
-    Apple,
     Automation,
     ExecutionRecovery,
 }
@@ -88,6 +115,13 @@ pub enum Task {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
+    MaterialNotSelected,
+    MaterialUnreadable,
+    MaterialInvalid,
+    TrustConflict,
+    MaterialRevoked,
+    MaterialVersionMismatch,
+    ListenerUnavailable,
     InitializationAuthorization,
     InitializationContent,
     InitializationConflict,

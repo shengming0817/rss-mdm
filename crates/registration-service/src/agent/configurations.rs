@@ -247,11 +247,11 @@ impl Service {
             for target in &input.targets {defaults=Some(settings::admit_on(c,&tenant,target.platform).await?);}
             let seconds=input.lifetime_seconds.unwrap_or(defaults.ok_or(Error::Malformed)?.configuration_default_seconds);
             if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds){return Err(Error::Malformed);}
-            service.installations.verify_signer(c,&tenant,&service.configuration_signer.key_id).await?;
+            service.installations.verify_signer(c,&tenant,&service.configuration_signer.as_ref().ok_or(Error::Runtime)?.key_id).await?;
             let id=Uuid::new_v4();let expires_at=now(c).await?+i64::from(seconds);
-            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.key_id.clone()};
+            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.as_ref().ok_or(Error::Runtime)?.key_id.clone()};
             config.signing_bytes(&input.secret).map_err(|_|Error::Configuration)?;
-            let signature=service.configuration_signer.sign(config.clone(),input.secret.clone())?.signature;
+            let signature=service.configuration_signer.as_ref().ok_or(Error::Runtime)?.sign(config.clone(),input.secret.clone())?.signature;
             let quantity=match input.quantity{wire_config::Quantity::Finite{count}=>Some(i64::from(count.get())),wire_config::Quantity::Unlimited=>None};
             sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,request_digest,signature,document,quantity,state,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'available',to_timestamp($11))")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(p.principal_id()).bind(p.instance_id()).bind(configuration_secret(&tenant,id,&input.secret)).bind(&*d).bind(&signature).bind(serde_json::to_value(&config).map_err(|_|Error::Malformed)?).bind(quantity).bind(expires_at as f64).execute(&mut *c).await.map_err(db)?;
@@ -339,7 +339,10 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
         version(input.file.configuration.wire_version, input.operation_id)?;
-        self.configuration_signer.verify(&input.file)?;
+        self.configuration_signer
+            .as_ref()
+            .ok_or(Error::Runtime)?
+            .verify(&input.file)?;
         if input.secret.expose() == input.file.secret.expose() {
             return Err(Error::Malformed.into());
         }

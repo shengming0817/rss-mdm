@@ -205,6 +205,7 @@ impl Fixture {
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
+            config.agent_pki.bootstrap_materials(crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
         let agent_enrollment = agent_pki
             .as_ref()
@@ -263,7 +264,15 @@ impl Fixture {
         ).await?;
         execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
+        // This handler fixture owns its real transport outside production assembly.
+        if let Some(agent) = &agent_pki {
+            execution.channels.set(crate::channel_status::ChannelName::Agent,
+                crate::channel_status::ChannelState::Ready, None)?;
+            execution.channels.listening(crate::channel_status::ChannelName::Agent)?;
+            execution.channels.installation(agent.clone(), pki.clone())?;
+        }
         let app = Arc::new(Assembly {
+            channels: execution.channels.clone(),
             telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
             apple_material_roots: Arc::new(Vec::new()),
@@ -392,7 +401,7 @@ impl Fixture {
             let mut launch = startup.commit();
             launch.stage_task_with_token(notifications.registration().critical());
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     manage,
                     native,
                     access
@@ -400,11 +409,11 @@ impl Fixture {
                         .await?,
                     case_tenant().into(),
                     crate::native::NativeListenerKind::AppleManagement,
-                )
+                ).await?
                 .critical(),
             );
             launch.stage_task_with_token(
-                tls::registration(
+                crate::test_support::gateway::registration(
                     webhook,
                     hooks,
                     access
@@ -412,7 +421,7 @@ impl Fixture {
                         .await?,
                     case_tenant().into(),
                     crate::native::NativeListenerKind::AppleWebhookFixture,
-                )
+                ).await?
                 .critical(),
             );
 
@@ -625,13 +634,14 @@ impl Fixture {
         )?;
         let mut startup = owner.startup()?.commit();
         startup.stage_task_with_token(
-            tls::registration(
+            crate::test_support::gateway::registration(
                 listener,
                 router,
                 self.app.audit_store.clone(),
                 case_tenant().into(),
                 native::NativeListenerKind::AppleWebhookFixture,
             )
+            .await?
             .critical(),
         );
         startup.finish();
@@ -685,7 +695,7 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
     let original: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
     for (pointer, category) in [
-        ("/trust_file", "AgentPki"),
+        ("/trust_file", "FileAccess"),
         ("/webhooks/0/challenge/secret_file", "AppleChallengeWebhook"),
         ("/webhooks/0/notify/secret_file", "AppleNotifyWebhook"),
     ] {

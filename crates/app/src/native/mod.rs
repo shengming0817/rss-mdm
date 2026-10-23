@@ -1,5 +1,6 @@
 //! Native transports share ingress limits and TLS ownership, never protocol state.
 pub(crate) mod admission;
+mod proxy;
 pub(crate) mod tls;
 use axum::Router;
 use serde::Deserialize;
@@ -54,7 +55,7 @@ impl NativeListenerKind {
 pub(crate) struct TlsRouter {
     pub(crate) admission: Arc<admission::Admission>,
     pub listen: SocketAddr,
-    pub tls: Arc<tokio_rustls::rustls::ServerConfig>,
+    pub tls: Arc<crate::native::tls::Configuration>,
     pub router: Router,
 }
 pub(crate) struct Routers {
@@ -68,4 +69,5 @@ pub(crate) struct Routers {
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub browser: Router,
     pub listeners: Vec<(NativeListenerKind, TlsRouter)>,
+    pub bound: Vec<(NativeListenerKind, tokio::net::TcpListener)>,
 }

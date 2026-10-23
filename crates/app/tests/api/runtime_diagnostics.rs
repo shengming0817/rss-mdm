@@ -35,14 +35,13 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                     })?;
                     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
                     ensure!(status == StatusCode::OK, "{status} {value}");
-                    ensure!(value.as_object().unwrap().len() == 3);
+                    ensure!(value.as_object().unwrap().len() == 4);
                     ensure!(value["alive"] == true && value["ready"].is_boolean());
                     names(
                         &value["components"],
                         &[
                             "inventory",
                             "identity_audit",
-                            "apple",
                             "automation",
                             "execution_recovery",
                         ],
@@ -104,7 +103,24 @@ impl Fixture {
             ),
         )
         .await?;
+        let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+            authority.access.archive_pool(),
+            authority.audit.clone(),
+            vec![],
+            execution.providers.clone(),
+        ));
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            channels: execution.channels.clone(),
+            pki: pki.clone(),
+            registration: Arc::new(crate::registration_channels::Channels {
+                preparation: execution.channels.clone(),
+                windows: None,
+                agent: None,
+                apple: None,
+                pki: pki.clone(),
+                clock: Arc::new(crate::clock::SystemClock),
+            }),
+            apple_store: authority.access.apple_store(),
             access: authority.access.archive_pool(),
             telemetry: None,
             execution: execution.service,

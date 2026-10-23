@@ -28,9 +28,11 @@ services:
       postgres: {condition: service_healthy}
     entrypoint: [python3, /usr/local/lib/rss-mdm/initialize.py]
     environment:
-      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:-https://localhost:8445}
+      MDM_PRODUCT_ORIGIN: ${MDM_PRODUCT_ORIGIN:?canonical HTTPS hostname required}
       MDM_ORGANIZATION: ${MDM_ORGANIZATION:-My organization}
       MDM_CONTENT_STORAGE: ${MDM_CONTENT_STORAGE:-volume}
+      MDM_BACKEND_ADDRESS: ${MDM_BACKEND_ADDRESS:-172.30.86.3}
+      MDM_GATEWAY_ADDRESS: ${MDM_GATEWAY_ADDRESS:-172.30.86.2}
     volumes:
       - state:/var/lib/rss-mdm
       - content:/var/lib/rss-mdm-content
@@ -64,14 +66,19 @@ services:
       - content:/var/lib/rss-mdm-content
     networks:
       default: {aliases: [primary-server]}
-    ports:
-      - "${MDM_PUBLISH_IP:-127.0.0.1}:${MDM_HTTPS_PORT:-8445}:8445"
+      ingress: {ipv4_address: "${MDM_BACKEND_ADDRESS:-172.30.86.3}"}
     restart: unless-stopped
   gateway:
-    image: ${MDM_WEB_IMAGE:?MDM console image required}
+    image: ${MDM_GATEWAY_IMAGE:?fixed nginx image with stream ssl_preread required}
     user: "10001:10001"
-    depends_on: [server]
-    network_mode: service:server
+    depends_on:
+      init: {condition: service_completed_successfully}
+      web: {condition: service_started}
+    networks:
+      default: {}
+      ingress: {ipv4_address: "${MDM_GATEWAY_ADDRESS:-172.30.86.2}"}
+      frontend: {}
+    ports: ["${MDM_PUBLISH_ADDRESS:-0.0.0.0:443}:8443"]
     read_only: true
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
@@ -82,8 +89,23 @@ services:
         source: state
         target: /run/gateway
         read_only: true
-        volume: {subpath: runtime/primary/gateway, nocopy: true}
+        volume: {subpath: runtime/gateway, nocopy: true}
     restart: unless-stopped
+  web:
+    image: ${MDM_WEB_IMAGE:?static MDM console image required}
+    user: "10001:10001"
+    networks: [frontend]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    restart: unless-stopped
+networks:
+  ingress:
+    internal: true
+    ipam:
+      config: [{subnet: "${MDM_INGRESS_SUBNET:-172.30.86.0/24}"}]
+  frontend: {internal: true}
 volumes:
   state:
   content:

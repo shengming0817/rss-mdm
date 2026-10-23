@@ -72,6 +72,7 @@ mod software_catalog;
 mod task_signing;
 use database::Database;
 
+mod channel_status;
 mod diagnostic;
 mod error_projection;
 mod registration_channels;

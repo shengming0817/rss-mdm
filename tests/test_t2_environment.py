@@ -129,7 +129,8 @@ class EnvironmentTests(unittest.TestCase):
         server=source.split('  server:',1)[1].split('  gateway:',1)[0]
         self.assertIn('runtime:/run/mdm:ro',server)
         self.assertNotIn('operator:',server)
-        self.assertIn('network_mode: service:runtime-netns',server)
+        self.assertIn('ingress: {ipv4_address:',server)
+        self.assertNotIn('network_mode:',server)
 
     def test_role_changes_require_reset_without_running_ddl(self):
         from unittest.mock import patch
@@ -243,16 +244,16 @@ class ExternalGatewayTests(unittest.TestCase):
         shutil.copyfile(directory/'server.crt',directory/'custom fullchain.pem')
         shutil.copyfile(directory/'server.key',directory/'custom private.pem')
         (self.env.worktree/'.env').write_text('MDM_PRODUCT_ORIGIN=https://mdm.example.test\n')
-        self.model={'x-gateway':dict(origin='https://mdm.example.test',publish='0.0.0.0:443:8445',
+        self.model={'x-gateway':dict(origin='https://mdm.example.test',publish='0.0.0.0:443:8443',
                     certificate_file='./deployment/certs/custom fullchain.pem',key_file='./deployment/certs/custom private.pem'),
-            'services':{'runtime-netns':{'ports':[dict(target=8445,published='443',host_ip='0.0.0.0')]},
+            'services':{'gateway':{'ports':[dict(target=8443,published='443',host_ip='0.0.0.0')]},
                 'inputs':{'volumes':[dict(type='bind',source=str(directory/'custom fullchain.pem'),target='/tls-input/server.crt'),
                                      dict(type='bind',source=str(directory/'custom private.pem'),target='/tls-input/server.key')]}}}
         return directory
 
     def test_no_external_files_retains_local_mode_but_explicit_missing_directory_fails(self):
         self.assertIsNone(self.env.gateway_settings()['origin'])
-        self.assertEqual(self.env.variables()['MDM_GATEWAY_PUBLISH'],'127.0.0.1::8445')
+        self.assertEqual(self.env.variables()['MDM_GATEWAY_PUBLISH'],'127.0.0.1::8443')
         with self.assertRaisesRegex(ValueError,'env file does not exist'):
             self.env.gateway_settings(self.env.worktree/'missing')
 
@@ -283,13 +284,13 @@ class ExternalGatewayTests(unittest.TestCase):
             self.model['x-gateway']['origin']=origin
             with self.assertRaisesRegex(ValueError,'HTTPS origin'):self.env.gateway_settings()
         self.model['x-gateway']['origin']='https://mdm.example.test'
-        self.model['services']['runtime-netns']['ports'][0]['protocol']='udp'
+        self.model['services']['gateway']['ports'][0]['protocol']='udp'
         with self.assertRaisesRegex(ValueError,'TCP'):self.env.gateway_settings()
-        self.model['services']['runtime-netns']['ports'][0]['protocol']='tcp'
+        self.model['services']['gateway']['ports'][0]['protocol']='tcp'
         self.model['x-gateway']['origin']='https://mdm.example.test:9443'
         with self.assertRaisesRegex(ValueError,'match the origin port'):self.env.gateway_settings()
-        self.model['services']['runtime-netns']['ports'][0]['published']='9443'
-        self.model['x-gateway']['publish']='127.0.0.1:9443:8445'
+        self.model['services']['gateway']['ports'][0]['published']='9443'
+        self.model['x-gateway']['publish']='127.0.0.1:9443:8443'
         self.assertEqual(self.env.gateway_settings()['origin'],'https://mdm.example.test:9443')
 
     def test_compose_resolves_env_again_without_using_saved_gateway_settings(self):
@@ -310,7 +311,7 @@ class ExternalGatewayTests(unittest.TestCase):
         def compose(*args):
             if 'public-host-config' in args:return json.dumps(generated)
             return '0.0.0.0:443' if args[0]=='port' else ''
-        with patch.object(self.env,'gateway_settings',return_value=tls),patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
+        with patch('t2_environment.Ingress.allocate',return_value={'MDM_INGRESS_SUBNET':'172.29.0.0/24','MDM_GATEWAY_ADDRESS':'172.29.0.2','MDM_BACKEND_ADDRESS':'172.29.0.3'}),patch.object(self.env,'gateway_settings',return_value=tls),patch.object(self.env,'up'),patch.object(self.env,'roles'),patch.object(self.env,'sql',return_value='1'), \
              patch.object(self.env,'compose',side_effect=compose), \
              patch('t2_environment.run',return_value=SimpleNamespace(stdout='[{"Id":"sha256:reviewed"}]')):
             self.env.initialize('container','server','web')
@@ -320,12 +321,12 @@ class ExternalGatewayTests(unittest.TestCase):
         for name in ('ui.json','mdm.json'):
             self.assertEqual(json.loads((container/'gateway'/name).read_text()),generated[name])
         nginx=(container/'gateway/nginx.conf').read_text()
-        self.assertIn('listen 8445 ssl;',nginx)
+        self.assertIn('listen 127.0.0.1:8445 ssl proxy_protocol;',nginx)
         self.assertIn('server_name mdm.example.test;',nginx)
         self.assertIn('ssl_certificate /certs/server.crt;',nginx)
         self.assertNotIn('localhost',nginx)
         variables=Environment(self.env.worktree,group='development').variables()
-        self.assertEqual(variables['MDM_GATEWAY_PUBLISH'],'0.0.0.0:443:8445')
+        self.assertEqual(variables['MDM_GATEWAY_PUBLISH'],'0.0.0.0:443:8443')
         self.assertEqual(variables['MDM_GATEWAY_TLS_CERT_FILE'],str(directory/'custom fullchain.pem'))
         self.assertEqual(variables['MDM_GATEWAY_TLS_KEY_FILE'],str(directory/'custom private.pem'))
 
@@ -333,7 +334,7 @@ class ExternalGatewayTests(unittest.TestCase):
         self.env.root.mkdir(parents=True)
         (self.env.root/'container-initialized.json').write_text(json.dumps(dict(origin='https://mdm.example.test',https_port=443)))
         (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.example.test')))
-        with patch.object(self.env,'verify_ownership'), \
+        with patch('t2_environment.Ingress.validate'),patch.object(self.env,'verify_ownership'), \
              patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else '') as compose, \
              patch('t2_environment.ssl.create_default_context') as context,patch.object(self.env,'probe_product') as probe:
             self.env.start_product()
@@ -341,7 +342,7 @@ class ExternalGatewayTests(unittest.TestCase):
         commands=[call.args for call in compose.call_args_list]
         stop=commands.index(('--profile','product','stop','server','gateway'))
         copy=commands.index(('--profile','product','run','--rm','inputs'))
-        start=commands.index(('--profile','product','up','-d','--force-recreate','server','gateway'))
+        start=commands.index(('--profile','product','up','-d','--force-recreate','server','web','gateway'))
         self.assertLess(stop,copy);self.assertLess(copy,start)
         self.assertEqual(probe.call_args.args[:2],('https://mdm.example.test',443))
 
@@ -382,7 +383,7 @@ class ExternalGatewayTests(unittest.TestCase):
         (self.env.root/'container-gateway.json').write_text(json.dumps(dict(origin='https://mdm.example.test')))
         error=ssl.SSLCertVerificationError('untrusted private input');error.verify_code=20
         output=io.StringIO()
-        with patch.object(self.env,'verify_ownership'), \
+        with patch('t2_environment.Ingress.validate'),patch.object(self.env,'verify_ownership'), \
              patch.object(self.env,'compose',side_effect=lambda *args:'0.0.0.0:443' if args[0]=='port' else ''), \
              patch.object(self.env,'probe_product',side_effect=error), \
              patch('t2_environment.time.monotonic',side_effect=[0,0,61,62]),contextlib.redirect_stdout(output):

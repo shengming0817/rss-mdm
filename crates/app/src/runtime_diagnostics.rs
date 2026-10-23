@@ -5,6 +5,10 @@ use rss_mdm_management_http::runtime_diagnostics::*;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct RuntimeDiagnostics {
+    pub channels: Arc<crate::channel_status::Channels>,
+    pub registration: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub apple_store: Arc<rss_mdm_apple_channel::Store>,
     pub access: sqlx::PgPool,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
@@ -35,7 +39,6 @@ impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
         let audit = self.audit_health();
-        let apple = self.apple_health();
         let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
@@ -78,7 +81,7 @@ impl RuntimeDiagnostics {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
         let execution = execution_component(self.execution.health());
-        let mut components = vec![inventory, audit, apple, automation, execution];
+        let mut components = vec![inventory, audit, automation, execution];
         if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
             components.push(telemetry);
         }
@@ -86,6 +89,7 @@ impl RuntimeDiagnostics {
             components.push(initialization);
         }
         Snapshot {
+            channels: self.channel_health(cutoff).await,
             alive: true,
             ready: components
                 .iter()
@@ -347,30 +351,159 @@ impl RuntimeDiagnostics {
         }
         audit
     }
-    fn apple_health(&self) -> Component {
-        let Some(apple) = &self.apple else {
-            let mut result = component(ComponentName::Apple, false);
-            result.readiness = Readiness::NotApplicable;
-            result.health = Health::NotApplicable;
-            return result;
+    fn observe_trust(&self, channel: &mut ChannelStatus) -> Option<Reason> {
+        use rss_mdm_agent_wire::pki::Purpose;
+        let purpose = match channel.name {
+            ChannelName::Apple => Purpose::Apple,
+            ChannelName::Windows => Purpose::Windows,
+            ChannelName::Agent => Purpose::Agent,
+            ChannelName::AgentBootstrap => Purpose::AgentBootstrap,
+            ChannelName::Signing | ChannelName::WindowsPush => return None,
         };
-        match self.clock.unix_seconds() {
-            Ok(now) => {
-                let state = apple.channel.health(now);
-                let mut result = component(ComponentName::Apple, state.is_ready());
-                if !state.push_available {
-                    result.reasons.push(Reason::PushUnavailable);
-                }
-                if state.certificates_expired() {
-                    result.reasons.push(Reason::CertificateExpired);
-                }
-                result
+        // Registry rotation updates this running verifier. Report that loaded fact, not desired files.
+        let revision = self
+            .pki
+            .trust(purpose)
+            .ok()
+            .and_then(|trust| i64::try_from(trust.revision).ok());
+        match revision {
+            Some(revision) => {
+                channel.loaded_materials.insert("trust".into(), revision);
+                None
             }
-            Err(_) => {
-                let mut result = component(ComponentName::Apple, false);
-                result.reasons.push(Reason::ClockUnavailable);
-                result
+            None => {
+                channel.loaded_materials.remove("trust");
+                Some(Reason::MaterialInvalid)
             }
+        }
+    }
+    async fn channel_health(&self, cutoff: Instant) -> Vec<ChannelStatus> {
+        let mut channels: Vec<_> = self
+            .channels
+            .snapshot()
+            .into_iter()
+            .map(channel_projection)
+            .collect();
+        project_dependents(&mut channels);
+        for channel in &mut channels {
+            if channel.state != ChannelState::Ready {
+                continue;
+            }
+            if let Some(reason) = self.observe_trust(channel) {
+                channel.state = ChannelState::Degraded;
+                channel.reasons = vec![reason];
+                continue;
+            }
+            let failure = match self.clock.unix_seconds() {
+                Ok(now) => match channel.name {
+                    ChannelName::Apple => self.apple_failure(now, cutoff).await,
+                    ChannelName::Signing | ChannelName::WindowsPush => {
+                        self.selected_material_failure(channel, cutoff).await
+                    }
+                    ChannelName::Windows | ChannelName::Agent => {
+                        use rss_mdm_management_http::enrollment::channels::Availability;
+                        use rss_mdm_registration_service::quotas::Channel;
+                        let name = if channel.name == ChannelName::Windows {
+                            Channel::WindowsMdm
+                        } else {
+                            Channel::Agent
+                        };
+                        (!matches!(
+                            self.registration.status(name).availability,
+                            Availability::Ready
+                        ))
+                        .then_some(Reason::MaterialInvalid)
+                    }
+                    ChannelName::AgentBootstrap => {
+                        let purpose = rss_mdm_agent_wire::pki::Purpose::AgentBootstrap;
+                        self.pki
+                            .trust(purpose)
+                            .ok()
+                            .and_then(|trust| {
+                                rss_mdm_device_trust::DeviceTrust::new(trust, purpose, now).ok()
+                            })
+                            .is_none()
+                            .then_some(Reason::MaterialInvalid)
+                    }
+                },
+                Err(_) => Some(Reason::ClockUnavailable),
+            };
+            if let Some(reason) = failure {
+                channel.state = ChannelState::Degraded;
+                channel.reasons = vec![reason];
+            }
+        }
+        project_dependents(&mut channels);
+        channels
+    }
+    async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
+        let apple = self.apple.as_ref()?;
+        let health = apple.channel.health(now);
+        if health.certificates_expired() || !apple.tls.valid_at(now) {
+            return Some(Reason::CertificateExpired);
+        }
+        if !health.push_available {
+            return Some(Reason::PushUnavailable);
+        }
+        match tokio::time::timeout_at(
+            cutoff.into(),
+            apple
+                .channel
+                .check_materials(&self.apple_store, &self.tenant.to_string(), now),
+        )
+        .await
+        {
+            Ok(Ok(())) => None,
+            Ok(Err(rss_mdm_apple_channel::Error::Conflict)) => Some(Reason::MaterialInvalid),
+            _ => Some(Reason::DependencyUnavailable),
+        }
+    }
+    async fn selected_material_failure(
+        &self,
+        channel: &ChannelStatus,
+        cutoff: Instant,
+    ) -> Option<Reason> {
+        let key = match channel.name {
+            ChannelName::WindowsPush => "wns",
+            ChannelName::Signing => "signing",
+            _ => return None,
+        };
+        let Some(revision) = channel.loaded_materials.get(key) else {
+            return Some(Reason::MaterialNotSelected);
+        };
+        let check = async {
+            let mut tx = self.access.begin().await.map_err(|_| ())?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true)").bind(self.tenant.to_string()).execute(&mut *tx).await.map_err(|_| ())?;
+            let valid = match channel.name {
+                ChannelName::WindowsPush => rss_mdm_windows_channel::wns_materials::is_selected(
+                    &mut tx,
+                    &self.tenant.to_string(),
+                    *revision,
+                )
+                .await
+                .map_err(|_| ()),
+                ChannelName::Signing => {
+                    match rss_mdm_execution_service::task_signing::trust::check_revision(
+                        &mut tx,
+                        self.tenant,
+                        *revision as u64,
+                    )
+                    .await
+                    {
+                        Ok(()) => Ok(true),
+                        Err(rss_mdm_execution_service::Error::Conflict) => Ok(false),
+                        Err(_) => Err(()),
+                    }
+                }
+                _ => Err(()),
+            };
+            tx.rollback().await.map_err(|_| ())?;
+            valid
+        };
+        match tokio::time::timeout_at(cutoff.into(), check).await {
+            Ok(Ok(true)) => None,
+            Ok(Ok(false)) => Some(Reason::MaterialRevoked),
+            _ => Some(Reason::DependencyUnavailable),
         }
     }
 }
@@ -557,3 +690,118 @@ fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation)
 #[cfg(test)]
 #[path = "../tests/api/execution_health.rs"]
 mod tests;
+
+/// A prepared material is not an available capability when its transport owner is closed.
+pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
+    for (child, parent) in [
+        (ChannelName::WindowsPush, ChannelName::Windows),
+        (ChannelName::AgentBootstrap, ChannelName::Agent),
+    ] {
+        let failed = values
+            .iter()
+            .find(|v| v.name == parent)
+            .filter(|v| v.state != ChannelState::Ready || !v.listening)
+            .map(|v| v.reasons.clone());
+        if let Some(reasons) = failed
+            && let Some(value) = values
+                .iter_mut()
+                .find(|v| v.name == child && v.state == ChannelState::Ready)
+        {
+            value.state = ChannelState::Degraded;
+            value.reasons = if reasons.is_empty() {
+                vec![Reason::ListenerUnavailable]
+            } else {
+                reasons
+            };
+        }
+    }
+}
+
+fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
+    use crate::channel_status as assembly;
+    let name = match value.name {
+        assembly::ChannelName::Apple => ChannelName::Apple,
+        assembly::ChannelName::Windows => ChannelName::Windows,
+        assembly::ChannelName::Agent => ChannelName::Agent,
+        assembly::ChannelName::WindowsPush => ChannelName::WindowsPush,
+        assembly::ChannelName::AgentBootstrap => ChannelName::AgentBootstrap,
+        assembly::ChannelName::Signing => ChannelName::Signing,
+    };
+    let state = match value.state {
+        assembly::ChannelState::Disabled => ChannelState::Disabled,
+        assembly::ChannelState::Waiting => ChannelState::Waiting,
+        assembly::ChannelState::Ready => ChannelState::Ready,
+        assembly::ChannelState::Degraded => ChannelState::Degraded,
+    };
+    let reasons = value
+        .reason
+        .map(|reason| match reason {
+            assembly::Reason::MaterialNotSelected => Reason::MaterialNotSelected,
+            assembly::Reason::MaterialUnreadable => Reason::MaterialUnreadable,
+            assembly::Reason::MaterialInvalid => Reason::MaterialInvalid,
+            assembly::Reason::TrustConflict => Reason::TrustConflict,
+            assembly::Reason::MaterialRevoked => Reason::MaterialRevoked,
+            assembly::Reason::MaterialVersionMismatch => Reason::MaterialVersionMismatch,
+            assembly::Reason::ListenerUnavailable => Reason::ListenerUnavailable,
+            assembly::Reason::CertificateExpired => Reason::CertificateExpired,
+            assembly::Reason::DependencyUnavailable => Reason::DependencyUnavailable,
+        })
+        .into_iter()
+        .collect();
+    let materials = value.materials;
+    let loaded_materials = [
+        ("trust", materials.trust),
+        ("apns", materials.apns),
+        ("profile", materials.profile),
+        ("wns", materials.wns),
+        ("signing", materials.signing),
+    ]
+    .into_iter()
+    .filter_map(|(name, revision)| revision.map(|v| (name.to_owned(), v)))
+    .collect();
+    ChannelStatus {
+        name,
+        state,
+        reasons,
+        listening: value.listening,
+        loaded_materials,
+    }
+}
+
+#[cfg(test)]
+mod channel_projection_tests {
+    use super::*;
+    #[test]
+    fn closed_parent_prevents_ready_bootstrap_and_preserves_loaded_material_identity() {
+        use crate::channel_status as assembly;
+        let facts = [
+            assembly::Assembly {
+                name: assembly::ChannelName::Agent,
+                state: assembly::ChannelState::Degraded,
+                reason: Some(assembly::Reason::ListenerUnavailable),
+                listening: false,
+                materials: Default::default(),
+            },
+            assembly::Assembly {
+                name: assembly::ChannelName::AgentBootstrap,
+                state: assembly::ChannelState::Ready,
+                reason: None,
+                listening: false,
+                materials: assembly::LoadedMaterials {
+                    trust: Some(4),
+                    ..Default::default()
+                },
+            },
+        ];
+        let mut values: Vec<_> = facts.iter().cloned().map(channel_projection).collect();
+        project_dependents(&mut values);
+        assert_eq!(values[1].state, ChannelState::Degraded);
+        assert!(matches!(
+            values[1].reasons.as_slice(),
+            [Reason::ListenerUnavailable]
+        ));
+        assert_eq!(values[1].loaded_materials["trust"], 4);
+        assert!(facts[1].state == assembly::ChannelState::Ready);
+        assert!(facts[1].reason.is_none());
+    }
+}

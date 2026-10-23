@@ -46,7 +46,10 @@ impl Fixture {
         config.native_protocols.windows = None;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(self.root.join("apple.json"))?)?;
-        apple.management.listen = self.app.apple()?.config.management.listen;
+        let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        apple.management.listen = backend.local_addr()?;
+        let native_address = apple.management.listen;
+        drop(backend);
         apple.management.origin = peer.origin.clone();
         apple.trust_file = self.app.apple()?.config.trust_file.clone();
         apple.test_push_transport = Some((participant.origin(), self.root.join("ca.crt")));
@@ -61,6 +64,16 @@ impl Fixture {
         self.stop_execution_worker().await?;
         let manual = std::mem::replace(&mut self.owner, empty);
         ensure!(manual.shutdown().join().await?.is_clean());
+        let mut ingress = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )?;
+        ingress
+            .startup()?
+            .stage_task_with_token(crate::test_support::gateway::proxy(
+                tokio::net::TcpListener::bind(self.app.apple()?.config.management.listen).await?,
+                native_address,
+            ));
         let stop = tokio_util::sync::CancellationToken::new();
         let stopped = stop.clone();
         let server = tokio::spawn(crate::lifecycle::serve(
@@ -139,13 +152,39 @@ impl Fixture {
             "production APNs worker never delivered pending work"
         );
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
-        // APNs-only table failure must affect readiness even while general DB checks still work.
+        crate::test_support::http::set_management_grants(
+            crate::test_support::case::admin(),
+            json!(["runtime_diagnostics_read"]),
+        )
+        .await?;
+        // APNs failure degrades only the channel; core readiness stays available.
         sqlx::query("REVOKE SELECT ON mdm_apple.channels FROM mdm_command_runtime")
             .execute(&mut pg)
             .await?;
         let mut unhealthy = false;
         for _ in 0..120 {
-            if ready(client.clone()).await.ok() == Some(StatusCode::SERVICE_UNAVAILABLE) {
+            let response = client
+                .get(format!("http://{address}/api/v1/runtime/diagnostics"))
+                .header("host", "mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
+                .header(
+                    "cookie",
+                    self.browser
+                        .cookies
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+                .send()
+                .await?;
+            let snapshot: serde_json::Value = response.json().await?;
+            if snapshot["channels"].as_array().is_some_and(|channels| {
+                channels
+                    .iter()
+                    .any(|c| c["name"] == "apple" && c["state"] == "degraded")
+            }) {
+                ensure!(ready(client.clone()).await.ok() == Some(StatusCode::OK));
                 unhealthy = true;
                 break;
             }
@@ -156,11 +195,33 @@ impl Fixture {
             .await?;
         ensure!(
             unhealthy,
-            "persistent APNs storage failure left readiness green"
+            "persistent APNs storage failure was not reported by channel diagnostics"
         );
         let mut recovered = false;
         for _ in 0..180 {
-            if ready(client.clone()).await.ok() == Some(StatusCode::OK) {
+            let snapshot: serde_json::Value = client
+                .get(format!("http://{address}/api/v1/runtime/diagnostics"))
+                .header("host", "mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
+                .header(
+                    "cookie",
+                    self.browser
+                        .cookies
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                )
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if snapshot["channels"].as_array().is_some_and(|channels| {
+                channels
+                    .iter()
+                    .any(|c| c["name"] == "apple" && c["state"] == "ready")
+            }) {
                 recovered = true;
                 break;
             }
@@ -172,6 +233,7 @@ impl Fixture {
         );
         stop.cancel();
         tokio::time::timeout(Duration::from_secs(45), server).await???;
+        ensure!(ingress.shutdown().join().await?.is_clean());
         participant.close().await?;
         ensure!(
             tokio::net::TcpStream::connect(address).await.is_err(),
@@ -210,8 +272,8 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
     seed_fixture_materials(&f.root, &f.app.protection).await?;
     let roots = vec![std::fs::read(f.root.join("apple-root.pem"))?];
     let selection = runtime::Selection {
-        apns: 1,
-        profile: 1,
+        apns: Some(1),
+        profile: Some(1),
         accounts: std::collections::BTreeMap::from([("organization".into(), 1)]),
     };
     let store = f.app.access.apple_store();
@@ -274,4 +336,192 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
             .is_err()
     );
     f.close().await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: real host starts with Apple intent but no selected organizational materials"]
+async fn missing_apple_materials_keep_management_ready_and_listener_closed() -> Result<()> {
+    blocked_apple_host(StartupFault::MissingSelection).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: unavailable optional CA leaves management alive and closes Apple transport"]
+async fn unavailable_apple_provider_keeps_management_ready_and_listener_closed() -> Result<()> {
+    blocked_apple_host(StartupFault::ProviderUnavailable).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: conflicting origin closes only the channel and preserves persistent trust"]
+async fn conflicting_apple_trust_preserves_history_and_keeps_management_ready() -> Result<()> {
+    blocked_apple_host(StartupFault::TrustConflict).await
+}
+#[derive(Clone, Copy)]
+enum StartupFault {
+    MissingSelection,
+    ProviderUnavailable,
+    TrustConflict,
+}
+
+async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let (expected_state, expected_reason) = match fault {
+        StartupFault::MissingSelection => ("waiting", "material_not_selected"),
+        StartupFault::ProviderUnavailable => ("degraded", "dependency_unavailable"),
+        StartupFault::TrustConflict => ("degraded", "trust_conflict"),
+    };
+    let mut config = crate::test_support::identity::config(case_tenant())?;
+    let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = browser.local_addr()?;
+    drop(browser);
+    let native = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let native_address = native.local_addr()?;
+    drop(native);
+    config.listen = address;
+    config.native_protocols.windows = None;
+    config.agent_pki = crate::agent_pki::Config::Disabled {};
+    let mut apple: config::Config =
+        serde_json::from_slice(&std::fs::read(fixture.root.join("apple.json"))?)?;
+    apple.management.listen = native_address;
+    if !matches!(fault, StartupFault::TrustConflict) {
+        apple.management.origin = fixture.app.apple()?.config.management.origin.clone();
+        apple.trust_file = fixture.app.apple()?.config.trust_file.clone();
+    }
+    if !matches!(fault, StartupFault::MissingSelection) {
+        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
+        for provider in &mut config.device_pki {
+            if matches!(fault, StartupFault::ProviderUnavailable)
+                && provider.purpose == rss_mdm_agent_wire::pki::Purpose::Apple
+            {
+                provider.origin = "https://localhost:1".into();
+            }
+        }
+    } else {
+        apple.materials = Default::default();
+    }
+    crate::test_support::http::set_management_grants(
+        crate::test_support::case::admin(),
+        json!(["runtime_diagnostics_read"]),
+    )
+    .await?;
+    config.native_protocols.apple = Some(apple);
+    config.apple_material_roots = vec![fixture.root.join("apple-root.pem")];
+    let stop = tokio_util::sync::CancellationToken::new();
+    let stopped = stop.clone();
+    let server = tokio::spawn(crate::lifecycle::serve(
+        config,
+        async move {
+            stopped.cancelled().await;
+            Ok(())
+        },
+        fixture_clock(),
+    ));
+    let result: Result<()> = async {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()?;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Ok(response) = client
+                    .get(format!("http://{address}/readyz"))
+                    .header("host", "mdm.example.test")
+                    .send()
+                    .await
+                    && response.status() == StatusCode::OK
+                {
+                    break;
+                }
+                ensure!(
+                    !server.is_finished(),
+                    "missing optional materials terminated the host"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+        let response = client
+            .get(format!("http://{address}/api/v1/runtime/diagnostics"))
+            .header("host", "mdm.example.test")
+            .header("x-forwarded-for", "127.0.0.1")
+            .header(
+                "cookie",
+                fixture
+                    .browser
+                    .cookies
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+            .send()
+            .await?;
+        ensure!(
+            response.status() == StatusCode::OK,
+            "authorized diagnostics unavailable"
+        );
+        let snapshot: serde_json::Value = response.json().await?;
+        let apple = snapshot["channels"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["name"] == "apple"))
+            .ok_or_else(|| anyhow::anyhow!("missing Apple state"))?;
+        ensure!(
+            apple["state"] == expected_state && apple["listening"] == false,
+            "{apple}"
+        );
+        ensure!(apple["reasons"] == json!([expected_reason]), "{apple}");
+        let mut tx = fixture.app.access.archive_pool().begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let body: Vec<u8> = sqlx::query_scalar(
+            "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='apple'",
+        )
+        .bind(case_tenant())
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.rollback().await?;
+        let retained: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&body)?;
+        ensure!(retained.origin == fixture.app.apple()?.config.management.origin);
+        ensure!(
+            tokio::net::TcpStream::connect(native_address)
+                .await
+                .is_err(),
+            "unprepared Apple listener was published"
+        );
+        Ok(())
+    }
+    .await;
+    stop.cancel();
+    let closed = tokio::time::timeout(Duration::from_secs(45), server).await;
+    let fixture_closed = fixture.close().await;
+    result?;
+    closed???;
+    fixture_closed
+}
+
+#[tokio::test]
+#[ignore = "MODULE=apple.host: persisted Apple corruption must remain a fatal material error"]
+async fn corrupt_persisted_apple_certificate_is_not_optional_unavailability() -> Result<()> {
+    let fixture = Fixture::start().await?;
+    let result: Result<()> = async {
+        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
+        let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        sqlx::query("UPDATE mdm_apple_runtime.versions SET certificate='corrupt persisted PEM' WHERE tenant_id=$1::uuid AND purpose='apns' AND revision=1")
+            .bind(case_tenant()).execute(&mut c).await?;
+        let selection = rss_mdm_apple_channel::runtime_materials::runtime::Selection {
+            apns: Some(1), profile: Some(1), accounts: Default::default(),
+        };
+        let result = rss_mdm_apple_channel::runtime_materials::runtime::load(
+            &fixture.app.access.apple_store(), rss_request_context::TenantId::parse(case_tenant())?,
+            &fixture.app.protection, &[std::fs::read(fixture.root.join("apple-root.pem"))?],
+            &selection, time::OffsetDateTime::now_utc().unix_timestamp(),
+        ).await;
+        ensure!(matches!(result, Err(rss_mdm_apple_channel::runtime_materials::runtime::LoadError::Fatal(_))));
+        Ok(())
+    }.await;
+    let closed = fixture.close().await;
+    result?;
+    closed
 }

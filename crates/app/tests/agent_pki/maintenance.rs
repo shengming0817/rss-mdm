@@ -46,7 +46,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         certificate_file: root().join("server.crt"),
         private_key_file: root().join("agent-tls.pk8"),
     };
-    let mut tls = (*crate::native::tls::configuration(&endpoint, None)?).clone();
+    let mut tls = crate::native::tls::configuration(&endpoint, None)?.fixture_server();
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();

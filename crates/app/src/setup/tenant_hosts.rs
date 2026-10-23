@@ -67,10 +67,7 @@ pub async fn reconcile(input: &Input) -> Result<usize> {
 
 pub(super) fn validate_slots(input: &Input) -> Result<()> {
     let mut origins = std::collections::BTreeSet::from([input.origin.clone()]);
-    let mut ports = std::collections::BTreeSet::from([url::Url::parse(&input.origin)
-        .map_err(|_| Error::Input)?
-        .port_or_known_default()
-        .ok_or(Error::Input)?]);
+    let mut listeners = std::collections::BTreeSet::from([input.listen]);
     if input.additional_hosts.len() > 1023 {
         return Err(Error::Input);
     }
@@ -80,9 +77,9 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
             || url.origin().ascii_serialization() != slot.origin
             || !url.username().is_empty()
             || url.password().is_some()
-            || !slot.listen.ip().is_loopback()
+            || slot.listen.ip().is_unspecified()
             || slot.listen.port() == 0
-            || !ports.insert(url.port_or_known_default().ok_or(Error::Input)?)
+            || !listeners.insert(slot.listen)
             || !origins.insert(slot.origin.clone())
         {
             return Err(Error::Input);
@@ -270,7 +267,6 @@ pub(super) fn additional_runtime(
     candidate["identity"]["tenant_id"] = serde_json::json!(progress.tenant_id);
     candidate["product_origin"] = serde_json::json!(slot.origin);
     candidate["listen"] = serde_json::json!(slot.listen);
-    candidate["trusted_gateway"] = serde_json::json!(slot.listen.ip());
     let digest = {
         use sha2::{Digest, Sha256};
         format!(

@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import socket
 import time
 import uuid
 from release import sha
@@ -37,6 +38,7 @@ class Browser:
         if data is not None: headers["Content-Type"] = "application/json"
         connection = http.client.HTTPSConnection("127.0.0.1", self.port, context=self.context, timeout=15)
         try:
+            connection.sock=self.context.wrap_socket(socket.create_connection(("127.0.0.1",self.port),timeout=15),server_hostname=self.host)
             connection.request(method, path, body=json.dumps(data) if data is not None else None, headers=headers)
             response = connection.getresponse()
             body = response.read()
@@ -60,7 +62,12 @@ def native_pki_journey(deployed,browser):
     operation=str(uuid.uuid4())
     request=dict(wireVersion=1,operationId=operation,secret=secret,platform='macos',csr=csr)
     context=ssl.create_default_context(cafile=str(root/'ca.crt'))
-    def connection():return http.client.HTTPSConnection('localhost',deployed.agent_port,context=context,timeout=15)
+    def connection():
+        from urllib.parse import urlsplit
+        host=urlsplit(deployed.agent_origin).hostname
+        client=http.client.HTTPSConnection(host,deployed.agent_port,context=context,timeout=15)
+        client.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',deployed.agent_port),timeout=15),server_hostname=host)
+        return client
     def call(client,method,path,body=None):
         client.request(method,path,body=json.dumps(body) if body is not None else None,
                        headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})

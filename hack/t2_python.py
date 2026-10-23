@@ -26,7 +26,7 @@ def main(argv=None):
     scenario = importlib.import_module('t2_modules.' + module.python)
     if module.python == 'gateway':
         context = SimpleNamespace(gateway_owner=Environment(group='t2-gateway'))
-        context.gateway = lambda config: RunFixtures.gateway(context, config)
+        context.gateway = lambda config, files=None: RunFixtures.gateway(context, config, files)
         scenario.main(context, fixture)
     else:
         scenario.execute(fixture)
