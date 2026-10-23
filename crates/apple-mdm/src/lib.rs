@@ -2,6 +2,7 @@
 pub mod applicability;
 pub mod native;
 pub mod profile;
+pub mod platform_sso;
 pub mod protocol;
 pub mod software;
 #[derive(Clone, Copy, Debug, thiserror::Error)]

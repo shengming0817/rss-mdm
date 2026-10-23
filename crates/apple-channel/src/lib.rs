@@ -21,6 +21,7 @@ mod organizations;
 mod profiles;
 mod protection;
 pub mod push;
+pub mod platform_sso;
 pub mod renewal;
 pub mod rewrap;
 pub mod runtime_materials;
