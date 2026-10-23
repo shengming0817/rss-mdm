@@ -2154,3 +2154,8 @@ T1_INPUTS += ('crates/certificate/tests/peer.rs', 'crates/agent-wire/tests/fixtu
 consume(('crates/content-service/src/installer/xar_metadata.rs',), 'agent.configurations')
 
 consume(('crates/inventory-service/src/database.rs',), 'inventory.runtime')
+
+consume(('crates/flow-service/src/planning/group_references.sql',), 'planning.http planning.group_scope')
+consume(('crates/inventory-service/src/assets/summaries.rs',), 'device.views assets.http assets.sources apple.collection')
+consume(('crates/inventory-service/schema/directory.sql','crates/registration-service/schema/directory.sql','crates/device-service/schema/directory.sql'), 'device.views agent.current_user')
+consume(('crates/inventory-service/schema/collection-metadata.sql',), 'assets.queries assets.sources inventory.runtime')

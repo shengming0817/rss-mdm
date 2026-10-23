@@ -84,7 +84,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let stale=sessions.authenticate(access.authorization(),credential.duplicate()?).await?;
         stale.require(crate::authorization::Permission::InventorySensitiveRead,None)?;
         identity::set_grants(case_a(),viewer_id,grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventorySensitiveRead).cloned().collect()).await?;
-        let people=people(&authority,&credential,&sessions)?;
+        let people=people(&authority)?;
         let hidden=service.view(&stale,&ViewRef::Endpoint(last.into()),&people).await?;
         ensure!(hidden["endpoints"][0]["registrationUser"]["user"]["principalId"]==principal);
         ensure!(hidden["endpoints"][0]["registrationUser"]["display"].is_null(),"stale proof disclosed revoked personnel");
@@ -99,9 +99,11 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         identity::set_grants(case_a(),viewer_id,grants.clone()).await?;
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         let cursor=page["nextCursor"].as_str().context("two devices")?;
-        // Unrelated account changes must not bind device pagination.
+        // The current Identity revision fences personnel pagination.
         sqlx::query("UPDATE identity_authority.accounts SET enabled=false WHERE tenant_id=$1::uuid AND principal_id='00000000-0000-0000-0000-000000000001'").bind(case_a()).execute(&mut pg).await?;
-        ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
+        ensure!(reader.call(&router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
+        let cursor=page["nextCursor"].as_str().context("refreshed personnel cursor")?;
         ok(&mut browser,&router,Method::PUT,&local,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":{"displayName":"Renamed Person","username":null,"email":null,"extensions":{},"maxAgeSeconds":14400}}))).await?;
         person=Browser::default();
         ensure!(person.login_password(&router,"directory-person",identity::PASSWORD).await?==StatusCode::OK);

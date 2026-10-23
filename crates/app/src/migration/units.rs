@@ -288,5 +288,14 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             "inventory-source-facts-v1",
             rss_mdm_inventory_service::SOURCE_FACTS_SQL,
         ),
+        (
+            "registration-directory-v1",
+            rss_mdm_registration_service::DIRECTORY_SQL,
+        ),
+        (
+            "inventory-directory-v1",
+            rss_mdm_inventory_service::DIRECTORY_SQL,
+        ),
+        ("device-directory-v1", rss_mdm_device_service::DIRECTORY_SQL),
     ]
 }

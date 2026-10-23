@@ -9,6 +9,7 @@ use rss_mdm_resource::{
 };
 use rss_mdm_windows_mdm::{CodecLimits, syncml as s};
 use serde_json::json;
+use sqlx::Connection;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
 
@@ -1102,21 +1103,14 @@ async fn dynamic_result(
     }
     let sealed = crate::collection::store::load_on(pg, case_tenant(), run).await?;
     crate::inventory_runtime::test_support::wait_ready_projection(&host.runtime, &sealed).await?;
-    let value:serde_json::Value=sqlx::query_scalar("SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3 ORDER BY collection_sequence DESC LIMIT 1").bind(case_tenant()).bind(saved.scope.encode()?).bind(key.as_str()).fetch_one(&mut *pg).await?;
+    let value = prior_list_value(pg, &saved.scope, key).await?;
     if matches!(completion, Completion::MissingChild) {
         ensure!(value == serde_json::to_value(&old)?);
     }
     if completion == Completion::EmptyInventory {
         ensure!(value == json!({"kind":"array","value":[]}));
     }
-    let retained: serde_json::Value = sqlx::query_scalar(
-        "SELECT value::jsonb FROM mdm.inventory WHERE tenant_id=$1::uuid AND scope=$2 AND field=$3",
-    )
-    .bind(case_tenant())
-    .bind(agent_scope.encode()?)
-    .bind(agent_key.as_str())
-    .fetch_one(&mut *pg)
-    .await?;
+    let retained = prior_list_value(pg, &agent_scope, agent_key).await?;
     ensure!(
         retained == serde_json::to_value(&agent_value)?,
         "native collection modified Agent software"
@@ -1166,7 +1160,50 @@ async fn seed_prior_list(
     key: rss_mdm_inventory::FieldKey,
     value: &rss_mdm_inventory::Scalar,
 ) -> anyhow::Result<()> {
-    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
-        .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(serde_json::to_string(value)?).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(pg).await?;
+    use sha2::{Digest, Sha256};
+    let field = definition.field(key)?;
+    let value = field.canonical_value(value.clone())?;
+    let rss_mdm_inventory::Scalar::Array(items) = &value else {
+        anyhow::bail!("prior list fixture requires an array");
+    };
+    let bytes = serde_json::to_vec(&value)?;
+    let definition_bytes = serde_json::to_vec(field)?;
+    let definition_digest = format!("{:x}", Sha256::digest(&definition_bytes));
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let version = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(1, &definition_digest, &digest))?)
+    );
+    let mut tx = pg.begin().await?;
+    sqlx::query("INSERT INTO mdm.array_versions(tenant_id,version,format,field,definition_digest,item_count,canonical_bytes,digest,definition) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING")
+        .bind(scope.tenant().to_string()).bind(&version).bind(key.as_str()).bind(&definition_digest).bind(items.len() as i64).bind(bytes.len() as i64).bind(digest).bind(definition_bytes).execute(&mut *tx).await?;
+    let mut prefix = 0i64;
+    for (ordinal, item) in items.iter().enumerate() {
+        let payload = serde_json::to_vec(item)?;
+        prefix += payload.len() as i64 + i64::from(ordinal > 0);
+        sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) VALUES($1::uuid,$2,$3,$4,sha256($4),$5) ON CONFLICT DO NOTHING")
+            .bind(scope.tenant().to_string()).bind(&version).bind(ordinal as i64).bind(payload).bind(prefix).execute(&mut *tx).await?;
+    }
+    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value_version,batch_id,observed_at,received_at,state,last_known_version,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'prior-list',1,2,'known',$5,'prior-list',1,2,$6::uuid,$7,$8::uuid,0)")
+        .bind(scope.tenant().to_string()).bind(scope.encode()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(version).bind(scope.registration().as_str()).bind(scope.source().as_str()).bind(scope.epoch().as_str()).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
+}
+
+async fn prior_list_value(
+    pg: &mut sqlx::PgConnection,
+    scope: &rss_observation::Scope,
+    key: rss_mdm_inventory::FieldKey,
+) -> anyhow::Result<serde_json::Value> {
+    let fields =
+        rss_mdm_inventory_postgres::read_in(pg, scope.tenant(), std::slice::from_ref(scope))
+            .await?;
+    let fact = fields
+        .into_iter()
+        .find(|field| field.field == key)
+        .ok_or_else(|| anyhow::anyhow!("missing projected list"))?;
+    let rss_mdm_inventory::State::Known(value) = fact.fact.state else {
+        anyhow::bail!("projected list is not known");
+    };
+    Ok(serde_json::to_value(value)?)
 }
