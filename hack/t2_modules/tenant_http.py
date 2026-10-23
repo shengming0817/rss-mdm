@@ -11,7 +11,7 @@ BASE = '/api/v1/tenant-administration'
 
 
 def exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
-             builds, root, stack, login, write, rule):
+             builds, root, stack, login, write, rule, owner, database):
     def call(method, path, body=None, operation=None, browser=admin):
         headers = {'Idempotency-Key': operation or str(uuid.uuid4())} if method != 'GET' else {}
         return browser.call(method, BASE + path, body, headers)
@@ -80,6 +80,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     login(other,tenant,'tenant-admin-two')
     require(other.call('POST',f"/api/v1/identity/tenants/{tenant}/accounts/{first['result']['principalId']}/password",dict(password=password+'rotated'))[0] == 200, 'target password reset failed')
     require(call('POST',path,request,admin_key) == (200,first), 'password change invalidated immutable replay')
+    audit_backpressure(target_config, admin, other, management, tenant, password, sql, builds, root, stack, owner, database)
 
     grant_id = str(uuid.uuid4())
     status, delegated_actor = delegate.call('GET','/api/v1/identity-host/tenants/' + management + '/context')
@@ -108,6 +109,95 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     absent_host.close()
     lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
     provisioning_pages_and_active_directory(admin, sql)
+
+
+def audit_backpressure(config, manager, target_admin, management, tenant, password, sql,
+                       builds, root, stack, owner, database):
+    """Real source quota refusal preserves the product reason across all App adapters."""
+    import time
+    from contextlib import contextmanager
+    from t2_processes import subprocess
+    limit = 16
+    candidate = deepcopy(config)
+    candidate['audit_projection']['max_events'] = limit
+    candidate['audit_projection']['max_bytes'] = 10485760
+    host = Host(builds, private(root/'capacity-runtime.json', candidate), root/'capacity-host', require_ready=False)
+    stack.callback(host.close)
+    admin, target = Browser(host, config['product_origin']), Browser(host, config['product_origin'])
+    admin.cookie, admin.csrf = manager.cookie, manager.csrf
+    target.cookie, target.csrf = target_admin.cookie, target_admin.csrf
+    tenants = f"'{management}','{tenant}'"
+
+    def drained():
+        until = time.monotonic() + 30
+        while sql(f"SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id IN ({tenants}) AND projected_at IS NULL") != '0':
+            require(time.monotonic() < until, 'audit source did not drain after quota fixture')
+            time.sleep(.02)
+
+    @contextmanager
+    def hold_projection():
+        # Source admission never writes the final Audit head. A separate bounded
+        # transaction stalls only projection, without forging backlog counters.
+        process = subprocess.Popen(['docker','exec','-i',owner.container(),'psql','-X','-qAt','-v','ON_ERROR_STOP=1','-U','postgres','-d',database],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            process.stdin.write("BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL idle_in_transaction_session_timeout='30s'; LOCK TABLE rss_audit.heads IN SHARE MODE; SELECT 'projection-held';\n")
+            process.stdin.flush()
+            require(process.stdout.readline().strip() == 'projection-held', 'audit projection lock not acquired')
+            yield
+        finally:
+            _, errors = process.communicate('ROLLBACK;\n', timeout=10)
+            require(process.returncode == 0, 'audit projection lock cleanup failed: ' + errors)
+
+    def fill(browser, tenant_id, route):
+        for _ in range(limit + 1):
+            count = int(sql(f"SELECT coalesce((SELECT events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}'),0)"))
+            if count == limit:
+                require(sql(f"SELECT reserved_events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}'") == '0', 'failure reserve was already consumed')
+                return
+            require(browser.call('GET', route)[0] == 200, 'ordinary source fill rejected before capacity')
+        raise RuntimeError('successful reads did not fill the audit source')
+
+    subscription = str(uuid.uuid4())
+    settings = json.dumps(dict(presentation=dict(name='Quota rollback'), endpoint='https://receiver.invalid/', eventTypes=['device.registered'], selection=dict(kind='allDevices'), keyReference='retired-key', networkReference='retired-network'))
+    # A disabled subscription with removed delivery material is legal and deletable.
+    sql(f"INSERT INTO mdm_webhook.subscriptions(tenant_id,id,revision,target_version,settings) VALUES('{tenant}','{subscription}',1,1,'{settings}'::jsonb); INSERT INTO mdm_webhook.versions(tenant_id,subscription,version,settings) VALUES('{tenant}','{subscription}',1,'{settings}'::jsonb)")
+    try:
+        for kind in ('registry', 'provisioning', 'administrator', 'webhook'):
+            drained()
+            operation = str(uuid.uuid4())
+            before = sql(f"SELECT (SELECT count(*) FROM public.mdm_tenants)||':'||(SELECT count(*) FROM rss_transactional_messaging.tenant_epoch)||':'||(SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
+            tenant_before = sql(f"SELECT revision||':'||coalesce(notes,'') FROM public.mdm_tenants WHERE tenant_id='{tenant}'")
+            with hold_projection():
+                if kind != 'webhook':
+                    fill(admin, management, BASE+'/tenants')
+                if kind in ('administrator', 'webhook'):
+                    fill(target, tenant, '/api/v1/authorization')
+                if kind == 'registry':
+                    revision = int(tenant_before.split(':', 1)[0])
+                    response = admin.call('PUT', BASE+'/tenants/'+tenant, dict(expectedRevision=revision,notes='must rollback'), {'Idempotency-Key':operation})
+                elif kind == 'provisioning':
+                    response = admin.call('POST', BASE+'/provisionings', dict(name='Quota tenant',administratorLogin='quota-admin',administratorPassword=password), {'Idempotency-Key':operation})
+                elif kind == 'administrator':
+                    response = admin.call('POST', BASE+'/tenants/'+tenant+'/administrators', dict(login='quota-admin',password=password), {'Idempotency-Key':operation})
+                else:
+                    response = target.call('PUT', '/api/v1/webhooks/subscriptions/'+subscription, dict(operationId=operation,expectedRevision=1,change=dict(kind='delete')))
+                require(response == (503, {'code':'service_unavailable'}), kind+' changed safe quota response: '+str(response))
+                diagnostics = [json.loads(line) for line in host.log_path.read_text().splitlines() if line.startswith('{')]
+                matching = [entry for entry in diagnostics if entry.get('event') == 'mdm_request' and entry.get('operation_id') == operation]
+                require(len(matching) == 1 and matching[0].get('error', {}).get('reason') == 'audit_backpressure', kind+' lost audit quota diagnostic: '+str(matching))
+                after = sql(f"SELECT (SELECT count(*) FROM public.mdm_tenants)||':'||(SELECT count(*) FROM rss_transactional_messaging.tenant_epoch)||':'||(SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
+                require(after == before, kind+' committed partial business state')
+                require(sql(f"SELECT revision||':'||coalesce(notes,'') FROM public.mdm_tenants WHERE tenant_id='{tenant}'") == tenant_before, kind+' changed tenant metadata')
+                require(sql(f"SELECT revision||':'||deleted FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{subscription}'") == '1:false', 'quota refusal deleted webhook')
+                require(sql(f"SELECT count(*)||':'||min(version)||':'||bool_or(retired) FROM mdm_webhook.versions WHERE tenant_id='{tenant}' AND subscription='{subscription}'") == '1:1:false', 'quota refusal changed webhook versions')
+                require(sql(f"SELECT (SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}')+(SELECT count(*) FROM mdm_webhook.operations WHERE tenant_id='{tenant}' AND id='{operation}')") == '0', kind+' persisted business receipt')
+                completion_tenant = tenant if kind == 'webhook' else management
+                require(sql(f"SELECT count(*) FROM mdm_audit.receipts r JOIN rss_transactional_messaging.outbox o ON (o.tenant_id,o.message_id)=(r.tenant_id,r.message_id) WHERE r.tenant_id='{completion_tenant}' AND r.reserved AND r.projected_at IS NULL AND convert_from(r.source_bytes,'UTF8')::jsonb->>'operation'='{operation}' AND convert_from(r.source_bytes,'UTF8')::jsonb->>'outcome'='failed'") == '1', kind+' did not atomically queue failure in reserve')
+            drained()
+    finally:
+        host.close()
+        sql(f"DELETE FROM mdm_webhook.versions WHERE tenant_id='{tenant}' AND subscription='{subscription}'; DELETE FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{subscription}'")
 
 
 def administrator_rollback(call, path, tenant, password, sql):

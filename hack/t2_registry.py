@@ -1912,6 +1912,7 @@ consume(('crates/registration-service/src/agent/activation.rs','crates/registrat
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
 consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
 consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')
+consume(('crates/app/src/webhooks/mod.rs',), 'deployment.management-tenant')
 
 consume(('crates/app/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
 

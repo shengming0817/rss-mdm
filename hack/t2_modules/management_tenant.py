@@ -176,7 +176,7 @@ def execute(fixture):
         require(operations(delegate) == set(), 'revoked grant remained effective')
         from t2_modules.tenant_http import exercise
         exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
-                 builds, root, stack, login, write, rule)
+                 builds, root, stack, login, write, rule, fixture.owner, fixture.database)
         # Membership and account enable state are authoritative on every request.
         for state in ('membership', 'enabled'):
             require(admin.call('POST', api + '/accounts/' + delegate_id + '/' + state, dict(enabled=False))[0] == 200,

@@ -270,13 +270,13 @@ impl Service {
                 let result = apply_on(c, input).await?;
                 scope(c, proof.tenant_id()).await?;
                 Ok::<_, Reason>(result)
-            })).await?;
+            })).await.map_err(project)?;
             let receipt = match result {
                 Outcome::Replay(receipt) => { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); receipt }
-                Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await.map_err(|_| Reason::Storage)?; receipt }
+                Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await?; receipt }
             };
             audit.mark_commit_started();
-            Ok::<_, Reason>(receipt)
+            Ok::<_, Error>(receipt)
         })).await;
         outcome.fold(
             |value| {
@@ -297,16 +297,11 @@ impl Service {
         )
     }
 }
-impl From<rss_mdm_audit_integration::Error> for Reason {
-    fn from(_: rss_mdm_audit_integration::Error) -> Self {
-        Self::Storage
-    }
-}
-fn tx_error(error: rss_mdm_audit_integration::TransactionError<Reason>) -> Error {
+fn tx_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_mdm_audit_integration::TransactionError::Operation(reason) => project(reason),
+        rss_mdm_audit_integration::TransactionError::Operation(error) => error,
+        rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
         rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
-        _ => project(Reason::Storage),
     }
 }
 fn project(reason: Reason) -> Error {
@@ -514,6 +509,20 @@ impl axum::response::IntoResponse for HttpFailure {
             Error::CommitUnknown => Http::CommitUnknown,
             Error::RollbackFailed => Http::RollbackFailed,
             Error::Authorization(error) => error.into(),
+            Error::Unavailable(reason) => {
+                use rss_mdm_management_http::Failure as F;
+                Http::Unavailable(match reason {
+                    Failure::RequestDeadline => F::RequestDeadline,
+                    Failure::Audit => F::Audit,
+                    Failure::AuditIntegrity => F::AuditIntegrity,
+                    Failure::AuditIsolation => F::AuditIsolation,
+                    Failure::AuditAdmission => F::AuditAdmission,
+                    Failure::AuditContract => F::AuditContract,
+                    Failure::AuditBackpressure => F::AuditBackpressure,
+                    Failure::AuditReserveExhausted => F::AuditReserveExhausted,
+                    _ => F::Database,
+                })
+            }
             _ => Http::Unavailable(rss_mdm_management_http::Failure::Database),
         };
         error.into_response()

@@ -149,11 +149,11 @@ impl Service {
                     .execute(&mut *c).await.map_err(|_|Reason::Storage)?;
                 scope(c,proof.tenant_id()).await?;
                 Ok::<_,Reason>((receipt,administrator_operation,false))
-            })).await?;
+            })).await.map_err(project)?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            else {service.audit.append(tx,fact,false).await.map_err(|_|Reason::Storage)?;}
+            else {service.audit.append(tx,fact,false).await?;}
             audit.mark_commit_started();
-            Ok::<_,Reason>((receipt,administrator_operation))
+            Ok::<_,Error>((receipt,administrator_operation))
         })).await;
         attempt.fold(
             |value| {

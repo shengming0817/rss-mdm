@@ -177,14 +177,29 @@ impl Backend {
                 |ctx, tx| {
                     Box::pin(async move {
                         let (backend, proof, audit, command, failure) = ctx;
+                        let preserve_audit_error = |error: rss_mdm_audit_integration::Error| {
+                            match failure.lock() {
+                                Ok(mut failure) => *failure = Some(HttpError::from(&error)),
+                                Err(_) => {
+                                    return PgError::from(sqlx::Error::Protocol(
+                                        "webhook result lock".into(),
+                                    ));
+                                }
+                            }
+                            PgError::from(error)
+                        };
                         if operation(command).is_some() {
                             backend
                                 .audit
                                 .prepare_in(tx, audit, &[])
                                 .await
-                                .map_err(PgError::from)?;
+                                .map_err(preserve_audit_error)?;
                         } else {
-                            backend.audit.bind_in(tx).await.map_err(PgError::from)?;
+                            backend
+                                .audit
+                                .bind_in(tx)
+                                .await
+                                .map_err(preserve_audit_error)?;
                         }
                         let owned = (*backend).clone();
                         let p = proof.clone();
@@ -237,7 +252,7 @@ impl Backend {
                                 .audit
                                 .append_in(tx, &fact, replayed)
                                 .await
-                                .map_err(PgError::from)?;
+                                .map_err(preserve_audit_error)?;
                         } else {
                             audit.require_request_settlement();
                         }

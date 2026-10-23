@@ -136,7 +136,7 @@ impl Service {
             (self, &provisioner, actor, Some(prepared), request, operator, fact, audit, &saved_error, &source, &target_audit),
             |(service,provisioner,actor,prepared,request,operator,fact,audit,saved_error,source,target_audit),tx| Box::pin(async move {
                 let result = async {
-                    source.prepare_in(tx,target_audit,&[]).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+                    source.prepare_in(tx,target_audit,&[]).await?;
                     tx.with_connection(|c| Box::pin(async move {
                         sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(c).await?;
                         Ok(())
@@ -177,7 +177,7 @@ impl Service {
                             .bind(operation).bind(&tenant).bind(request).bind(receipt_json).bind(operator).execute(c).await?;
                         Ok(())
                     })).await.map_err(pg_error)?;
-                    source.append_in(tx,fact,false).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+                    source.append_in(tx,fact,false).await?;
                     audit.mark_commit_started();
                     Ok(receipt)
                 }.await;
