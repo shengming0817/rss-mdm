@@ -199,7 +199,7 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
     use rss_mdm_audit_integration::BacklogLimits;
     use rss_transactional_messaging::policy::OperationDeadline;
     let pool = pool("mdm_access").await?;
-    let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let tenant = TenantId::parse(crate::test_support::case::tenant())?;
     let store = new_store_with_limits(
         pool.clone(),
         Integrity::Plain,
