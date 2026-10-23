@@ -1843,10 +1843,12 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(converged.1["convergence"]["activeDevices"]==1 && converged.1["convergence"]["confirmedDevices"]==1,"actual convergence {converged:?}");
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
-        identity::set_grants(case_tenant(), &f.subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
-        let observed=user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
+        let mut inventory_user=authority::Authority::prepared_browser("other").await?;
+        let subject=browser_subject(&inventory_user, &f.router).await?;
+        identity::set_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
+        let observed=inventory_user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
         ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==3 && observed.1["failure"].is_null(),"inventory reader could not see target and installed facts: {observed:?}");
-        ensure!(user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?.0==StatusCode::FORBIDDEN);
+        ensure!(inventory_user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?.0==StatusCode::FORBIDDEN);
         ensure!(tls_a.owner.shutdown().join().await?.is_clean());ensure!(tls_b.owner.shutdown().join().await?.is_clean());
         Ok(())
     }).await?;

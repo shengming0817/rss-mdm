@@ -48,6 +48,17 @@ pub(crate) fn router(
     product_origin: String,
     agent: Option<Arc<rss_mdm_registration_service::agent::Service>>,
 ) -> Router {
+    let routes = routes
+        .into_iter()
+        .map(|(kind, mut route)| {
+            if kind == ChannelKind::Agent {
+                route.router = route
+                    .router
+                    .layer(axum::middleware::from_fn(super::admission::admit_agent));
+            }
+            (kind, route)
+        })
+        .collect();
     Router::new().fallback(dispatch).with_state(Dispatch {
         browser,
         routes: Arc::new(routes),

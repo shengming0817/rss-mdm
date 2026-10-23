@@ -958,7 +958,7 @@ pub(crate) fn from_state(
             crate::native::ChannelKind::Agent,
             crate::native::ChannelRouter {
                 origins: pki.origins.clone(),
-                router: router.layer(middleware::from_fn(crate::native::admission::admit_agent)),
+                router,
                 admission: crate::native::admission::Admission::new(
                     monotonic.clone(),
                     state.requests.clone(),
