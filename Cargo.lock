@@ -3832,6 +3832,7 @@ dependencies = [
  "base64 0.22.1",
  "cms",
  "openssl",
+ "percent-encoding",
  "plist",
  "ring",
  "serde",
@@ -3840,6 +3841,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "time",
+ "tokio",
  "tokio-rustls",
  "uuid",
  "x509-cert",
@@ -3961,7 +3963,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
- "xara",
  "zeroize",
  "zip",
 ]
@@ -4448,6 +4449,7 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-device-trust",
  "rss-mdm-inventory",
+ "rss-mdm-native-protection",
  "rss-mdm-pki-service",
  "rss-mdm-webhook-service",
  "rss-observation",
@@ -6605,19 +6607,6 @@ dependencies = [
  "der",
  "spki",
  "tls_codec",
-]
-
-[[package]]
-name = "xara"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbbf83fd271e6aa9f3b06c4fb2ebaedbb717a87c0f158eff7b74e4a448552eaf"
-dependencies = [
- "base64 0.23.1",
- "byteorder",
- "flate2",
- "quick-xml 0.42.0",
- "thiserror 2.0.20",
 ]
 
 [[package]]
