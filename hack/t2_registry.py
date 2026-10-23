@@ -490,7 +490,9 @@ MODULES['audit.integrity'] = replace(MODULES['audit.integrity'], db_mode='instan
 ))
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], db_mode='reuse', scope='pair')
 MODULES['audit.budget'] = replace(MODULES['audit.budget'], db_mode='reuse', scope='tenant')
-MODULES['identity.local'] = replace(MODULES['identity.local'], db_mode='instance', scope='objects')
+MODULES['identity.local'] = replace(MODULES['identity.local'], db_mode='instance', scope='objects', policies=(
+    CasePolicy('identity::t2::local::correct_passwords_keep_sessions_usable_and_expose_retry_after', 'reuse', 'tenant'),
+))
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], db_mode='reuse', scope='tenant')
 MODULES['identity.audit'] = replace(MODULES['identity.audit'], db_mode='instance', scope='objects')
 MODULES['authorization.rules'] = replace(MODULES['authorization.rules'], db_mode='reuse', scope='tenant', policies=(

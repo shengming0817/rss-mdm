@@ -21,15 +21,17 @@ def verify(context):
     # The source-key, budget, burst, error and location rules are the production file.
     config=render(ROOT/'deployment', backend='127.0.0.1:8082', public_port=8080, certificates='/run/config', web=False, plain=True)
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-    locations = ''
+    retry_path = '/api/v1/identity/tenants/11111111-1111-4111-8111-111111111111/session/reauthenticate'
+    locations = 'location = '+retry_path+' { default_type application/json; add_header Retry-After 537 always; return 429 \'{"code":"rate_limited"}\'; }'
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
     config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; client_max_body_size 128m; '+locations+' location / { return 200 "$http_x_forwarded_for"; } }}'
     with context.gateway(config) as (name,port):
-        def request(path,forward='',body=None,method='POST'):
+        def request(path,forward='',body=None,method='POST',expected_retry=None):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=15)
             try:
                 c.request(method,path,body=body,headers={'Host':'mdm.example.test','Origin':'https://mdm.example.test','X-Identity-Request':'1','X-Forwarded-For':forward})
                 r=c.getresponse();body=r.read()
+                if expected_retry is not None and r.getheader('Retry-After') != str(expected_retry):raise RuntimeError('gateway lost or replaced the Identity retry deadline')
                 if r.status>=400 and any(r.getheader(k)!=v for k,v in [('Cache-Control','no-store'),('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff')]):raise RuntimeError('gateway rejection omitted security headers')
                 return r.status,body
             finally:c.close()
@@ -40,6 +42,8 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
+        status,body=request(retry_path,expected_retry=537)
+        if status!=429 or json.loads(body)!={'code':'rate_limited'}:raise RuntimeError('gateway replaced an upstream Identity 429 with its own admission error')
         # Synthetic route payload only; registry-backed production generation is covered by management_tenant.
         public=dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
         subprocess.run(['docker','exec','--user','0','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)

@@ -118,6 +118,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             "REVOKE UPDATE (instance) ON mdm_access.authorization_rules FROM mdm_access",
         ),
         (
+            "CREATE FUNCTION rss_transactional_messaging.consumer_domain_allowed(text,text) RETURNS boolean LANGUAGE sql AS 'SELECT true'",
+            "DROP FUNCTION rss_transactional_messaging.consumer_domain_allowed(text,text)",
+        ),
+        (
             "CREATE TABLE mdm_agent.unexpected(tenant_id uuid)",
             "DROP TABLE mdm_agent.unexpected",
         ),
