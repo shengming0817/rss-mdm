@@ -30,7 +30,10 @@ pub mod session;
 pub mod tenancy;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    include_str!("../schema/authority.sql")
+);
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 

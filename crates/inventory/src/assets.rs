@@ -346,7 +346,7 @@ fn resolve_state(definition: &FieldDefinition, sources: &[&SourceFact]) -> Resul
     Ok(state)
 }
 
-fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> Result<()> {
+pub(crate) fn validate_evidence(definition: &FieldDefinition, e: &Evidence) -> Result<()> {
     if e.source == crate::Source::Manual {
         if e.scope != crate::CollectionScope::Device {
             return Err(Invalid::Evidence);

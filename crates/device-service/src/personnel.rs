@@ -1,17 +1,16 @@
-//! Request-local personnel presentation; Identity remains the only account/profile owner.
-//! ref: rss-identity@5e979508 src/operations.rs::list_accounts and src/profiles.rs::latest_profile.
+//! Bounded presentation through Identity's fixed, lifetime-scoped read relations.
+//! ref: PostgreSQL REL_17_STABLE src/backend/commands/variable.c.
 use crate::{Error, Result};
-use rss_identity_core::{PrincipalId, account::AccountKey, profile::Attribute};
-use rss_identity_postgres::{
-    AuthenticatedSession, Authority, AuthorityError, ProfileSource, ProfileStatus, TrustedProfile,
-};
-use rss_mdm_authorization_service::{
-    Permission, context::AuthorizedPrincipal, credential::RequestCredential,
-};
+use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
+use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_request_context::{Clock, TenantId};
 use rss_transactional_messaging::policy::OperationDeadline;
 use serde::Serialize;
 use serde_json::Value;
+use sqlx::{
+    Arguments, Row,
+    postgres::{PgArguments, PgRow},
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Instant,
@@ -20,44 +19,49 @@ use uuid::Uuid;
 
 const RELATIONS: [&str; 2] = ["registrationUser", "currentUser"];
 
-/// Borrows the original request credential; never stores it beyond the request or renews idle.
+/// Current host configuration for the MDM-owned Platform SSO qualification relation.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformConfiguration {
+    /// Current configuration and endpoint fingerprint.
+    pub configuration: String,
+    /// Expected application identifier.
+    pub application_id: String,
+    /// Expected installed application version.
+    pub application_version: String,
+    /// Expected native profile identifier.
+    pub profile_identifier: String,
+    /// Expected native profile UUID.
+    pub profile_uuid: Uuid,
+}
+const CURRENT_USERS: &str = concat!(
+    "WITH platform_configuration AS (SELECT $2::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    include_str!("current_users.sql")
+);
+
 pub struct Reader<'a> {
     authority: &'a Authority,
-    credential: &'a RequestCredential,
     deadline: Instant,
     clock: &'a dyn Clock,
-    pub(crate) sessions: &'a rss_mdm_authorization_service::session::SessionAuthority,
+    platform: Option<&'a PlatformConfiguration>,
 }
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Profile {
-    source: ProfileSource,
-    status: ProfileStatus,
-    display_name: Option<String>,
-    username: Option<String>,
-}
-#[derive(Default, Serialize)]
-struct Display {
-    login: Option<String>,
-    profiles: Vec<Profile>,
-}
-
 impl<'a> Reader<'a> {
     pub fn new(
         authority: &'a Authority,
-        credential: &'a RequestCredential,
         deadline: Instant,
         clock: &'a dyn Clock,
-        sessions: &'a rss_mdm_authorization_service::session::SessionAuthority,
+        platform: Option<&'a PlatformConfiguration>,
     ) -> Self {
         Self {
             authority,
-            credential,
             deadline,
             clock,
-            sessions,
+            platform,
         }
+    }
+    pub(crate) fn platform_configuration(&self) -> Result<Value> {
+        serde_json::to_value(self.platform).map_err(|_| Error::Storage)
     }
     fn budget(&self) -> Result<OperationDeadline> {
         let remaining = self
@@ -66,53 +70,42 @@ impl<'a> Reader<'a> {
             .ok_or(Error::Deadline)?;
         Ok(OperationDeadline::from_remaining(remaining))
     }
-    /// Account listing consumes its proof. Passive reinspection supplies a fresh proof per page.
-    async fn authenticate(&self, proof: &AuthorizedPrincipal) -> Result<AuthenticatedSession> {
-        let tenant = TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?;
-        let actor = match self.credential.duplicate()? {
-            RequestCredential::Cookie(secret) => {
-                self.authority
-                    .inspect_session(tenant, secret, self.budget()?)
-                    .await
-            }
-            RequestCredential::Bearer(secret) => {
-                self.authority
-                    .inspect_bearer(tenant, secret, self.budget()?)
-                    .await
-            }
-            RequestCredential::ApiKey(_) => return Err(Error::Forbidden),
+    /// Static product SELECTs compose fixed relations; no raw Identity table or connection escapes.
+    pub(crate) async fn query(
+        &self,
+        proof: &AuthorizedPrincipal,
+        select: &'static str,
+        arguments: PgArguments,
+        max_rows: usize,
+    ) -> Result<(PersonnelRevision, Vec<PgRow>)> {
+        proof.check_live()?;
+        let result = if let Ok(actor) = proof.session() {
+            self.authority
+                .with_personnel_read(actor, self.budget()?, move |context| {
+                    Box::pin(query_rows(context, select, arguments, max_rows))
+                })
+                .await
+        } else {
+            self.authority
+                .with_session_references_read(
+                    TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
+                    self.budget()?,
+                    move |context| Box::pin(query_rows(context, select, arguments, max_rows)),
+                )
+                .await
         }
         .map_err(identity_error)?;
-        let original = proof.session()?;
-        if actor.account() != original.account()
-            || actor.instance() != original.instance()
-            || actor.view().id != original.view().id
-            || actor.view().credential_kind != original.view().credential_kind
-        {
-            return Err(Error::Unauthorized);
-        }
-        Ok(actor)
+        proof.check_live()?;
+        Ok(result)
     }
-    /// Called once for the entire authorized result set, before filtering and pagination.
+    /// Only the current page's already authorized relationships are hydrated.
     pub(crate) async fn project<'b>(
         &self,
         proof: &AuthorizedPrincipal,
         sensitive: bool,
         rows: impl Iterator<Item = &'b mut Value>,
     ) -> Result<()> {
-        tokio::time::timeout_at(
-            self.deadline.into(),
-            self.project_inner(proof, sensitive, rows.collect()),
-        )
-        .await
-        .map_err(|_| Error::Deadline)?
-    }
-    async fn project_inner(
-        &self,
-        proof: &AuthorizedPrincipal,
-        sensitive: bool,
-        mut rows: Vec<&mut Value>,
-    ) -> Result<()> {
+        let mut rows = rows.collect::<Vec<_>>();
         let mut targets = BTreeSet::new();
         for endpoint in &mut rows {
             for key in RELATIONS {
@@ -125,183 +118,103 @@ impl<'a> Reader<'a> {
                             return Err(Error::Storage);
                         }
                         targets.insert(
-                            PrincipalId::parse(user["principalId"].as_str().ok_or(Error::Storage)?)
-                                .map_err(|_| Error::Storage)?
-                                .as_uuid(),
+                            Uuid::parse_str(user["principalId"].as_str().ok_or(Error::Storage)?)
+                                .map_err(|_| Error::Storage)?,
                         );
                     }
                 }
             }
         }
-        // reason: API keys and initialization proofs have no natural-person profile context.
         if targets.is_empty() || proof.session().is_err() {
             return Ok(());
         }
-        let profiles_read = permits(proof, Permission::UserProfilesRead)?;
-        let logins_read = permits(proof, Permission::IdentityAccountsManage)?;
-        let mut displays = BTreeMap::new();
-        let mut observations = BTreeMap::new();
+        if targets.len() > 400 {
+            return Err(Error::Storage);
+        }
+        let mut arguments = PgArguments::default();
+        arguments
+            .add(targets.into_iter().collect::<Vec<_>>())
+            .map_err(|_| Error::Storage)?;
+        let (revision, display_rows) = self
+            .query(proof, include_str!("personnel_display.sql"), arguments, 400)
+            .await?;
         let own = proof.session()?.account().principal.as_uuid();
-        for target in &targets {
-            if profiles_read || *target == own {
-                let profiles = self.profiles(proof, *target).await?;
-                if let Some(profiles) = profiles {
-                    observations.insert(*target, profiles);
-                    displays.insert(*target, Display::default());
-                }
+        let mut displays = BTreeMap::new();
+        for row in display_rows {
+            let id: Uuid = row.try_get("principal_id")?;
+            let profiles = match revision.profiles {
+                rss_identity_postgres::PersonnelProfileScope::None => false,
+                rss_identity_postgres::PersonnelProfileScope::SelfOnly => id == own,
+                rss_identity_postgres::PersonnelProfileScope::All => true,
+            };
+            if revision.logins || profiles {
+                displays.insert(id, row.try_get::<Value, _>("display")?);
             }
-        }
-        if logins_read {
-            self.logins(proof, &targets, &mut displays).await?;
-        }
-        for (target, mut profiles) in observations {
-            if profiles.iter().any(|profile| profile.view().is_err()) {
-                self.authenticate(proof).await?;
-                // A target observation can expire while other targets/account pages are read.
-                // Reload once to obtain its current expired/unavailable state; never emit a
-                // caller authentication error merely because an observation aged out.
-                let Some(fresh) = self.profiles(proof, target).await? else {
-                    displays.remove(&target);
-                    continue;
-                };
-                profiles = fresh;
-            }
-            if let Some(display) = displays.get_mut(&target) {
-                display.profiles = profiles.iter().map(profile).collect::<Result<_>>()?;
-            }
-        }
-        // Recheck the caller after target failures/reads, without renewing the session.
-        if profiles_read || logins_read || targets.contains(&own) {
-            self.authenticate(proof).await?;
         }
         for endpoint in rows {
             for key in RELATIONS {
                 if let Some(relation) = endpoint.get_mut(key)
                     && let Some(id) = relation["user"]["principalId"].as_str()
                 {
-                    let id = PrincipalId::parse(id)
-                        .map_err(|_| Error::Storage)?
-                        .as_uuid();
-                    relation["display"] =
-                        serde_json::to_value(displays.get(&id)).map_err(|_| Error::Storage)?;
+                    let id = Uuid::parse_str(id).map_err(|_| Error::Storage)?;
+                    relation["display"] = displays.get(&id).cloned().unwrap_or(Value::Null);
                 }
             }
         }
         Ok(())
     }
-    async fn profiles(
-        &self,
-        proof: &AuthorizedPrincipal,
-        target: Uuid,
-    ) -> Result<Option<Vec<TrustedProfile>>> {
-        let account = AccountKey {
-            tenant: TenantId::parse(proof.tenant_id()).map_err(|_| Error::Storage)?,
-            principal: PrincipalId::parse(&target.to_string()).map_err(|_| Error::Storage)?,
-        };
-        let mut cursor = None;
-        let mut profiles = Vec::new();
-        loop {
-            let result = self
-                .authority
-                .latest_profile_sources(proof.session()?, account, cursor, self.budget()?)
-                .await;
-            let Some(page) = self.target_result(proof, result).await? else {
-                return Ok(None);
-            };
-            for source in page.sources {
-                let result = self
-                    .authority
-                    .latest_profile(proof.session()?, account, source, self.budget()?)
-                    .await;
-                let Some(profile) = self.target_result(proof, result).await? else {
-                    return Ok(None);
-                };
-                profiles.push(profile);
-            }
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(Some(profiles))
-    }
-    async fn target_result<T>(
-        &self,
-        proof: &AuthorizedPrincipal,
-        value: std::result::Result<T, AuthorityError>,
-    ) -> Result<Option<T>> {
-        match value {
-            Ok(value) => Ok(Some(value)),
-            Err(AuthorityError::Rejected) => {
-                self.authenticate(proof).await?;
-                // reason: a live caller may retain a relationship to a removed/inactive target.
-                Ok(None)
-            }
-            Err(error) => Err(identity_error(error)),
-        }
-    }
-    async fn logins(
-        &self,
-        proof: &AuthorizedPrincipal,
-        targets: &BTreeSet<Uuid>,
-        displays: &mut BTreeMap<Uuid, Display>,
-    ) -> Result<()> {
-        let mut remaining = targets.clone();
-        let mut cursor = None;
-        while !remaining.is_empty() {
-            let actor = self.authenticate(proof).await?;
-            let page = self
-                .authority
-                .list_accounts(actor, cursor, 100, self.budget()?)
-                .await
-                .map_err(identity_error)?;
-            for account in page.accounts {
-                if !remaining.remove(&account.principal_id.as_uuid()) {
-                    continue;
-                }
-                if account.enabled && account.member_active {
-                    displays
-                        .entry(account.principal_id.as_uuid())
-                        .or_default()
-                        .login = account.login;
-                } else {
-                    displays.remove(&account.principal_id.as_uuid());
-                }
-            }
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        for absent in remaining {
-            displays.remove(&absent);
-        }
-        Ok(())
-    }
-}
 
-fn profile(value: &TrustedProfile) -> Result<Profile> {
-    let value = value.view().map_err(|_| Error::Deadline)?;
-    let available = matches!(value.status, ProfileStatus::Available);
-    let text = |attr: &Attribute<String>| {
-        if available {
-            attr.value().filter(|s| !s.trim().is_empty()).cloned()
-        } else {
-            None
+    pub(crate) async fn current_users(
+        &self,
+        proof: &AuthorizedPrincipal,
+        rows: &mut [Value],
+        bindings: &crate::presentation::Bindings,
+    ) -> Result<()> {
+        if rows.len() > 200 {
+            return Err(Error::Storage);
         }
-    };
-    Ok(Profile {
-        source: value.source.ok_or(Error::Storage)?,
-        status: value.status,
-        display_name: value.profile.as_ref().and_then(|p| text(&p.display_name)),
-        username: value.profile.as_ref().and_then(|p| text(&p.username)),
-    })
-}
-fn permits(proof: &AuthorizedPrincipal, permission: Permission) -> Result<bool> {
-    match proof.require(permission, None) {
-        Ok(()) => Ok(true),
-        Err(rss_mdm_authorization_service::Error::Forbidden) => Ok(false),
-        Err(error) => Err(error.into()),
+        let inputs =
+            rows.iter()
+                .filter_map(|row| {
+                    let id = row["id"].as_str()?;
+                    let binding = bindings.get(id)?;
+                    (binding.registration_valid)
+                        .then(|| {
+                            binding.reference.as_ref().map(
+                                |reference| serde_json::json!({"device":id,"reference":reference}),
+                            )
+                        })
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+        let mut arguments = PgArguments::default();
+        arguments
+            .add(serde_json::json!(inputs))
+            .map_err(|_| Error::Storage)?;
+        arguments
+            .add(self.platform_configuration()?)
+            .map_err(|_| Error::Storage)?;
+        let (_, valid) = self.query(proof, CURRENT_USERS, arguments, 200).await?;
+        let valid = valid
+            .into_iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>("device")?,
+                    row.try_get::<Value, _>("user")?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        for row in rows {
+            let id = row["id"].as_str().ok_or(Error::Storage)?;
+            if let Some(binding) = bindings.get(id) {
+                row["currentUser"] = serde_json::json!({
+                    "revision":binding.revision,
+                    "state":if valid.contains_key(id){"active"}else if binding.reference.is_some(){"invalidated"}else{"unbound"},
+                    "user":valid.get(id), "confirmedAt":binding.confirmed_at,
+                });
+            }
+        }
+        Ok(())
     }
 }
 fn identity_error(error: AuthorityError) -> Error {
@@ -311,4 +224,14 @@ fn identity_error(error: AuthorityError) -> Error {
         AuthorityError::DeadlineElapsed => Error::Deadline,
         _ => Error::Storage,
     }
+}
+
+async fn query_rows(
+    mut context: rss_identity_postgres::PersonnelRead<'_>,
+    select: &'static str,
+    arguments: PgArguments,
+    max_rows: usize,
+) -> std::result::Result<(PersonnelRevision, Vec<PgRow>), AuthorityError> {
+    let rows = context.query(select, arguments, max_rows).await?;
+    Ok((context.revision()?, rows))
 }

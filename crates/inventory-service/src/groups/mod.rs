@@ -33,7 +33,8 @@ pub trait Flow: Send + Sync {
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
-    ) -> crate::tasks::Pending<'a, Vec<references::Entry>>;
+        request: references::PageRequest,
+    ) -> crate::tasks::Pending<'a, references::Page>;
 
     fn task<'a, 'tx>(
         &'a self,

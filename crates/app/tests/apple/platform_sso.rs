@@ -108,6 +108,7 @@ async fn grants(_f: &Fixture) -> Result<()> {
     )?;
     grants.extend(
         [
+            Permission::InventorySensitiveRead,
             Permission::ResourceRead,
             Permission::ResourceWrite,
             Permission::PolicyRead,
@@ -201,11 +202,15 @@ async fn pair(
     c.close().await?;
     Ok(mdm)
 }
-async fn installed_application(registration: Uuid) -> Result<()> {
+async fn installed_application(
+    registration: Uuid,
+    dataset: &str,
+    version: Option<&str>,
+) -> Result<()> {
     use rss_mdm_inventory::{FieldKey, Scalar};
+    use sha2::{Digest, Sha256};
     let key = FieldKey::parse("device.software.apple.installed_applications")?;
-    let definition =
-        crate::test_support::inventory::definition("psso-applications", "mdm.apple", &[key]);
+    let definition = crate::test_support::inventory::definition(dataset, "mdm.apple", &[key]);
     crate::test_support::inventory::register_definition(&definition)?;
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -221,18 +226,35 @@ async fn installed_application(registration: Uuid) -> Result<()> {
         registration,
         "mdm.apple",
         epoch,
-        "psso-applications",
+        dataset,
     )?
     .encode()?;
-    let value = serde_json::to_string(&Scalar::Array(vec![Scalar::Object(
-        [
-            ("id".into(), Scalar::String("com.rss.psso".into())),
-            ("version".into(), Scalar::String("1.0".into())),
-        ]
-        .into(),
-    )]))?;
-    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{\"kind\":\"device\"}',$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,'known',$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,$6,'mdm.apple',$7,1)")
-        .bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(value).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
+    let mut object =
+        std::collections::BTreeMap::from([("id".into(), Scalar::String("com.rss.psso".into()))]);
+    if let Some(v) = version {
+        object.insert("version".into(), Scalar::String(v.into()));
+    }
+    let value = definition
+        .field(key)?
+        .canonical_value(Scalar::Array(vec![Scalar::Object(object)]))?;
+    let Scalar::Array(items) = &value else {
+        unreachable!()
+    };
+    let bytes = serde_json::to_vec(&value)?;
+    let field = serde_json::to_vec(definition.field(key)?)?;
+    let fd = format!("{:x}", Sha256::digest(&field));
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let value_version = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(1, &fd, &digest))?)
+    );
+    sqlx::query("INSERT INTO mdm.array_versions(tenant_id,version,format,field,definition_digest,item_count,canonical_bytes,digest,definition) VALUES($1::uuid,$2,1,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING")
+        .bind(case_tenant()).bind(&value_version).bind(key.as_str()).bind(fd).bind(items.len() as i64).bind(bytes.len() as i64).bind(digest).bind(field).execute(&mut *tx).await?;
+    let payload = serde_json::to_vec(&items[0])?;
+    sqlx::query("INSERT INTO mdm.array_items(tenant_id,version,ordinal,payload,digest,prefix_bytes) VALUES($1::uuid,$2,0,$3,sha256($3),$4) ON CONFLICT DO NOTHING")
+        .bind(case_tenant()).bind(&value_version).bind(&payload).bind(payload.len() as i64).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value_version,batch_id,observed_at,received_at,state,last_known_version,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{\"kind\":\"device\"}',$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,'known',$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,$6,'mdm.apple',$7,1)")
+        .bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(value_version).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
     tx.commit().await?;
     c.close().await?;
     Ok(())
@@ -523,7 +545,19 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let (security,_) = peer.next("SecurityInfo").await?;
         let waiting = peer.manage("Acknowledged",Some(security),Some(("SecurityInfo",protocol::dictionary([("ManagementStatus",protocol::dictionary([("EnrolledViaDEP",false.into()),("UserApprovedEnrollment",true.into()),("IsUserEnrollment",false.into())]).into())]).into()))).await?;
         ensure!(waiting.is_empty(),"RSS profile waits for application observation: {}",String::from_utf8_lossy(&waiting));
-        installed_application(mdm.registration_id).await?;
+        installed_application(mdm.registration_id,"psso-applications",Some("1.0")).await?;
+        installed_application(mdm.registration_id,"psso-missing-version",None).await?;
+        ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"a valid scope must not mask another scope missing version");
+        {
+            let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut pg).await?;
+            let cfg=serde_json::to_value(f.ade.platform_sso.as_ref().unwrap().qualification_configuration()?)?;
+            let valid:bool=sqlx::query_scalar("SELECT mdm_apple.application_valid_until($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint) IS NOT NULL").bind(mdm.registration_id).bind(&cfg).fetch_one(&mut pg).await?;
+            ensure!(!valid,"missing version in another scope must reject application qualification");
+            sqlx::query("DELETE FROM mdm.inventory i USING mdm.collection_definitions d WHERE (i.tenant_id,i.coverage,i.source)=(d.tenant_id,d.coverage,d.source) AND i.tenant_id=$1::uuid AND d.dataset='psso-missing-version'").bind(case_tenant()).execute(&mut pg).await?;
+            let valid:bool=sqlx::query_scalar("SELECT mdm_apple.application_valid_until($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint) IS NOT NULL").bind(mdm.registration_id).bind(&cfg).fetch_one(&mut pg).await?;
+            ensure!(valid,"valid scope alone qualifies");
+        }
         let (execute,_)=peer.next("InstallProfile").await?;
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
@@ -557,12 +591,47 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let (status,headers,body)=browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().context("access token")?).await?;
         ensure!(status==StatusCode::OK,"browser exchange {status}: {body}");
         ensure!(headers.get_all("set-cookie").iter().any(|h|h.to_str().is_ok_and(|s|s.starts_with("__Host-identity-session="))),"P2 must issue ordinary Identity session");
+        let secret=headers.get_all("set-cookie").iter().filter_map(|h|h.to_str().ok()).find_map(|v|v.strip_prefix("__Host-identity-session=").and_then(|v|v.split(';').next())).context("platform cookie")?;
+        let session=f.app.identity.authority.inspect_session(f.app.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
+        let reference=serde_json::to_value(session.reference()?)?;
+        {
+            let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut pg).await?;
+            sqlx::query("INSERT INTO mdm_access.current_users(tenant_id,device,revision,registration,generation,session_reference,confirmed_at) SELECT tenant_id,device,1,id,generation,$3,floor(extract(epoch FROM clock_timestamp()))::bigint FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(agent_registration).bind(&reference).execute(&mut pg).await?;
+        }
+        directory_session(&mut f,agent_device,true).await?;
+        // A local lookup must not evaluate an unrelated source, even if its document is corrupt.
+        {
+            let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            sqlx::query("BEGIN").execute(&mut pg).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut pg).await?;
+            sqlx::query("UPDATE mdm_apple.psso_sources SET document=jsonb_set(document,'{bindingGeneration}','\"invalid\"'::jsonb) WHERE tenant_id=$1::uuid AND id=$2::uuid")
+                .bind(case_tenant()).bind(registered["sourceId"].as_str().context("source id")?).execute(&mut pg).await?;
+            sqlx::query("SET LOCAL ROLE mdm_access").execute(&mut pg).await?;
+            let cfg=serde_json::to_value(f.ade.platform_sso.as_ref().unwrap().qualification_configuration()?)?;
+            let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.platform_session_qualifications($1,$2,floor(extract(epoch FROM statement_timestamp()))::bigint)")
+                .bind(Uuid::new_v4()).bind(cfg).fetch_one(&mut pg).await?;
+            ensure!(count==0,"missing source has no qualification and cannot evaluate another source");
+            sqlx::query("ROLLBACK").execute(&mut pg).await?;
+        }
+        // Changing protected evidence must invalidate the cached qualification immediately.
+        {
+            let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut pg).await?;
+            let cipher:Vec<u8>=sqlx::query_scalar("SELECT response FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(observe).fetch_one(&mut pg).await?;
+            sqlx::query("UPDATE mdm_apple.attempts SET response=set_byte(response,octet_length(response)-1,get_byte(response,octet_length(response)-1)#1) WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(observe).execute(&mut pg).await?;
+            directory_session(&mut f,agent_device,false).await?;
+            sqlx::query("UPDATE mdm_apple.attempts SET response=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(observe).bind(cipher).execute(&mut pg).await?;
+        }
+        directory_session(&mut f,agent_device,true).await?;
         let fresh=login_request(&f,&device,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&fresh).await?.0==StatusCode::OK,"fresh SE renewal");
         ensure!(browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().unwrap()).await?.0==StatusCode::UNAUTHORIZED,"renewal replaces the native access token");
         let replacement=Key::new()?;
         let replaced=register_key(&f,"device",None,agent_registration,&replacement,&device_encryption).await?;
         ensure!(replaced["sourceId"]==registered_device["sourceId"]&&replaced["sourceVersion"]==2);
+        directory_session(&mut f,agent_device,false).await?;
         let stale=login_request(&f,&replacement,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
         let repaired=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
@@ -627,4 +696,54 @@ async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
     ensure!(worker.shutdown().join().await?.is_clean());
     f.close().await?;
     result
+}
+
+async fn directory_session(f: &mut Fixture, device: &str, active: bool) -> Result<()> {
+    let (status, detail) = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/device-views/endpoint/{device}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "directory detail {status}: {detail}"
+    );
+    let user = &detail["endpoints"]
+        .as_array()
+        .context("endpoints")?
+        .iter()
+        .find(|e| e["id"] == device)
+        .context("agent endpoint")?["currentUser"];
+    ensure!(
+        user["state"] == if active { "active" } else { "invalidated" },
+        "SSO currentUser {user}"
+    );
+    let (status, page) = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "/api/v1/device-views?limit=1&search={}",
+                crate::test_support::case::admin()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "directory search {status}: {page}"
+    );
+    let found = page["items"]
+        .as_array()
+        .context("items")?
+        .iter()
+        .flat_map(|g| g["endpoints"].as_array().into_iter().flatten())
+        .any(|e| e["id"] == device && e["currentUser"]["state"] == "active");
+    ensure!(found == active, "SSO search {page}");
+    Ok(())
 }

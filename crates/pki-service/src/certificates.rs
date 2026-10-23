@@ -22,6 +22,8 @@ pub async fn record_candidate_in(
     issuer: &str,
     certificate: &[u8],
 ) -> Result<(), Error> {
+    let qualification =
+        crate::qualification::for_certificate_in(c, tenant, purpose, certificate).await?;
     let leaf = x509_cert::Certificate::from_der(certificate).map_err(|_| Error::Request)?;
     let fingerprint = sha2::Sha256::digest(certificate).to_vec();
     let serial = serial(leaf.tbs_certificate.serial_number.as_bytes());
@@ -31,15 +33,18 @@ pub async fn record_candidate_in(
         .not_after
         .to_unix_duration()
         .as_secs() as i64;
-    let changed = sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,registration,not_after,certificate) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(tenant_id,purpose,fingerprint) DO NOTHING")
+    let changed = sqlx::query("INSERT INTO mdm_pki.certificates(tenant_id,purpose,fingerprint,issuer,serial,registration,not_after,certificate,verification_version,verification_trust,verification_start,verification_end) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(tenant_id,purpose,fingerprint) DO NOTHING")
         .bind(tenant).bind(purpose).bind(&fingerprint).bind(issuer).bind(&serial).bind(registration)
-        .bind(end).bind(certificate).execute(&mut *c).await.map_err(|_| Error::Storage)?.rows_affected();
+        .bind(end).bind(certificate).bind(rss_mdm_device_trust::qualification::VERSION)
+        .bind(&qualification.trust).bind(qualification.start).bind(qualification.end).execute(&mut *c).await.map_err(|_| Error::Storage)?.rows_affected();
     if changed == 0 {
-        let old: (Option<Uuid>,Vec<u8>,String) = sqlx::query_as("SELECT registration,certificate,issuer FROM mdm_pki.certificates WHERE tenant_id=$1::uuid AND purpose=$2 AND fingerprint=$3")
-            .bind(tenant).bind(purpose).bind(fingerprint).fetch_one(&mut *c).await.map_err(|_| Error::Storage)?;
+        let old: (Option<Uuid>,Vec<u8>,String,bool) = sqlx::query_as("SELECT registration,certificate,issuer,(verification_version=$4 AND verification_trust=$5 AND verification_start IS NOT DISTINCT FROM $6 AND verification_end IS NOT DISTINCT FROM $7) AS verified FROM mdm_pki.certificates WHERE tenant_id=$1::uuid AND purpose=$2 AND fingerprint=$3")
+            .bind(tenant).bind(purpose).bind(fingerprint).bind(rss_mdm_device_trust::qualification::VERSION)
+            .bind(&qualification.trust).bind(qualification.start).bind(qualification.end).fetch_one(&mut *c).await.map_err(|_| Error::Storage)?;
         if (old.0.is_some() && registration.is_some() && old.0 != registration)
             || old.1 != certificate
             || old.2 != issuer
+            || !old.3
         {
             return Err(Error::Conflict);
         }

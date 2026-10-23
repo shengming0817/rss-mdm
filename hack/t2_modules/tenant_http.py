@@ -129,10 +129,32 @@ def audit_backpressure(config, manager, target_admin, management, tenant, passwo
     tenants = f"'{management}','{tenant}'"
 
     def drained():
-        until = time.monotonic() + 30
-        while sql(f"SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id IN ({tenants}) AND projected_at IS NULL") != '0':
-            require(time.monotonic() < until, 'audit source did not drain after quota fixture')
-            time.sleep(.02)
+        def pending():
+            # A cancelled projection may leave a durable claim after commit-unknown.
+            # Observe its actual recovery horizon; never clear or shorten that claim.
+            return json.loads(sql(f"""WITH pending AS (
+                SELECT r.message_id,o.status,o.lease_until,o.retry_after,
+                  (SELECT max(i.lease_until) FROM rss_transactional_messaging.inbox i
+                   WHERE (i.tenant_id,i.message_id)=(r.tenant_id,r.message_id)
+                     AND i.disposition IS NULL) AS inbox_lease
+                FROM mdm_audit.receipts r
+                LEFT JOIN rss_transactional_messaging.outbox o
+                  ON (o.tenant_id,o.message_id)=(r.tenant_id,r.message_id)
+                WHERE r.tenant_id IN ({tenants}) AND r.projected_at IS NULL)
+                SELECT jsonb_build_object('count',count(*),
+                  'waitSeconds',greatest(0,coalesce(extract(epoch FROM
+                    (max(greatest(lease_until,inbox_lease,retry_after))-clock_timestamp())),0)),
+                  'sample',(SELECT jsonb_agg(to_jsonb(p)) FROM (SELECT * FROM pending LIMIT 8) p))
+                FROM pending"""))
+
+        state = pending()
+        # Production claims last 60 s. Keep the normal 30 s processing allowance,
+        # include only the observed lease horizon, and cap the entire drain at 90 s.
+        until = time.monotonic() + min(90, 30 + state['waitSeconds'])
+        while state['count']:
+            require(time.monotonic() < until, 'audit source did not drain after quota fixture: ' + json.dumps(state))
+            time.sleep(.1)
+            state = pending()
 
     @contextmanager
     def hold_projection():

@@ -63,7 +63,8 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             "manual-device",
             rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
-            &fact
+            &fact.state,
+            &fact.evidence
         )
         .await?,
         Some(1)
@@ -75,7 +76,8 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             "manual-device",
             rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
-            &fact
+            &fact.state,
+            &fact.evidence
         )
         .await?,
         None
@@ -83,6 +85,56 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
     assert_eq!(
         pg::manual_in(&mut tx, tenant, &["manual-device".into()]).await?[0].fact,
         fact
+    );
+    // Exercise the storage page byte bound independently of the HTTP item-count bound.
+    let mut field = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|field| field.key == rss_mdm_inventory::builtin::OFFICE_FLOOR)
+        .unwrap();
+    field.key = rss_mdm_inventory::FieldKey::parse("custom.array_page")?;
+    field.value_type = rss_mdm_inventory::ValueType::Array {
+        items: Box::new(rss_mdm_inventory::ValueType::String {
+            max_length: 64,
+            allow_empty: true,
+        }),
+        max_items: 8,
+    };
+    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    let items = vec![
+        Scalar::String("中文🙂".into()),
+        Scalar::String("second".into()),
+        Scalar::String("last".into()),
+    ];
+    assert_eq!(
+        pg::assign_in(
+            &mut tx,
+            tenant,
+            "array-device",
+            field.key,
+            0,
+            &State::Known(Scalar::Array(items.clone())),
+            &fact.evidence
+        )
+        .await?,
+        Some(1)
+    );
+    let version: String = sqlx::query_scalar("SELECT value_version FROM mdm.manual_assignments WHERE tenant_id=$1::uuid AND device='array-device' AND field=$2")
+        .bind(tenant.to_string()).bind(field.key.as_str()).fetch_one(&mut *tx).await?;
+    let budget = serde_json::to_vec(&items[0])?.len();
+    let first = pg::arrays::page(&mut tx, tenant, &version, 0, 8, budget).await?;
+    assert_eq!(first.items, items[..1]);
+    assert_eq!(first.next, Some(1));
+    let second =
+        pg::arrays::page(&mut tx, tenant, &version, first.next.unwrap(), 8, budget).await?;
+    assert_eq!(second.items, items[1..2]);
+    assert_eq!(second.next, Some(2));
+    let last = pg::arrays::page(&mut tx, tenant, &version, second.next.unwrap(), 8, budget).await?;
+    assert_eq!(last.items, items[2..]);
+    assert_eq!(last.next, None);
+    assert!(
+        pg::arrays::page(&mut tx, tenant, &version, 0, 8, budget - 1)
+            .await
+            .is_err()
     );
     tx.rollback().await?;
     let mut tx = c.begin().await?;

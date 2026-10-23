@@ -41,7 +41,7 @@ SELECT
  AND NOT EXISTS(SELECT 1 FROM reachable r WHERE has_table_privilege(r.oid,t.oid,'INSERT,UPDATE,DELETE')
  OR has_any_column_privilege(r.oid,t.oid,'INSERT,UPDATE,REFERENCES'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
- WHERE c.oid NOT IN(t.oid,'mdm.field_versions'::regclass,'mdm.collection_definitions'::regclass) AND n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f')
+ WHERE c.oid NOT IN(t.oid,'mdm.field_versions'::regclass,'mdm.collection_definitions'::regclass,'mdm.array_versions'::regclass,'mdm.array_items'::regclass) AND n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f')
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema') AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND has_schema_privilege(current_user,n.oid,'USAGE') AND has_function_privilege(current_user,p.oid,'EXECUTE'))
@@ -49,9 +49,9 @@ SELECT
  EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND contype='p' AND pg_get_constraintdef(oid)='PRIMARY KEY (tenant_id, journal, generation, scope, field, field_scope)') AS identity,
  (SELECT jsonb_agg(jsonb_build_array(attname,format_type(atttypid,atttypmod),attnotnull) ORDER BY attnum)
  FROM pg_attribute WHERE attrelid=t.oid AND attnum>0 AND NOT attisdropped) =
- '[ ["tenant_id","uuid",true],["journal","text",true],["generation","text",true],["scope","text",true],["coverage","text",true],["field","text",true],["value","text",false],["batch_id","text",true],["observed_at","bigint",true],["received_at","bigint",true],["state","text",true],["last_known","text",false],["last_known_batch","text",false],["last_known_observed","bigint",false],["last_known_received","bigint",false],["registration","text",true],["source","text",true],["epoch","text",true],["collection_sequence","bigint",true],["field_scope","text",true] ]'::jsonb
+ '[ ["tenant_id","uuid",true],["journal","text",true],["generation","text",true],["scope","text",true],["coverage","text",true],["field","text",true],["value","text",false],["batch_id","text",true],["observed_at","bigint",true],["received_at","bigint",true],["state","text",true],["last_known","text",false],["last_known_batch","text",false],["last_known_observed","bigint",false],["last_known_received","bigint",false],["registration","text",true],["source","text",true],["epoch","text",true],["collection_sequence","bigint",true],["field_scope","text",true],["value_version","text",false],["last_known_version","text",false] ]'::jsonb
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_value_state' AND convalidated
- AND pg_get_constraintdef(oid)='CHECK (((state = ''known''::text) = (value IS NOT NULL)))')
+ AND pg_get_constraintdef(oid)='CHECK (((state = ''known''::text) = ((value IS NOT NULL) OR (value_version IS NOT NULL))))')
  AND EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=t.oid AND conname='inventory_state_check' AND convalidated
  AND pg_get_constraintdef(oid)='CHECK ((state = ANY (ARRAY[''known''::text, ''null''::text, ''deleted''::text, ''unsupported''::text, ''unknown_conflict''::text, ''unknown_incomplete''::text, ''unknown_native''::text, ''unknown_limit''::text])))')
  AND EXISTS(SELECT 1 FROM pg_index i JOIN pg_class idx ON idx.oid=i.indexrelid WHERE i.indrelid=t.oid AND idx.relname='inventory_source'
@@ -118,6 +118,34 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
             ]),
         ),
         (
+            "array_versions",
+            "PRIMARY KEY (tenant_id, version)",
+            serde_json::json!([
+                ["tenant_id", "uuid", true],
+                ["version", "text", true],
+                ["format", "integer", true],
+                ["field", "text", true],
+                ["definition_digest", "text", true],
+                ["item_count", "bigint", true],
+                ["canonical_bytes", "bigint", true],
+                ["digest", "text", true],
+                ["definition", "bytea", true]
+            ]),
+        ),
+        (
+            "array_items",
+            "PRIMARY KEY (tenant_id, version, ordinal)",
+            serde_json::json!([
+                ["tenant_id", "uuid", true],
+                ["version", "text", true],
+                ["ordinal", "bigint", true],
+                ["payload", "bytea", true],
+                ["digest", "bytea", true],
+                ["item_bytes", "integer", false],
+                ["prefix_bytes", "bigint", true]
+            ]),
+        ),
+        (
             "collection_results",
             "PRIMARY KEY (tenant_id, run)",
             serde_json::json!([
@@ -142,6 +170,9 @@ pub async fn verify_collections(c: &mut sqlx::PgConnection) -> Result<()> {
                 )
         };
         let insert = match table {
+            "array_versions" | "array_items" => {
+                matches!(role.as_str(), "mdm_runtime" | "mdm_flow_runtime")
+            }
             "field_versions" | "retention_policies" => role == "mdm_flow_runtime",
             "collection_definitions" => matches!(
                 role.as_str(),

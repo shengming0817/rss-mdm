@@ -181,11 +181,7 @@ impl Groups {
             GroupChange::Delete => {
                 group_checked(self.groups.lock_reference_target_in(tx, group).await?)?;
                 flow.assert_unused(tx, id).await?;
-                if dependencies::graph_in(tx)
-                    .await?
-                    .values()
-                    .any(|refs| refs.contains(&id))
-                {
+                if dependencies::used_in(tx, id).await? {
                     return Err(Error::Conflict.into());
                 }
                 let tenant = self.tenant;

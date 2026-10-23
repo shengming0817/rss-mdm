@@ -48,23 +48,7 @@ impl Query {
     }
 }
 const DIRECTORY: &str = r#"
-WITH targets AS (
- SELECT id FROM mdm_access.devices WHERE tenant_id=$1::uuid
- UNION SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id)
- WHERE q.tenant_id=$1::uuid AND q.issuance_operation IS NOT NULL
-), visible AS (
- SELECT id FROM targets WHERE ($2::text[] IS NULL OR id=ANY($2))
-), heads AS (
- SELECT d.id,
- CASE WHEN EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.credentials c ON(c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.state='active' AND c.state='active') THEN 'active'
- WHEN EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.state='pending' AND q.expires_at>statement_timestamp() AND NOT EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE (r.tenant_id,r.request_id)=(q.tenant_id,q.id))) THEN 'pending'
- WHEN EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.state='revoked') THEN 'revoked'
- WHEN EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.state='superseded') THEN 'superseded'
- WHEN EXISTS(SELECT 1 FROM mdm_access.devices r WHERE r.tenant_id=$1::uuid AND r.id=d.id) THEN 'registered'
- WHEN EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.state='cancelled') THEN 'cancelled'
- ELSE 'expired' END AS status
- FROM visible d
-), filtered AS (
+WITH heads AS (SELECT id,status,summary FROM mdm_access.directory_endpoints WHERE tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2))), filtered AS (
  SELECT * FROM heads d WHERE ($3::text IS NULL OR status=$3)
  AND ($4::text IS NULL OR EXISTS(SELECT 1 FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.channel=$4)
  OR EXISTS(SELECT 1 FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND CASE WHEN q.source LIKE 'mdm.%' THEN 'mdm' ELSE 'agent' END=$4))
@@ -73,15 +57,7 @@ WITH targets AS (
  SELECT * FROM filtered WHERE ($6::text IS NULL OR CASE WHEN $7 THEN id COLLATE "C"<$6 COLLATE "C" ELSE id COLLATE "C">$6 COLLATE "C" END)
  ORDER BY CASE WHEN NOT $7 THEN id END COLLATE "C" ASC, CASE WHEN $7 THEN id END COLLATE "C" DESC LIMIT $8
 )
-SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',d.id,'status',d.status,
- 'primaryMdmRegistration',(SELECT jsonb_build_object('registrationId',r.id,'generation',r.generation,'source',q.source) FROM mdm_access.registrations r JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.channel='mdm' AND r.purpose='primary' AND r.state='active'),
- 'channels',coalesce((SELECT jsonb_agg(jsonb_build_object('registrationId',r.id,'channel',r.channel,'generation',r.generation,'status',r.state,'source',r.source,'platform',r.platform,'lastCommunicationReceivedAt',floor(extract(epoch FROM r.last_communication_received_at))::bigint,
- 'children',coalesce((SELECT jsonb_agg(jsonb_build_object('registrationId',child.id,'purpose',child.purpose,'generation',child.generation,'status',child.state,'ready',child.ready,'parentRegistrationId',child.parent_id,'parentGeneration',child.parent_generation) ORDER BY child.purpose) FROM
- (SELECT DISTINCT ON(c.purpose) c.id,c.purpose,c.generation,c.state,c.ready,c.parent_id,c.parent_generation FROM mdm_access.registrations c WHERE c.tenant_id=$1::uuid AND c.device=d.id AND c.parent_id=r.id AND c.parent_generation=r.generation ORDER BY c.purpose,c.generation DESC) child),'[]'::jsonb),
- 'userContext',CASE WHEN r.windows_profile='Full' THEN jsonb_build_object('id',r.id,'parentRegistrationId',r.id,'parentGeneration',r.generation,'registrationStatus',r.state) END) ORDER BY r.channel) FROM
- (SELECT DISTINCT ON(r.channel) r.id,r.channel,r.generation,r.state,r.last_communication_received_at,q.windows_profile,coalesce(q.source,'agent.builtin') AS source,CASE q.source WHEN 'mdm.windows' THEN 'windows' WHEN 'mdm.apple' THEN 'macos' ELSE g.platform END AS platform FROM mdm_access.registrations r LEFT JOIN mdm_access.requests q ON(q.tenant_id,q.id)=(r.tenant_id,r.request_id) LEFT JOIN mdm_access.agent_grants g ON(g.tenant_id,g.id)=(r.tenant_id,r.agent_grant_id) WHERE r.tenant_id=$1::uuid AND r.device=d.id AND r.purpose='primary' ORDER BY r.channel,r.generation DESC) r),'[]'::jsonb),
- 'enrollments',coalesce((SELECT jsonb_agg(jsonb_build_object('enrollmentId',q.id,'source',q.source,'platform',CASE q.source WHEN 'mdm.windows' THEN 'windows' WHEN 'mdm.apple' THEN 'macos' END,'status',CASE WHEN q.state='pending' AND q.expires_at<=statement_timestamp() THEN 'expired' ELSE q.state END,'expiresAt',floor(extract(epoch FROM q.expires_at))::bigint) ORDER BY q.source) FROM
- (SELECT DISTINCT ON(q.source) q.id,q.source,q.state,q.expires_at FROM mdm_access.requests q JOIN mdm_access.grants g ON(g.tenant_id,g.id)=(q.tenant_id,q.grant_id) WHERE q.tenant_id=$1::uuid AND g.device=d.id AND q.issuance_operation IS NOT NULL ORDER BY q.source,q.expires_at DESC,q.id DESC) q),'[]'::jsonb))
+SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(d.summary
  ORDER BY CASE WHEN NOT $7 THEN d.id END COLLATE "C" ASC, CASE WHEN $7 THEN d.id END COLLATE "C" DESC) FROM page d),'[]'::jsonb),
  'statistics',(SELECT jsonb_build_object('total',count(*),'pending',count(*) FILTER(WHERE status='pending'),'active',count(*) FILTER(WHERE status='active'),'revoked',count(*) FILTER(WHERE status='revoked')) FROM filtered),
  'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint)
@@ -157,22 +133,24 @@ impl DeviceService {
     }
 }
 
-/// Current directory rows inside a consumer-owned tenant transaction. Caller supplies live scope.
+/// Hydrate one already authorized endpoint page; this entry cannot enumerate a tenant.
 pub async fn page_on(
     c: &mut sqlx::PgConnection,
     tenant: &str,
-    allowed: Option<Vec<String>>,
-    after: Option<String>,
+    devices: &[String],
 ) -> Result<Value, Error> {
+    if devices.len() > 200 {
+        return Err(Error::Malformed);
+    }
     sqlx::query_scalar(DIRECTORY)
         .bind(tenant)
-        .bind(allowed)
+        .bind(devices)
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
         .bind(Option::<String>::None)
-        .bind(after)
+        .bind(Option::<String>::None)
         .bind(false)
-        .bind(1000_i64)
+        .bind(200_i64)
         .fetch_one(c)
         .await
         .map_err(db)

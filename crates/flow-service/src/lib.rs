@@ -17,7 +17,11 @@ use rss_mdm_inventory_service::{assets, compliance};
 use rss_mdm_registration_service::device;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/qualification.sql")
+);
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 

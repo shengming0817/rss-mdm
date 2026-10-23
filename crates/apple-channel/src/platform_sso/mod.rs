@@ -61,6 +61,18 @@ impl Runtime {
         use sha2::Digest;
         Ok(crypto::encode(&sha2::Sha256::digest(bytes)))
     }
+    pub fn qualification_configuration(
+        &self,
+    ) -> Result<rss_mdm_device_service::personnel::PlatformConfiguration, Error> {
+        let profile = self.profile()?;
+        Ok(rss_mdm_device_service::personnel::PlatformConfiguration {
+            configuration: self.fingerprint()?,
+            application_id: self.configuration.application_id.clone(),
+            application_version: self.configuration.application_version.clone(),
+            profile_identifier: profile.identifier,
+            profile_uuid: profile.uuid,
+        })
+    }
     pub fn jwks(&self) -> serde_json::Value {
         serde_json::json!({"keys":self.keys.values().map(|k|k.jwk()).collect::<Vec<_>>()})
     }
@@ -93,7 +105,11 @@ impl Runtime {
 fn runtime(app: &HttpState) -> Result<&Runtime, Error> {
     app.platform_sso.as_deref().ok_or(Error::Unsupported)
 }
-pub const INSTALL_SQL: &str = include_str!("../../schema/platform-sso.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../../schema/platform-sso.sql"),
+    "\n",
+    include_str!("../../schema/platform-qualifications.sql")
+);
 
 /// Verify the borrowed Identity runtime's product read/locking privileges at startup.
 pub async fn verify_runtime(c: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {

@@ -42,6 +42,14 @@
     {
       "name": "mdm_apple.account_current",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.application_valid_until",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_apple.platform_session_qualifications",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

@@ -59,7 +59,16 @@
       "delete_policy": null
     }
   ],
-  "functions": [],
+  "functions": [
+    {
+      "name": "mdm_access.operation_authority_valid",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_access.operation_authority_valid_until",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
   "external_relations": [],
   "verified_schemas": []
 }

@@ -3,7 +3,7 @@ use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_inventory::Channel;
 use rss_mdm_registration_service::device::endpoints;
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Row};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -101,23 +101,25 @@ impl Associations {
                             )
                             .await?;
                             let snapshot = authorization(c, proof).await?;
-                            let world = identity::world(
-                                c,
-                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-                            )
-                            .await?;
-                            let a = world
-                                .associations
-                                .iter()
-                                .find(|a| a.id == id)
-                                .cloned()
-                                .ok_or(Error::NotFound)?;
+                            let a = load(c, proof.tenant_id(), id).await?;
                             authorize(&snapshot, proof, &a.members, false).map_err(
                                 |e| match e {
                                     Error::Forbidden => Error::NotFound,
                                     other => other,
                                 },
                             )?;
+                            let ids = a
+                                .members
+                                .iter()
+                                .map(|m| m.device.clone())
+                                .collect::<Vec<_>>();
+                            let world = identity::local_world(
+                                c,
+                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+                                &ids,
+                                &[id],
+                            )
+                            .await?;
                             let a = world.effective(a);
                             proof.check_live()?;
                             Ok(a)
@@ -161,20 +163,12 @@ impl Associations {
                 if endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.is_none(){return Err(Error::Conflict);}
                 let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
                 let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().collect::<Vec<_>>());
-                let mut position=after.unwrap_or("").to_string();
-                let mut items=Vec::new();
-                loop {
-                    let ids=endpoints::candidate_page_in(c,proof.tenant_id(),channel,&position,allowed.clone(),250).await?;
-                    let done=ids.len()<250;
-                    for id in ids {
-                        position=id.clone();
-                        if id==*device || snapshot.require(proof,Permission::DeviceAssociationWrite,Some(&id)).is_err(){continue;}
-                        let occupied:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released)").bind(proof.tenant_id()).bind(&id).fetch_one(&mut *c).await?;
-                        if !occupied && let Some(member)=endpoints::current_in(c,proof.tenant_id(),&id,channel).await?{items.push(member);}
-                        if items.len()>limit{break;}
-                    }
-                    if done||items.len()>limit{break;}
-                }
+                let writable=snapshot.devices_for(proof,Permission::DeviceAssociationWrite)?.map(|s|s.into_iter().collect::<Vec<_>>());
+                let rows=sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.channel=$2 AND r.purpose='primary' AND r.state='active' AND r.device<>$3 AND ($4::text IS NULL OR r.device COLLATE \"C\">$4 COLLATE \"C\") AND ($5::text[] IS NULL OR r.device=ANY($5)) AND ($6::text[] IS NULL OR r.device=ANY($6)) AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active') AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE (m.tenant_id,m.device)=(r.tenant_id,r.device) AND NOT m.released) ORDER BY r.device COLLATE \"C\" LIMIT $7")
+                    .bind(proof.tenant_id()).bind(channel.as_str()).bind(*device).bind(*after).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
+                let mut items=rows.into_iter().map(|row|Ok(Member {
+                    device:row.try_get("device")?,channel,registration_id:row.try_get("id")?,generation:row.try_get("generation")?,
+                })).collect::<Result<Vec<_>>>()?;
                 let more=items.len()>limit;items.truncate(limit);
                 let next_cursor=more.then(||items.last().expect("lookahead").device.clone());
                 proof.check_live()?;

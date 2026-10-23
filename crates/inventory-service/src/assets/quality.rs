@@ -7,25 +7,22 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
     let source = stored(rss_mdm_inventory::Source::parse(
         coordinate.source().as_str(),
     ))?;
-    let attempts: crate::collection::Attempts =
-        stored(serde_json::from_str(row.try_get("attempts")?))?;
-    stored(attempts.definition().validate_scope(&coordinate))?;
+    let attempts: crate::collection::summary::Summary = stored(
+        crate::collection::summary::Summary::decode(row.try_get("metadata")?),
+    )?;
+    stored(attempts.definition.validate_scope(&coordinate))?;
     let fields = attempts
-        .fields()
+        .fields
         .iter()
         .map(|(field, a)| QualityField {
             reason: a.reason.clone(),
             scope: attempts
-                .definition()
+                .definition
                 .field_scope(*field)
                 .expect("frozen field")
                 .clone(),
-            item_count: a.items().len(),
-            invalid_items: a
-                .items()
-                .iter()
-                .filter(|q| **q == crate::collection::Quality::Invalid)
-                .count(),
+            item_count: a.item_count,
+            invalid_items: a.invalid_items,
             field: *field,
             quality: a.quality,
             status: a.status,
@@ -33,10 +30,10 @@ pub(super) fn decode(row: &sqlx::postgres::PgRow, generation: u64) -> Result<Qua
         })
         .collect();
     Ok(QualityRun {
-        dataset: attempts.definition().dataset().into(),
-        template_version: attempts.definition().version().into(),
-        fingerprint: stored(attempts.definition().fingerprint())?,
-        coverage: stored(attempts.definition().coverage())?,
+        dataset: attempts.definition.dataset().into(),
+        template_version: attempts.definition.version().into(),
+        fingerprint: stored(attempts.definition.fingerprint())?,
+        coverage: stored(attempts.definition.coverage())?,
         complete: attempts.coverage_complete(),
         source,
         channel: source.channel().ok_or(Error::Malformed)?,

@@ -52,7 +52,7 @@ SELECT
  AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
- AND p.oid NOT IN ('mdm_content.reference_ready()'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
+ AND p.oid NOT IN ('mdm_access.operation_authority_valid(jsonb,text,bigint)'::regprocedure,'mdm_access.operation_authority_valid_until(jsonb,text,bigint)'::regprocedure,'mdm_content.reference_ready()'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
  AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass)
  AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

@@ -13,7 +13,12 @@ mod hardware;
 mod software;
 pub use channels::{AgentInstallation, MdmEnrollment};
 pub use hardware::{normalize_hardware_uuid, normalize_serial_number};
+mod array;
 mod assets;
+pub use array::{
+    ArrayFact, ArrayKnownValue, ArrayState, ArrayValue, EndpointArrayFact, ResolvedArray,
+    ResolvedDeviceArray, resolve_array, resolve_device_array,
+};
 mod collected;
 pub use collected::{CollectedValue, UnknownReason};
 /// Immutable seed definitions for the one product catalog.

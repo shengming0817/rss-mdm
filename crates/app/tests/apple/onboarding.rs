@@ -334,6 +334,10 @@ async fn next_after_cooldown(
         lifecycle::command(&early, kind).is_err(),
         "cooldown allowed an early retry"
     );
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut db)
+        .await?;
     let changed = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(attempt).execute(&mut db).await?;
     ensure!(changed.rows_affected() == 1);

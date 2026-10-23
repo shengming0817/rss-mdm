@@ -310,12 +310,13 @@ impl rss_mdm_inventory_service::groups::Flow for Planning {
         &'a self,
         tx: &'a mut PgTransaction<'tx>,
         id: Uuid,
+        request: rss_mdm_inventory_service::groups::references::PageRequest,
     ) -> rss_mdm_inventory_service::tasks::Pending<
         'a,
-        Vec<rss_mdm_inventory_service::groups::references::Entry>,
+        rss_mdm_inventory_service::groups::references::Page,
     > {
         Box::pin(async move {
-            self.group_references_in(tx, id)
+            self.group_references_in(tx, id, request)
                 .await
                 .map_err(crate::automation::inventory_tasks::failure)
         })

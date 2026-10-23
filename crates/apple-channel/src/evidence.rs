@@ -25,7 +25,7 @@ pub(crate) async fn observations(
         Request::InstallProfile { .. } | Request::RemoveProfile { .. }
     );
     let assessment = if profile {
-        Some(crate::profiles::assessment(c, key, tenant, operation).await?)
+        Some(crate::profiles::assessment(c, tenant, operation).await?)
     } else {
         None
     };

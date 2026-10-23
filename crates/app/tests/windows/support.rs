@@ -467,6 +467,7 @@ impl Host {
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
+            platform_configuration: None,
             audit_projection_health: Default::default(),
             channels: execution.channels.clone(),
             telemetry: None,

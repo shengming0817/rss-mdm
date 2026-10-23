@@ -23,7 +23,11 @@ pub mod objects;
 pub mod apple_collection;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/collection-metadata.sql")
+);
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
@@ -46,3 +50,6 @@ pub const GROUP_SELECTIONS_SQL: &str = include_str!("../schema/group-selections.
 
 /// Current scalar sources and hardware-key qualification used by association writers.
 pub const SOURCE_FACTS_SQL: &str = include_str!("../schema/source-facts.sql");
+
+/// Current scalar directory fields resolved before search and pagination.
+pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");

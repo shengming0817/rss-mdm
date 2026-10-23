@@ -1,7 +1,6 @@
 //! Reuse native application facts and profile verification; acknowledgements are not readiness.
 use super::*;
 use crate::database::db;
-use rss_mdm_inventory::{CollectionScope, FieldKey, ReportSource, Scalar, State};
 use rss_request_context::TenantId;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -13,62 +12,19 @@ pub(crate) async fn application(
     registration: Uuid,
     now: i64,
 ) -> Result<bool, Error> {
-    let source = ReportSource::MdmApple;
-    let Some(epoch) = rss_mdm_registration_service::device::store::report_epoch_in(
-        c,
-        &tenant.to_string(),
-        registration,
-        source,
-    )
-    .await?
-    else {
-        return Ok(false);
-    };
-    let rows = rss_mdm_inventory_postgres::field_in(
-        c,
-        tenant,
-        registration,
-        source,
-        epoch,
-        FieldKey::parse("device.software.apple.installed_applications")
-            .map_err(|_| Error::Malformed)?,
-    )
-    .await
-    .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
-    let mut observed = false;
-    for row in rows {
-        if row.fact.evidence.scope != CollectionScope::Device {
-            continue;
-        }
-        if row.fact.evidence.received_at > now || row.fact.evidence.received_at < now - 86400 {
-            return Ok(false);
-        }
-        let State::Known(Scalar::Array(items)) = row.fact.state else {
-            return Ok(false);
-        };
-        let matches = items
-            .iter()
-            .filter_map(|i| match i {
-                Scalar::Object(v) => Some(v),
-                _ => None,
-            })
-            .filter(|v| {
-                v.get("id") == Some(&Scalar::String(rt.configuration.application_id.clone()))
-            })
-            .collect::<Vec<_>>();
-        if matches.len() != 1
-            || matches[0].get("version")
-                != Some(&Scalar::String(
-                    rt.configuration.application_version.clone(),
-                ))
-            || matches[0].get("installing") == Some(&Scalar::Boolean(true))
-        {
-            return Ok(false);
-        }
-        observed = true;
-    }
-    Ok(observed)
+    sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)=$4 AND mdm_apple.application_valid_until($1,$2,$3) IS NOT NULL")
+        .bind(registration)
+        .bind(
+            serde_json::to_value(rt.qualification_configuration()?)
+                .map_err(|_| Error::Malformed)?,
+        )
+        .bind(now)
+        .bind(tenant.to_string())
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
+
 pub(super) async fn profile(
     c: &mut PgConnection,
     app: &Context,
@@ -83,7 +39,7 @@ pub(super) async fn profile(
         return Ok(false);
     }
     Ok(matches!(
-        crate::profiles::assessment(c, &app.protection, &tenant, operations[0]).await?,
+        crate::profiles::assessment(c, &tenant, operations[0]).await?,
         rss_mdm_apple_mdm::native::profiles::Verification::Matched
     ))
 }

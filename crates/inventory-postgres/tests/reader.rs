@@ -164,7 +164,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
         ),
         (
             "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK(true)",
-            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL))",
+            "ALTER TABLE mdm.inventory DROP CONSTRAINT inventory_value_state; ALTER TABLE mdm.inventory ADD CONSTRAINT inventory_value_state CHECK((state='known')=(value IS NOT NULL OR value_version IS NOT NULL))",
             "assets",
         ),
         (

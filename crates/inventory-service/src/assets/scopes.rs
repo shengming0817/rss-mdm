@@ -206,11 +206,12 @@ WITH authority AS (
 ), attempts AS (
  SELECT DISTINCT ON(h.scope,f->'definition'->>'key',f->'scope')
    f->'scope' AS scope,
-   ((h.document->>'attempts')::jsonb->'fields'->(f->'definition'->>'key')->>'quality') AS quality
+   (v.metadata->'fields'->(f->'definition'->>'key')->>'quality') AS quality
  FROM runs h
  JOIN authority a ON a.registration=h.scope::jsonb->>'registration'
    AND a.source=h.scope::jsonb->>'source' AND a.epoch=h.scope::jsonb->>'epoch'
- CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f
+ JOIN mdm_access.collection_versions v ON v.tenant_id=$1::uuid AND v.version=h.document->>'progress_version'
+ CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f
  WHERE h.document IS NOT NULL AND f->'definition'->>'key'=ANY($4::text[])
  ORDER BY h.scope,f->'definition'->>'key',f->'scope',h.sequence DESC,h.run DESC
 ), candidates AS (

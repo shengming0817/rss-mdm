@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub fn routes(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     identity: rss_identity_postgres::Authority,
+    platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
 ) -> Router<Arc<Associations>> {
     Router::new()
         .route("/device-views", get(list))
@@ -34,6 +35,7 @@ pub fn routes(
         .route("/devices/{device}/association-candidates", get(candidates))
         .layer(Extension(sessions))
         .layer(Extension(identity))
+        .layer(Extension(platform))
 }
 fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
     match kind.as_str() {
@@ -46,12 +48,13 @@ fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
 }
 async fn list(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: Result<Query<ViewQuery>, axum::extract::rejection::QueryRejection>,
@@ -63,10 +66,9 @@ async fn list(
             &query.map_err(|_| Error::Malformed)?.0,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
+                platform.as_ref(),
             ),
         )
         .await?,
@@ -74,12 +76,13 @@ async fn list(
 }
 async fn detail(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
@@ -96,10 +99,9 @@ async fn detail(
             &reference,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
+                platform.as_ref(),
             ),
         )
         .await?,
@@ -117,12 +119,13 @@ fn limit() -> usize {
 }
 async fn items(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -139,10 +142,9 @@ async fn items(
             q.limit,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
+                platform.as_ref(),
             ),
         )
         .await?,

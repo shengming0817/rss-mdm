@@ -1,9 +1,7 @@
 //! Authorized directory/ detail presentation from the existing canonical owners.
 use crate::*;
-use rss_mdm_authorization_service::{
-    Permission, Snapshot, context::AuthorizedPrincipal, session::SessionAuthority,
-};
-use rss_mdm_inventory::{Catalog, Platform, Scalar, Sensitivity, State as FieldState};
+use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
+use rss_mdm_inventory::{Catalog, Scalar, Sensitivity, State as FieldState};
 use rss_mdm_registration_service::{agent::current_user, device::registration_user};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
@@ -133,88 +131,6 @@ pub(crate) async fn endpoints(
     }
     Ok(pending)
 }
-/// Resolve Identity only after releasing product authorization and asset locks.
-pub(crate) async fn current_users(
-    rows: &mut [Value],
-    bindings: &Bindings,
-    sessions: &SessionAuthority,
-    cache: &mut BTreeMap<String, rss_mdm_agent_wire::runtime::CurrentUser>,
-) -> Result<()> {
-    for endpoint in rows {
-        let id = endpoint["id"].as_str().ok_or(Error::Storage)?;
-        if let Some(binding) = bindings.get(id) {
-            let key = crate::cursor::digest(&(&binding.reference, binding.registration_valid))?;
-            let mut value = if let Some(value) = cache.get(&key) {
-                value.clone()
-            } else {
-                let value = current_user::resolve(binding, sessions).await?;
-                cache.insert(key, value.clone());
-                value
-            };
-            value.revision = binding.revision;
-            value.confirmed_at = binding.confirmed_at;
-            endpoint["currentUser"] = serde_json::to_value(value).map_err(|_| Error::Storage)?;
-        }
-    }
-    Ok(())
-}
-fn scalar_matches(field: &Value, search: &str) -> bool {
-    let matches = |state: &Value| {
-        state["kind"] == "known"
-            && state["value"]["kind"] == "string"
-            && state["value"]["value"]
-                .as_str()
-                .is_some_and(|s| s.to_lowercase().contains(search))
-    };
-    matches(&field["state"])
-        || (field["state"]["kind"] == "conflict"
-            && field["sources"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|f| matches(&f["state"])))
-}
-pub(crate) fn matches(endpoint: &Value, search: Option<&str>, platform: Option<Platform>) -> bool {
-    if let Some(platform) = platform {
-        let platform = match platform {
-            Platform::Windows => "windows",
-            Platform::Macos => "macos",
-        };
-        if !endpoint["platform"]["values"]
-            .as_array()
-            .is_some_and(|values| values.iter().any(|v| v == platform))
-        {
-            return false;
-        }
-    }
-    search.is_none_or(|search| {
-        let search = search.trim().to_lowercase();
-        scalar_matches(&endpoint["displayName"], &search)
-            || scalar_matches(&endpoint["serialNumber"], &search)
-            || ["registrationUser", "currentUser"].iter().any(|key| {
-                endpoint[*key]["user"]["principalId"]
-                    .as_str()
-                    .is_some_and(|s| s.to_lowercase().contains(&search))
-            })
-            || ["registrationUser", "currentUser"].iter().any(|key| {
-                let display = &endpoint[*key]["display"];
-                display["login"]
-                    .as_str()
-                    .is_some_and(|s| s.to_lowercase().contains(&search))
-                    || display["profiles"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .any(|profile| {
-                            profile["status"] == "available"
-                                && profile["displayName"]
-                                    .as_str()
-                                    .is_some_and(|s| s.to_lowercase().contains(&search))
-                        })
-            })
-    })
-}
-
 fn permits(
     snapshot: &Snapshot,
     proof: &AuthorizedPrincipal,

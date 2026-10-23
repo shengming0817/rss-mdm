@@ -8,6 +8,7 @@ use crate::{
 };
 use rss_mdm_apple_mdm::native::{profiles::ProfileObject, request::Request};
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
+use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -36,9 +37,25 @@ pub(crate) fn aad(row: &PgRow) -> Result<DerivedAad, Error> {
 }
 fn open(key: &Protector, row: &PgRow) -> Result<Vec<ProfileObject>, Error> {
     let cipher: Vec<u8> = row.try_get("manifest").map_err(db)?;
+    if row
+        .try_get::<Option<Vec<u8>>, _>("manifest_cipher_digest")
+        .map_err(db)?
+        .as_deref()
+        != Some(Sha256::digest(&cipher).as_slice())
+    {
+        return Err(Error::Unavailable(Failure::AppleStorage));
+    }
     let plain = key
         .open_bytes(&cipher, &aad(row)?)
         .map_err(|_| Error::Unavailable(Failure::AppleStorage))?;
+    if row
+        .try_get::<Option<Vec<u8>>, _>("manifest_digest")
+        .map_err(db)?
+        .as_deref()
+        != Some(Sha256::digest(plain.expose()).as_slice())
+    {
+        return Err(Error::Unavailable(Failure::AppleStorage));
+    }
     serde_json::from_slice(plain.expose()).map_err(|_| Error::Unavailable(Failure::AppleStorage))
 }
 /// The caller holds the existing device/registration lock. Scan bounded pages of active evidence.
@@ -174,12 +191,53 @@ pub(crate) async fn dispatch(
                 .map_err(|_| Error::Unavailable(Failure::AppleStorage))
         })
         .transpose()?;
-    sqlx::query("UPDATE mdm_apple.profiles SET manifest=$3,dispatched_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
-        .bind(&target.tenant).bind(operation).bind(manifest).execute(c).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.profiles SET manifest=$3,manifest_cipher_digest=sha256($3),manifest_digest=$4,dispatched_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND operation=$2")
+        .bind(&target.tenant).bind(operation).bind(manifest).bind(objects.map(|v| serde_json::to_vec(v).map(|plain| Sha256::digest(plain).to_vec())).transpose().map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
     Ok(true)
 }
-/// Read and interpret the latest native evidence once. No ownership mutation occurs here.
+/// Current qualification is bound to exact latest evidence, independently of observation history.
 pub(crate) async fn assessment(
+    c: &mut PgConnection,
+    tenant: &str,
+    operation: Uuid,
+) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
+    use rss_mdm_apple_mdm::native::profiles::Verification as V;
+    let state: Option<String> = sqlx::query_scalar(
+        "SELECT verification FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2",
+    )
+    .bind(tenant).bind(operation).fetch_optional(c).await.map_err(db)?;
+    match state.as_deref() {
+        None | Some("unknown") => Ok(V::Unknown),
+        Some("matched") => Ok(V::Matched),
+        Some("mismatched") => Ok(V::Mismatched),
+        Some("failed") => Ok(V::Failed),
+        _ => Err(Error::Unavailable(Failure::AppleStorage)),
+    }
+}
+
+/// Called after native settlement, before any rejection/NotNow/phase early return.
+/// Maintenance that rewraps profile evidence calls this same owner in its original transaction.
+pub(crate) async fn qualify_latest(
+    c: &mut PgConnection,
+    key: &Protector,
+    tenant: &str,
+    operation: Uuid,
+) -> Result<(), Error> {
+    use rss_mdm_apple_mdm::native::profiles::Verification as V;
+    let decision = evaluate_latest(c, key, tenant, operation).await?;
+    let state = match decision {
+        V::Unknown => "unknown",
+        V::Matched => "matched",
+        V::Mismatched => "mismatched",
+        V::Failed => "failed",
+    };
+    sqlx::query("UPDATE mdm_apple.profiles p SET verification=$3,verification_evidence=q.current_evidence FROM mdm_apple.profile_qualifications q WHERE (p.tenant_id,p.operation)=(q.tenant_id,q.operation) AND p.tenant_id=$1::uuid AND p.operation=$2")
+        .bind(tenant).bind(operation).bind(state).execute(c).await.map_err(db)?;
+    Ok(())
+}
+
+/// Sole interpretation of protected native profile evidence, used only by its writer.
+async fn evaluate_latest(
     c: &mut PgConnection,
     key: &Protector,
     tenant: &str,
@@ -215,7 +273,7 @@ pub(crate) async fn assessment(
     let failed = sqlx::query_scalar::<_,bool>("SELECT accepted AND state='error' FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND registration=$3 AND generation=$4 AND user_key=$5 AND phase='execute' ORDER BY ordinal DESC LIMIT 1")
         .bind(tenant).bind(operation).bind(registration).bind(generation).bind(&user).fetch_optional(&mut *c).await.map_err(db)?.unwrap_or(false);
     let old = if failed && !present {
-        sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND profile=$7 AND operation<>$8 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL LIMIT 2")
+        sqlx::query("SELECT * FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND profile=$7 AND operation<>$8 AND retired_at IS NULL AND present AND observed_at IS NOT NULL AND dispatched_at IS NOT NULL ORDER BY operation LIMIT 2")
             .bind(tenant).bind(row.try_get::<String,_>("device").map_err(db)?).bind(&user).bind(registration).bind(generation).bind(&identifier).bind(uuid).bind(operation).fetch_all(&mut *c).await.map_err(db)?
     } else {
         Vec::new()
@@ -249,7 +307,7 @@ pub(crate) async fn confirm(
     use rss_mdm_apple_mdm::native::profiles::Verification as V;
     let row = sqlx::query("SELECT identifier,user_key FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2 AND device=$3 AND registration=$4 AND generation=$5 AND retired_at IS NULL AND dispatched_at IS NOT NULL FOR UPDATE")
         .bind(&target.tenant).bind(operation).bind(&target.device).bind(target.registration).bind(target.generation).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
-    let decision = assessment(c, key, &target.tenant, operation).await?;
+    let decision = assessment(c, &target.tenant, operation).await?;
     match decision {
         V::Matched => {
             sqlx::query("UPDATE mdm_apple.profiles SET retired_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND device=$2 AND user_key=$3 AND registration=$4 AND generation=$5 AND identifier=$6 AND operation<>$7 AND retired_at IS NULL")
@@ -262,7 +320,9 @@ pub(crate) async fn confirm(
         V::Unknown | V::Mismatched => return Ok(decision),
     }
     sqlx::query("UPDATE mdm_apple.profiles SET observed_at=coalesce(observed_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1::uuid AND operation=$2")
-        .bind(&target.tenant).bind(operation).execute(c).await.map_err(db)?;
+        .bind(&target.tenant).bind(operation).execute(&mut *c).await.map_err(db)?;
+    // Retiring previous manifests changes removal evidence; capture the settled owner state.
+    qualify_latest(c, key, &target.tenant, operation).await?;
     Ok(decision)
 }
 
