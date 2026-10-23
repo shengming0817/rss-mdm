@@ -99,6 +99,7 @@ async fn grants(_f: &Fixture) -> Result<()> {
             "inventory_read",
             "inventory_collect",
             "configuration_write",
+            "security_operate",
             "operation_read",
             "operation_cancel",
             "account_write",
