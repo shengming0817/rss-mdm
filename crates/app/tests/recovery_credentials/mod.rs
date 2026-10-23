@@ -484,6 +484,7 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
         let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         for (method, path) in [(Method::GET, secret_url(device, &coordinates)), (Method::POST, secret_url(device, &coordinates).replace("/secret", "/revoke"))] {
             let mut hold = observer.begin().await?;
+            crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
             rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, rss_request_context::TenantId::parse(case_tenant())?).await?;
             let release = async {
                 let observed = tokio::time::timeout(Duration::from_secs(3), async {
