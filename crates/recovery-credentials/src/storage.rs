@@ -763,3 +763,16 @@ pub async fn cleanup_visited_in(
     sqlx::query("UPDATE mdm_recovery.versions SET cleanup_checked_at=(extract(epoch FROM clock_timestamp())*1000000)::bigint WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(tenant).bind(id).bind(version).execute(c).await?;
     Ok(())
 }
+
+/// Current verified/pending state for one exact subject; callers cannot select another device.
+pub async fn current_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    binding: &Binding,
+) -> Result<Option<Material>, Error> {
+    active_in(c, tenant, binding).await?;
+    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND e.device=$2 AND e.registration=$3 AND e.generation=$4 AND e.subject=$5 AND e.current_version=v.version AND NOT e.retired FOR UPDATE OF e,v"))
+        .bind(tenant).bind(&binding.device).bind(binding.registration).bind(binding.generation)
+        .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
+        .fetch_optional(c).await?.as_ref().map(decode).transpose()
+}

@@ -106,6 +106,7 @@ pub struct Binding {
     pub person: Person,
     pub origin: Origin,
     pub generation: i64,
+    pub factor_generation: i64,
     pub revision: i64,
     pub state: State,
     pub intent: AccountIntent,
@@ -116,9 +117,26 @@ pub struct Binding {
     pub received_revision: Option<i64>,
     pub applied_revision: Option<i64>,
     pub effect: Option<AccessEffect>,
+    /// Last verified factors survive later failed configuration observations.
+    pub applied_windows: Option<rss_mdm_agent_wire::runtime::AccessWindowsFacts>,
     pub created_by_rss: bool,
 }
 impl Binding {
+    pub fn status(&self) -> rss_mdm_agent_wire::runtime::AccessBindingStatus {
+        rss_mdm_agent_wire::runtime::AccessBindingStatus {
+            id: self.id,
+            binding_generation: self.generation,
+            factor_generation: self.factor_generation,
+            revision: self.revision,
+            revoked: self.state == State::Revoked,
+            account: self.account.clone(),
+            configuration: self.configuration.clone(),
+            received_revision: self.received_revision,
+            applied_revision: self.applied_revision,
+            effect: self.effect.clone(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         self.person.validate()?;
         self.intent.validate()?;
@@ -130,6 +148,7 @@ impl Binding {
             || self.device.is_empty()
             || self.device.len() > 256
             || self.generation < 1
+            || self.factor_generation < 1
             || self.revision < 1
             || self.registration_generation < 1
             || self
@@ -163,6 +182,7 @@ impl Binding {
                 self.registration_generation,
                 self.id,
                 self.generation,
+                self.factor_generation,
                 self.revision,
                 &self.person,
                 &self.origin,
@@ -195,6 +215,20 @@ pub struct PolicySelection {
 
 /// Product composition checks the current policy and live native interactive context.
 pub trait Admission: Send + Sync {
+    fn policies<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: Uuid,
+        device: &'a str,
+        after: Option<Uuid>,
+    ) -> crate::agent::Pending<
+        'a,
+        (
+            Vec<rss_mdm_agent_wire::runtime::AccessPolicyOption>,
+            Option<Uuid>,
+        ),
+    >;
+
     fn policy<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -224,6 +258,7 @@ pub struct Change {
     deny_unknown_fields
 )]
 pub enum Action {
+    ResetFactors,
     Put {
         person: Person,
         intent: AccountIntent,

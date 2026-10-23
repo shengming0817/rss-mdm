@@ -433,6 +433,7 @@ async fn applied_binding(id: Uuid) -> Result<()> {
     b.applied_revision = Some(b.revision);
     b.received_revision = Some(b.revision);
     b.effect = Some(AccessEffect::Applied {
+        windows: None,
         account: b.account.clone().context("local account")?,
         role: AccessRole::Standard,
         mac: Some(AccessMacFacts {

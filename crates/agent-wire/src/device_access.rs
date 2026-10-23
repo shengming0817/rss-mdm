@@ -69,12 +69,16 @@ pub struct AccessTaskSpec {
     pub principal_id: Uuid,
     /// Monotonic association generation.
     pub binding_generation: i64,
+    /// Independent factor replacement generation. Configuration changes preserve it.
+    pub factor_generation: i64,
     /// Exact desired state revision.
     pub revision: i64,
     /// Frozen owner definition digest.
     pub definition_digest: [u8; 32],
     /// Closed native action.
     pub action: AccessAction,
+    /// Windows factor provisioning; absent for macOS and unlink.
+    pub windows: Option<AccessWindowsPlan>,
     /// Current product authorization.
     pub authorization: super::TaskAuthorization,
 }
@@ -97,6 +101,7 @@ impl AccessTaskSpec {
             || self.generation == 0
             || self.generation > i64::MAX as u64
             || self.binding_generation < 1
+            || self.factor_generation < 1
             || self.revision < 1
             || self.definition_digest == [0; 32]
             || self.device_id.is_empty()
@@ -132,7 +137,75 @@ impl AccessTaskSpec {
                 }
             }
         }
+        let provisioning = self.platform == TaskPlatform::Windows
+            && !matches!(self.action, AccessAction::Unbind { .. });
+        if self.windows.is_some() != provisioning {
+            return Err(WireError::InvalidValue);
+        }
+        if let Some(plan) = &self.windows {
+            plan.validate()?;
+            if let AccessWindowsPlan::Preserve { facts } = plan {
+                let super::CredentialSubject::RssLogin {
+                    binding,
+                    binding_generation,
+                    sid,
+                } = &facts.recovery.subject
+                else {
+                    return Err(WireError::InvalidValue);
+                };
+                if facts.factor_generation != self.factor_generation
+                    || *binding != self.binding_id
+                    || *binding_generation != self.binding_generation
+                    || !matches!(&self.action, AccessAction::Apply { account: AccessAccount::Windows { sid: expected }, .. } if expected == sid)
+                {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+        }
         Ok(())
+    }
+    /// Bind an encrypted first/replacement recovery candidate to this exact signed task.
+    pub fn material_aad(
+        &self,
+        subject: &super::CredentialSubject,
+        revision: i64,
+    ) -> Result<Vec<u8>, WireError> {
+        self.validate()?;
+        subject.validate()?;
+        let Some(AccessWindowsPlan::Initialize {
+            recipient,
+            expected_revision,
+        }) = &self.windows
+        else {
+            return Err(WireError::InvalidValue);
+        };
+        let super::CredentialSubject::RssLogin {
+            binding,
+            binding_generation,
+            sid,
+        } = subject
+        else {
+            return Err(WireError::InvalidValue);
+        };
+        if *binding != self.binding_id
+            || *binding_generation != self.binding_generation
+            || revision != *expected_revision
+        {
+            return Err(WireError::InvalidValue);
+        }
+        if let AccessAction::Apply { account, .. } = &self.action {
+            if account != &(AccessAccount::Windows { sid: sid.clone() }) {
+                return Err(WireError::InvalidValue);
+            }
+        }
+        serde_json::to_vec(&(
+            "rss-mdm/device-access/recovery/v1",
+            self,
+            subject,
+            revision,
+            &recipient.key_id,
+        ))
+        .map_err(|_| WireError::InvalidValue)
     }
     /// Domain-separated canonical signing bytes include every identity and desired value.
     pub fn signing_bytes(&self, key_id: &str) -> Result<Vec<u8>, WireError> {
@@ -340,6 +413,8 @@ pub enum AccessEffect {
         role: AccessRole,
         /// macOS-specific facts; required on macOS and absent on Windows.
         mac: Option<AccessMacFacts>,
+        /// Installed Windows factors and exact durable escrow coordinates.
+        windows: Option<AccessWindowsFacts>,
     },
     /// The integration was removed, preserving the OS account and its data.
     Unbound,
@@ -354,9 +429,32 @@ pub enum AccessEffect {
 impl AccessEffect {
     /// Reject cross-platform or incomplete successful evidence.
     pub fn validate_for(&self, platform: TaskPlatform) -> Result<(), WireError> {
-        if let Self::Applied { account, mac, .. } = self {
+        if let Self::Applied {
+            account,
+            mac,
+            windows,
+            ..
+        } = self
+        {
             account.validate()?;
-            if account.platform() != platform || mac.is_some() != (platform == TaskPlatform::Macos)
+            if account.platform() != platform
+                || mac.is_some() != (platform == TaskPlatform::Macos)
+                || windows.is_some() != (platform == TaskPlatform::Windows)
+            {
+                return Err(WireError::InvalidValue);
+            }
+        }
+        if let Self::Applied {
+            account,
+            windows: Some(facts),
+            ..
+        } = self
+        {
+            if facts.factor_generation < 1 {
+                return Err(WireError::InvalidValue);
+            }
+            facts.recovery.validate()?;
+            if !matches!((&facts.recovery.subject, account), (super::CredentialSubject::RssLogin { sid, .. }, AccessAccount::Windows { sid: expected }) if sid == expected)
             {
                 return Err(WireError::InvalidValue);
             }
@@ -428,4 +526,129 @@ impl AccessRecoveryUse {
             Ok(())
         }
     }
+}
+
+/// Windows initialization is part of the access task, not a second policy or scheduler.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AccessWindowsPlan {
+    /// Install a new factor generation after durable escrow acknowledgement.
+    Initialize {
+        /// Public encryption recipient; never used for offline verification.
+        recipient: super::CredentialRecipient,
+        /// Exact recovery revision before this mutation.
+        expected_revision: i64,
+    },
+    /// Apply configuration while preserving existing factors.
+    Preserve {
+        /// Last applied factor facts; the endpoint must independently read them back.
+        facts: AccessWindowsFacts,
+    },
+}
+impl AccessWindowsPlan {
+    /// Structural validation does not establish task authority.
+    pub fn validate(&self) -> Result<(), WireError> {
+        match self {
+            Self::Initialize {
+                recipient,
+                expected_revision,
+            } => {
+                use base64::Engine;
+                if *expected_revision < 0
+                    || recipient.key_id.len() != 64
+                    || !recipient.key_id.bytes().all(|v| v.is_ascii_hexdigit())
+                    || recipient.public_key.len() > 8192
+                    || base64::engine::general_purpose::STANDARD
+                        .decode(&recipient.public_key)
+                        .map_err(|_| WireError::InvalidValue)?
+                        .is_empty()
+                {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            Self::Preserve { facts } => {
+                if facts.factor_generation < 1 {
+                    return Err(WireError::InvalidValue);
+                }
+                facts.recovery.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+/// Installed factor identity is independent of the account association and configuration revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessWindowsFacts {
+    /// Exact installed factor generation.
+    pub factor_generation: i64,
+    /// Exact recovery material retained on this endpoint.
+    pub recovery: super::CredentialReceipt,
+}
+/// Actual native account identity observed by a started task; not a successful application.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessPrepared {
+    /// Exact binding being prepared.
+    pub binding_id: Uuid,
+    /// Exact binding generation.
+    pub binding_generation: i64,
+    /// Exact configuration revision.
+    pub revision: i64,
+    /// Original signed definition.
+    pub definition_digest: [u8; 32],
+    /// Actual stable OS identity; never an account name.
+    pub account: AccessAccount,
+}
+/// Safe employee-facing binding projection. This is not a login credential.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessBindingStatus {
+    /// Stable binding.
+    pub id: Uuid,
+    /// Association generation.
+    pub binding_generation: i64,
+    /// Factor replacement generation.
+    pub factor_generation: i64,
+    /// Desired revision.
+    pub revision: i64,
+    /// Whether this association is revoked on the server.
+    pub revoked: bool,
+    /// Actual native account, if known.
+    pub account: Option<AccessAccount>,
+    /// Desired configuration.
+    pub configuration: AccessConfiguration,
+    /// Last received desired revision.
+    pub received_revision: Option<i64>,
+    /// Last confirmed applied revision.
+    pub applied_revision: Option<i64>,
+    /// Native effect, not inferred from transport acknowledgement.
+    pub effect: Option<AccessEffect>,
+}
+/// One currently eligible first-enrollment policy.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessPolicyOption {
+    /// Policy identity used by begin.
+    pub policy: Uuid,
+    /// Current published policy version.
+    pub version: Uuid,
+    /// Safe configuration preview; begin rechecks current authority.
+    pub configuration: AccessConfiguration,
+}
+/// Bounded employee discovery; cursors advance scanned rows, including ineligible policies.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessDirectory {
+    /// Eligible policies in this scan page.
+    pub policies: Vec<AccessPolicyOption>,
+    /// Cursor for the next policy scan.
+    pub after: Option<Uuid>,
+    /// This authenticated person's bindings in the current device registration.
+    pub bindings: Vec<AccessBindingStatus>,
 }

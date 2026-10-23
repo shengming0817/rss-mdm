@@ -226,7 +226,18 @@ pub async fn result_in(
         return Ok(false);
     }
     match &report.effect {
-        AccessEffect::Applied { account, role, .. } => {
+        AccessEffect::Applied {
+            account,
+            role,
+            windows,
+            ..
+        } => {
+            if windows
+                .as_ref()
+                .is_some_and(|facts| facts.factor_generation != b.factor_generation)
+            {
+                return Err(Error::Conflict);
+            }
             let required = b
                 .configuration
                 .role
@@ -242,6 +253,7 @@ pub async fn result_in(
                 return Err(Error::Conflict);
             }
             b.account = Some(account.clone());
+            b.applied_windows = windows.clone();
             if report.effect.complete() {
                 b.state = State::Active;
             }
@@ -303,4 +315,31 @@ fn state(value: State) -> &'static str {
         State::Active => "active",
         State::Revoked => "revoked",
     }
+}
+
+/// A started, correlated task reports native account identity without completing configuration.
+pub async fn prepared_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    value: &rss_mdm_agent_wire::runtime::AccessPrepared,
+) -> Result<(), Error> {
+    value.account.validate().map_err(|_| Error::Malformed)?;
+    let mut b = locked_observation_in(c, tenant, value.binding_id).await?;
+    if b.intent.platform() != value.account.platform()
+        || b.account.as_ref().is_some_and(|a| a != &value.account)
+    {
+        return Err(Error::Conflict);
+    }
+    if b.state == State::Revoked
+        || b.generation != value.binding_generation
+        || b.revision != value.revision
+        || b.definition_digest()? != value.definition_digest
+    {
+        // The caller correlated the signed Start. Remember a created account for eventual cleanup only.
+        if !b.created_by_rss || b.account.is_some() {
+            return Ok(());
+        }
+    }
+    b.account = Some(value.account.clone());
+    save_in(c, &b, b.revision).await
 }

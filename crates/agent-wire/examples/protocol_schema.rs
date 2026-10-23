@@ -20,6 +20,8 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "AccessDirectory": schemars::schema_for!(runtime::AccessDirectory),
+            "AccessBindingStatus": schemars::schema_for!(runtime::AccessBindingStatus),
             "AccessBegin": schemars::schema_for!(runtime::AccessBegin),
             "AccessChallenge": schemars::schema_for!(runtime::AccessChallenge),
             "AccessConfirm": schemars::schema_for!(runtime::AccessConfirm),
