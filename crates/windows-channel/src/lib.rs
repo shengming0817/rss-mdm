@@ -359,7 +359,7 @@ async fn issue(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     bytes: Bytes,
 ) -> Response {
     enrollment(app, headers, audit, bytes, true, peer.map(|Extension(p)| p)).await
@@ -370,7 +370,7 @@ async fn enrollment(
     audit: RequestAudit,
     bytes: Bytes,
     issuing: bool,
-    peer: Option<rss_mdm_certificate::HandshakePeer>,
+    peer: Option<rss_mdm_certificate::ClientCertificateEvidence>,
 ) -> Response {
     let (op, path) = if issuing {
         (Operation::Issue, "/EnrollmentServer/Enrollment.svc")

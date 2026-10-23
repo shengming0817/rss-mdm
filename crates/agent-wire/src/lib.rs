@@ -12,6 +12,9 @@ pub mod pki;
 /// Public task-signing trust updates and durable installation acknowledgements.
 pub mod task_trust;
 
+/// Signed, revisioned transport locations bound to stable installation identity.
+pub mod connections;
+
 mod collection_scope;
 pub use collection_scope::CollectionScope;
 

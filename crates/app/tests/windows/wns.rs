@@ -338,11 +338,9 @@ async fn worker_transport(
     tokio_util::sync::CancellationToken,
 )> {
     let root = root()?;
-    let config: crate::windows::WindowsConfig =
-        serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("https://localhost:{}", listener.local_addr()?.port());
-    let mut tls = crate::native::tls::configuration(&config.management, None)?.fixture_server();
+    let mut tls = crate::test_support::tls::server(&root, "windows-tls.pk8", None)?;
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();

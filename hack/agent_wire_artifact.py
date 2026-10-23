@@ -12,6 +12,7 @@ from build_run import LEASE_ENV, lease_fds, require_lease
 
 ROOT = Path(__file__).resolve().parents[1]
 FAMILIES = {
+    'connections': ('manifest.json', 'https://rss.example/agent/connections/v1/', {'apiVersion': 1}),
     'runtime': ('agent-v1.schema-manifest.json',
                 'https://rss.example/mdm/agent/runtime/v1/payload/v1/',
                 {'apiVersion': 1, 'wireVersion': 1}),

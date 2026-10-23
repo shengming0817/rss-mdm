@@ -33,11 +33,15 @@ services:
   gateway-probe:
     profiles: [probe]
     image: ${MDM_NGINX_IMAGE:?}
+    user: "${MDM_GATEWAY_PROBE_USER:-0:0}"
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    sysctls: {net.ipv4.ip_unprivileged_port_start: 0}
     labels: *owner
     ports: ["127.0.0.1::8080"]
     extra_hosts: ["host.docker.internal:host-gateway"]
-    volumes: ["${MDM_ENV_ROOT:?}/probe/nginx.conf:/tmp/input.conf:ro", "${MDM_ENV_ROOT:?}/probe:/run/probe:ro"]
-    command: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
+    volumes: ["${MDM_GATEWAY_PROBE_DIRECTORY:-${MDM_ENV_ROOT:?}/probe}/nginx.conf:/tmp/input.conf:ro", "${MDM_GATEWAY_PROBE_DIRECTORY:-${MDM_ENV_ROOT:?}/probe}:/run/probe:ro"]
+    entrypoint: [nginx, -e, stderr, -c, /tmp/input.conf, -g, 'daemon off;']
   step-ca:
     networks:
       default:

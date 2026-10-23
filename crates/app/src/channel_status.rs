@@ -26,7 +26,6 @@ pub(crate) enum Reason {
     TrustConflict,
     MaterialRevoked,
     MaterialVersionMismatch,
-    ListenerUnavailable,
     CertificateExpired,
     DependencyUnavailable,
 }
@@ -43,11 +42,12 @@ pub(crate) struct Assembly {
     pub name: ChannelName,
     pub state: ChannelState,
     pub reason: Option<Reason>,
-    pub listening: bool,
+    pub mounted: bool,
     pub materials: LoadedMaterials,
 }
 
 pub(crate) struct Channels {
+    endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints,
     values: RwLock<Vec<Assembly>>,
     installation: OnceLock<(
         Arc<crate::agent_pki::AgentPki>,
@@ -67,6 +67,32 @@ impl Channels {
             }
         );
         Self {
+            endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+                console: config.product_origin.clone(),
+                agent: match &config.agent_pki {
+                    crate::agent_pki::Config::StepCa {
+                        endpoint,
+                        additional_origins,
+                        ..
+                    } => std::iter::once(endpoint.origin.clone())
+                        .chain(additional_origins.iter().cloned())
+                        .collect(),
+                    crate::agent_pki::Config::Disabled {} => vec![],
+                },
+                windows_enrollment: windows.map(|w| w.enrollment.origin.clone()),
+                windows_management: windows
+                    .map(|w| {
+                        std::iter::once(w.management.origin.clone())
+                            .chain(w.additional_management.iter().map(|e| e.origin.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                apple_management: config
+                    .native_protocols
+                    .apple
+                    .as_ref()
+                    .map(|a| a.management.origin.clone()),
+            },
             values: RwLock::new(
                 [
                     (ChannelName::Apple, apple),
@@ -88,13 +114,18 @@ impl Channels {
                         ChannelState::Disabled
                     },
                     reason: enabled.then_some(Reason::MaterialNotSelected),
-                    listening: false,
+                    mounted: false,
                     materials: Default::default(),
                 })
                 .collect(),
             ),
             installation: OnceLock::new(),
         }
+    }
+    pub(crate) fn endpoints(
+        &self,
+    ) -> rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+        self.endpoints.clone()
     }
     pub(crate) fn set(
         &self,
@@ -117,7 +148,7 @@ impl Channels {
         value.reason = reason;
         Ok(())
     }
-    pub(crate) fn listening(&self, name: ChannelName) -> Result<(), crate::Error> {
+    pub(crate) fn mounted(&self, name: ChannelName) -> Result<(), crate::Error> {
         let mut values = self
             .values
             .write()
@@ -126,7 +157,7 @@ impl Channels {
             .iter_mut()
             .find(|v| v.name == name)
             .ok_or(crate::Error::Malformed)?;
-        value.listening = true;
+        value.mounted = true;
         Ok(())
     }
     pub(crate) fn loaded(
@@ -218,7 +249,7 @@ impl rss_mdm_execution_service::AgentInstallationAdmission for Channels {
                 states.iter().any(|s| {
                     s.name == name
                         && s.state == ChannelState::Ready
-                        && (name != ChannelName::Agent || s.listening)
+                        && (name != ChannelName::Agent || s.mounted)
                 })
             });
             if !ready {
@@ -254,6 +285,13 @@ mod tests {
     fn prepared_materials_without_final_assembly_cannot_admit_installation() {
         use rss_mdm_execution_service::AgentInstallationAdmission;
         let channels = Channels {
+            endpoints: rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+                console: "https://mdm.example.test".into(),
+                agent: vec![],
+                windows_enrollment: None,
+                windows_management: vec![],
+                apple_management: None,
+            },
             values: RwLock::new(
                 [
                     ChannelName::Agent,
@@ -265,7 +303,7 @@ mod tests {
                     name,
                     state: ChannelState::Ready,
                     reason: None,
-                    listening: true,
+                    mounted: true,
                     materials: LoadedMaterials {
                         signing: Some(1),
                         ..Default::default()

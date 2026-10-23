@@ -37,11 +37,13 @@ fn stored_trust(
     revision: i64,
     digest: &str,
     tenant: TenantId,
+    service: Uuid,
 ) -> Result<Trust, Error> {
     let invalid = || Error::Unavailable(crate::Failure::CommandInvariant);
     let trust: Trust = serde_json::from_value(body).map_err(|_| invalid())?;
     trust.validate().map_err(|_| invalid())?;
-    if trust.tenant.to_string() != tenant.to_string()
+    if trust.service_id != service
+        || trust.tenant.to_string() != tenant.to_string()
         || trust.revision != u64::try_from(revision).map_err(|_| invalid())?
         || trust.installation_digest().map_err(|_| invalid())? != digest
     {
@@ -51,8 +53,15 @@ fn stored_trust(
 }
 pub async fn current(c: &mut PgConnection, tenant: TenantId) -> Result<Trust, Error> {
     let (body, revision, digest): (serde_json::Value,i64,String) = sqlx::query_as("SELECT v.body,v.revision,v.digest FROM mdm_task_signing.versions v JOIN mdm_task_signing.heads h USING(tenant_id,revision) WHERE tenant_id=$1::uuid")
-        .bind(tenant.to_string()).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
-    stored_trust(body, revision, &digest, tenant)
+        .bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::NotFound)?;
+    let service = installation_service(c).await?;
+    stored_trust(body, revision, &digest, tenant, service)
+}
+async fn installation_service(c: &mut PgConnection) -> Result<Uuid, Error> {
+    sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation")
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
 async fn replay(
     c: &mut PgConnection,
@@ -61,7 +70,7 @@ async fn replay(
     protection: &Protector,
     request: &[u8],
 ) -> Result<Option<Trust>, Error> {
-    let row=sqlx::query("SELECT body,fingerprint_key,fingerprint FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant.to_string()).bind(operation).fetch_optional(c).await.map_err(db)?;
+    let row=sqlx::query("SELECT body,fingerprint_key,fingerprint FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant.to_string()).bind(operation).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else { return Ok(None) };
     protection
         .verify_mac_with_key(
@@ -74,6 +83,11 @@ async fn replay(
     let value: Trust =
         serde_json::from_value(row.try_get("body").map_err(db)?).map_err(|_| Error::Conflict)?;
     value.validate().map_err(|_| Error::Conflict)?;
+    if value.service_id != installation_service(c).await?
+        || value.tenant.to_string() != tenant.to_string()
+    {
+        return Err(Error::Conflict);
+    }
     Ok(Some(value))
 }
 async fn save(
@@ -105,7 +119,6 @@ pub async fn prepare(
     tenant: TenantId,
     operation: Uuid,
     expected: i64,
-    origin: &str,
     protection: &Protector,
     actor: &str,
 ) -> Result<Trust, Error> {
@@ -113,7 +126,7 @@ pub async fn prepare(
         return Err(Error::Malformed);
     }
     let request =
-        serde_json::to_vec(&("prepare", expected, origin, actor)).map_err(|_| Error::Malformed)?;
+        serde_json::to_vec(&("prepare", expected, actor)).map_err(|_| Error::Malformed)?;
     let revision = lock(c, tenant).await?;
     if let Some(previous) = replay(c, tenant, operation, protection, &request).await? {
         return Ok(previous);
@@ -129,13 +142,18 @@ pub async fn prepare(
         Trust {
             version: 1,
             tenant: Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Malformed)?,
-            origin: origin.into(),
+            service_id: sqlx::query_scalar::<_, Uuid>(
+                "SELECT instance_id FROM public.mdm_installation",
+            )
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?,
             revision: 1,
             keys: vec![],
         }
     } else {
         let mut previous = current(c, tenant).await?;
-        if previous.origin != origin || previous.keys.len() >= 16 {
+        if previous.keys.len() >= 16 {
             return Err(Error::Conflict);
         }
         previous.revision += 1;
@@ -279,7 +297,6 @@ pub async fn require_issue(
 }
 pub struct Loaded {
     pub task: super::Signer,
-    pub configuration: rss_mdm_registration_service::agent::configurations::Signer,
 }
 /// Load an exact published revision only while its signer remains active in the current authority.
 /// Preparing a successor does not invalidate a still-active signer on restart.
@@ -314,12 +331,6 @@ pub async fn load(
     Ok(Loaded {
         task: super::Signer::from_bytes(private.expose(), &active.id, &keys)
             .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
-        configuration: rss_mdm_registration_service::agent::configurations::Signer::new(
-            private.expose(),
-            &active.id,
-            &keys,
-        )
-        .map_err(|_| Error::Unavailable(crate::Failure::CommandInvariant))?,
     })
 }
 
@@ -335,7 +346,7 @@ async fn selected_trust(
     .bind(tenant.to_string())
     .bind(i64::try_from(revision).map_err(|_| Error::Malformed)?)
     .fetch_optional(&mut *c).await.map_err(db)?.ok_or(Error::Conflict)?;
-    let trust = stored_trust(body, stored_revision, &digest, tenant)?;
+    let trust = stored_trust(body, stored_revision, &digest, tenant, current.service_id)?;
     let active = trust
         .keys
         .iter()
@@ -422,7 +433,7 @@ pub async fn retire(
         return Err(Error::Conflict);
     }
     if key.state == KeyState::VerifyOnly {
-        let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_attempts a JOIN mdm_commands.action_runs r ON (r.tenant_id,r.id)=(a.tenant_id,a.run) WHERE a.tenant_id=$1::uuid AND r.deadline>extract(epoch FROM clock_timestamp()) AND (a.offer->>'keyId'=$2 OR a.permit->>'keyId'=$2)) OR EXISTS(SELECT 1 FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND state='available' AND expires_at>clock_timestamp() AND document->>'keyId'=$2)")
+        let pending:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_attempts a JOIN mdm_commands.action_runs r ON (r.tenant_id,r.id)=(a.tenant_id,a.run) WHERE a.tenant_id=$1::uuid AND r.deadline>extract(epoch FROM clock_timestamp()) AND (a.offer->>'keyId'=$2 OR a.permit->>'keyId'=$2))")
             .bind(tenant.to_string()).bind(key_id).fetch_one(&mut *c).await.map_err(db)?;
         if pending {
             return Err(Error::Conflict);

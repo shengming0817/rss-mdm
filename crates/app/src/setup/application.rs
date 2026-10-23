@@ -139,6 +139,7 @@ pub(super) async fn reconcile(
                 .map_err(|_| Error::Storage)?;
         match applied {
             Ok(observed) => {
+                runtime_files::record_observation(c, &runtime, &observed).await?;
                 progress
                     .application
                     .as_mut()

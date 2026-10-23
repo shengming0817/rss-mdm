@@ -49,6 +49,8 @@ pub enum Error {
     Unauthorized,
     #[error("permission denied")]
     Forbidden,
+    #[error(transparent)]
+    AgentPackage(#[from] rss_mdm_software_service::agent_packages::Rejection),
     #[error("dependency unavailable")]
     Unavailable(Failure),
     #[error("inventory not found")]

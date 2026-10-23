@@ -9,8 +9,15 @@ impl Store {
         Self { pool }
     }
     pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(&mut *tx).await.map_err(db)?;
+        self.begin_delivery(tenant).await.map_err(db)
+    }
+    /// Preserve SQLSTATE only for the idempotent delivery acknowledgement seam.
+    pub(crate) async fn begin_delivery(
+        &self,
+        tenant: &str,
+    ) -> Result<Transaction<'_, Postgres>, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','1000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(&mut *tx).await?;
         Ok(tx)
     }
     pub(crate) async fn begin_read(

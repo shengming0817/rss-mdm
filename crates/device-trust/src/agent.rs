@@ -1,6 +1,6 @@
 //! Agent trust generations and authorized issuance evidence.
 use rss_mdm_certificate::{
-    Error, HandshakePeer,
+    ClientCertificateEvidence, Error,
     agent::{PROFILE, VerifiedAgentCsr},
 };
 use sha2::{Digest, Sha256};
@@ -216,7 +216,11 @@ impl AgentTrust {
             chain,
         })
     }
-    pub fn verify_peer(&self, peer: &HandshakePeer, now: i64) -> Result<VerifiedAgentPeer, Error> {
+    pub fn verify_peer(
+        &self,
+        peer: &ClientCertificateEvidence,
+        now: i64,
+    ) -> Result<VerifiedAgentPeer, Error> {
         self.check(peer.chain(), now)
             .map(|metadata| VerifiedAgentPeer { metadata })
     }

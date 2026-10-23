@@ -627,6 +627,16 @@ fn unsigned_native_installers_are_observed_without_signature_evidence() {
             Some("1.2.3.0"),
         ),
         ("agent.pkg", installer_fixtures::pkg("1.2.3"), Some("1.2.3")),
+        (
+            "pkgbuild.pkg",
+            installer_fixtures::pkgbuild(),
+            Some("1.2.3"),
+        ),
+        (
+            "productbuild.pkg",
+            installer_fixtures::productbuild(),
+            Some("1.2.3"),
+        ),
     ];
     for (name, bytes, version) in samples {
         let mut file = tempfile::tempfile().unwrap();

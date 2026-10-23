@@ -82,12 +82,7 @@ impl Participant {
             );
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = crate::native::TlsEndpoint {
-            listen: listener.local_addr()?,
-            origin: format!("https://localhost:{}", listener.local_addr()?.port()),
-            certificate_file: root.join("server.crt"),
-            private_key_file: root.join("apple-tls.pk8"),
-        };
+        let address = listener.local_addr()?;
         let mut roots = rustls::RootCertStore::empty();
         roots.add(CertificateDer::from_pem_slice(&std::fs::read(
             root.join("apple-root.pem"),
@@ -97,8 +92,7 @@ impl Participant {
             Arc::new(rustls::crypto::ring::default_provider()),
         )
         .build()?;
-        let mut tls =
-            crate::native::tls::configuration(&endpoint, Some(verifier))?.fixture_server();
+        let mut tls = crate::test_support::tls::server(&root, "apple-tls.pk8", Some(verifier))?;
         tls.alpn_protocols = vec![b"h2".to_vec()];
         let acceptor = TlsAcceptor::from(Arc::new(tls));
         let expected_token = token
@@ -166,7 +160,11 @@ impl Participant {
         let client = reqwest::Client::builder().no_proxy().add_root_certificate(
             reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?,
         );
-        let push = fixture_push(&config, client, endpoint.origin)?;
+        let push = fixture_push(
+            &config,
+            client,
+            format!("https://localhost:{}", address.port()),
+        )?;
         Ok(Self { push, server, stop })
     }
     pub(in crate::apple) async fn close(self) -> Result<()> {

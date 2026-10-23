@@ -94,7 +94,7 @@ pub async fn admit(
             .headers()
             .get(header::HOST)
             .and_then(|v| v.to_str().ok())
-            != Some(envelope.host.as_str())
+            .is_none_or(|host| !envelope.host.is_empty() && host != envelope.host)
     {
         project(Error::Malformed)
     } else {
@@ -197,6 +197,13 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v1/agent/enroll/connections" | "/connections" => "agent_connections_read",
+        "/api/v1/agent/enroll/connections/acknowledgements" | "/connections/acknowledgements" => {
+            "agent_connections_ack"
+        }
+        "/api/v1/agent/enroll/connections/failures" | "/connections/failures" => {
+            "agent_connections_failure"
+        }
         "/api/v1/agent/enroll/native-grants" | "/native-grants" => "agent_native_grant",
         "/api/v1/agent/enroll/bootstrap/scep/challenge" | "/bootstrap/scep/challenge" => {
             "agent_bootstrap_sign"

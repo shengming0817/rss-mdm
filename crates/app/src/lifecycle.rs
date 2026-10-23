@@ -325,11 +325,12 @@ pub async fn serve(
                             audit_store.clone(),
                             Arc::new(crate::clock::SystemClock),
                         );
+                        let product_origin = compiled.config.product_origin.clone();
                         let mut app = crate::api::from_compiled(
                             compiled,
                             crate::api::AssemblyDependencies {
                                 #[cfg(test)]
-                                bind_listeners: true,
+                                mount_channels: true,
                                 telemetry: telemetry.clone(),
                                 certificate_archive: archive.clone(),
                                 timeline: timeline.clone(),
@@ -349,10 +350,17 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::webhooks::Resource(app.webhooks.clone()),
                         ));
-                        app.browser = app.browser.layer(axum::middleware::from_fn_with_state(
-                            gateway,
-                            crate::identity::ingress,
-                        ));
+                        let native_listeners = app
+                            .listeners
+                            .iter()
+                            .any(|(kind, _)| kind.windows_retention());
+                        let agent_enrollment = app.agent_enrollment.clone();
+                        app.browser = crate::native::gateway::router(
+                            app.browser,
+                            std::mem::take(&mut app.listeners),
+                            product_origin,
+                            agent_enrollment,
+                        );
                         let listener =
                             tokio::net::TcpListener::bind(listen).await.map_err(|e| {
                                 ProcessError::Io {
@@ -360,23 +368,6 @@ pub async fn serve(
                                     kind: e.kind(),
                                 }
                             })?;
-                        if app.bound.len() != app.listeners.len() {
-                            return Err(assembly_error(Error::Conflict));
-                        }
-                        let mut native_listeners = Vec::new();
-                        for ((kind, listener), (router_kind, router)) in
-                            app.bound.drain(..).zip(app.listeners.drain(..))
-                        {
-                            let address = listener.local_addr().map_err(|_| {
-                                assembly_error(Error::Configuration(crate::ConfigIssue::Listen))
-                            })?;
-                            if kind != router_kind
-                                || (router.listen.port() != 0 && address != router.listen)
-                            {
-                                return Err(assembly_error(Error::Conflict));
-                            }
-                            native_listeners.push((kind, listener, router));
-                        }
                         listener_receipt(&listener, &mut std::io::stdout().lock()).map_err(
                             |e| ProcessError::Io {
                                 stage: "startup.listener_receipt",
@@ -488,10 +479,7 @@ pub async fn serve(
                             .critical(),
                         );
                     }
-                    if native_listeners
-                        .iter()
-                        .any(|(kind, _, _)| kind.windows_retention())
-                    {
+                    if native_listeners {
                         launch.stage_task_with_token(
                             rss_mdm_windows_channel::retention::registration(
                                 access.windows_store(),
@@ -506,25 +494,12 @@ pub async fn serve(
                         rss_axum::serve_http1_registration(
                             listener,
                             app.browser,
-                            rss_axum::PlainTransport,
+                            crate::native::gateway::Transport { gateway },
                             "mdm-http",
                             http_policy(),
                         )
                         .critical(),
                     );
-                    for (kind, listener, router) in native_listeners {
-                        launch.stage_task_with_token(
-                            crate::native::tls::registration(
-                                listener,
-                                router,
-                                audit_store.clone(),
-                                tenant.clone(),
-                                kind,
-                                gateway,
-                            )
-                            .critical(),
-                        );
-                    }
                     launch.finish();
                     std::future::pending().await
                 })

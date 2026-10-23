@@ -278,7 +278,7 @@ fn optional_signing_is_admitted_by_consumers_not_core_configuration() {
     let mut value: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     let root = independent_secrets(&mut value);
-    let endpoint = serde_json::json!({"listen":"127.0.0.1:9445","origin":"https://agent.example.test","certificate_file":"unused.pem","private_key_file":"unused.key"});
+    let endpoint = serde_json::json!({"origin":"https://agent.example.test"});
     for enabled in [false, true] {
         for signed in [false, true] {
             value["agent_pki"] = if enabled {

@@ -1,9 +1,12 @@
 //! Public bootstrap trust uses the fixed HTTPS authority; installation ACK requires a live device credential.
 use super::*;
 use rss_mdm_agent_wire::pki::{Acknowledgement, Trust};
-use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_certificate::ClientCertificateEvidence;
 impl Service {
-    pub async fn device_trust(&self, peer: Option<&HandshakePeer>) -> Result<Trust, Failure> {
+    pub async fn device_trust(
+        &self,
+        peer: Option<&ClientCertificateEvidence>,
+    ) -> Result<Trust, Failure> {
         if let Some(peer) = peer {
             self.authenticate(peer).await?;
         }
@@ -14,7 +17,7 @@ impl Service {
     }
     pub async fn acknowledge_trust(
         &self,
-        peer: &HandshakePeer,
+        peer: &ClientCertificateEvidence,
         input: &Acknowledgement,
         a: &RequestAudit,
     ) -> Result<(), Failure> {
@@ -94,7 +97,7 @@ impl Service {
 impl Service {
     pub async fn observe_trust(
         &self,
-        peer: &HandshakePeer,
+        peer: &ClientCertificateEvidence,
         input: &rss_mdm_agent_wire::pki::Observation,
         a: &RequestAudit,
     ) -> Result<(), Failure> {

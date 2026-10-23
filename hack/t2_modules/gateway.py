@@ -19,7 +19,7 @@ def verify(context):
     verify_sni(context)
     # Only TLS/file/listener locations are adapted for this loopback protocol seam.
     # The source-key, budget, burst, error and location rules are the production file.
-    config=render(ROOT/'deployment', public_port=8080, certificates='/run/config', web=False, plain=True)
+    config=render(ROOT/'deployment', backend='127.0.0.1:8082', public_port=8080, certificates='/run/config', web=False, plain=True)
     config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
     locations = ''
     locations += 'location = /api/unsupported-test { default_type application/json; return 404 \'{"code":"not_found"}\'; }'
@@ -41,8 +41,8 @@ def verify(context):
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
         # Synthetic route payload only; registry-backed production generation is covered by management_tenant.
-        public=dict(canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
-        subprocess.run(['docker','exec','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
+        public=dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+        subprocess.run(['docker','exec','--user','0','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
         status,body=request('/api/v1/mdm-host/config.json',method='GET')
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
@@ -50,7 +50,7 @@ def verify(context):
         status,body=request('/software/native/sources/retired/test/information',method='GET')
         if status!=404 or json.loads(body)!={'code':'not_found'}:raise RuntimeError('retired native software API fell through to SPA')
         for path in ['/api/v1/agent/enroll/certificates', '/api/v1/agent/runtime/tasks/task/content', '/api/v1/agent/enroll/installations/operation/package']:
-            if request(path,method='GET')[0] != 404: raise RuntimeError('Agent route leaked through browser gateway: '+path)
+            if request(path,method='GET')[0] != 200: raise RuntimeError('shared Agent route did not reach private HTTP ingress: '+path)
         status, forwarded=request('/api/probe','203.0.113.254')
         if status!=200 or not forwarded or forwarded==b'203.0.113.254':raise RuntimeError('gateway failed to overwrite source header')
         statuses=[]
@@ -134,7 +134,7 @@ def verify(context):
         if 200 not in statuses or 429 not in statuses: raise RuntimeError('general API admission is not bounded')
         log=subprocess.run(['docker','logs',name],check=True,capture_output=True,text=True,timeout=10)
         if 'synthetic-sensitive-value' in log.stdout+log.stderr or 'mdm_gateway' not in log.stdout:raise RuntimeError('gateway logging contract failed')
-        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and isolated Agent listener routing passed')
+        print('login gateway T2: actual peer budget, spoofed forwarding rejection, bounded recovery and shared gateway Agent routing passed')
 
 def verify_business(context, fixture):
     from t2_hosts import Host
@@ -170,8 +170,7 @@ def verify_business(context, fixture):
             relay.timeout=15
             thread=threading.Thread(target=relay.serve_forever,daemon=True);thread.start()
             try:
-                config=render(ROOT/'deployment', public_port=8080, certificates='/run/config', web=False, plain=True)
-                config=config.replace('server 127.0.0.1:8081;',f'server host.docker.internal:{relay.server_port};')
+                config=render(ROOT/'deployment', backend=f'host.docker.internal:{relay.server_port}', public_port=8080, certificates='/run/config', web=False, plain=True)
                 with context.gateway(config) as (_,port):
                     browser=Browser(SimpleNamespace(address=f'127.0.0.1:{port}'),'https://mdm.example.test')
                     end=time.monotonic()+30
@@ -228,111 +227,74 @@ def main(context, fixture):
 
 
 def verify_sni(context):
-    """Real nginx SNI passthrough, PROXY framing and mutual TLS in one connection."""
+    """Real nginx terminates mTLS and overwrites evidence on its private HTTP hop."""
     import ssl
-    import socketserver
+    from urllib.parse import unquote
     with tempfile.TemporaryDirectory(prefix='mdm-gateway-tls-') as directory:
         root=Path(directory)
         def openssl(*args):
-            subprocess.run(['openssl',*map(str,args)],cwd=root,check=True,capture_output=True,timeout=30)
+            return subprocess.run(['openssl',*map(str,args)],cwd=root,check=True,capture_output=True,timeout=30).stdout
         openssl('req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Gateway test CA','-keyout','ca.key','-out','ca.crt','-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash')
         for name,usage in [('server','serverAuth'),('client','clientAuth')]:
             openssl('req','-new','-newkey','rsa:2048','-nodes','-subj','/CN='+name,'-keyout',name+'.key','-out',name+'.csr')
             (root/'leaf.ext').write_text('subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage='+usage+'\nsubjectAltName=DNS:mdm.example.test,DNS:device.example.test,DNS:unknown.example.test\n')
             openssl('x509','-req','-in',name+'.csr','-CA','ca.crt','-CAkey','ca.key','-CAcreateserial','-days','1','-extfile','leaf.ext','-out',name+'.crt')
-        server_context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        server_context.load_cert_chain(root/'server.crt',root/'server.key')
-        server_context.load_verify_locations(root/'ca.crt');server_context.verify_mode=ssl.CERT_REQUIRED
+        expected=openssl('x509','-in','client.crt','-outform','DER')
         seen=[]
-        class Device(socketserver.BaseRequestHandler):
-            def handle(self):
-                self.request.settimeout(5)
-                header=b''
-                while len(header)<107 and not header.endswith(b'\r\n'):
-                    byte=self.request.recv(1)
-                    if not byte:return
-                    header+=byte
-                if not header.startswith(b'PROXY TCP4 ') or not header.endswith(b'\r\n'):return
-                try:
-                    with server_context.wrap_socket(self.request,server_side=True) as stream:
-                        request=b''
-                        while b'\r\n\r\n' not in request and len(request)<8192:
-                            data=stream.recv(1024)
-                            if not data:return
-                            request+=data
-                        subject=stream.getpeercert()['subject']
-                        seen.append((header,subject))
-                        body=b'verified-client'
-                        stream.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\n'+body)
-                except (ssl.SSLError,OSError):pass
-        class ManagedServer(socketserver.ThreadingTCPServer):
-            daemon_threads=False
-        with ManagedServer(('0.0.0.0',0),Device) as device:
-            thread=threading.Thread(target=device.serve_forever,daemon=True);thread.start()
-            try:
-                config=render(ROOT/'deployment',public_port=8080,targets={'device.example.test':f'host.docker.internal:{device.server_address[1]}'},web=False,certificates='/run/probe')
-                # The browser route is independently identified; its backend remains a bounded fixture.
-                config=config.replace('server 127.0.0.1:8081;','server 127.0.0.1:8082;')
-                config=config.rsplit('}',1)[0]+'server { listen 127.0.0.1:8082; location / { return 200 "browser"; } }}'
-                files={name:(root/name).read_text() for name in ['server.crt','server.key']}
-                with context.gateway(config,files) as (name,port):
-                    import ipaddress
-                    addresses=subprocess.run(['docker','exec',name,'getent','ahostsv4','host.docker.internal'],check=True,capture_output=True,text=True,timeout=10).stdout
-                    host_address=str(ipaddress.ip_address(addresses.split()[0]))
-                    resolved=config.replace('host.docker.internal:',host_address+':')
-                    (context.gateway_owner.root/'probe/nginx.conf').write_text(resolved)
-                    subprocess.run(['docker','exec',name,'nginx','-c','/tmp/input.conf','-s','reload'],check=True,capture_output=True,timeout=10)
-                    def request(host,identity=None,authority=None):
-                        tls=ssl.create_default_context(cafile=str(root/'ca.crt'))
-                        if identity:tls.load_cert_chain(root/(identity+'.crt'),root/(identity+'.key'))
-                        with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
-                            with tls.wrap_socket(raw,server_hostname=host) as stream:
-                                stream.sendall(('GET /api/probe HTTP/1.1\r\nHost: '+(authority or host)+'\r\nX-Client-Cert: forged\r\nConnection: close\r\n\r\n').encode())
-                                chunks=[]
-                                while True:
-                                    chunk=stream.recv(8192)
-                                    if not chunk:break
-                                    chunks.append(chunk)
-                                return b''.join(chunks)
-                    until=time.monotonic()+30
-                    last='no response'
-                    while True:
-                        try:
-                            if request('mdm.example.test').endswith(b'browser'):break
-                        except OSError as error:last=str(error)
-                        if time.monotonic()>until:raise RuntimeError('SNI gateway startup deadline: '+last)
-                        time.sleep(.1)
-                    if b'421' not in request('mdm.example.test',authority='wrong.example.test').split(b'\r\n',1)[0]:raise RuntimeError('SNI/Host mismatch accepted')
-                    if not request('device.example.test','client').endswith(b'verified-client'):raise RuntimeError('mTLS passthrough failed')
-                    def rejected(reply):
-                        if b'200 OK' in reply:raise RuntimeError('SNI or client certificate rejection bypassed')
-                    for host,identity in [('device.example.test',None),('device.example.test','server'),('unknown.example.test','client')]:
-                        try:reply=request(host,identity)
-                        except (OSError,ssl.SSLError):continue
-                        rejected(reply)
-                    if len(seen)!=1 or ('commonName','client') not in seen[0][1][0]:raise RuntimeError('gateway replaced the authenticated device identity')
+        class Backend(BaseHTTPRequestHandler):
+            def do_GET(self):
+                status=200;body=b'browser'
+                if self.path.startswith('/api/v1/agent/'):
+                    try:
+                        certificate=ssl.PEM_cert_to_DER_cert(unquote(self.headers.get('X-RSS-Client-Cert','')))
+                        valid=certificate==expected
+                    except (ValueError,TypeError):valid=False
+                    valid=valid and self.headers.get('X-RSS-Public-Origin')=='https://device.example.test'
+                    valid=valid and self.headers.get('X-RSS-User-Session')=='device-user-session'
+                    valid=valid and not any(self.headers.get(name) for name in ('Cookie','Authorization','X-Client-Cert','X-Device-ID','X-Tenant-ID','Forwarded'))
+                    source=self.headers.get('X-Forwarded-For')
+                    valid=valid and bool(source) and source!='203.0.113.9' and ',' not in source
+                    status=200 if valid else 403;body=b'verified-client' if valid else b'rejected'
+                    if valid:seen.append(certificate)
+                self.send_response(status);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        backend=HTTPServer(('0.0.0.0',0),Backend)
+        thread=threading.Thread(target=backend.serve_forever,daemon=True);thread.start()
+        try:
+            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None,'https://device.example.test:8443':None},web=False,certificates='/run/probe')
+            files={name:(root/name).read_text() for name in ['server.crt','server.key']}
+            with context.gateway(config,files) as (name,port):
+                def request(host,identity=None,authority=None,forged=True):
+                    tls=ssl.create_default_context(cafile=str(root/'ca.crt'))
+                    if identity:tls.load_cert_chain(root/(identity+'.crt'),root/(identity+'.key'))
+                    path='/api/probe' if host=='mdm.example.test' else '/api/v1/agent/runtime/probe'
                     with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
-                        raw.sendall(b'PROXY TCP4 203.0.113.9 203.0.113.10 1234 443\r\n')
-                        raw.shutdown(socket.SHUT_WR)
-                        if raw.recv(1024):raise RuntimeError('public gateway accepted caller PROXY framing')
-                    # Negative control: a wrong default must complete trusted TLS and fail this same assertion.
-                    bad=resolved.replace('default "";',f'default {host_address}:{device.server_address[1]};',1)
-                    (context.gateway_owner.root/'probe/nginx.conf').write_text(bad)
-                    subprocess.run(['docker','exec',name,'nginx','-c','/tmp/input.conf','-s','reload'],check=True,capture_output=True,timeout=10)
-                    until=time.monotonic()+15
-                    while True:
-                        try:
-                            reply=request('unknown.example.test','client')
-                            if b'200 OK' in reply:break
-                        except (OSError,ssl.SSLError):pass
-                        if time.monotonic()>until:raise RuntimeError('wrong-default negative control did not reach backend')
-                        time.sleep(.1)
-                    try:rejected(reply)
-                    except RuntimeError:pass
-                    else:raise RuntimeError('unknown SNI assertion missed the injected wrong route')
-            finally:
-                device.shutdown();thread.join(timeout=10)
-                if thread.is_alive():raise RuntimeError('gateway TLS participant did not stop')
+                        with tls.wrap_socket(raw,server_hostname=host) as stream:
+                            extra='X-RSS-Client-Cert: forged\r\nX-RSS-Public-Origin: https://evil.example.test\r\nX-Forwarded-For: 203.0.113.9\r\nX-Client-Cert: forged\r\nX-Device-ID: forged\r\nX-Tenant-ID: forged\r\nForwarded: for=forged\r\nCookie: session=secret\r\nAuthorization: Bearer secret\r\n' if forged else ''
+                            stream.sendall(('GET '+path+' HTTP/1.1\r\nHost: '+(authority or host)+'\r\nX-RSS-User-Session: device-user-session\r\n'+extra+'Connection: close\r\n\r\n').encode())
+                            chunks=[]
+                            while True:
+                                chunk=stream.recv(8192)
+                                if not chunk:break
+                                chunks.append(chunk)
+                            return b''.join(chunks)
+                until=time.monotonic()+30
+                while True:
+                    try:
+                        if request('mdm.example.test').endswith(b'browser'):break
+                    except OSError:pass
+                    if time.monotonic()>until:raise RuntimeError('HTTPS gateway startup deadline')
+                    time.sleep(.1)
+                if b'421' not in request('mdm.example.test',authority='device.example.test').split(b'\r\n',1)[0]:raise RuntimeError('SNI/Host mismatch accepted')
+                if not request('device.example.test','client').endswith(b'verified-client'):raise RuntimeError('gateway certificate evidence was not the actual TLS leaf')
+                for host,identity in [('device.example.test',None),('device.example.test','server'),('unknown.example.test','client')]:
+                    try:reply=request(host,identity)
+                    except (OSError,ssl.SSLError):continue
+                    if b'200 OK' in reply:raise RuntimeError('TLS identity or unknown SNI rejection bypassed')
+                if seen!=[expected]:raise RuntimeError('gateway accepted forged evidence or forwarded browser credentials')
+        finally:
+            backend.shutdown();backend.server_close();thread.join(timeout=10)
+            if thread.is_alive():raise RuntimeError('gateway HTTP participant did not stop')
 
 
 def verify_network_allocation(context):

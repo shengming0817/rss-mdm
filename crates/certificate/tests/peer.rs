@@ -10,9 +10,9 @@ fn an_unfinished_connection_cannot_mint_handshake_evidence() {
     .unwrap()
     .with_no_client_auth()
     .with_cert_resolver(Arc::new(rustls::server::ResolvesServerCertUsingSni::new()));
-    let connection = ServerConnection::new(Arc::new(config)).unwrap();
+    let connection = rustls::ServerConnection::new(Arc::new(config)).unwrap();
     assert!(matches!(
-        HandshakePeer::from_completed_tls(&connection),
+        ClientCertificateEvidence::from_completed_tls(&connection),
         Err(Error::Unauthorized)
     ));
 }

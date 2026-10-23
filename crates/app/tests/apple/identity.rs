@@ -74,9 +74,10 @@ impl Fixture {
                 .put(format!("{}/mdm", peer.origin))
                 .body("<plist/>")
                 .send()
-                .await
-                .is_err(),
-            "missing mTLS certificate admitted"
+                .await?
+                .status()
+                == StatusCode::UNAUTHORIZED,
+            "missing mTLS certificate did not receive an authentication rejection"
         );
         Ok(())
     }

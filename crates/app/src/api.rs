@@ -181,7 +181,7 @@ pub(crate) async fn application_fixture(
         let mut fixture_routers = from_compiled(
             compiled,
             AssemblyDependencies {
-                bind_listeners: false,
+                mount_channels: false,
                 telemetry,
                 certificate_archive: crate::certificate_archive::assemble(
                     &access,
@@ -210,8 +210,12 @@ pub(crate) async fn application_fixture(
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
         for (kind, tls) in fixture_routers.listeners {
-            if kind == crate::native::NativeListenerKind::Agent {
-                fixture_routers.browser = fixture_routers.browser.merge(tls.router)
+            if kind == crate::native::ChannelKind::Agent {
+                fixture_routers.browser = crate::test_support::gateway::browser_agent(
+                    fixture_routers.browser,
+                    tls.router,
+                    "mdm.example.test",
+                )
             }
         }
         Ok((
@@ -237,7 +241,7 @@ pub(crate) async fn application_fixture(
 }
 pub(crate) struct AssemblyDependencies {
     #[cfg(test)]
-    pub(crate) bind_listeners: bool,
+    pub(crate) mount_channels: bool,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -261,7 +265,7 @@ pub(crate) async fn from_compiled(
     } = compiled;
     let AssemblyDependencies {
         #[cfg(test)]
-        bind_listeners,
+        mount_channels,
         telemetry,
         certificate_archive,
         timeline,
@@ -279,7 +283,6 @@ pub(crate) async fn from_compiled(
         channels,
         providers,
         bootstrap,
-        configuration_signer,
         service: execution,
         inputs,
         queries,
@@ -436,6 +439,7 @@ pub(crate) async fn from_compiled(
         .material(
             ChannelName::Agent,
             config.agent_pki.load(
+                &config.identity.instance_id,
                 audit_store.clone(),
                 clock.clone(),
                 providers.clone(),
@@ -451,8 +455,8 @@ pub(crate) async fn from_compiled(
         providers.clone(),
     );
     #[cfg(not(test))]
-    let bind_listeners = true;
-    if bind_listeners {
+    let mount_channels = true;
+    if mount_channels {
         admit_native(
             &mut windows,
             &mut apple,
@@ -465,11 +469,6 @@ pub(crate) async fn from_compiled(
         .await?;
     }
     loaded_native_materials(&windows, &apple, &channels)?;
-    let bound = if bind_listeners {
-        bind_native_channels(&mut windows, &mut apple, &mut agent_pki, &channels).await?
-    } else {
-        vec![]
-    };
     let trusts = native_trusts(&windows, &apple, &agent_pki);
     let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
         access.archive_pool(),
@@ -480,8 +479,23 @@ pub(crate) async fn from_compiled(
     observe_native_trust(&pki, &agent_pki, &channels)?;
     // Handler fixtures own their transport outside this assembly.
     #[cfg(test)]
-    if !bind_listeners {
-        fixture_native_listening(&windows, &apple, &agent_pki, &channels)?;
+    if !mount_channels {
+        fixture_native_mounted(&windows, &apple, &agent_pki, &channels)?;
+    }
+    for (enabled, name) in [
+        (
+            windows.is_some(),
+            crate::channel_status::ChannelName::Windows,
+        ),
+        (apple.is_some(), crate::channel_status::ChannelName::Apple),
+        (
+            agent_pki.is_some(),
+            crate::channel_status::ChannelName::Agent,
+        ),
+    ] {
+        if enabled {
+            channels.mounted(name)?;
+        }
     }
     let agent_enrollment = agent_pki
         .as_ref()
@@ -496,8 +510,7 @@ pub(crate) async fn from_compiled(
                     binding: Arc::new(rss_mdm_agent_channel::Bindings),
                     native: execution.clone(),
                     bootstrap: pki.bootstrap.clone(),
-                    origin: pki.origin.clone(),
-                    configuration_signer: configuration_signer.clone(),
+                    protection: protection.clone(),
                     installations: Arc::new(crate::agent_configurations::Installations),
                 },
             )
@@ -583,8 +596,7 @@ pub(crate) async fn from_compiled(
             "baseline initialization outcome unknown; resume original intent after restart"
         ),
     }
-    let mut routers = from_state(state, host, monotonic);
-    routers.bound = bound;
+    let routers = from_state(state, host, monotonic);
     Ok(routers)
 }
 
@@ -884,14 +896,11 @@ pub(crate) fn from_state(
         windows_state.clone(),
         monotonic.clone(),
     ) {
-        listeners.push((
-            crate::native::NativeListenerKind::WindowsEnrollment,
-            enrollment,
-        ));
+        listeners.push((crate::native::ChannelKind::WindowsEnrollment, enrollment));
         listeners.extend(
             planning
                 .into_iter()
-                .map(|router| (crate::native::NativeListenerKind::WindowsManagement, router)),
+                .map(|router| (crate::native::ChannelKind::WindowsManagement, router)),
         );
     }
     if let Some(apple) = crate::apple::router(
@@ -899,11 +908,12 @@ pub(crate) fn from_state(
         apple_state.clone(),
         monotonic.clone(),
     ) {
-        listeners.push((crate::native::NativeListenerKind::AppleManagement, apple));
+        listeners.push((crate::native::ChannelKind::AppleManagement, apple));
     }
     if let (Some(pki), Some(service)) = (&state.agent_pki, &state.agent_enrollment) {
         let mut envelope = agent_boundary;
-        envelope.host = pki.origin.trim_start_matches("https://").to_string();
+        // This outer gateway dispatcher validates the actual published Agent origin.
+        envelope.host.clear();
         let runtime = rss_mdm_agent_channel::router(
             Arc::new(crate::agent::HttpState {
                 content: state.content_writer.clone(),
@@ -945,10 +955,9 @@ pub(crate) fn from_state(
                 )),
         );
         listeners.push((
-            crate::native::NativeListenerKind::Agent,
-            crate::native::TlsRouter {
-                listen: pki.listen,
-                tls: pki.tls.clone(),
+            crate::native::ChannelKind::Agent,
+            crate::native::ChannelRouter {
+                origins: pki.origins.clone(),
                 router,
                 admission: crate::native::admission::Admission::new(
                     monotonic.clone(),
@@ -1009,8 +1018,8 @@ pub(crate) fn from_state(
         windows: state.windows.clone(),
         apple,
         browser,
+        agent_enrollment: state.agent_enrollment.clone(),
         listeners,
-        bound: Vec::new(),
     }
 }
 
@@ -1196,7 +1205,7 @@ fn observe_native_trust(
     Ok(())
 }
 #[cfg(test)]
-fn fixture_native_listening(
+fn fixture_native_mounted(
     windows: &Option<Arc<crate::windows::Windows>>,
     apple: &Option<Arc<crate::apple::Apple>>,
     agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
@@ -1209,7 +1218,7 @@ fn fixture_native_listening(
         (ChannelName::Agent, agent_pki.is_some()),
     ] {
         if present {
-            channels.listening(name)?;
+            channels.mounted(name)?;
         }
     }
     Ok(())
@@ -1309,113 +1318,4 @@ fn loaded_native_materials(
         )?;
     }
     Ok(())
-}
-async fn bind_native_channels(
-    windows: &mut Option<Arc<crate::windows::Windows>>,
-    apple: &mut Option<Arc<crate::apple::Apple>>,
-    agent_pki: &mut Option<Arc<crate::agent_pki::AgentPki>>,
-    channels: &crate::channel_status::Channels,
-) -> Result<Vec<(crate::native::NativeListenerKind, tokio::net::TcpListener)>, Error> {
-    use crate::channel_status::{ChannelName, ChannelState, Reason};
-    let mut bound = Vec::new();
-    if let Some(w) = windows.as_ref() {
-        let mut endpoints = vec![
-            (
-                crate::native::NativeListenerKind::WindowsEnrollment,
-                w.config.enrollment.listen,
-            ),
-            (
-                crate::native::NativeListenerKind::WindowsManagement,
-                w.config.management.listen,
-            ),
-        ];
-        endpoints.extend(w.config.additional_management.iter().map(|e| {
-            (
-                crate::native::NativeListenerKind::WindowsManagement,
-                e.listen,
-            )
-        }));
-        match bind_native(&endpoints).await {
-            Ok(listeners) => {
-                bound.extend(listeners);
-                channels.listening(ChannelName::Windows)?;
-            }
-            Err(_) => {
-                channels.set(
-                    ChannelName::Windows,
-                    ChannelState::Degraded,
-                    Some(Reason::ListenerUnavailable),
-                )?;
-                *windows = None;
-            }
-        }
-    }
-    if let Some(a) = apple.as_ref() {
-        match bind_native(&[(
-            crate::native::NativeListenerKind::AppleManagement,
-            a.config.management.listen,
-        )])
-        .await
-        {
-            Ok(listeners) => {
-                bound.extend(listeners);
-                channels.listening(ChannelName::Apple)?;
-            }
-            Err(_) => {
-                channels.set(
-                    ChannelName::Apple,
-                    ChannelState::Degraded,
-                    Some(Reason::ListenerUnavailable),
-                )?;
-                *apple = None;
-            }
-        }
-    }
-    if let Some(a) = agent_pki.as_ref() {
-        match bind_native(&[(crate::native::NativeListenerKind::Agent, a.listen)]).await {
-            Ok(listeners) => {
-                bound.extend(listeners);
-                channels.listening(ChannelName::Agent)?;
-            }
-            Err(_) => {
-                channels.set(
-                    ChannelName::Agent,
-                    ChannelState::Degraded,
-                    Some(Reason::ListenerUnavailable),
-                )?;
-                *agent_pki = None;
-            }
-        }
-    }
-    Ok(bound)
-}
-async fn bind_native(
-    endpoints: &[(crate::native::NativeListenerKind, std::net::SocketAddr)],
-) -> std::io::Result<Vec<(crate::native::NativeListenerKind, tokio::net::TcpListener)>> {
-    let mut listeners = Vec::new();
-    for (kind, address) in endpoints {
-        listeners.push((*kind, tokio::net::TcpListener::bind(address).await?));
-    }
-    Ok(listeners)
-}
-
-#[cfg(test)]
-mod binding_tests {
-    #[tokio::test]
-    async fn partial_channel_binding_releases_every_acquired_listener() {
-        use crate::native::NativeListenerKind as K;
-        let free = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let first = free.local_addr().unwrap();
-        drop(free);
-        let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        assert!(
-            super::bind_native(&[
-                (K::WindowsEnrollment, first),
-                (K::WindowsManagement, occupied.local_addr().unwrap())
-            ])
-            .await
-            .is_err()
-        );
-        assert!(tokio::net::TcpListener::bind(first).await.is_ok());
-    }
 }

@@ -90,6 +90,7 @@ pub(super) fn validate_slots(input: &Input) -> Result<()> {
 
 /// The same host completion transition is used by installation and later provisioning.
 pub(super) async fn activate(
+    c: &mut sqlx::PgConnection,
     directory: &std::path::Path,
     deployment: &runtime_files::Config,
     runtime: &Value,
@@ -113,6 +114,7 @@ pub(super) async fn activate(
     });
     match runtime_files::apply(directory, deployment, runtime).await {
         Ok(observed) => {
+            runtime_files::record_observation(c, runtime, &observed).await?;
             let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)
                 .map_err(|_| Error::Storage)?;
             progress
@@ -198,7 +200,7 @@ async fn provision_pending(
             value = requested;
         }
         drop(owner);
-        let _ = activate(&input.directory, &input.deployment, &value, progress).await;
+        let _ = activate(c, &input.directory, &input.deployment, &value, progress).await;
     } else {
         let slot = if let Some(index) = reservations.get(&progress.host_id) {
             Some(*index)
@@ -213,7 +215,7 @@ async fn provision_pending(
             journal.save("host-reservations.json", reservations)?;
             match additional_runtime(&input.directory, runtime, slot, progress) {
                 Ok(candidate) => {
-                    if activate(&input.directory, &slot.deployment, &candidate, progress)
+                    if activate(c, &input.directory, &slot.deployment, &candidate, progress)
                         .await
                         .is_ok()
                     {

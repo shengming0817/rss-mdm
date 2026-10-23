@@ -11,13 +11,14 @@ use sqlx::Row;
 use zeroize::Zeroizing;
 pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
-    Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
     uri: axum::http::Uri,
     bytes: Bytes,
 ) -> Result<Response, Error> {
+    let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
     if headers.keys().any(|k| {
         k.as_str() == "forwarded"
             || k.as_str().starts_with("x-forwarded-")

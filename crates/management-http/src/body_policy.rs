@@ -32,7 +32,9 @@ pub(crate) fn for_route(route: &str, method: &Method) -> BodyPolicy {
         ) => Buffered(8 * 1024 * 1024),
         ("POST", "/api/v1/devices/{device}/operations") => Buffered(16 * 1024 * 1024),
         ("POST", "/api/v1/pki/rotations" | "/api/v1/pki/crls") => Buffered(64 * 1024 * 1024),
-        ("POST", "/api/v1/pki/signing/recover") => Buffered(256 * 1024),
+        ("POST", "/api/v1/pki/signing/recover" | "/api/v1/agent-issuances/{id}/recover") => {
+            Buffered(256 * 1024)
+        }
         ("PUT", "/api/v1/windows/entra-policy") => Buffered(128 * 1024),
         ("POST", "/api/v1/certificate-archive/import")
         | (

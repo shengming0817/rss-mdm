@@ -14,7 +14,6 @@ pub enum Change {
     Prepare {
         #[serde(rename = "expectedRevision")]
         expected_revision: i64,
-        origin: String,
     },
     Retire {
         #[serde(rename = "expectedRevision")]
@@ -159,7 +158,7 @@ impl ExecutionService {
                 let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.versions WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(service.tenant.to_string()).bind(*operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 let actor=format!("{}:{}:{}",p.tenant_id(),p.instance_id(),p.principal_id());
                 let value=match change {
-                    Change::Prepare{expected_revision,origin}=>trust::prepare(c,service.tenant,*operation,*expected_revision,origin,&service.protection,&actor).await?,
+                    Change::Prepare{expected_revision}=>trust::prepare(c,service.tenant,*operation,*expected_revision,&service.protection,&actor).await?,
                     Change::Retire{expected_revision,key_id}=>trust::retire(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
                     Change::Activate{expected_revision,key_id}=>trust::activate(c,service.tenant,*operation,*expected_revision,key_id,&service.protection,&actor).await?,
                 };

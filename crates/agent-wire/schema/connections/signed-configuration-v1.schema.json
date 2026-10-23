@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "Configuration": {
+      "additionalProperties": false,
+      "description": "Transport addresses never form the service, device or credential identity.",
+      "properties": {
+        "keyId": {
+          "description": "Already installed configuration verification key; never supplied as public key bytes.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "type": "string"
+        },
+        "origins": {
+          "description": "Exact canonical HTTPS origins, sorted for one signed representation.",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "type": "array"
+        },
+        "preferredOrigin": {
+          "description": "Preferred address, necessarily a member of origins.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string"
+        },
+        "revision": {
+          "description": "Strictly increasing installation revision; equal revisions require identical bytes.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "serviceId": {
+          "description": "Immutable product installation instance, shared by all its entrances.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Tenant to which the installed device belongs.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "wireVersion": {
+          "const": 1,
+          "description": "Current product format, independent of configuration revision."
+        }
+      },
+      "required": [
+        "wireVersion",
+        "serviceId",
+        "tenantId",
+        "revision",
+        "preferredOrigin",
+        "origins",
+        "keyId"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A transferable public configuration; no device credential or CA private key is included.",
+  "properties": {
+    "configuration": {
+      "$ref": "#/$defs/Configuration",
+      "description": "Exact signed connection configuration."
+    },
+    "signature": {
+      "description": "Canonical unpadded base64url Ed25519 signature.",
+      "maxLength": 86,
+      "minLength": 86,
+      "pattern": "^[A-Za-z0-9_-]{86}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "configuration",
+    "signature"
+  ],
+  "title": "SignedConfiguration",
+  "type": "object",
+  "$id": "https://rss.example/agent/connections/v1/SignedConfiguration"
+}

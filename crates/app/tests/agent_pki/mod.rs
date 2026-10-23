@@ -92,6 +92,7 @@ async fn service_with_provider(
     let config: crate::agent_pki::Config = serde_json::from_value(value)?;
     let pki = config
         .load(
+            crate::test_support::identity::INSTANCE,
             audit.clone(),
             Arc::new(SystemClock),
             providers.clone(),
@@ -113,8 +114,7 @@ async fn service_with_provider(
         audit,
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        origin: pki.origin.clone(),
-        configuration_signer: Some(Arc::new(crate::test_support::agent::fixture_signer()?)),
+        protection: crate::test_support::identity::config(case_a())?.native_protector()?,
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
@@ -196,6 +196,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
     let pki = serde_json::from_value::<crate::agent_pki::Config>(deployment())?
         .load(
+            crate::test_support::identity::INSTANCE,
             audit_store.clone(),
             Arc::new(SystemClock),
             fixture_providers()?,
@@ -210,8 +211,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             audit: audit_store.clone(),
             issuer: pki.issuer.clone(),
             clock: time.clone(),
-            origin: pki.origin.clone(),
-            configuration_signer: Some(Arc::new(crate::test_support::agent::fixture_signer()?)),
+            protection: crate::test_support::identity::config(case_a())?.native_protector()?,
             installations: Arc::new(crate::agent_configurations::Installations),
             bootstrap: None,
             binding: Arc::new(crate::agent::Bindings),
@@ -560,9 +560,9 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         requests.clone(),
         "mdm-agent",
     );
-    let first = admission.connection("127.0.0.1".parse()?).unwrap();
-    let second = admission.connection("127.0.0.2".parse()?).unwrap();
-    let third = admission.connection("127.0.0.3".parse()?).unwrap();
+    let first = admission.gate("127.0.0.1".parse()?).unwrap();
+    let second = admission.gate("127.0.0.2".parse()?).unwrap();
+    let third = admission.gate("127.0.0.3".parse()?).unwrap();
     let release = Arc::new(Barrier::new(5));
     let (entered, mut entries) = mpsc::channel(4);
     let handler_release = release.clone();
@@ -592,7 +592,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     )
     .layer(middleware::from_fn(crate::native::admission::admit_agent));
     let mut running = Vec::new();
-    for gate in [first.gate(), first.gate(), second.gate(), second.gate()] {
+    for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
         let request = Request::get("/held")
             .header("host", "mdm.example.test")
             .extension(gate)
@@ -612,7 +612,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         .oneshot(
             Request::get("/ready")
                 .header("host", "mdm.example.test")
-                .extension(third.gate())
+                .extension(third.clone())
                 .body(Body::empty())?,
         )
         .await?;
@@ -647,7 +647,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
         .oneshot(
             Request::get("/ready")
                 .header("host", "mdm.example.test")
-                .extension(third.gate())
+                .extension(third.clone())
                 .body(Body::empty())?,
         )
         .await?;
@@ -668,7 +668,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
     let (_, router) = routers
         .listeners
         .into_iter()
-        .find(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -682,7 +682,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
             router,
             host.app.audit_store.clone(),
             case_a().into(),
-            crate::native::NativeListenerKind::Agent,
+            crate::native::ChannelKind::Agent,
         )
         .await?,
     );
@@ -2220,6 +2220,51 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
             .count(),
         1
     );
+    // The administrator's original receipt is also available through authenticated HTTP.
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources
+        .finish(async {
+            use crate::test_support::{Method, Router, StatusCode, http::Browser};
+            let mut browser: Browser = authority.browser("admin")?;
+            let router = authority.router(Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
+            ))?;
+            let path = format!(
+                "/api/v1/agent-issuances/{}/recovery-operations/{}",
+                candidate.issuance_id, input.operation_id
+            );
+            let result = browser.call(&router, Method::GET, &path, None).await?;
+            anyhow::ensure!(
+                result == (StatusCode::OK, serde_json::to_value(&candidate)?),
+                "HTTP original recovery {result:?}"
+            );
+            let unknown = browser
+                .call(
+                    &router,
+                    Method::GET,
+                    &format!(
+                        "/api/v1/agent-issuances/{}/recovery-operations/{}",
+                        candidate.issuance_id,
+                        Uuid::new_v4()
+                    ),
+                    None,
+                )
+                .await?;
+            anyhow::ensure!(unknown == (StatusCode::OK, serde_json::Value::Null));
+            let replay = browser
+                .call(
+                    &router,
+                    Method::POST,
+                    &format!("/api/v1/agent-issuances/{}/recover", candidate.issuance_id),
+                    Some(serde_json::to_value(&input)?),
+                )
+                .await?;
+            anyhow::ensure!(replay == result, "HTTP original recovery replay");
+            anyhow::Ok(())
+        })
+        .await?;
     let next_grant = grant()?;
     let next_authorized = authorize_request(&s, &p, &next_grant, &audit()).await?;
     let next = s

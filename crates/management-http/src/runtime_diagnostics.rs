@@ -51,7 +51,7 @@ pub struct ChannelStatus {
     pub name: ChannelName,
     pub state: ChannelState,
     pub reasons: Vec<Reason>,
-    pub listening: bool,
+    pub mounted: bool,
     pub loaded_materials: std::collections::BTreeMap<String, i64>,
 }
 #[derive(Serialize)]
@@ -121,7 +121,7 @@ pub enum Reason {
     TrustConflict,
     MaterialRevoked,
     MaterialVersionMismatch,
-    ListenerUnavailable,
+    IngressUnavailable,
     InitializationAuthorization,
     InitializationContent,
     InitializationConflict,

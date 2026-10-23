@@ -1991,7 +1991,7 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
     host.app.channels.set(
         ChannelName::Agent,
         ChannelState::Degraded,
-        Some(Reason::ListenerUnavailable),
+        Some(Reason::DependencyUnavailable),
     )?;
     ensure!(
         host.app
@@ -2074,8 +2074,15 @@ async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
         "current signing: {status} {current}"
     );
     client.browser.operation = Some(Uuid::new_v4());
-    let (status, prepared) = client.browser.call(&client.router, Method::POST, "/api/v1/task-signing/trust",
-        Some(json!({"action":"prepare","expectedRevision":current["revision"],"origin":current["origin"]}))).await?;
+    let (status, prepared) = client
+        .browser
+        .call(
+            &client.router,
+            Method::POST,
+            "/api/v1/task-signing/trust",
+            Some(json!({"action":"prepare","expectedRevision":current["revision"]})),
+        )
+        .await?;
     ensure!(
         status == StatusCode::OK,
         "prepare signing: {status} {prepared}"

@@ -1,4 +1,4 @@
-use crate::{ConfigIssue, Error, native::TlsEndpoint};
+use crate::{ConfigIssue, Error, native::PublicEndpoint};
 use serde::Deserialize;
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -8,7 +8,7 @@ pub struct Config {
     #[cfg(test)]
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
-    pub management: TlsEndpoint,
+    pub management: PublicEndpoint,
     #[serde(default)]
     pub trust_file: PathBuf,
     #[serde(default)]
@@ -20,13 +20,11 @@ pub struct Config {
 }
 impl Config {
     pub(crate) fn validate(&self, browser: SocketAddr) -> Result<(), Error> {
+        let _ = browser;
         let bad = |issue| Error::Configuration(issue);
         let endpoint = crate::config::https_url(&self.management.origin)
             .map_err(|_| bad(ConfigIssue::AppleListeners))?;
-        if endpoint.origin().ascii_serialization() != self.management.origin
-            || self.management.listen == browser
-            || self.management.listen.port() == 0
-        {
+        if endpoint.origin().ascii_serialization() != self.management.origin {
             return Err(bad(ConfigIssue::AppleListeners));
         }
         if self.materials.apns.is_some_and(|v| v < 1)

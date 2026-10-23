@@ -24,7 +24,7 @@ pub(crate) async fn seed(tenant: &str, config: &crate::config::Config) -> Result
     let trust = Trust {
         version: 1,
         tenant: Uuid::parse_str(tenant)?,
-        origin: "https://mdm.example.test:9445".into(),
+        service_id: Uuid::parse_str(&config.identity.instance_id)?,
         revision: 1,
         keys: keys
             .into_iter()
@@ -59,6 +59,15 @@ pub(crate) async fn seed(tenant: &str, config: &crate::config::Config) -> Result
     sqlx::query("INSERT INTO mdm_task_signing.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,body,digest) VALUES($1::uuid,1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING")
         .bind(tenant).bind(operation).bind(protection.fingerprint_id()).bind(fingerprint.as_slice())
         .bind(serde_json::to_value(&trust)?).bind(trust.installation_digest()?).execute(&mut *tx).await?;
+    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
+        rss_mdm_registration_service::agent::connections::fixture_configuration_on(
+            &mut tx,
+            Uuid::parse_str(tenant)?,
+            &protection,
+            &endpoint.origin,
+        )
+        .await?;
+    }
     tx.commit().await?;
     c.close().await?;
     Ok(())
@@ -66,7 +75,7 @@ pub(crate) async fn seed(tenant: &str, config: &crate::config::Config) -> Result
 /// The controlled device participant validates and persists the complete set before acknowledging.
 pub(crate) async fn acknowledge(
     service: &rss_mdm_registration_service::agent::Service,
-    peer: &rss_mdm_certificate::HandshakePeer,
+    peer: &rss_mdm_certificate::ClientCertificateEvidence,
 ) -> Result<()> {
     let p = service.authenticate(peer).await?;
     let config = super::identity::config(&p.tenant().to_string())?;
@@ -80,7 +89,7 @@ pub(crate) async fn acknowledge(
         rss_mdm_execution_service::task_signing::trust::current(&mut tx, p.tenant()).await?;
     trust.validate()?;
     anyhow::ensure!(
-        trust.origin == "https://mdm.example.test:9445"
+        trust.service_id.to_string() == crate::test_support::identity::INSTANCE
             && trust.tenant.to_string() == p.tenant().to_string()
     );
     let root = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);

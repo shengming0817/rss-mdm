@@ -156,7 +156,12 @@ impl Registry {
                 Some(bytes) => {
                     let mut stored: Trust =
                         serde_json::from_slice(bytes).map_err(|_| Error::Storage)?;
-                    if configured.origin != stored.origin
+                    if configured.service_id != stored.service_id
+                        || (configured.origin != stored.origin
+                            && !matches!(
+                                configured.purpose,
+                                Purpose::Agent | Purpose::AgentBootstrap
+                            ))
                         || configured.issuers.iter().any(|g| {
                             !stored.issuers.iter().chain(archived.iter()).any(|s| {
                                 s.digest == g.digest
@@ -315,7 +320,9 @@ impl Registry {
             || old.tenant.to_string() != p.tenant_id()
             || input.expected_revision != old.revision
             || input.candidate.revision != old.revision + 1
-            || input.candidate.origin != old.origin
+            || input.candidate.service_id != old.service_id
+            || (input.candidate.origin != old.origin
+                && !matches!(old.purpose, Purpose::Agent | Purpose::AgentBootstrap))
             || input.candidate.tenant != old.tenant
             || input.candidate.purpose != old.purpose
         {

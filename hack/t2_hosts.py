@@ -66,7 +66,7 @@ class Host:
                     if self.address is None:
                         raise OSError('listener receipt pending')
                     request = urllib.request.Request('http://' + self.address + ('/readyz' if require_ready else '/livez'),
-                                                     headers={'Host': urlsplit(config['product_origin']).netloc})
+                                                     headers={'Host': urlsplit(config['product_origin']).netloc, 'X-RSS-Public-Origin': config['product_origin'], 'X-Forwarded-For':'127.0.0.1'})
                     with opener.open(request, timeout=1) as response:
                         if response.status == 200:
                             break

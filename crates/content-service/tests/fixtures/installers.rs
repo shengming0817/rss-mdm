@@ -1,6 +1,9 @@
 //! Minimal native containers for format/HTTP tests. They are not installable product releases.
 use std::io::{Cursor, Write};
 pub fn exe(version: &str) -> Vec<u8> {
+    exe_machine(version, 0x8664)
+}
+pub fn exe_machine(version: &str, machine: u16) -> Vec<u8> {
     let mut bytes = vec![0; 128 * 1024 + 3];
     fn u16_at(bytes: &mut [u8], at: usize, v: u16) {
         bytes[at..at + 2].copy_from_slice(&v.to_le_bytes());
@@ -11,7 +14,7 @@ pub fn exe(version: &str) -> Vec<u8> {
     bytes[..2].copy_from_slice(b"MZ");
     u32_at(&mut bytes, 0x3c, 0x80);
     bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
-    u16_at(&mut bytes, 0x84, 0x8664);
+    u16_at(&mut bytes, 0x84, machine);
     u16_at(&mut bytes, 0x86, 1);
     u16_at(&mut bytes, 0x94, 240);
     u16_at(&mut bytes, 0x96, 0x22);
@@ -86,4 +89,12 @@ pub fn msix(version: &str, arm: bool) -> Vec<u8> {
         .unwrap();
     write!(zip,r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="RSS.Agent" Publisher="CN=RSS" Version="{version}" ProcessorArchitecture="{}"/><Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0"/></Dependencies></Package>"#,if arm {"arm64"}else{"x64"}).unwrap();
     zip.finish().unwrap().into_inner()
+}
+
+/// Genuine Apple tool containers; they contain only the documented text payload.
+pub fn pkgbuild() -> Vec<u8> {
+    include_bytes!("pkgbuild.pkg").to_vec()
+}
+pub fn productbuild() -> Vec<u8> {
+    include_bytes!("productbuild.pkg").to_vec()
 }

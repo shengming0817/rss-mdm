@@ -14,7 +14,7 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         let registration=f.register().await?;
         let prepared_operation=Uuid::new_v4();
         f.author.operation=Some(prepared_operation);
-        let prepare=json!({"action":"prepare","expectedRevision":1,"origin":"https://mdm.example.test:9445"});
+        let prepare=json!({"action":"prepare","expectedRevision":1});
         let (status,body)=f.author.call(&f.router,Method::POST,"/api/v1/task-signing/trust",Some(prepare.clone())).await?;
         ensure!(status==StatusCode::OK,"prepare: {status} {body}");
         let prepared:Trust=serde_json::from_value(body.clone())?;
@@ -167,7 +167,7 @@ async fn selected_material_corruption_is_fatal_even_with_a_matching_active_key()
         let mut tx = connection.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
         let original = trust::current(&mut tx, tenant).await?;
-        trust::prepare(&mut tx, tenant, Uuid::new_v4(), 1, &original.origin, &protection, "fixture").await?;
+        trust::prepare(&mut tx, tenant, Uuid::new_v4(), 1, &protection, "fixture").await?;
         trust::check_revision(&mut tx, tenant, 1).await?;
         for mode in 0..3 {
             let mut changed = original.clone();

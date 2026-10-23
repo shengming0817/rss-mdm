@@ -141,7 +141,7 @@ pub fn ingress_error(code: wire::ErrorCode) -> Response {
 async fn report(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
@@ -160,7 +160,7 @@ async fn report_inner(
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
-    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<wire::ReportAck>), AgentError> {
     let input = parse_report(&body)?;
@@ -217,7 +217,7 @@ async fn report_inner(
 async fn status(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
@@ -236,7 +236,7 @@ async fn status_inner(
     app: &HttpState,
     audit: &RequestAudit,
     headers: &HeaderMap,
-    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     id: Uuid,
 ) -> Result<Json<wire::ReportStatus>, AgentError> {
     if id.is_nil() {
@@ -336,7 +336,7 @@ fn parse_report(body: &[u8]) -> Result<wire::ReportRequest, AgentError> {
 pub(crate) async fn authenticate(
     service: &rss_mdm_registration_service::agent::Service,
     headers: &HeaderMap,
-    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
 ) -> Result<device::DevicePrincipal, AgentError> {
     if headers.contains_key(header::AUTHORIZATION) {
         return Err(Error::Unauthorized.into());

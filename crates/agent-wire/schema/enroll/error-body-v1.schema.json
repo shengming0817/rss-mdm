@@ -44,6 +44,16 @@
           "type": "string"
         },
         {
+          "const": "connection_deployment_unobserved",
+          "description": "A proposed destination has no successful deployment observation.",
+          "type": "string"
+        },
+        {
+          "const": "connection_retirement_blocked",
+          "description": "Removing an entrance would strand an active device without an installation confirmation.",
+          "type": "string"
+        },
+        {
           "const": "issuance_unknown",
           "description": "Original CA signing result is unknown.",
           "type": "string"

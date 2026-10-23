@@ -2,6 +2,7 @@ BEGIN;
 CREATE TABLE mdm_access.agent_bootstraps (
  tenant_id uuid NOT NULL,id uuid NOT NULL,installation uuid NOT NULL,delivery uuid NOT NULL,
  cleanup uuid,cleanup_complete boolean NOT NULL DEFAULT false,cleanup_retry_at bigint NOT NULL DEFAULT 0,source jsonb NOT NULL,release uuid NOT NULL,issuer text NOT NULL,provisioner text NOT NULL,
+ download_origin text NOT NULL CHECK(octet_length(download_origin) BETWEEN 1 AND 2048),
  active boolean NOT NULL DEFAULT true,challenge bytea NOT NULL CHECK(octet_length(challenge)=32),deadline bigint NOT NULL,
  state text NOT NULL CHECK(state IN ('prepared','signing','issued','consumed','revoked')),
  transaction_id text,csr_digest bytea,spki bytea,fingerprint bytea,certificate bytea,

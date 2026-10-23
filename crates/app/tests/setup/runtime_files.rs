@@ -20,28 +20,18 @@ fn scep_gateway_publishes_exact_device_paths_with_private_upstream_tls() {
         scep_url: Some("https://mdm.example.test/scep/rss".into()),
     }];
     let gateway = Journal::open(&root.join("gateway")).unwrap();
-    let rendered = scep_locations(&config, &gateway).unwrap();
-    assert!(rendered.contains("location = /scep/rss {"));
-    assert!(rendered.contains("location = /scep/rss/pkiclient.exe {"));
-    assert!(rendered.contains("proxy_pass https://step-ca:9000/scep/rss;"));
-    assert!(rendered.contains("proxy_ssl_verify on;"));
-    assert!(rendered.contains("proxy_ssl_name step-ca;"));
-    assert!(rendered.contains("proxy_pass_request_headers off;"));
-    assert!(!rendered.contains("not-exported.key"));
-    assert!(!rendered.contains("location /scep"));
-    let duplicate =
-        serde_json::from_value(serde_json::to_value(&config.device_pki[0]).unwrap()).unwrap();
-    config.device_pki.push(duplicate);
-    assert_eq!(scep_locations(&config, &gateway).unwrap(), rendered);
-    config.device_pki[1].origin = "https://other-ca:9000".into();
-    assert!(scep_locations(&config, &gateway).is_err());
-    config.device_pki.pop();
-    config.device_pki[0].scep_url = Some("https://mdm.example.test/scep/rss-tenant".into());
-    let namespaced = scep_locations(&config, &gateway).unwrap();
-    assert!(namespaced.contains("proxy_pass https://step-ca:9000/scep/rss-tenant;"));
-    assert!(!namespaced.contains("proxy_pass https://step-ca:9000/scep/rss;"));
+    let routes = scep_routes(&config, &gateway).unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0]["path"], "/scep/rss");
+    assert_eq!(routes[0]["origin"], "https://step-ca:9000");
+    assert_eq!(routes[0]["provisioner"], "rss");
+    assert!(
+        !serde_json::to_string(&routes)
+            .unwrap()
+            .contains("not-exported.key")
+    );
     config.device_pki[0].scep_url = Some("https://mdm.example.test/scep/rss%2fadmin".into());
-    assert!(scep_locations(&config, &gateway).is_err());
+    assert!(scep_routes(&config, &gateway).is_err());
 }
 
 #[test]
@@ -51,13 +41,7 @@ fn runtime_listeners_reject_backend_collisions_not_gateway_namespace() {
     assert!(validate_listeners(&config).is_ok());
     config.listen.set_port(8445);
     assert!(validate_listeners(&config).is_ok());
-    config.listen.set_port(8081);
-    let windows = config.native_protocols.windows.as_mut().unwrap();
-    let mut endpoint = serde_json::to_value(&windows.management).unwrap();
-    endpoint["listen"] = json!("0.0.0.0:8081");
-    windows
-        .additional_management
-        .push(serde_json::from_value(endpoint).unwrap());
+    config.listen = "0.0.0.0:8081".parse().unwrap();
     assert!(validate_listeners(&config).is_err());
 }
 
@@ -198,6 +182,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
         directory: root.join("primary-runtime"),
         content_volume: Some(root.join("primary-content")),
         probe_address: None,
+        probe_addresses: BTreeMap::new(),
         certificate_file: root.join("server.crt"),
         private_key_file: root.join("server.key"),
         trust_file: root.join("ca.crt"),
@@ -317,29 +302,23 @@ fn optional_channel_files_do_not_block_projection_or_reuse_stale_secrets() {
 }
 
 #[test]
-fn sni_routes_share_443_without_sharing_authentication_listeners() {
+fn gateway_public_origins_allow_shared_and_separate_hosts_and_ports() {
     let mut config: crate::config::Config =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
     config.product_origin = "https://mdm.example.test".into();
     config.agent_pki = crate::agent_pki::Config::Disabled {};
     config.native_protocols.apple = None;
     let windows = config.native_protocols.windows.as_mut().unwrap();
-    windows.enrollment.origin = "https://enroll.example.test".into();
-    windows.management.origin = "https://manage.example.test".into();
+    windows.enrollment.origin = config.product_origin.clone();
+    windows.management.origin = "https://manage.example.test:8443".into();
     windows.additional_management.clear();
-    windows.enrollment.listen = "127.0.0.1:8443".parse().unwrap();
-    windows.management.listen = "127.0.0.1:8444".parse().unwrap();
-    let routes = ingress_routes(&config).unwrap();
-    assert!(routes.contains("mdm.example.test 127.0.0.1:8445;"));
-    assert!(routes.contains("enroll.example.test ") && routes.contains("manage.example.test "));
-    config
-        .native_protocols
-        .windows
-        .as_mut()
-        .unwrap()
-        .management
-        .origin = config.product_origin.clone();
-    assert!(ingress_routes(&config).is_err());
+    assert_eq!(
+        public_routes(&config).unwrap(),
+        vec![
+            "https://manage.example.test:8443",
+            "https://mdm.example.test"
+        ]
+    );
 }
 
 fn test_certificate() -> Vec<u8> {

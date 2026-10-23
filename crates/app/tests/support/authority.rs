@@ -163,6 +163,15 @@ pub(crate) async fn reader(base: &Value) -> Result<Arc<InventoryReader>> {
 
 pub(crate) struct RegistrationChannels;
 impl rss_mdm_management_http::enrollment::channels::Source for RegistrationChannels {
+    fn endpoints(&self) -> rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+        rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+            console: "https://mdm.example.test".into(),
+            agent: vec![],
+            windows_enrollment: None,
+            windows_management: vec![],
+            apple_management: None,
+        }
+    }
     fn status(
         &self,
         _: rss_mdm_registration_service::quotas::Channel,

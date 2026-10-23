@@ -60,6 +60,7 @@ pub(crate) async fn roundtrip(
                     gateway_directory: root.join("gateway"),
                     directory: inputs.clone(),
                     probe_address: None,
+                    probe_addresses: BTreeMap::new(),
                     certificate_file: inputs.join("server.crt"),
                     private_key_file: inputs.join("server.key"),
                     trust_file: inputs.join("ca.crt"),

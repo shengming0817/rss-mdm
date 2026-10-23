@@ -439,7 +439,7 @@ impl RuntimeDiagnostics {
     async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
         let apple = self.apple.as_ref()?;
         let health = apple.channel.health(now);
-        if health.certificates_expired() || !apple.tls.valid_at(now) {
+        if health.certificates_expired() {
             return Some(Reason::CertificateExpired);
         }
         if !health.push_available {
@@ -700,7 +700,7 @@ pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
         let failed = values
             .iter()
             .find(|v| v.name == parent)
-            .filter(|v| v.state != ChannelState::Ready || !v.listening)
+            .filter(|v| v.state != ChannelState::Ready || !v.mounted)
             .map(|v| v.reasons.clone());
         if let Some(reasons) = failed
             && let Some(value) = values
@@ -709,7 +709,7 @@ pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
         {
             value.state = ChannelState::Degraded;
             value.reasons = if reasons.is_empty() {
-                vec![Reason::ListenerUnavailable]
+                vec![Reason::IngressUnavailable]
             } else {
                 reasons
             };
@@ -742,7 +742,6 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
             assembly::Reason::TrustConflict => Reason::TrustConflict,
             assembly::Reason::MaterialRevoked => Reason::MaterialRevoked,
             assembly::Reason::MaterialVersionMismatch => Reason::MaterialVersionMismatch,
-            assembly::Reason::ListenerUnavailable => Reason::ListenerUnavailable,
             assembly::Reason::CertificateExpired => Reason::CertificateExpired,
             assembly::Reason::DependencyUnavailable => Reason::DependencyUnavailable,
         })
@@ -763,7 +762,7 @@ fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
         name,
         state,
         reasons,
-        listening: value.listening,
+        mounted: value.mounted,
         loaded_materials,
     }
 }
@@ -778,15 +777,15 @@ mod channel_projection_tests {
             assembly::Assembly {
                 name: assembly::ChannelName::Agent,
                 state: assembly::ChannelState::Degraded,
-                reason: Some(assembly::Reason::ListenerUnavailable),
-                listening: false,
+                reason: Some(assembly::Reason::DependencyUnavailable),
+                mounted: false,
                 materials: Default::default(),
             },
             assembly::Assembly {
                 name: assembly::ChannelName::AgentBootstrap,
                 state: assembly::ChannelState::Ready,
                 reason: None,
-                listening: false,
+                mounted: false,
                 materials: assembly::LoadedMaterials {
                     trust: Some(4),
                     ..Default::default()
@@ -798,10 +797,18 @@ mod channel_projection_tests {
         assert_eq!(values[1].state, ChannelState::Degraded);
         assert!(matches!(
             values[1].reasons.as_slice(),
-            [Reason::ListenerUnavailable]
+            [Reason::DependencyUnavailable]
         ));
         assert_eq!(values[1].loaded_materials["trust"], 4);
         assert!(facts[1].state == assembly::ChannelState::Ready);
         assert!(facts[1].reason.is_none());
+        let mut without_reason = facts;
+        without_reason[0].reason = None;
+        let mut values: Vec<_> = without_reason.into_iter().map(channel_projection).collect();
+        project_dependents(&mut values);
+        assert!(matches!(
+            values[1].reasons.as_slice(),
+            [Reason::IngressUnavailable]
+        ));
     }
 }

@@ -47,7 +47,7 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Complete server-authorized task-signing trust for one tenant and runtime origin.",
+  "description": "Complete server-authorized task-signing trust for one tenant and stable service identity.",
   "properties": {
     "keys": {
       "description": "Full key set, strictly sorted by key ID for a unique digest.",
@@ -56,15 +56,20 @@
       },
       "type": "array"
     },
-    "origin": {
-      "description": "Canonical HTTPS runtime origin, with no path, query or fragment.",
-      "type": "string"
-    },
     "revision": {
       "description": "Monotonically increasing revision, never inferred from a timestamp.",
       "format": "uint64",
       "minimum": 0,
       "type": "integer"
+    },
+    "service_id": {
+      "description": "Immutable product installation instance; independent of network locations.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "tenant": {
       "description": "Tenant owning the authenticated Agent channel.",
@@ -85,7 +90,7 @@
   },
   "required": [
     "version",
-    "origin",
+    "service_id",
     "tenant",
     "revision",
     "keys"

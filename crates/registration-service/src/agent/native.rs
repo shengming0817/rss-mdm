@@ -67,6 +67,7 @@ secret_digest,
 request_digest,
 spki,
 state,
+created_at,
 expires_at,
 native_authority)
 VALUES($1::uuid,
@@ -81,8 +82,9 @@ $8,
 $9,
 $10,
 'available',
+statement_timestamp(),
 least(to_timestamp($11),
-clock_timestamp()+make_interval(secs=>$13)),
+statement_timestamp()+make_interval(secs=>$13)),
 $12)
 "#,
     )

@@ -203,7 +203,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         Router::new()
             .merge(software_content)
             .merge(host_context)
-            .nest("/api/v1/public-agent", public_packages)
+            .nest("/api/v1/agent/enroll", public_packages)
             .nest("/api/v1", protected),
         envelope,
     )

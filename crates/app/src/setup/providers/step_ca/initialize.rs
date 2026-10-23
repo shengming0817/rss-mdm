@@ -343,8 +343,15 @@ pub(in crate::setup) async fn prepare(
                 kid.clone()
             },
         };
-        let (trust, active_before) =
-            prepared_trust(previous, candidate, tenant, purpose, device_origin)?;
+        let (trust, active_before) = prepared_trust(
+            previous,
+            candidate,
+            tenant,
+            serde_json::from_value(runtime["identity"]["instance_id"].clone())
+                .map_err(|_| Error::Corrupt)?,
+            purpose,
+            device_origin,
+        )?;
         // Freeze original trust bytes before exporting; CRL refresh cannot change a resumed operation.
         let trust_file = freeze_trust(&owner, &trust)?;
         let provider = json!({"purpose":purpose,"issuer":issuer_digest,"origin":profile.origin,"tls_root_file":root_file,
@@ -838,6 +845,7 @@ fn prepared_trust(
     previous: Option<Trust>,
     mut candidate: Issuer,
     tenant: Uuid,
+    service_id: Uuid,
     purpose: Purpose,
     device_origin: String,
 ) -> Result<(Trust, bool)> {
@@ -845,6 +853,7 @@ fn prepared_trust(
     rss_mdm_device_trust::DeviceTrust::new(
         Trust {
             version: 1,
+            service_id,
             origin: device_origin.clone(),
             tenant,
             purpose,
@@ -857,13 +866,17 @@ fn prepared_trust(
     .map_err(|_| Error::Conflict)?;
     let mut trust = previous.unwrap_or(Trust {
         version: 1,
+        service_id,
         origin: device_origin.clone(),
         tenant,
         purpose,
         revision: 0,
         issuers: vec![],
     });
-    if trust.origin != device_origin {
+    if trust.service_id != service_id
+        || (trust.origin != device_origin
+            && !matches!(purpose, Purpose::Agent | Purpose::AgentBootstrap))
+    {
         return Err(Error::Conflict);
     }
     let active_before = !trust.issuers.is_empty();

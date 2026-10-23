@@ -115,7 +115,7 @@ MDM 与 Agent 各自持有 DeviceId、注册世代、凭据、采集和策略。
 
 示例 releaseId 应替换为本租户实际发布结果，schedule 使用未来的实际窗口；完整 Policy 外壳、Group / Scope 和 CAS 发布步骤沿用本指南前文。Windows release 可以选择 MSI 或 MSIX：MSI 使用 ProductCode、DownloadInstall 与原生状态；MSIX 使用单个签名应用包的 HostedInstall、PFN 和设备 provisioning，禁止 bundle、外部依赖、用户安装及未签名包。PKG 使用 InstallEnterpriseApplication。EXE 可公开下载和独立安装，不能用于 MDM 首装。
 
-旧 `agent_installation` 配置已删除且拒绝解析。下载 origin 直接来自 `agent_pki.endpoint.origin`，包身份来自发布记录；不同架构无需共用安装身份。MDM→Agent 需要配置专用 `agent_pki.bootstrap` 与 `agent_bootstrap` PKI provider，详见[Agent 集成](agent-integration.md)。缺少引导 PKI 时不能发布此安装策略。
+旧 `agent_installation` 配置已删除且拒绝解析。新任务的下载 origin 在接受时从当前已发布签名连接配置冻结，已有任务保留原地址并参与入口退役检查；策略和包身份不绑定地址，包身份来自发布记录；不同架构无需共用安装身份。MDM→Agent 需要配置专用 `agent_pki.bootstrap` 与 `agent_bootstrap` PKI provider，详见[Agent 集成](agent-integration.md)。缺少引导 PKI 时不能发布此安装策略。
 
 安装投递和引导证书投递是同一冻结安装授权下的独立操作。检测覆盖发布目录中的历史身份，包括已撤回包；任一格式存在或状态未明时不会启动第二个安装器。重叠策略共享排他与去重，不同 release 选择明确冲突。Scope 退出阻止尚未投递的新安装；已投递操作只在原期限、原策略版本、当前权限和来源世代仍有效时继续。Scope 退出不卸载 Agent。
 

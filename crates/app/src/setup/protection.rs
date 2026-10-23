@@ -349,6 +349,44 @@ async fn reserve_rotation(
     Ok(saved)
 }
 
+async fn rewrap_native(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    protector: &rss_mdm_native_protection::Protector,
+) -> Result<u64> {
+    let tenant_uuid = uuid::Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Corrupt)?;
+    let mut rewritten = 0;
+
+    rewritten += rss_mdm_webhook_service::materials::rewrap(&mut *c, tenant_uuid, protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_mail_service::store::rewrap(&mut *c, &tenant.to_string(), protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    rewritten +=
+        rss_mdm_windows_channel::wns_materials::rewrap(&mut *c, &tenant.to_string(), protector)
+            .await
+            .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_content_service::connections::rewrap(&mut *c, tenant, protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    rewritten +=
+        rss_mdm_registration_service::agent::connections::rewrap(&mut *c, tenant, protector)
+            .await
+            .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_execution_service::task_signing::trust::rewrap(&mut *c, tenant, protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    rewritten += rss_mdm_apple_channel::rewrap::run(&mut *c, &tenant.to_string(), protector)
+        .await
+        .map_err(|_| Error::Corrupt)?;
+    rewritten +=
+        rss_mdm_apple_channel::runtime_materials::rewrap(&mut *c, &tenant.to_string(), protector)
+            .await
+            .map_err(|_| Error::Corrupt)?;
+    Ok(rewritten)
+}
+
 async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) -> Result<u64> {
     let mut rewritten = 0;
 
@@ -400,39 +438,7 @@ async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) 
         }
         Purpose::Native => {
             let protector = purpose.protector(&config)?;
-            rewritten +=
-                rss_mdm_webhook_service::materials::rewrap(&mut tx, host.tenant, &protector)
-                    .await
-                    .map_err(|_| Error::Corrupt)?;
-            rewritten +=
-                rss_mdm_mail_service::store::rewrap(&mut tx, &host.tenant.to_string(), &protector)
-                    .await
-                    .map_err(|_| Error::Corrupt)?;
-            rewritten += rss_mdm_windows_channel::wns_materials::rewrap(
-                &mut tx,
-                &host.tenant.to_string(),
-                &protector,
-            )
-            .await
-            .map_err(|_| Error::Corrupt)?;
-            rewritten += rss_mdm_content_service::connections::rewrap(&mut tx, tenant, &protector)
-                .await
-                .map_err(|_| Error::Corrupt)?;
-            rewritten +=
-                rss_mdm_execution_service::task_signing::trust::rewrap(&mut tx, tenant, &protector)
-                    .await
-                    .map_err(|_| Error::Corrupt)?;
-            rewritten +=
-                rss_mdm_apple_channel::rewrap::run(&mut tx, &host.tenant.to_string(), &protector)
-                    .await
-                    .map_err(|_| Error::Corrupt)?;
-            rewritten += rss_mdm_apple_channel::runtime_materials::rewrap(
-                &mut tx,
-                &host.tenant.to_string(),
-                &protector,
-            )
-            .await
-            .map_err(|_| Error::Corrupt)?;
+            rewritten += rewrap_native(&mut tx, tenant, &protector).await?;
         }
     }
     tx.commit().await.map_err(|_| Error::Storage)?;

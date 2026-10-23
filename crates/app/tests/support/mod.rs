@@ -69,3 +69,5 @@ pub(crate) mod installer_fixtures;
 pub(crate) mod runtime;
 
 pub(crate) mod gateway;
+
+pub(crate) mod tls;

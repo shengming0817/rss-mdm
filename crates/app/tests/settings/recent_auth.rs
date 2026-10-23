@@ -22,7 +22,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
             ("/api/v1/windows/wns",json!({"expectedRevision":0,"packageFamilyName":"fixture","sid":"fixture","clientSecret":"fixture"}),StatusCode::UNAUTHORIZED),
             ("/api/v1/storage/connections",json!({"expectedRevision":0,"profile":"fixture","source":{"kind":"generate"}}),StatusCode::FORBIDDEN),
             ("/api/v1/smtp",json!({"expectedRevision":0,"profile":"fixture","sender":"a@example.test","recipient":"b@example.test","username":"fixture","password":"fixture"}),StatusCode::FORBIDDEN),
-            ("/api/v1/task-signing/trust",json!({"action":"prepare","expectedRevision":0,"origin":"generated"}),StatusCode::UNAUTHORIZED),
+            ("/api/v1/task-signing/trust",json!({"action":"prepare","expectedRevision":0}),StatusCode::UNAUTHORIZED),
             ("/api/v1/webhooks/materials",json!({"reference":"fixture","expectedRevision":0,"configurationSha256":"00".repeat(32),"endpoint":"https://example.test/hook","networkReference":"fixture","source":{"kind":"generate"}}),StatusCode::FORBIDDEN),
         ];
         for (path,input,status) in cases {

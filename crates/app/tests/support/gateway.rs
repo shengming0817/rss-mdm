@@ -1,81 +1,204 @@
-//! Real TCP ingress for protocol fixtures. TLS and authentication remain in the product transport.
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{
-    io::AsyncWriteExt,
-    net::{TcpListener, TcpStream},
-    task::JoinSet,
+//! Completed TLS possession for protocol participants. No public listener configuration exists in Rust.
+//! The production gateway adapter has separate actual Nginx integration coverage.
+use rss_axum::{AcceptedConnectionInfo, ConnectionTransport, EstablishedTransport};
+use rss_mdm_certificate::{ClientCertificateEvidence, GatewayConnection};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
 };
+use tokio::net::{TcpListener, TcpStream};
+/// Combine the two complete hosts only for controlled in-process business fixtures.
+/// Dispatch happens above both nested routers, matching production's protocol separation.
+pub(crate) fn browser_agent(
+    browser: axum::Router,
+    agent: axum::Router,
+    console_host: &str,
+) -> axum::Router {
+    use tower::ServiceExt;
+    let console_host = console_host.to_owned();
+    axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let public_package = request
+            .uri()
+            .path()
+            .strip_prefix("/api/v1/agent/enroll/packages")
+            .is_some_and(|p| p.is_empty() || p.starts_with('/'));
+        let console_package = public_package
+            && request.headers().get("host").and_then(|h| h.to_str().ok())
+                == Some(console_host.as_str());
+        let target = if request.uri().path().starts_with("/api/v1/agent/") && !console_package {
+            agent.clone()
+        } else {
+            browser.clone()
+        };
+        async move {
+            target
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|never| match never {})
+        }
+    })
+}
 
+#[derive(Clone)]
+struct Metadata {
+    certificate: Option<ClientCertificateEvidence>,
+    source: IpAddr,
+    gateway: GatewayConnection,
+}
+struct Transport(tokio_rustls::TlsAcceptor);
+impl ConnectionTransport for Transport {
+    type Io = tokio_rustls::server::TlsStream<TcpStream>;
+    type Metadata = Metadata;
+    type Guard = ();
+    type Error = anyhow::Error;
+    async fn prepare(
+        &self,
+        stream: TcpStream,
+        peer: SocketAddr,
+    ) -> Result<EstablishedTransport<Self::Io, Self::Metadata, Self::Guard>, Self::Error> {
+        let gateway = GatewayConnection::from_stream(&stream, "127.0.0.1".parse()?)?;
+        let io = self.0.accept(stream).await?;
+        let certificate = ClientCertificateEvidence::from_completed_tls(io.get_ref().1).ok();
+        Ok(EstablishedTransport::new(
+            io,
+            Metadata {
+                certificate,
+                source: peer.ip(),
+                gateway,
+            },
+            (),
+        ))
+    }
+}
 pub(crate) async fn registration(
     listener: TcpListener,
-    router: crate::native::TlsRouter,
-    audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    tenant: String,
-    kind: crate::native::NativeListenerKind,
+    channel: crate::native::ChannelRouter,
+    _audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    _tenant: String,
+    kind: crate::native::ChannelKind,
 ) -> anyhow::Result<rss_runtime::ManagedTaskRegistration> {
-    let backend = TcpListener::bind("127.0.0.1:0").await?;
-    let target = backend.local_addr()?;
-    let native =
-        crate::native::tls::registration(backend, router, audit, tenant, kind, target.ip());
-    let (task, _) = rss_runtime::ManagedTask::prepare("fixture-ingress", Duration::from_secs(25));
-    Ok(task.into_registration(move |cancel| async move {
-        let lifecycle: anyhow::Result<()> = async {
-            let mut owner = rss_runtime::ShutdownStack::try_new(
-                rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
-                Arc::new(crate::lifecycle::RuntimeTimer),
-            )?;
-            owner.startup()?.stage_task_with_token(native);
-            let result = forward(listener, target, cancel).await;
-            anyhow::ensure!(
-                owner.shutdown().join().await?.is_clean(),
-                "fixture TLS cleanup failed"
-            );
-            result
-        }
-        .await;
-        lifecycle.map_err(failed)
-    }))
+    use crate::native::ChannelKind::*;
+    let (variable, key) = match kind {
+        Agent => ("MDM_AGENT_PKI_FIXTURES", "agent-tls.pk8"),
+        WindowsEnrollment | WindowsManagement => ("MDM_WINDOWS_FIXTURES", "windows-tls.pk8"),
+        _ => ("MDM_APPLE_FIXTURES", "apple-tls.pk8"),
+    };
+    let root = std::path::PathBuf::from(std::env::var(variable)?);
+    let tls = super::tls::server(&root, key, Some(Arc::new(super::tls::Possession)))?;
+    let origin = channel
+        .origins
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("fixture origin missing"))?;
+    let router = channel.router.layer(axum::middleware::from_fn(
+        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+            let admission = channel.admission.clone();
+            let origin = origin.clone();
+            async move {
+                let Some(info) = request
+                    .extensions()
+                    .get::<AcceptedConnectionInfo<Metadata>>()
+                    .map(|i| i.metadata().clone())
+                else {
+                    return axum::http::StatusCode::FORBIDDEN.into_response();
+                };
+                if let Some(cert) = info.certificate {
+                    request.extensions_mut().insert(cert);
+                }
+                request
+                    .extensions_mut()
+                    .insert(info.gateway.request_origin(origin));
+                request
+                    .extensions_mut()
+                    .insert(rss_identity_http_axum::ClientAddress(info.source));
+                let Some(gate) = admission.gate(info.source) else {
+                    return axum::http::StatusCode::TOO_MANY_REQUESTS.into_response();
+                };
+                request.extensions_mut().insert(gate);
+                next.run(request).await
+            }
+        },
+    ));
+    Ok(rss_axum::serve_http1_registration(
+        listener,
+        router,
+        Transport(tokio_rustls::TlsAcceptor::from(Arc::new(tls))),
+        "fixture-protocol-gateway",
+        crate::lifecycle::http_policy(),
+    ))
 }
+use axum::response::IntoResponse;
+
+/// External TLS carrier for production process tests; forwards real possession to its private HTTP ingress.
 pub(crate) fn proxy(
     listener: TcpListener,
     target: SocketAddr,
-) -> rss_runtime::ManagedTaskRegistration {
-    let (task, _) = rss_runtime::ManagedTask::prepare("fixture-proxy", Duration::from_secs(5));
-    task.into_registration(move |cancel| async move {
-        forward(listener, target, cancel).await.map_err(failed)
-    })
-}
-fn failed(_: anyhow::Error) -> rss_runtime::ShutdownError {
-    rss_runtime::ShutdownError::new(std::io::Error::other("fixture gateway failed"))
-}
-async fn forward(
-    listener: TcpListener,
-    target: SocketAddr,
-    cancel: tokio_util::sync::CancellationToken,
-) -> anyhow::Result<()> {
-    let mut connections = JoinSet::new();
-    let result = async {
-        loop {
-            tokio::select! {
-                biased;
-                () = cancel.cancelled() => break,
-                Some(done) = connections.join_next(), if !connections.is_empty() => { done??; }
-                accepted = listener.accept(), if connections.len() < 128 => {
-                    let (mut incoming, source) = accepted?;
-                    let destination = incoming.local_addr()?;
-                    connections.spawn(async move {
-                        let mut outgoing = TcpStream::connect(target).await?;
-                        outgoing.write_all(format!("PROXY TCP4 {} {} {} {}\r\n", source.ip(), destination.ip(), source.port(), destination.port()).as_bytes()).await?;
-                        // Peer disconnects are protocol inputs, not fixture infrastructure failures.
-                        let _ = tokio::io::copy_bidirectional(&mut incoming, &mut outgoing).await;
-                        Ok::<_, anyhow::Error>(())
-                    });
+    root: std::path::PathBuf,
+    origin: String,
+    key_file: &str,
+) -> anyhow::Result<rss_runtime::ManagedTaskRegistration> {
+    let tls = super::tls::server(&root, key_file, Some(Arc::new(super::tls::Possession)))?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+    let router = axum::Router::new().fallback(move |mut request: axum::extract::Request| {
+        let client = client.clone();
+        let origin = origin.clone();
+        async move {
+            let result = async {
+                let info = request
+                    .extensions()
+                    .get::<AcceptedConnectionInfo<Metadata>>()
+                    .ok_or_else(|| anyhow::anyhow!("missing real connection"))?
+                    .metadata()
+                    .clone();
+                for name in [
+                    "connection",
+                    "host",
+                    "cookie",
+                    "forwarded",
+                    "x-rss-public-origin",
+                    "x-rss-client-cert",
+                    "x-forwarded-for",
+                ] {
+                    request.headers_mut().remove(name);
                 }
+                let certificate = if let Some(cert) = info.certificate {
+                    let pem = openssl::x509::X509::from_der(cert.chain()[0].as_ref())?.to_pem()?;
+                    pem.iter().map(|b| format!("%{b:02X}")).collect::<String>()
+                } else {
+                    String::new()
+                };
+                let url = format!("http://{target}{}", request.uri());
+                let outgoing = client
+                    .request(request.method().clone(), url)
+                    .headers(request.headers().clone())
+                    .header(
+                        "host",
+                        origin
+                            .strip_prefix("https://")
+                            .ok_or_else(|| anyhow::anyhow!("origin"))?,
+                    )
+                    .header("x-rss-public-origin", origin)
+                    .header("x-rss-client-cert", certificate)
+                    .header("x-forwarded-for", info.source.to_string());
+                let body = axum::body::to_bytes(request.into_body(), 16 * 1024 * 1024).await?;
+                let response = outgoing.body(body).send().await?;
+                let mut result = axum::response::Response::builder().status(response.status());
+                *result.headers_mut().unwrap() = response.headers().clone();
+                anyhow::Ok(result.body(axum::body::Body::from(response.bytes().await?))?)
             }
+            .await;
+            result.unwrap_or_else(|_| axum::http::StatusCode::BAD_GATEWAY.into_response())
         }
-        Ok(())
-    }.await;
-    connections.abort_all();
-    while connections.join_next().await.is_some() {}
-    result
+    });
+    Ok(rss_axum::serve_http1_registration(
+        listener,
+        router,
+        Transport(tokio_rustls::TlsAcceptor::from(Arc::new(tls))),
+        "fixture-process-gateway",
+        crate::lifecycle::http_policy(),
+    ))
 }

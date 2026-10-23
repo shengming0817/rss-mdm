@@ -260,7 +260,7 @@ CREATE UNIQUE INDEX collection_apple_sequence ON mdm_access.collection_runs USIN
 
 CREATE INDEX collection_delivery ON mdm_access.collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE delivery_pending;
 
-CREATE UNIQUE INDEX collection_enterprise_sequence ON mdm_access.collection_runs USING btree (tenant_id, registration, source, epoch, sequence) WHERE (source = ANY (ARRAY['agent.script'::text, 'agent.osquery'::text, 'agent.native'::text]));
+CREATE UNIQUE INDEX collection_enterprise_sequence ON mdm_access.collection_runs USING btree (tenant_id, scope, sequence) WHERE (source = ANY (ARRAY['agent.script'::text, 'agent.osquery'::text, 'agent.native'::text]));
 
 CREATE INDEX collection_history_scope ON mdm_access.collection_history USING btree (tenant_id, scope, run, revision DESC);
 

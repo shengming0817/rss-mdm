@@ -28,7 +28,7 @@ class Browser:
 
     def call(self, method, path, body=None, extra_headers=None):
         headers = {'Host': urlsplit(self.origin).netloc, 'Origin': self.origin,
-                   'X-Identity-Request': '1', 'X-Forwarded-For': '203.0.113.7'}
+                   'X-Identity-Request': '1', 'X-Forwarded-For': '203.0.113.7', 'X-RSS-Public-Origin': self.origin}
         if self.cookie:
             headers['Cookie'] = self.cookie
         if self.csrf:

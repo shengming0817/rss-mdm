@@ -37,9 +37,15 @@ pub(crate) async fn seed_trust(
         if let Some(bytes) = stored {
             let current: Trust = serde_json::from_slice(&bytes)?;
             ensure!(
-                current.tenant == trust.tenant
+                current.service_id == trust.service_id
+                    && current.tenant == trust.tenant
                     && current.purpose == trust.purpose
-                    && current.origin == trust.origin
+                    && (current.origin == trust.origin
+                        || matches!(
+                            trust.purpose,
+                            rss_mdm_agent_wire::pki::Purpose::Agent
+                                | rss_mdm_agent_wire::pki::Purpose::AgentBootstrap
+                        ))
                     && trust
                         .issuers
                         .iter()

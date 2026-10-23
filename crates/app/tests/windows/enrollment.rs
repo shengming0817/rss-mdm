@@ -110,9 +110,10 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
             .post(url)
             .body("no certificate")
             .send()
-            .await
-            .is_err(),
-        "management accepted an anonymous TLS handshake"
+            .await?
+            .status()
+            == StatusCode::UNAUTHORIZED,
+        "management admitted a request without client evidence"
     );
     let rogue_identity = reqwest::Identity::from_pem(
         &[
@@ -130,11 +131,16 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
     ensure!(
         rogue
             .post(url)
-            .body("untrusted chain")
+            .header("content-type", "application/vnd.syncml.dm+xml")
+            .body(rss_mdm_windows_mdm::syncml::encode(
+                &peer.message,
+                &CodecLimits::default()
+            )?)
             .send()
-            .await
-            .is_err(),
-        "management accepted an untrusted client CA"
+            .await?
+            .status()
+            == StatusCode::UNAUTHORIZED,
+        "management admitted untrusted client certificate evidence"
     );
     ensure!(positive().await?.status() == StatusCode::OK);
     host.close().await?;

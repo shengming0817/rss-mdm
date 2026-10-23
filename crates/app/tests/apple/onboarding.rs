@@ -252,7 +252,6 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     let mut config: config::Config =
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
     config.management.origin = f.app.apple()?.config.management.origin.clone();
-    config.management.listen = f.app.apple()?.config.management.listen;
     config.trust_file = f.app.apple()?.config.trust_file.clone();
     setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let original_rights: i32 = pg(&format!(

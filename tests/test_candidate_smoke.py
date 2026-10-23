@@ -178,7 +178,7 @@ class ExternalReviewRegressions(unittest.TestCase):
     def test_host_fixture_keeps_private_directory_and_tls_key(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
-            candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment/nginx.conf')
+            candidate.inputs(root,Path(__file__).resolve().parents[1]/'fixtures/mdm-config.example.json',Path(__file__).resolve().parents[1]/'deployment')
             self.assertEqual(root.stat().st_mode & 0o077,0)
             self.assertEqual((root/'server.key').stat().st_mode & 0o077,0)
             verified=candidate.subprocess.run([

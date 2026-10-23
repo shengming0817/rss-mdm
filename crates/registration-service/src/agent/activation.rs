@@ -1,11 +1,11 @@
 use super::*;
 use crate::device::{self, DevicePrincipal};
-use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_inventory::Channel;
 impl Service {
     pub async fn activate(
         &self,
-        peer: &HandshakePeer,
+        peer: &ClientCertificateEvidence,
         input: &wire::ActivationRequest,
         a: &RequestAudit,
     ) -> Result<wire::ActivationReceipt, Failure> {
@@ -313,7 +313,10 @@ tenant_id=$1::uuid AND id=$2
         .map_err(Into::into)
     }
     /// Recheck certificate profile, expiry and current database mapping on every request.
-    pub async fn authenticate(&self, peer: &HandshakePeer) -> Result<DevicePrincipal, Failure> {
+    pub async fn authenticate(
+        &self,
+        peer: &ClientCertificateEvidence,
+    ) -> Result<DevicePrincipal, Failure> {
         let tenant = self.tenant.to_string();
         let mut tx = self.store.begin(&tenant).await?;
         let fingerprint = hex(Sha256::digest(&peer.chain()[0]));

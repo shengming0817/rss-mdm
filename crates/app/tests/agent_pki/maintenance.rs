@@ -40,13 +40,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let observed = Arc::new(std::sync::Mutex::new(Vec::<(String, String, i64)>::new()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("https://localhost:{}", listener.local_addr()?.port());
-    let endpoint = crate::native::TlsEndpoint {
-        listen: listener.local_addr()?,
-        origin: origin.clone(),
-        certificate_file: root().join("server.crt"),
-        private_key_file: root().join("agent-tls.pk8"),
-    };
-    let mut tls = crate::native::tls::configuration(&endpoint, None)?.fixture_server();
+    let mut tls = crate::test_support::tls::server(&root(), "agent-tls.pk8", None)?;
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stop = tokio_util::sync::CancellationToken::new();

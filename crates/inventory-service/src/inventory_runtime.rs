@@ -333,7 +333,7 @@ impl InventoryRuntime {
         &self,
         report: &DurableReport,
         deadline: Deadline,
-    ) -> Result<(), WorkerFailure> {
+    ) -> Result<bool, WorkerFailure> {
         if report.scope().tenant() != self.tenant {
             return Err(WorkerFailure::ReportAuthority);
         }
@@ -358,10 +358,24 @@ impl InventoryRuntime {
             .map_err(|_| WorkerFailure::ObservationReceive)?;
         // A lost acknowledgement leaves this true. Restart repeats the exact batch; lookup None
         // is never interpreted as proof of rollback.
-        tokio::time::timeout_at(deadline.instant().into(), self.delivery.delivered(report))
+        match tokio::time::timeout_at(deadline.instant().into(), self.delivery.delivered(report))
             .await
-            .map_err(|_| WorkerFailure::DeliveryProgress)?
-            .map_err(|_| WorkerFailure::DeliveryProgress)
+        {
+            Ok(Ok(())) => Ok(true),
+            Ok(Err(crate::collection::store::DeliveryError::Permanent(_))) => {
+                Err(WorkerFailure::DeliveryProgress)
+            }
+            Ok(Err(error)) => {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"event":"mdm_inventory_ack_deferred","commitUnknown":matches!(error,crate::collection::store::DeliveryError::CommitUnknown)})
+                );
+                Ok(false)
+            }
+            // The shared pass budget expired; dropping COMMIT does not prove rollback.
+            // The next pass rereads durable progress and reuses the exact batch identity.
+            Err(_) => Ok(false),
+        }
     }
     async fn deliver_pending(
         &self,
@@ -377,19 +391,23 @@ impl InventoryRuntime {
             if token.is_cancelled() {
                 return Ok(());
             }
-            if let Err(phase) = self.deliver(&report, deadline).await {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event":"mdm_inventory_delivery_failure",
-                        "phase":phase,
-                        "reportId":report.batch().id().as_str(),
-                        "source":report.scope().source().as_str(),
-                        "stream":stream_correlation(report.scope()),
-                        "pendingCount":pending_count,
-                    })
-                );
-                return Err(phase);
+            match self.deliver(&report, deadline).await {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(phase) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "event":"mdm_inventory_delivery_failure",
+                            "phase":phase,
+                            "reportId":report.batch().id().as_str(),
+                            "source":report.scope().source().as_str(),
+                            "stream":stream_correlation(report.scope()),
+                            "pendingCount":pending_count,
+                        })
+                    );
+                    return Err(phase);
+                }
             }
         }
         Ok(())
@@ -696,8 +714,14 @@ impl InventoryRuntime {
         self.observation.inject_next_fault(fault);
         self.observation.receive(batch, self.clock.deadline()).await
     }
+    #[cfg(feature = "integration")]
+    pub fn fixture_lose_next_delivery_ack(&self) {
+        self.delivery.inject_ack_loss();
+    }
     pub async fn fixture_deliver(&self, report: &DurableReport) -> Result<(), WorkerFailure> {
-        self.deliver(report, self.clock.deadline()).await
+        self.deliver(report, self.clock.deadline())
+            .await
+            .map(|_| ())
     }
     pub async fn fixture_wait_stopped(&self) -> rss_runtime::TaskExit {
         self.readiness

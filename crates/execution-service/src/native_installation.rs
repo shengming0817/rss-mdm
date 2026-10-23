@@ -23,19 +23,25 @@ impl ExecutionService {
         else {
             return Ok(());
         };
+        let tenant = tx.tenant_id();
+        let download_origin = tx.with_connection(move |c| Box::pin(async move {
+            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await
+                .map(|v| v.configuration.preferred_origin).map_err(Error::from))
+        })).await??;
         let operation_id = Uuid::new_v4();
         let input = Create {
             operation_id,
             deadline,
             input_version: version.to_string(),
             target: NativeTarget::Device,
-            task: package.native_task(operation_id)?,
+            task: package.native_task(operation_id, &download_origin)?,
         };
         let authority = authority::ExecutionAuthority::AgentInstall {
             stage: authority::AgentInstallStage::Install,
             source_objects: vec![],
             required: input.task.permissions()?,
             package: Box::new(package),
+            download_origin,
             tenant: tx.tenant_id().to_string(),
             policy,
             version,

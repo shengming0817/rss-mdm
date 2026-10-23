@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "185cad2df40b91b2976aa739f07232277685084bab7ffdedb60aac4f807f20b6";
+    "94cf129fdaad4a685bdb3f088fac05e0e62eaeffffc78c7b26e8085a7056786d";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.
@@ -269,6 +269,10 @@ pub enum ErrorCode {
     RegistrationLimit,
     /// The same operation was reused for different content/key.
     OperationConflict,
+    /// A proposed destination has no successful deployment observation.
+    ConnectionDeploymentUnobserved,
+    /// Removing an entrance would strand an active device without an installation confirmation.
+    ConnectionRetirementBlocked,
     /// Original CA signing result is unknown.
     IssuanceUnknown,
     /// Activation transaction settlement is unknown.

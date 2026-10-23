@@ -8,7 +8,9 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 pub enum Config {
     Disabled {},
     StepCa {
-        endpoint: Box<crate::native::TlsEndpoint>,
+        endpoint: Box<crate::native::PublicEndpoint>,
+        #[serde(default)]
+        additional_origins: Vec<String>,
         #[serde(default)]
         trust_file: PathBuf,
         #[serde(default)]
@@ -48,9 +50,7 @@ pub struct BootstrapConfig {
 pub(crate) struct AgentPki {
     pub issuer: Arc<AgentIssuer>,
     pub bootstrap: Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
-    pub listen: std::net::SocketAddr,
-    pub origin: String,
-    pub tls: Arc<crate::native::tls::Configuration>,
+    pub origins: Vec<String>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     clock: Arc<dyn crate::clock::Clock>,
     required_seconds: i64,
@@ -58,6 +58,7 @@ pub(crate) struct AgentPki {
 impl Config {
     pub(crate) fn load(
         &self,
+        service_id: &str,
         _audit: Arc<rss_mdm_audit_integration::AuditStore>,
         clock: Arc<dyn crate::clock::Clock>,
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
@@ -65,6 +66,7 @@ impl Config {
     ) -> Result<Option<Arc<AgentPki>>, Error> {
         let Self::StepCa {
             endpoint,
+            additional_origins,
             trust_file,
             lifetime,
             ..
@@ -81,13 +83,30 @@ impl Config {
         {
             return Err(invalid());
         }
+        let mut origins = vec![endpoint.origin.clone()];
+        origins.extend(additional_origins.iter().cloned());
+        origins.sort();
+        if origins.len() > rss_mdm_agent_wire::connections::MAX_ORIGINS
+            || origins.windows(2).any(|p| p[0] == p[1])
+        {
+            return Err(invalid());
+        }
+        for value in &origins {
+            rss_mdm_agent_wire::connections::validate_origin(value).map_err(|_| invalid())?;
+        }
         let days = lifetime.days()?;
         let device_trust = crate::device_pki::load(
             trust_file,
             rss_mdm_agent_wire::pki::Purpose::Agent,
             clock.unix_seconds()?,
         )?;
-        if device_trust.public().map_err(|_| invalid())?.origin != endpoint.origin {
+        if device_trust
+            .public()
+            .map_err(|_| invalid())?
+            .service_id
+            .to_string()
+            != service_id
+        {
             return Err(invalid());
         }
         let trust = Arc::new(
@@ -102,17 +121,8 @@ impl Config {
             Arc::new(PkiClock(clock.clone())),
         )
         .map_err(|_| invalid())?;
-        let mut purposes = vec![issuer.trust().trust.clone()];
-        if let Some(bootstrap) = &bootstrap {
-            purposes.push(bootstrap.trust.clone());
-        }
-        let verifier =
-            rss_mdm_device_trust::enrollment_verifier(purposes).map_err(|_| invalid())?;
-        let tls = crate::native::tls::configuration(endpoint, Some(verifier))?;
         Ok(Some(Arc::new(AgentPki {
-            listen: endpoint.listen,
-            origin: endpoint.origin.clone(),
-            tls,
+            origins,
             pki_clock: Arc::new(PkiClock(clock.clone())),
             issuer: Arc::new(issuer),
             bootstrap,
@@ -131,20 +141,15 @@ impl rss_mdm_registration_service::agent_pki::Clock for PkiClock {
 }
 impl AgentPki {
     pub(crate) fn remove_bootstrap(&mut self) -> Result<(), Error> {
-        let verifier =
-            rss_mdm_device_trust::enrollment_verifier(vec![self.issuer.trust().trust.clone()])
-                .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;
-        self.tls = self.tls.with_client_verifier(verifier)?;
         self.bootstrap = None;
         Ok(())
     }
 
     pub(crate) fn issuance_ready(&self, now: i64) -> bool {
-        self.tls.valid_at(now)
-            && !matches!(
-                health(self.issuer.trust().expires(), now, self.required_seconds),
-                "expired" | "issuance_unavailable"
-            )
+        !matches!(
+            health(self.issuer.trust().expires(), now, self.required_seconds),
+            "expired" | "issuance_unavailable"
+        )
     }
 
     pub(crate) fn registration(self: Arc<Self>) -> rss_runtime::ManagedTaskRegistration {
@@ -188,12 +193,12 @@ fn health(expires: i64, now: i64, required: i64) -> &'static str {
 impl Config {
     pub(crate) fn bootstrap_materials(
         &self,
+        service_id: &str,
         providers: &rss_mdm_pki_service::providers::Providers,
         now: i64,
     ) -> Result<Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>, Error>
     {
         let Self::StepCa {
-            endpoint,
             bootstrap: Some(input),
             ..
         } = self
@@ -206,7 +211,13 @@ impl Config {
             rss_mdm_agent_wire::pki::Purpose::AgentBootstrap,
             now,
         )?;
-        if trust.public().map_err(|_| invalid())?.origin != endpoint.origin {
+        if trust
+            .public()
+            .map_err(|_| invalid())?
+            .service_id
+            .to_string()
+            != service_id
+        {
             return Err(invalid());
         }
         for issuer in trust.public().map_err(|_| invalid())?.issuers {

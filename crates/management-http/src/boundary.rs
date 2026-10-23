@@ -205,6 +205,18 @@ fn project(error: Error) -> Response {
 }
 fn route_action(route: &str) -> &'static str {
     match route {
+        "/api/v1/agent-connections" | "/api/v1/agent-connections/configuration" => {
+            "agent_connections_read"
+        }
+        "/api/v1/agent-connections/publish" => "agent_connections_publish",
+        "/api/v1/agent-connection-operations/{id}" => "agent_connections_operation_read",
+        "/api/v1/agent-connections/devices"
+        | "/api/v1/agent-connections/devices/{device}/observation" => {
+            "agent_connections_devices_read"
+        }
+        "/api/v1/agent-issuances/{id}/recovery-operations/{operation}" => {
+            "agent_certificate_recovery_read"
+        }
         "/api/v1/device-associations" => "device_association_confirm",
         "/api/v1/device-associations/{id}/revoke" => "device_association_revoke",
         "/api/v1/device-associations/changes"

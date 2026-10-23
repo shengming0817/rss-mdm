@@ -423,7 +423,6 @@ class Environment:
         prefix='/certs' if mode=='container' else str(gateway)
         nginx=render(ROOT/'deployment', origin=origin,
                      backend=config['listen'], public_port=8443 if mode=='container' else https_port,
-                     http_port=8445 if mode=='container' else backend_port+1,
                      certificates=prefix, web=mode=='container')
         if mode=='host':
             nginx=nginx.replace('/tmp/mdm-',str(gateway)+'/mdm-')

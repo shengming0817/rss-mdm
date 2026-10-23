@@ -182,17 +182,12 @@ pub(crate) async fn open(
             &channels,
         )
         .await?;
-        let (signer, configuration_signer) = match loaded_signing {
-            Some(loaded) => (
-                Some(Arc::new(loaded.task)),
-                Some(Arc::new(loaded.configuration)),
-            ),
-            None => (None, None),
-        };
+        let signer = loaded_signing.map(|loaded| Arc::new(loaded.task));
         let bootstrap = channels
             .material(
                 crate::channel_status::ChannelName::AgentBootstrap,
                 config.agent_pki.bootstrap_materials(
+                    &config.identity.instance_id,
                     &providers,
                     time::OffsetDateTime::now_utc().unix_timestamp(),
                 ),
@@ -212,10 +207,6 @@ pub(crate) async fn open(
                 recovery_enabled: config.recovery_credentials.is_some(),
                 protection: protection.clone(),
                 software,
-                agent_origin: match &config.agent_pki {
-                    crate::agent_pki::Config::StepCa { endpoint, .. } => endpoint.origin.clone(),
-                    _ => String::new(),
-                },
                 bootstrap: bootstrap.as_ref().map(|_| {
                     config
                         .device_pki
@@ -284,7 +275,6 @@ pub(crate) async fn open(
             channels,
             providers,
             bootstrap,
-            configuration_signer,
             #[cfg(test)]
             webhooks: Arc::default(),
             service,
@@ -308,8 +298,6 @@ pub(crate) struct Assembly {
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) bootstrap:
         Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
-    pub(crate) configuration_signer:
-        Option<Arc<rss_mdm_registration_service::agent::configurations::Signer>>,
     #[cfg(test)]
     pub(crate) webhooks: Arc<std::sync::OnceLock<Arc<crate::webhooks::Backend>>>,
     pub(crate) service: Arc<ExecutionService>,

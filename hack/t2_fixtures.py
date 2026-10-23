@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 
 from candidate_fixture import INSTANCE, ADMIN
@@ -23,7 +24,7 @@ from t2_environment import Environment, private, run
 from t2_registry import IDENTITY_SETUP
 from s3_fixtures import S3Environment
 from t2_model import ROOT
-from t2_processes import diagnostic_phase, owned_by
+from t2_processes import diagnostic_phase, owned_by, subprocess
 from verification_result import require
 
 
@@ -415,14 +416,21 @@ class RunFixtures:
         environment = self.gateway_owner
         try:
             environment.prepare_inputs(certificates=False)
-            private(environment.root / 'probe/nginx.conf', config)
+            directory = environment.root / 'probe' / uuid.uuid4().hex
+            environment.extra = {**getattr(environment, 'extra', {}),
+                'MDM_GATEWAY_PROBE_DIRECTORY': str(directory), 'MDM_GATEWAY_PROBE_USER': f'{os.getuid()}:{os.getgid()}'}
+            private(directory / 'nginx.conf', config)
             for name,value in (files or {}).items():
                 if Path(name).name!=name:raise ValueError('gateway fixture filename required')
-                private(environment.root / 'probe' / name,value)
+                private(directory / name,value)
             environment.verify_ownership()
             environment.compose('--profile', 'probe', 'up', '-d', 'gateway-probe')
             name = environment.compose('ps', '-q', 'gateway-probe')
-            port = int(environment.compose('port', 'gateway-probe', '8080').rsplit(':', 1)[1])
+            try:
+                port = int(environment.compose('port', 'gateway-probe', '8080').rsplit(':', 1)[1])
+            except subprocess.CalledProcessError as error:
+                diagnostic = environment.compose('logs', '--no-color', '--tail', '80', 'gateway-probe')
+                raise RuntimeError('gateway startup failed before port discovery:\n' + diagnostic) from error
             yield name, port
         finally:
             environment.reset()

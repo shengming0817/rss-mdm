@@ -91,7 +91,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, gateway_file, *, database_host="postgres", hostname="mdm.example.test"):
+def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test"):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -140,7 +140,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres", hostname="m
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
-    gateway=render(gateway_file.parent, origin="https://"+hostname, backend="server:8081")
+    gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
     (root/"nginx.conf").write_text(gateway)
     root.chmod(0o700)
     (root/"server.key").chmod(0o600)
@@ -370,15 +370,14 @@ class Candidate:
         from t2_environment import private
         windows=generate(self.root,self.root/'server.crt',self.root/'server.key')
         for channel,port in [('enrollment',8443),('management',8444)]:
-            windows[channel]['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+f':{port}'
             windows[channel]['origin']=f'https://windows-{channel}.{self.host}:{self.port}'
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
-        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
+        windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root,instance_id=self.instance))
         agent_origin=f'https://agent.{self.host}:{self.port}'
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
-                                            agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root))
+                                            agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root,instance_id=self.instance))
         def copy_file(source):
             source=Path(source)
             target=self.runtime/(sha(source)[:32]+'-'+source.name)
@@ -389,7 +388,7 @@ class Candidate:
             if isinstance(value,list):return [copy(item) for item in value]
             return value
         self.config['native_protocols']['windows']=copy(json.loads((self.root/'windows.json').read_text()))
-        agent=json.loads((self.root/'agent-pki.json').read_text());agent['endpoint']['listen']=self.compose_environment['MDM_BACKEND_ADDRESS']+':9445'
+        agent=json.loads((self.root/'agent-pki.json').read_text())
         self.config['agent_pki']=copy(agent)
         providers=json.loads((self.root/'device-pki.json').read_text())
         self.agent_external_origin=next(item['origin'] for item in providers if item['purpose']=='agent')
@@ -412,7 +411,7 @@ class Candidate:
             self.root=Path(self.temporary.name)
             self.worktree_identity=project_name(self.root)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json",
-                                                  self.directory/"deployment/nginx.conf",database_host=self.pg_host,hostname=self.host)
+                                                  self.directory/"deployment",database_host=self.pg_host,hostname=self.host)
             import socket
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1',0));self.port=reservation.getsockname()[1]
@@ -463,7 +462,7 @@ class Candidate:
             endpoints=[self.config['native_protocols']['windows'][key] for key in ['enrollment','management']]+[self.config['agent_pki']['endpoint']]
             from urllib.parse import urlsplit
             gateway=render(self.directory/'deployment',origin='https://'+self.host,
-                           backend=self.config['listen'],targets={urlsplit(e['origin']).hostname:e['listen'] for e in endpoints},web=self.web is not None)
+                           backend=self.config['listen'],targets={e['origin']:self.config['listen'] for e in endpoints},web=self.web is not None)
             private(self.root/'nginx.conf',gateway)
             shutil.copyfile(self.root/'nginx.conf',gateway_dir/'nginx.conf')
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
@@ -511,7 +510,7 @@ class Candidate:
             require(browser.call('POST','/api/v1/identity/tenants/'+self.tenant+'/login',
                                  dict(login='admin',password=PASSWORD))[0]==200,'fixture login failed')
             status,trust=browser.call('POST','/api/v1/task-signing/trust',
-                dict(action='prepare',expectedRevision=0,origin=self.agent_origin),str(uuid.uuid4()))
+                dict(action='prepare',expectedRevision=0),str(uuid.uuid4()))
             require(status==200 and trust['revision']==1,'fixture signing authority failed')
             self.config['task_signing']={'revision':trust['revision']}
             self.config['agent_pki']=agent

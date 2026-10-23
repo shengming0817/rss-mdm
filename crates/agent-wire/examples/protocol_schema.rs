@@ -2,6 +2,11 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "connections": {
+            "SignedConfiguration": schemars::schema_for!(rss_mdm_agent_wire::connections::SignedConfiguration),
+            "Acknowledgement": schemars::schema_for!(rss_mdm_agent_wire::connections::Acknowledgement),
+            "FailureReport": schemars::schema_for!(rss_mdm_agent_wire::connections::FailureReport),
+        },
         "task_trust": {
             "Observation": schemars::schema_for!(rss_mdm_agent_wire::task_trust::Observation),
             "ObservedInstallation": schemars::schema_for!(rss_mdm_agent_wire::task_trust::ObservedInstallation),

@@ -93,7 +93,7 @@ def execute(fixture):
     public = command('public-host-config', config)
     require(public == {
         'ui.json': {'canonicalOrigin': config['product_origin'], 'oidcEnabled': True},
-        'mdm.json': {'canonicalOrigin': config['product_origin'], 'tenant': business, 'managementTenant': management},
+        'mdm.json': {'serviceId': INSTANCE, 'canonicalOrigin': config['product_origin'], 'tenant': business, 'managementTenant': management},
     }, 'public host configuration did not use the installed management tenant')
     foreign = json.loads(json.dumps(config))
     foreign['identity']['tenant_id'] = management
