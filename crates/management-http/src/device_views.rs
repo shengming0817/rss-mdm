@@ -46,10 +46,8 @@ fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
 }
 async fn list(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(a): Extension<RequestAuth>,
@@ -63,10 +61,8 @@ async fn list(
             &query.map_err(|_| Error::Malformed)?.0,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
             ),
         )
         .await?,
@@ -74,10 +70,8 @@ async fn list(
 }
 async fn detail(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(a): Extension<RequestAuth>,
@@ -96,10 +90,8 @@ async fn detail(
             &reference,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
             ),
         )
         .await?,
@@ -117,10 +109,8 @@ fn limit() -> usize {
 }
 async fn items(
     State(s): State<Arc<Associations>>,
-    (Extension(sessions), Extension(identity), Extension(continuation), Extension(deadline)): (
-        Extension<Arc<rss_mdm_authorization_service::session::SessionAuthority>>,
+    (Extension(identity), Extension(deadline)): (
         Extension<rss_identity_postgres::Authority>,
-        Extension<crate::http_operation::RequestContinuation>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
     Extension(a): Extension<RequestAuth>,
@@ -139,10 +129,8 @@ async fn items(
             q.limit,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
-                continuation.secret(),
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
-                &sessions,
             ),
         )
         .await?,

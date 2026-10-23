@@ -297,6 +297,9 @@
     }
   ],
   "functions": [],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_access.directory_endpoints",
+    "mdm_access.directory_users"
+  ],
   "verified_schemas": []
 }

@@ -50,6 +50,21 @@ pub async fn bindings_on(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    let fingerprints = rows
+        .iter()
+        .map(|row| row.try_get::<Option<Vec<u8>>, _>("fingerprint").map_err(db))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let valid = rss_mdm_pki_service::registry::current_certificates_in(
+        c,
+        rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Corrupt)?,
+        rss_mdm_agent_wire::pki::Purpose::Agent,
+        &fingerprints,
+    )
+    .await
+    .map_err(|_| Error::Storage)?;
     for row in rows {
         let reference: Option<SessionReference> = row
             .try_get::<Option<serde_json::Value>, _>("session_reference")
@@ -58,23 +73,7 @@ pub async fn bindings_on(
             .transpose()
             .map_err(|_| Error::Corrupt)?;
         let fingerprint: Option<Vec<u8>> = row.try_get("fingerprint").map_err(db)?;
-        let mut registration_valid = fingerprint.is_some();
-        if reference.is_some()
-            && let Some(fingerprint) = fingerprint
-        {
-            match rss_mdm_pki_service::registry::current_certificate_in(
-                c,
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Corrupt)?,
-                rss_mdm_agent_wire::pki::Purpose::Agent,
-                &fingerprint,
-            )
-            .await
-            {
-                Ok(()) => {}
-                Err(rss_mdm_pki_service::Error::Forbidden) => registration_valid = false,
-                Err(_) => return Err(Error::Storage),
-            }
-        }
+        let registration_valid = fingerprint.as_ref().is_some_and(|f| valid.contains(f));
         result.insert(
             row.try_get("device").map_err(db)?,
             Binding {

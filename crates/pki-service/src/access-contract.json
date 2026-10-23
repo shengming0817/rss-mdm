@@ -24,7 +24,11 @@
       "table": "certificates",
       "read_write": true,
       "updates": [
-        "registration"
+        "registration",
+        "verification_version",
+        "verification_trust",
+        "verification_start",
+        "verification_end"
       ],
       "delete_policy": null
     },
@@ -110,6 +114,8 @@
     }
   ],
   "functions": [],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_pki.current_certificates"
+  ],
   "verified_schemas": []
 }

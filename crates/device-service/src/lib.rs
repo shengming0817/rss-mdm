@@ -2,6 +2,7 @@
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction ownership).
 mod changes;
 mod cursor;
+mod directory;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
@@ -45,3 +46,6 @@ impl Associations {
         })
     }
 }
+
+/// Product query revisions and narrow same-database read grants.
+pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");

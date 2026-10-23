@@ -668,6 +668,13 @@ pub async fn persist(c: &mut sqlx::PgConnection, trust: &Trust) -> Result<(), Er
             .bind(serde_json::to_vec(g).map_err(|_|Error::Request)?).bind(certificate.tbs_certificate.validity.not_after.to_unix_duration().as_secs() as i64).bind(if g.provisioner.is_empty(){"legacy"}else{"step_ca"})
             .execute(&mut *c).await.map_err(|_|Error::Storage)?;
     }
+    crate::qualification::publish_in(
+        c,
+        &trust.tenant.to_string(),
+        trust.purpose,
+        &serde_json::to_vec(trust).map_err(|_| Error::Request)?,
+    )
+    .await?;
     Ok(())
 }
 use sha2::Digest;
@@ -695,6 +702,23 @@ pub async fn current_certificate_in(
         .verify(&[certificate.into()], now)
         .map_err(|_| Error::Forbidden)?;
     Ok(())
+}
+
+/// Qualify a bounded presentation set using the owner's full-verifier records.
+/// This returns presentation eligibility only, never an authentication proof.
+pub async fn current_certificates_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    usage: Purpose,
+    fingerprints: &[Vec<u8>],
+) -> Result<std::collections::BTreeSet<Vec<u8>>, Error> {
+    if fingerprints.len() > 1000 || fingerprints.iter().any(|f| f.len() != 32) {
+        return Err(Error::Request);
+    }
+    let rows:Vec<Vec<u8>> = sqlx::query_scalar("SELECT fingerprint FROM mdm_pki.current_certificates WHERE tenant_id=$1::uuid AND purpose=$2 AND fingerprint=ANY($3)")
+        .bind(tenant.to_string()).bind(purpose(usage)).bind(fingerprints)
+        .fetch_all(c).await.map_err(|_|Error::Storage)?;
+    Ok(rows.into_iter().collect())
 }
 
 #[cfg(test)]

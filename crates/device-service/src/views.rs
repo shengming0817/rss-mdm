@@ -2,7 +2,7 @@ use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
 use rss_mdm_inventory::{
-    EndpointSourceFact, FieldKey, Scalar, Sensitivity, State as FieldState, ValueType,
+    ArrayState, EndpointArrayFact, EndpointSourceFact, FieldKey, Sensitivity, ValueType,
 };
 pub use rss_mdm_inventory_service::objects::ObjectRef as ViewRef;
 use serde::{Deserialize, Serialize};
@@ -30,13 +30,13 @@ pub struct ViewQuery {
 fn limit() -> usize {
     64
 }
-struct Group {
-    reference: ViewRef,
-    association: Option<Association>,
-    endpoints: Vec<Value>,
+pub(super) struct Group {
+    pub(super) reference: ViewRef,
+    pub(super) association: Option<Association>,
+    pub(super) endpoints: Vec<Value>,
 }
 impl Group {
-    fn key(&self) -> String {
+    pub(super) fn key(&self) -> String {
         match &self.reference {
             ViewRef::Endpoint(id) => format!("endpoint:{id}"),
             ViewRef::Association(id) => format!("association:{id}"),
@@ -48,43 +48,35 @@ impl Group {
             .map(|v| v["id"].as_str().map(str::to_owned).ok_or(Error::Storage))
             .collect()
     }
-    fn summary(&self) -> Value {
+    pub(super) fn summary(&self) -> Value {
         json!({"reference":self.reference,"association":self.association,"endpoints":self.endpoints})
     }
 }
-async fn groups(
+pub(super) async fn groups(
     c: &mut PgConnection,
     tenant: &str,
-    allowed: Option<BTreeSet<String>>,
+    selected: &BTreeSet<String>,
     world: &identity::World,
     snapshot: &Snapshot,
     proof: &AuthorizedPrincipal,
 ) -> Result<(Vec<Group>, crate::presentation::Bindings)> {
-    let mut after = None;
-    let mut rows = BTreeMap::new();
-    loop {
-        let page = rss_mdm_registration_service::device::directory::page_on(
-            c,
-            tenant,
-            allowed.clone().map(|v| v.into_iter().collect()),
-            after,
-        )
-        .await?;
-        let items = page["items"].as_array().ok_or(Error::Storage)?;
-        for item in items {
-            rows.insert(
+    let page = rss_mdm_registration_service::device::directory::page_on(
+        c,
+        tenant,
+        &selected.iter().cloned().collect::<Vec<_>>(),
+    )
+    .await?;
+    let mut rows = page["items"]
+        .as_array()
+        .ok_or(Error::Storage)?
+        .iter()
+        .map(|item| {
+            Ok((
                 item["id"].as_str().ok_or(Error::Storage)?.to_owned(),
                 item.clone(),
-            );
-        }
-        if items.len() < 1000 {
-            break;
-        }
-        after = items
-            .last()
-            .and_then(|v| v["id"].as_str())
-            .map(str::to_owned);
-    }
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let states: Vec<(String, String)> = sqlx::query_as(
         "SELECT device,state FROM mdm_devices.asset_states WHERE tenant_id=$1::uuid AND device=ANY($2)",
     ).bind(tenant).bind(rows.keys().cloned().collect::<Vec<_>>()).fetch_all(&mut *c).await?;
@@ -132,7 +124,7 @@ async fn groups(
     result.sort_by_key(Group::key);
     Ok((result, bindings))
 }
-fn scope(snapshot: &Snapshot, proof: &AuthorizedPrincipal) -> Result<(bool, String)> {
+pub(super) fn scope(snapshot: &Snapshot, proof: &AuthorizedPrincipal) -> Result<(bool, String)> {
     let sensitive = match snapshot.require(proof, Permission::InventorySensitiveRead, None) {
         Ok(()) => true,
         Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => false,
@@ -172,110 +164,7 @@ impl Associations {
         {
             return Err(Error::Malformed);
         }
-        let budget = AuditBudget::new(Duration::from_secs(15));
-        let (mut groups, bindings, sensitive, grants) = self
-            .audit
-            .write(
-                self.tenant,
-                &budget.source_control(),
-                (self, proof),
-                |(service, proof), tx| {
-                    Box::pin(async move {
-                        tx.with_connection_context(
-                            &mut (*service, *proof),
-                            |(service, proof), c| {
-                                Box::pin(async move {
-                                    rss_mdm_inventory_postgres::lock_watermark_in(
-                                        c,
-                                        service.tenant,
-                                    )
-                                    .await?;
-                                    let snapshot = read::authorization(c, proof).await?;
-                                    let (sensitive, grants) = scope(&snapshot, proof)?;
-                                    let world = identity::world(c, service.tenant).await?;
-                                    let (groups, bindings) = groups(
-                                        c,
-                                        proof.tenant_id(),
-                                        snapshot.inventory_devices(proof)?,
-                                        &world,
-                                        &snapshot,
-                                        proof,
-                                    )
-                                    .await?;
-                                    Ok((groups, bindings, sensitive, grants))
-                                })
-                            },
-                        )
-                        .await
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |e| Err(model::transaction_error(e)),
-                |e| Err(model::transaction_error(e)),
-                |_| Err(Error::RollbackFailed),
-                |_| Err(Error::CommitUnknown),
-                |e| Err(model::transaction_error(e)),
-            )?;
-        let mut cache = BTreeMap::new();
-        for group in &mut groups {
-            crate::presentation::current_users(
-                &mut group.endpoints,
-                &bindings,
-                personnel.sessions,
-                &mut cache,
-            )
-            .await?;
-        }
-        personnel
-            .project(
-                proof,
-                sensitive,
-                groups
-                    .iter_mut()
-                    .flat_map(|group| group.endpoints.iter_mut()),
-            )
-            .await?;
-        self.confirm_scope(proof, &grants, &budget).await?;
-        let version = cursor::digest(&groups.iter().map(|g| g.summary()).collect::<Vec<_>>())?;
-        let context = json!(cursor::digest(
-            &json!({"kind":"device-directory-v1","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"version":version,"query":{"status":query.status,"channel":query.channel,"source":query.source,"assetState":query.asset_state,"descending":query.descending,"search":query.search,"platform":query.platform}})
-        )?);
-        let offset = if let Some(cursor) = &query.cursor {
-            let cursor = self.decode(cursor)?;
-            if cursor.context != context {
-                return Err(Error::CursorInvalidated);
-            }
-            cursor.offset
-        } else {
-            0
-        };
-        groups.retain(|g| g.endpoints.iter().any(|e| matches_query(e, query)));
-        if query.descending {
-            groups.reverse();
-        }
-        let count = groups.len();
-        let endpoints: usize = groups.iter().map(|g| g.endpoints.len()).sum();
-        if offset > count {
-            return Err(Error::CursorInvalidated);
-        }
-        let items = groups
-            .iter()
-            .skip(offset)
-            .take(query.limit)
-            .map(Group::summary)
-            .collect::<Vec<_>>();
-        let next = if offset + items.len() < count {
-            Some(self.encode(context, offset + items.len())?)
-        } else {
-            None
-        };
-        proof.check_live()?;
-        Ok(
-            json!({"items":items,"statistics":{"endpointCount":endpoints,"deviceViewCount":count},"nextCursor":next}),
-        )
+        self.directory_page(proof, query, personnel).await
     }
     pub async fn view(
         &self,
@@ -311,12 +200,28 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let (mut value, bindings, sensitive, grants) = self.audit.write(self.tenant,&budget.source_control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
+        let (mut value, bindings, sensitive, grants, observed) = self.audit.write(self.tenant,&budget.source_control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*reference,*list),|(service,proof,reference,list),c|Box::pin(async move {
-                rss_mdm_inventory_postgres::lock_watermark_in(c,service.tenant).await?;let snapshot=read::authorization(c,proof).await?;
+                rss_mdm_inventory_postgres::lock_watermark_in(c,service.tenant).await?;
+                let snapshot=read::authorization(c,proof).await?;
                 let (sensitive,grants)=scope(&snapshot,proof)?;
-                let world=identity::world(c,service.tenant).await?;
-                let (mut groups,bindings)=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world,&snapshot,proof).await?;
+                let (ids,associations)=match reference {
+                    ViewRef::Endpoint(id)=>{
+                        snapshot.require(proof,Permission::InventoryRead,Some(id)).map_err(|e|match e {
+                            rss_mdm_authorization_service::error::AuthorizationError::Forbidden=>Error::NotFound,
+                            other=>other.into(),
+                        })?;
+                        (vec![id.clone()],vec![])
+                    },
+                    ViewRef::Association(id)=>{
+                        let association=read::load(c,proof.tenant_id(),*id).await?;
+                        if association.state==State::Revoked {return Err(Error::NotFound);}
+                        read::authorize(&snapshot,proof,&association.members,false).map_err(|e|match e {Error::Forbidden=>Error::NotFound,other=>other})?;
+                        (association.members.iter().map(|m|m.device.clone()).collect(),vec![*id])
+                    },
+                };
+                let world=identity::local_world(c,service.tenant,&ids,&associations).await?;
+                let (mut groups,bindings)=groups(c,proof.tenant_id(),&ids.into_iter().collect(),&world,&snapshot,proof).await?;
                 // Explicit endpoint reads retain their original semantics, even when both are visible.
                 let group=match reference {
                     ViewRef::Association(_)=>groups.into_iter().find(|g|g.reference==**reference).ok_or(Error::NotFound)?,
@@ -328,46 +233,48 @@ impl Associations {
                 let ids=group.ids()?;
                 for id in &ids {snapshot.require(proof,Permission::InventoryRead,Some(id))?;}
                 let catalog=rss_mdm_inventory_postgres::catalog_at_in(c,service.tenant,world.watermark).await.map_err(|_|Error::Storage)?;
-                let raw=rss_mdm_inventory_service::assets::planning::SnapshotReader{tenant:service.tenant}.devices_on(c,world.watermark,&ids,&catalog,sensitive).await.map_err(|_|Error::Storage)?;
-                let context=json!({"kind":"device-inventory-list","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"view":group.summary()});
+                let raw=rss_mdm_inventory_service::assets::planning::SnapshotReader{tenant:service.tenant}.summary_devices_on(c,world.watermark,&ids,&catalog,sensitive).await.map_err(|_|Error::Storage)?;
+                let observed=crate::directory::read_generation(c,proof.tenant_id()).await?;
+                let context=json!({"generation":observed,"kind":"device-inventory-list","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"view":group.summary()});
                 let mut fields=BTreeMap::new();let mut lists=BTreeMap::new();
                 for definition in catalog.fields().filter(|d|sensitive||d.sensitivity==Sensitivity::Standard) {
-                    let sources=raw.iter().flat_map(|e|e.fields.get(&definition.key).into_iter().flat_map(|f|f.sources.iter().cloned().map(|fact|EndpointSourceFact{endpoint:e.device.clone(),fact}))).collect();
-                    let resolved=rss_mdm_inventory::resolve_device(definition,sources).map_err(|_|Error::Storage)?;
                     if matches!(definition.value_type,ValueType::Array{..}) {
+                        let sources=raw.iter().flat_map(|e|e.arrays.get(&definition.key).into_iter().flat_map(|f|f.sources.iter().cloned().map(|fact|EndpointArrayFact{endpoint:e.scalars.device.clone(),fact}))).collect();
+                        let resolved=rss_mdm_inventory::resolve_device_array(definition,sources).map_err(|_|Error::Storage)?;
                         if let Some((field,token,limit))=list && *field==definition.key {
                             let cursor=service.decode(token)?;
                             if cursor.context["view"]!=context || cursor.context["field"]!=json!(field){return Err(Error::CursorInvalidated);}
                             let selected=cursor.context["source"].as_u64().ok_or(Error::Malformed)? as usize;
                             let source=resolved.sources.get(selected).ok_or(Error::CursorInvalidated)?;
-                            let values=match &source.fact.state {FieldState::Known(Scalar::Array(v))=>v,_=>return Err(Error::Conflict)};
-                            if cursor.offset>values.len(){return Err(Error::CursorInvalidated);}
-                            let items=values.iter().skip(cursor.offset).take(*limit).collect::<Vec<_>>();
-                            let next=if cursor.offset+items.len()<values.len(){Some(service.encode(cursor.context,cursor.offset+items.len())?)}else{None};
+                            let ArrayState::Known(value)=&source.fact.state else { return Err(Error::Conflict); };
+                            if cursor.context["version"]!=value.version {return Err(Error::CursorInvalidated);}
+                            let page=rss_mdm_inventory_postgres::arrays::page(c,service.tenant,&value.version,cursor.offset,*limit,16*1024*1024).await.map_err(|_|Error::Storage)?;
+                            let next=page.next.map(|offset|service.encode(cursor.context,offset)).transpose()?;
                             proof.check_live()?;
-                            return Ok((json!({"reference":reference,"field":field,"source":source.fact.evidence,"endpoint":source.endpoint,"total":values.len(),"items":items,"nextCursor":next}),bindings,sensitive,grants));
+                            return Ok((json!({"reference":reference,"field":field,"source":source.fact.evidence,"endpoint":source.endpoint,"total":value.count,"items":page.items,"nextCursor":next}),bindings,sensitive,grants,observed));
                         }
-                        let sources=resolved.sources.iter().enumerate().map(|(i,s)|Ok(json!({"endpoint":s.endpoint,"evidence":s.fact.evidence,"state":list_state(&s.fact.state)?,"lastKnown":s.fact.last_known.as_ref().map(|v|json!({"state":list_state(&FieldState::Known(v.value.clone())).ok(),"evidence":v.evidence})),"cursor":service.encode(json!({"view":context,"field":definition.key,"source":i}),0)?}))).collect::<Result<Vec<_>>>()?;
+                        let sources=resolved.sources.iter().enumerate().map(|(i,s)| {
+                            let version=match &s.fact.state {ArrayState::Known(value)=>Some(&value.version),_=>None};
+                            Ok(json!({"endpoint":s.endpoint,"evidence":s.fact.evidence,"state":list_state(&s.fact.state)?,"lastKnown":s.fact.last_known.as_ref().map(|v|json!({"state":{"kind":"known","count":v.value.count,"digest":v.value.digest},"evidence":v.evidence})),"cursor":service.encode(json!({"view":context,"field":definition.key,"source":i,"version":version}),0)?}))
+                        }).collect::<Result<Vec<_>>>()?;
                         lists.insert(definition.key,json!({"state":list_state(&resolved.state)?,"sources":sources,"itemKey":definition.item_key}));
-                    } else {fields.insert(definition.key,resolved);}
+                    } else {
+                        let sources=raw.iter().flat_map(|e|e.scalars.fields.get(&definition.key).into_iter().flat_map(|f|f.sources.iter().cloned().map(|fact|EndpointSourceFact{endpoint:e.scalars.device.clone(),fact}))).collect();
+                        fields.insert(definition.key,rss_mdm_inventory::resolve_device(definition,sources).map_err(|_|Error::Storage)?);
+                    }
                 }
                 if list.is_some(){return Err(Error::NotFound);}
-                let provenance=raw.iter().map(|e|json!({"endpoint":e.device,"quality":e.quality,"revisions":e.revisions})).collect::<Vec<_>>();
+                let provenance=raw.iter().map(|e|json!({"endpoint":e.scalars.device,"quality":e.scalars.quality,"revisions":e.scalars.revisions})).collect::<Vec<_>>();
                 let mut value=group.summary();value["fields"]=serde_json::to_value(fields).map_err(|_|Error::Storage)?;value["lists"]=serde_json::to_value(lists).map_err(|_|Error::Storage)?;value["inventorySources"]=json!(provenance);
-                proof.check_live()?;Ok((value,bindings,sensitive,grants))
+                proof.check_live()?;Ok((value,bindings,sensitive,grants,observed))
             })).await
         })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
         if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
-            crate::presentation::current_users(
-                rows,
-                &bindings,
-                personnel.sessions,
-                &mut BTreeMap::new(),
-            )
-            .await?;
+            personnel.current_users(proof, rows, &bindings).await?;
             personnel.project(proof, sensitive, rows.iter_mut()).await?;
         }
-        self.confirm_scope(proof, &grants, &budget).await?;
+        self.confirm_scope(proof, &grants, &observed, &budget)
+            .await?;
         Ok(value)
     }
     /// Fence permission changes that occurred while Identity resolved outside the product transaction.
@@ -375,25 +282,35 @@ impl Associations {
         &self,
         proof: &AuthorizedPrincipal,
         grants: &str,
+        observed: &Value,
         budget: &AuditBudget,
     ) -> Result<()> {
         self.audit
             .read(
                 self.tenant,
                 &budget.control(),
-                (proof, grants),
-                |(proof, grants), tx| {
+                (proof, grants, observed),
+                |(proof, grants, observed), tx| {
                     Box::pin(async move {
-                        tx.with_connection_context(&mut (*proof, *grants), |(proof, grants), c| {
-                            Box::pin(async move {
-                                let snapshot = read::authorization(c, proof).await?;
-                                if snapshot.query_binding(proof)? != *grants {
-                                    return Err(Error::Forbidden);
-                                }
-                                proof.check_live()?;
-                                Ok(())
-                            })
-                        })
+                        tx.with_connection_context(
+                            &mut (*proof, *grants, *observed),
+                            |(proof, grants, observed), c| {
+                                Box::pin(async move {
+                                    let snapshot = read::authorization(c, proof).await?;
+                                    if snapshot.query_binding(proof)? != *grants {
+                                        return Err(Error::Forbidden);
+                                    }
+                                    if crate::directory::read_generation(c, proof.tenant_id())
+                                        .await?
+                                        != **observed
+                                    {
+                                        return Err(Error::CursorInvalidated);
+                                    }
+                                    proof.check_live()?;
+                                    Ok(())
+                                })
+                            },
+                        )
                         .await
                     })
                 },
@@ -409,46 +326,9 @@ impl Associations {
             )
     }
 }
-fn list_state(state: &FieldState) -> Result<Value> {
+fn list_state(state: &ArrayState) -> Result<Value> {
     Ok(match state {
-        FieldState::Known(Scalar::Array(v)) => {
-            json!({"kind":"known","count":v.len(),"digest":cursor::digest(v)?})
-        }
-        FieldState::Known(_) => return Err(Error::Storage),
+        ArrayState::Known(v) => json!({"kind":"known","count":v.count,"digest":v.digest}),
         s => serde_json::to_value(s).map_err(|_| Error::Storage)?,
     })
-}
-
-fn matches_query(endpoint: &Value, query: &ViewQuery) -> bool {
-    if !crate::presentation::matches(endpoint, query.search.as_deref(), query.platform) {
-        return false;
-    }
-    let sources = endpoint["channels"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .chain(endpoint["enrollments"].as_array().into_iter().flatten())
-        .filter_map(|item| item["source"].as_str())
-        .collect::<Vec<_>>();
-    endpoint["assetState"]
-        == serde_json::to_value(
-            query
-                .asset_state
-                .unwrap_or(crate::lifecycle_management::AssetState::Active),
-        )
-        .expect("asset state serialization")
-        && query
-            .status
-            .as_deref()
-            .is_none_or(|status| endpoint["status"] == status)
-        && query
-            .source
-            .as_deref()
-            .is_none_or(|source| sources.contains(&source))
-        && query.channel.as_deref().is_none_or(|channel| {
-            sources.iter().any(|source| {
-                rss_mdm_inventory::ReportSource::parse(source)
-                    .is_ok_and(|source| source.channel().as_str() == channel)
-            })
-        })
 }

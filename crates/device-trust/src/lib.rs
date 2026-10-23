@@ -1,5 +1,6 @@
 //! Approved purpose trust and signed CRLs; all three device channels use this verifier.
 //! ref: rustls@0.23.45 src/webpki/client_verifier.rs; RFC 5280 sections 4–6.
+pub mod qualification;
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {
     #[error("invalid device trust material")]
@@ -546,12 +547,19 @@ impl DeviceTrust {
         Ok(generation.public.clone())
     }
     pub fn verify(&self, chain: &[CertificateDer<'_>], now: i64) -> Result<Issuer, Error> {
+        let snapshot = self.inner.read().map_err(invalid)?;
+        Self::verify_snapshot(&snapshot, chain, now)
+    }
+    fn verify_snapshot(
+        snapshot: &Snapshot,
+        chain: &[CertificateDer<'_>],
+        now: i64,
+    ) -> Result<Issuer, Error> {
         if chain.is_empty() || chain.len() > 4 || chain.iter().any(|c| c.len() > 32768) || now <= 0
         {
             return Err(Error::Unauthorized);
         }
         let leaf = Certificate::from_der(&chain[0]).map_err(invalid)?;
-        let snapshot = self.inner.read().map_err(invalid)?;
         Self::leaf_purpose(&snapshot.trust, &leaf)?;
         for g in &snapshot.generations {
             if leaf.tbs_certificate.issuer != g.certificate.tbs_certificate.subject {
