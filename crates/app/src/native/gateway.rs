@@ -79,45 +79,39 @@ fn kind(path: &str) -> Option<ChannelKind> {
         None
     }
 }
-async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Response {
-    let rejected = || {
-        crate::http_host::secure_response(
-            StatusCode::FORBIDDEN.into_response(),
-            uuid::Uuid::new_v4(),
-        )
-    };
+fn attest(request: &mut Request) -> Result<(String, IpAddr), ()> {
     let Some(connection) = request
         .extensions()
         .get::<AcceptedConnectionInfo<GatewayConnection>>()
         .map(|c| c.metadata().clone())
     else {
-        return rejected();
+        return Err(());
     };
-    let origin = match single(&request, "x-rss-public-origin") {
+    let origin = match single(request, "x-rss-public-origin") {
         Ok(Some(v)) => v.to_owned(),
-        _ => return rejected(),
+        _ => return Err(()),
     };
     if rss_mdm_agent_wire::connections::validate_origin(&origin).is_err() {
-        return rejected();
+        return Err(());
     }
-    if single(&request, "host") != Ok(origin.strip_prefix("https://")) {
-        return rejected();
+    if single(request, "host") != Ok(origin.strip_prefix("https://")) {
+        return Err(());
     }
-    let source = match single(&request, "x-forwarded-for")
+    let source = match single(request, "x-forwarded-for")
         .ok()
         .flatten()
         .and_then(|v| v.parse::<IpAddr>().ok())
     {
         Some(v) if !v.is_unspecified() && !v.is_multicast() => v,
-        _ => return rejected(),
+        _ => return Err(()),
     };
-    let certificate = match single(&request, "x-rss-client-cert") {
+    let certificate = match single(request, "x-rss-client-cert") {
         Ok(Some(v)) if !v.is_empty() => match connection.client_certificate(v) {
             Ok(v) => Some(v),
-            Err(_) => return rejected(),
+            Err(_) => return Err(()),
         },
         Ok(_) => None,
-        Err(_) => return rejected(),
+        Err(_) => return Err(()),
     };
     let names = request
         .headers()
@@ -146,6 +140,19 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
     if let Some(certificate) = certificate {
         request.extensions_mut().insert(certificate);
     }
+    Ok((origin, source))
+}
+async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Response {
+    let rejected = || {
+        crate::http_host::secure_response(
+            StatusCode::FORBIDDEN.into_response(),
+            uuid::Uuid::new_v4(),
+        )
+    };
+    let (origin, source) = match attest(&mut request) {
+        Ok(value) => value,
+        Err(()) => return rejected(),
+    };
     if matches!(request.uri().path(), "/livez" | "/readyz") {
         // The gateway attests the configured TLS virtual host even while a device channel is waiting for material.
         let host = state

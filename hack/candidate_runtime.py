@@ -91,7 +91,7 @@ def wait(check, stage, seconds=45):
         time.sleep(.2)
     raise RuntimeError("candidate deadline: " + stage)
 
-def inputs(root, example, gateway_file, *, database_host="postgres", hostname="mdm.example.test"):
+def inputs(root, example, deployment_directory, *, database_host="postgres", hostname="mdm.example.test"):
     """Runtime and operator get separate mounts; the server never receives maintenance credentials."""
     runtime, operator = root/"container/runtime", root/"container/operator"
     runtime.mkdir(parents=True); operator.mkdir(parents=True)
@@ -140,7 +140,7 @@ def inputs(root, example, gateway_file, *, database_host="postgres", hostname="m
     write(operator,"initialize.json",dict(database=database(operator,"mdm_identity_maintenance"),installation=installation(),tenant_id=TENANT,expected_epoch=1,principal_id=ADMIN,
                                           login="admin",password_file=write(operator,"account-password",PASSWORD)))
     from gateway_fixture import render
-    gateway=render(gateway_file.parent, origin="https://"+hostname, backend="server:8081")
+    gateway=render(deployment_directory, origin="https://"+hostname, backend="server:8081")
     (root/"nginx.conf").write_text(gateway)
     root.chmod(0o700)
     (root/"server.key").chmod(0o600)
@@ -411,7 +411,7 @@ class Candidate:
             self.root=Path(self.temporary.name)
             self.worktree_identity=project_name(self.root)
             self.runtime,self.operator_root=inputs(self.root,self.directory/"mdm-config.example.json",
-                                                  self.directory/"deployment/render_gateway.py",database_host=self.pg_host,hostname=self.host)
+                                                  self.directory/"deployment",database_host=self.pg_host,hostname=self.host)
             import socket
             with socket.socket() as reservation:
                 reservation.bind(('127.0.0.1',0));self.port=reservation.getsockname()[1]

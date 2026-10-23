@@ -11,11 +11,12 @@ use std::sync::Arc;
 
 pub async fn checkin(
     State(app): State<Arc<HttpState>>,
-    Extension(peer): Extension<rss_mdm_certificate::ClientCertificateEvidence>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     headers: axum::http::HeaderMap,
     bytes: Bytes,
 ) -> Result<axum::response::Response, Error> {
+    let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
     use axum::response::IntoResponse;
     let apple = app.apple()?;
     let leaf = apple.authority.verify(
@@ -375,11 +376,12 @@ async fn checkin_on(
 
 pub async fn manage(
     State(app): State<Arc<HttpState>>,
-    Extension(peer): Extension<rss_mdm_certificate::ClientCertificateEvidence>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     headers: axum::http::HeaderMap,
     bytes: Bytes,
 ) -> Result<axum::response::Response, Error> {
+    let Extension(peer) = peer.ok_or(Error::Unauthorized)?;
     use axum::response::IntoResponse;
     let apple = app.apple()?;
     let leaf = apple.authority.verify(

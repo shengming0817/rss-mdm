@@ -2226,7 +2226,7 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
     resources
         .finish(async {
             use crate::test_support::{Method, Router, StatusCode, http::Browser};
-            let mut browser: Browser = authority.browser("admin-a")?;
+            let mut browser: Browser = authority.browser("admin")?;
             let router = authority.router(Router::new().nest(
                 "/api/v1",
                 rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),

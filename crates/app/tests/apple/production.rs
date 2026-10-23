@@ -176,7 +176,6 @@ impl Fixture {
                 .header("host", "mdm.example.test")
                 .header("x-rss-public-origin", "https://mdm.example.test")
                 .header("x-forwarded-for", "127.0.0.1")
-                .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
                     self.browser
@@ -213,7 +212,6 @@ impl Fixture {
                 .get(format!("http://{address}/api/v1/runtime/diagnostics"))
                 .header("host", "mdm.example.test")
                 .header("x-rss-public-origin", "https://mdm.example.test")
-                .header("x-forwarded-for", "127.0.0.1")
                 .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
@@ -464,7 +462,6 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
             .get(format!("http://{address}/api/v1/runtime/diagnostics"))
             .header("host", "mdm.example.test")
             .header("x-rss-public-origin", "https://mdm.example.test")
-            .header("x-forwarded-for", "127.0.0.1")
             .header("x-forwarded-for", "127.0.0.1")
             .header(
                 "cookie",

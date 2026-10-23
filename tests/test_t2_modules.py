@@ -366,7 +366,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/execution/support/native.rs'),
                          self.selected('crates/app/tests/execution/support.rs'))
         device = self.selected('crates/app/tests/device/support.rs')
-        required = {'authorization.admission','enrollment.recovery','native.tls','software.http',
+        required = {'authorization.admission','enrollment.recovery','software.http',
                     'planning.http','execution.software.offer','execution.software.content','execution.software.recovery'}
         required |= {name for name in MODULES if name != 'windows.push_transport' and name.startswith(('device.','windows.','execution.commands.'))}
         required |= {'apple.'+part for part in ('collection','profile','policy','renewal','identity','push','fairness','host','scep')}

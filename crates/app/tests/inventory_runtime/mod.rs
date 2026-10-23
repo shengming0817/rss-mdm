@@ -192,6 +192,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(pending, "a timed-out acknowledgement invented completion");
     blocked.rollback().await?;
     blocker.close().await?;
+    #[cfg(feature = "integration")]
     runtime.fixture_lose_next_delivery_ack();
     runtime.fixture_deliver(durable).await?;
     ensure!(
