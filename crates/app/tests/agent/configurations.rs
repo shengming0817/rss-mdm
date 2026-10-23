@@ -523,8 +523,6 @@ async fn enroll(
         status == StatusCode::OK,
         "certificate {n} {status} {candidate}"
     );
-    // Independent devices share one loopback IP; respect the native one-connection-per-second refill.
-    tokio::time::sleep(Duration::from_secs(1)).await;
     Ok(tls.activate(&candidate, n).await?["runtime"]["deviceId"]
         .as_str()
         .unwrap()
@@ -677,6 +675,8 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
         .connections
         .configuration
         .preferred_origin = "https://untrusted.example".into();
+    bad.file.configuration.connections.configuration.origins =
+        vec!["https://untrusted.example".into()];
     ensure!(
         machine(&f, "/api/v1/agent/enroll/configurations/exchange", &bad)
             .await?
@@ -1264,7 +1264,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
         .call(
             &f.router,
             Method::GET,
-            "/api/v1/public-agent/packages",
+            "/api/v1/agent/enroll/packages",
             None,
         )
         .await?;
@@ -1279,7 +1279,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             .call(
                 &f.router,
                 Method::POST,
-                "/api/v1/public-agent/packages",
+                "/api/v1/agent/enroll/packages",
                 Some(json!({}))
             )
             .await?

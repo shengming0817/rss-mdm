@@ -1,4 +1,4 @@
-//! Product ingress budgets use the accepted TCP peer, before costly TLS or audit work.
+//! Internal request budgets use the attested client source; Nginx owns public transport limits.
 //! ref: Axum serve/listener.rs keeps accepted IO and its address together; Tokio owned permits.
 use axum::{
     Extension, Json,
