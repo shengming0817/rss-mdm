@@ -1954,3 +1954,173 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
     ensure!(owner.shutdown().join().await?.is_clean());
     host.close().await
 }
+
+fn installation_counts() -> Result<String> {
+    pg(&format!(
+        "SELECT jsonb_build_array((SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_access.agent_bootstraps WHERE tenant_id='{tenant}'))",
+        tenant = case_tenant()
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn assembled_channel_block_rejects_installation_freeze_without_side_effects() -> Result<()> {
+    use rss_mdm_execution_service::AgentInstallationAdmission;
+    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    let (host, mut client, _, commands, owner, policy, _) = start_fixture().await?;
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    // The existing policy and bootstrap were accepted by this fully assembled owner.
+    ensure!(
+        host.app
+            .channels
+            .ready_signing_revision(crate::windows::test_support::now())
+            == Some(1)
+    );
+    let original = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            &format!("/api/v1/policies/{policy}"),
+            None,
+        )
+        .await?;
+    ensure!(original.0 == StatusCode::OK, "{original:?}");
+    let before = installation_counts()?;
+    host.app.channels.set(
+        ChannelName::Agent,
+        ChannelState::Degraded,
+        Some(Reason::ListenerUnavailable),
+    )?;
+    ensure!(
+        host.app
+            .channels
+            .ready_signing_revision(crate::windows::test_support::now())
+            .is_none()
+    );
+    let rejected_policy = Uuid::new_v4();
+    let rejected = client.browser.call(&client.router, Method::POST, &format!("/api/v1/policies/{rejected_policy}"),
+        Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":original.1["definition"]}}))).await?;
+    ensure!(
+        rejected.0 == StatusCode::NOT_IMPLEMENTED && rejected.1["code"] == "action_not_supported",
+        "closed installation admission: {rejected:?}"
+    );
+    ensure!(pg(&format!("SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{rejected_policy}'",case_tenant()))?.trim() == "0");
+    ensure!(
+        installation_counts()? == before,
+        "rejected freeze created command/bootstrap state"
+    );
+    host.close().await
+}
+
+async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
+    let subject = browser_subject(&client.browser, &client.router).await?;
+    identity::set_grants(
+        case_tenant(),
+        &subject,
+        [
+            crate::authorization::Permission::RegistrationConfigurationRead,
+            crate::authorization::Permission::RegistrationConfigurationWrite,
+        ]
+        .into_iter()
+        .map(|operation| crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        })
+        .collect(),
+    )
+    .await?;
+    let (status, current) = client
+        .browser
+        .call(
+            &client.router,
+            Method::GET,
+            "/api/v1/task-signing/trust",
+            None,
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK,
+        "current signing: {status} {current}"
+    );
+    client.browser.operation = Some(Uuid::new_v4());
+    let (status, prepared) = client.browser.call(&client.router, Method::POST, "/api/v1/task-signing/trust",
+        Some(json!({"action":"prepare","expectedRevision":current["revision"],"origin":current["origin"]}))).await?;
+    ensure!(
+        status == StatusCode::OK,
+        "prepare signing: {status} {prepared}"
+    );
+    let key = prepared["keys"]
+        .as_array()
+        .context("prepared keys")?
+        .iter()
+        .find(|key| key["state"] == "prepared")
+        .context("prepared key")?["id"]
+        .clone();
+    client.browser.operation = Some(Uuid::new_v4());
+    let (status, activated) = client
+        .browser
+        .call(
+            &client.router,
+            Method::POST,
+            "/api/v1/task-signing/trust",
+            Some(json!({"action":"activate","expectedRevision":prepared["revision"],"keyId":key})),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::OK && activated["revision"] == 3,
+        "activate signing: {status} {activated}"
+    );
+    client.browser.operation = None;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=execution.commands.onboarding"]
+async fn changed_signing_authority_rejects_bootstrap_requeue_atomically() -> Result<()> {
+    use rss_mdm_execution_service::AgentInstallationAdmission;
+    let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let (initial, execute, delivered) =
+        installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
+    let _issued = bootstrap::issue_windows(
+        &host.app,
+        &client.router,
+        &host.root,
+        operation,
+        delivered
+            .as_ref()
+            .context("accepted bootstrap before rotation")?,
+    )
+    .await?;
+    post(&peer, &reply(&initial, &execute, false)).await?;
+    ensure!(commands.shutdown().join().await?.is_clean());
+    ensure!(owner.shutdown().join().await?.is_clean());
+    rotate_loaded_signing_authority(&mut client).await?;
+    // Loaded revision is unchanged: the real business boundary must consult current authority.
+    ensure!(
+        host.app
+            .channels
+            .ready_signing_revision(crate::windows::test_support::now())
+            == Some(1)
+    );
+    pg(&format!(
+        "UPDATE mdm_access.agent_bootstraps SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1 WHERE tenant_id='{}' AND installation='{operation}' AND state='issued'",
+        case_tenant()
+    ))?;
+    let before = installation_counts()?;
+    let mut poll = peer.message.clone();
+    poll.header.session_id = 2600;
+    let rejected = native::post(&peer.mutual, &peer.url, &poll).await?;
+    ensure!(
+        rejected.status() == StatusCode::INTERNAL_SERVER_ERROR,
+        "bootstrap with obsolete signing authority: {}",
+        rejected.status()
+    );
+    ensure!(
+        installation_counts()? == before,
+        "rejected bootstrap created a command or identity attempt"
+    );
+    ensure!(pg(&format!("SELECT jsonb_build_array(count(*),count(*) FILTER(WHERE active)) FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}'",case_tenant()))?.trim() == "[1, 1]", "failed requeue changed the original active bootstrap");
+    host.close().await
+}

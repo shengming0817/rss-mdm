@@ -37,7 +37,7 @@ mkdir -m 700 /absolute/mdm-secrets
 # 在这个私有目录内执行；生产使用组织提供的证书与秘密。
 umask 077
 openssl req -x509 -newkey rsa:3072 -nodes -days 365 -subj '/CN=MDM local TLS CA' -addext 'basicConstraints=critical,CA:TRUE' -addext 'keyUsage=critical,keyCertSign,cRLSign' -addext 'subjectKeyIdentifier=hash' -keyout ca.key -out ca.crt
-for pair in postgres:postgres gateway:localhost; do
+for pair in postgres:postgres gateway:mdm.example.test; do
   name=${pair%%:*}; dns=${pair#*:}
   printf 'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:%s\n' "$dns" > leaf.ext
   openssl req -new -newkey rsa:2048 -nodes -subj "/CN=$dns" -keyout "$name.key" -out "$name.csr"
