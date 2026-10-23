@@ -176,21 +176,7 @@ async fn prepare<C: ManagementContentPort>(
         .await
         .map_err(|_| invalid())?;
     let def = definition(&version, i)?;
-    let content = app.content.as_ref().ok_or(Error::Unsupported)?;
     let native_format = format(def.spec().material.format)?;
-    let facts = content
-        .inspect_installer(def.primary(), &filename(i.target, native_format))
-        .await?;
-    let (_, architecture) = target(i.target);
-    if facts.format != def.spec().material.format
-        || facts
-            .version
-            .as_ref()
-            .is_some_and(|v| v != &def.spec().version)
-        || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture))
-    {
-        return Err(Error::AgentPackage(Rejection::InstallerMismatch));
-    }
     let package = w::Package {
         release_id: Uuid::new_v4(),
         tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,

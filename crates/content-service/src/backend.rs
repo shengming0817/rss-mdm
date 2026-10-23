@@ -390,25 +390,29 @@ impl Backend {
                 };
                 tokio::task::spawn_blocking(move || {
                     let bytes = read_volume(&path, content, timer.as_ref(), deadline)?;
-                    Ok(bytes[start as usize..end as usize].to_vec())
+                    Ok(if start == 0 && end == content.length {
+                        bytes
+                    } else {
+                        bytes[start as usize..end as usize].to_vec()
+                    })
                 })
                 .await
                 .map_err(|_| storage())?
             }
             (Self::S3 { store, .. }, Coordinate::S3 { object }) => {
-                let v = store
-                    .verify(object, content, self.budget(store, deadline)?)
-                    .await
-                    .map_err(error)?;
                 let mut stream = store
-                    .read(&v, start, end, self.budget(store, deadline)?)
+                    .read_complete(object, content, self.budget(store, deadline)?)
                     .await
                     .map_err(error)?;
-                let mut out = Vec::with_capacity((end - start) as usize);
+                let mut out = Vec::with_capacity(content.length as usize);
                 while let Some(chunk) = stream.next().await {
                     out.extend_from_slice(&chunk.map_err(error)?);
                 }
-                Ok(out)
+                Ok(if start == 0 && end == content.length {
+                    out
+                } else {
+                    out[start as usize..end as usize].to_vec()
+                })
             }
             _ => Err(Error::Configuration),
         }

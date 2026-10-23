@@ -27,6 +27,10 @@ pub(super) struct Saved {
 #[serde(deny_unknown_fields)]
 pub(super) struct Manifest {
     pub pieces: Vec<Piece>,
+    pub inspections: std::collections::BTreeMap<
+        crate::installer::Kind,
+        rss_mdm_software_service::management::content::InstallerInspection,
+    >,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -185,9 +189,38 @@ impl Store {
         commit(tx).await?;
         Ok((saved, epoch))
     }
-    pub(super) async fn release(&self, key: Uuid, epoch: Uuid) -> Result<(), Error> {
+    pub(super) async fn claim_parse(
+        &self,
+        actor: &str,
+        id: Uuid,
+        now: i64,
+        epoch: Uuid,
+        budget: UploadBudget,
+    ) -> Result<(), Error> {
+        let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
-        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND held_until<=$5")
+            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict);
+        }
+        commit(tx).await
+    }
+    pub(super) async fn release(
+        &self,
+        key: Uuid,
+        epoch: Uuid,
+        temporary: u64,
+    ) -> Result<(), Error> {
+        let mut tx = self.tx().await?;
+        let document: Option<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 FOR UPDATE")
+            .bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
+        let Some(document) = document else {
+            return commit(tx).await;
+        };
+        let saved: Saved = self.unsign(&key.to_string(), document)?;
+        let baseline = protected::reservation(&saved.upload.binding)?;
+        sqlx::query("UPDATE mdm_content.uploads SET held_until=0,epoch=NULL,reserved=greatest($5,reserved-$4) WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(temporary as i64).bind(baseline as i64).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
     pub(super) async fn put_piece(

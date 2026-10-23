@@ -36,7 +36,7 @@ pub struct StagedImport {
 /// All uploaded originals and verified pins retained through transaction settlement.
 pub struct ImportEvidence {
     uploads: Vec<Upload>,
-    _pins: Vec<Verified>,
+    _pins: Vec<crate::reader::Pinned>,
 }
 impl ImportedContent for ImportEvidence {
     async fn bind_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> Result<(), Fault> {
@@ -52,6 +52,7 @@ impl ImportedContent for ImportEvidence {
 }
 impl ManagementContentPort for SoftwareContent {
     type Download = Verified;
+    type UploadPin = crate::reader::Pinned;
     type StagedImport = StagedImport;
     type ImportEvidence = ImportEvidence;
     async fn prepare_upload(
@@ -88,13 +89,13 @@ impl ManagementContentPort for SoftwareContent {
     }
     async fn inspect_upload(
         &self,
-        upload: uuid::Uuid,
+        id: uuid::Uuid,
         actor: &str,
         resource: &str,
-    ) -> Result<software::content::InspectedUpload<Verified>, Error> {
+    ) -> Result<software::content::InspectedUpload<Self::UploadPin>, Error> {
         let upload = self
             .store
-            .status(actor, upload, self.now()?)
+            .status(actor, id, self.now()?)
             .await
             .map_err(error)?;
         let crate::Purpose::Software {
@@ -107,61 +108,51 @@ impl ManagementContentPort for SoftwareContent {
         if owner != resource || !upload.complete {
             return Err(Error::Conflict);
         }
+        let kind = crate::installer::Kind::from_name(filename).ok_or(Error::Malformed)?;
         let artifact = upload.binding.artifact().map_err(error)?;
-        let pin = self.store.verify(&artifact).await.map_err(error)?;
-        let mut temp = pin.materialize(0).await.map_err(error)?;
-        let config = self.store.config.clone();
-        let timer = self.store.timer.clone();
-        let deadline = pin.deadline;
-        let filename = filename.clone();
-        let file_name = filename.clone();
-        let facts = tokio::task::spawn_blocking(move || {
-            crate::installer::inspect(
-                temp.file.as_file_mut(),
-                &file_name,
-                &config,
-                timer.as_ref(),
-                deadline,
-            )
-        })
-        .await
-        .map_err(|_| Error::Unavailable(Failure::ContentInvariant))?
-        .map_err(error)?;
+        let pin = self
+            .store
+            .pin_ready(&artifact, crate::StorageClass::Artifact)
+            .await
+            .map_err(error)?;
+        let inspection = pin
+            .manifest
+            .inspections
+            .get(&kind)
+            .cloned()
+            .unwrap_or_else(|| {
+                if artifact.length() > crate::installer::AUTO_LIMIT {
+                    software::content::InstallerInspection::SkippedSizeLimit
+                } else {
+                    software::content::InstallerInspection::NotRequested
+                }
+            });
         Ok(software::content::InspectedUpload {
-            facts,
+            inspection,
+            format: kind.format(),
             artifact: rss_mdm_resource::SoftwareArtifact {
                 reference: artifact.reference().as_str().into(),
                 origin: None,
                 length: artifact.length(),
                 sha256: artifact.digest().bytes(),
             },
-            filename,
+            filename: filename.clone(),
             _pin: pin,
         })
     }
-    async fn inspect_installer(
-        &self,
-        artifact: &rss_mdm_resource::Artifact,
-        filename: &str,
-    ) -> Result<software::content::InstallerFacts, Error> {
-        let pin = self.store.verify(artifact).await.map_err(error)?;
-        let mut temp = pin.materialize(0).await.map_err(error)?;
-        let config = self.store.config.clone();
-        let timer = self.store.timer.clone();
-        let deadline = pin.deadline;
-        let filename = filename.to_owned();
-        tokio::task::spawn_blocking(move || {
-            crate::installer::inspect(
-                temp.file.as_file_mut(),
-                &filename,
-                &config,
-                timer.as_ref(),
-                deadline,
-            )
-        })
-        .await
-        .map_err(|_| Error::Unavailable(Failure::ContentInvariant))?
-        .map_err(error)
+    async fn parse_upload(&self, id: uuid::Uuid, actor: &str, resource: &str) -> Result<(), Error> {
+        let upload = self
+            .store
+            .status(actor, id, self.now()?)
+            .await
+            .map_err(error)?;
+        if upload.binding.owner().map_err(error)? != resource {
+            return Err(Error::Forbidden);
+        }
+        self.store
+            .parse_upload(actor, id, self.now()?)
+            .await
+            .map_err(error)
     }
     async fn verify_artifact(
         &self,
@@ -176,6 +167,19 @@ impl ManagementContentPort for SoftwareContent {
         let artifact = input.artifact.artifact().map_err(|_| Error::Malformed)?;
         let binding = Binding {
             purpose: crate::Purpose::Resource(crate::ResourceBinding {
+                inspection: input
+                    .version
+                    .variants()
+                    .iter()
+                    .find(|v| v.key().as_str() == input.variant)
+                    .and_then(|v| match v.declaration() {
+                        rss_mdm_resource::Declaration::Software { definition }
+                            if definition.primary() == &artifact =>
+                        {
+                            Some(definition.spec().material.format)
+                        }
+                        _ => None,
+                    }),
                 storage_class: crate::StorageClass::Artifact,
                 resource: input.version.resource().as_str().to_owned(),
                 version: input.version.label().as_str().to_owned(),
@@ -226,11 +230,7 @@ impl ManagementContentPort for SoftwareContent {
             .iter()
             .map(|s| (s.artifact.clone(), crate::StorageClass::Artifact))
             .collect::<Vec<_>>();
-        let pins = self
-            .store
-            .verify_materials(&artifacts)
-            .await
-            .map_err(error)?;
+        let pins = self.store.pin_materials(&artifacts).await.map_err(error)?;
         Ok(ImportEvidence {
             uploads: staged.into_iter().map(|s| s.upload).collect(),
             _pins: pins,

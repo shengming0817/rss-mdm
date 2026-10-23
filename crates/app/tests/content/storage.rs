@@ -109,6 +109,7 @@ async fn connection_operations_bind_actor_material_and_provider_authority() -> R
 fn binding(bytes: &[u8], class: StorageClass) -> Binding {
     Binding {
         purpose: Purpose::Resource(ResourceBinding {
+            inspection: None,
             storage_class: class,
             resource: "storage-fixture".into(),
             version: "1".into(),

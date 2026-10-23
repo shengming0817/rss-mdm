@@ -4,10 +4,35 @@ use futures::StreamExt;
 use journal::{Manifest, Piece};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+/// A deletion pin on a previously completed signed content manifest. Does not read bytes.
+pub struct Pinned {
+    store: Store,
+    pin: Uuid,
+    pub(super) manifest: Manifest,
+}
+impl Pinned {
+    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest) -> Self {
+        Self {
+            store,
+            pin,
+            manifest,
+        }
+    }
+}
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let store = self.store.clone();
+            let pin = self.pin;
+            runtime.spawn(async move {
+                let _ = store.unpin(pin).await;
+            });
+        }
+    }
+}
 pub struct Verified {
     store: Store,
     pub artifact: Artifact,
-    class: StorageClass,
     manifest: Manifest,
     pin: Uuid,
     pub(super) deadline: Deadline,
@@ -50,29 +75,62 @@ impl Drop for Verified {
         }
     }
 }
-pub(super) struct Temporary {
-    pub file: tempfile::NamedTempFile,
-    store: Store,
-    pin: Uuid,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let s = self.store.clone();
-            let id = self.pin;
-            runtime.spawn(async move {
-                let _ = s.unpin(id).await;
-            });
-        }
-    }
-}
 impl Store {
+    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
+        Ok(Pinned {
+            store: self.clone(),
+            pin,
+            manifest,
+        })
+    }
+    pub async fn pin_materials(
+        &self,
+        artifacts: &[(Artifact, StorageClass)],
+    ) -> Result<Vec<Pinned>, Error> {
+        if artifacts.len() > 128 {
+            return Err(Error::Malformed);
+        }
+        let mut files = Vec::new();
+        for (a, c) in artifacts {
+            files.push(self.pin_ready(a, *c).await?);
+        }
+        Ok(files)
+    }
+    pub(super) async fn verify_ready_report(
+        &self,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let pin = self.pin_ready(a, StorageClass::Artifact).await?;
+        let (bytes, digest) = self
+            .check_pieces(
+                &pin.manifest.pieces,
+                a,
+                StorageClass::Artifact,
+                self.deadline()?,
+            )
+            .await?;
+        if digest != a.digest().bytes() {
+            return Err(Error::Invariant);
+        }
+        bytes.ok_or(Error::Malformed)
+    }
     pub(super) async fn check_pieces(
         &self,
         pieces: &[Piece],
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
+    ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32]), Error> {
+        self.check_pieces_to(pieces, a, c, deadline, None).await
+    }
+    pub(super) async fn check_pieces_to(
+        &self,
+        pieces: &[Piece],
+        a: &Artifact,
+        c: StorageClass,
+        deadline: Deadline,
+        mut spool: Option<&mut tokio::fs::File>,
     ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32]), Error> {
         if pieces.is_empty() || pieces.len() > 8193 || (c.protected() && pieces.len() != 1) {
             return Err(Error::Invariant);
@@ -99,20 +157,37 @@ impl Store {
                 .backend
                 .read(&p.coordinate, p.content, 0, p.content.length, deadline)
                 .await?;
-            if physical.len() as u64 != p.content.length
-                || Sha256::digest(&physical).as_slice() != p.content.sha256
-            {
-                return Err(Error::Invariant);
+            let expected = p.content;
+            let class = c;
+            let store = self.clone();
+            let artifact = a.clone();
+            let length = p.length;
+            let (next_hash, logical) = tokio::task::spawn_blocking(move || {
+                if physical.len() as u64 != expected.length
+                    || Sha256::digest(&physical).as_slice() != expected.sha256
+                {
+                    return Err(Error::Invariant);
+                }
+                let logical = if class.protected() {
+                    store.plaintext(&physical, &artifact, class, length)?
+                } else {
+                    Zeroizing::new(physical)
+                };
+                if logical.len() as u64 != length {
+                    return Err(Error::Invariant);
+                }
+                hash.update(&logical);
+                Ok((hash, logical))
+            })
+            .await
+            .map_err(|_| Error::Storage)??;
+            hash = next_hash;
+            self.check_deadline(deadline)?;
+            if let Some(file) = spool.as_deref_mut() {
+                tokio::io::AsyncWriteExt::write_all(file, &logical)
+                    .await
+                    .map_err(|_| storage())?;
             }
-            let logical = if c.protected() {
-                self.plaintext(&physical, a, c, p.length)?
-            } else {
-                Zeroizing::new(physical)
-            };
-            if logical.len() as u64 != p.length {
-                return Err(Error::Invariant);
-            }
-            hash.update(&logical);
             if let Some(small) = &mut small {
                 small.extend_from_slice(&logical);
             }
@@ -158,7 +233,6 @@ impl Store {
         let mut verified = Verified {
             store: self.clone(),
             artifact: a.clone(),
-            class: c,
             manifest,
             pin,
             deadline: d,
@@ -174,34 +248,8 @@ impl Store {
         verified.plaintext = plaintext;
         Ok(verified)
     }
-    pub async fn verify_materials(
-        &self,
-        artifacts: &[(Artifact, StorageClass)],
-    ) -> Result<Vec<Verified>, Error> {
-        if artifacts.len() > 128 {
-            return Err(Error::Malformed);
-        }
-        let permit = self
-            .transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Conflict)?;
-        let d = self.deadline()?;
-        let mut out = Vec::new();
-        for (a, c) in artifacts {
-            out.push(self.verify_at(a, *c, d).await?);
-        }
-        if let Some(v) = out.first_mut() {
-            v._permit = Some(TransferLease::new(permit, d));
-        }
-        Ok(out)
-    }
 }
 impl Verified {
-    /// Catalog validation has finished reading; retain identity and deletion pins only.
-    pub(crate) fn release_transfer(&mut self) {
-        self._permit.take();
-    }
     pub fn matches(&self, a: &Artifact) -> bool {
         self.store.check_deadline(self.deadline).is_ok()
             && self.artifact.length() == a.length()
@@ -222,46 +270,6 @@ impl Verified {
             .as_ref()
             .map(|b| Zeroizing::new(b.to_vec()))
             .ok_or(Error::Malformed)
-    }
-    pub(super) async fn materialize(&self, extra: u64) -> Result<Temporary, Error> {
-        if self.class.protected() {
-            return Err(Error::Malformed);
-        }
-        let (_, pin) = self
-            .store
-            .pin(
-                &self.artifact,
-                self.class,
-                self.deadline,
-                self.artifact
-                    .length()
-                    .checked_add(extra)
-                    .ok_or(Error::Malformed)?,
-            )
-            .await?;
-        let mut tmp = Temporary {
-            file: tempfile::NamedTempFile::new().map_err(|_| storage())?,
-            store: self.store.clone(),
-            pin,
-        };
-        use std::io::Write;
-        for p in &self.manifest.pieces {
-            self.store.check_deadline(self.deadline)?;
-            let bytes = self
-                .store
-                .backend
-                .read(&p.coordinate, p.content, 0, p.content.length, self.deadline)
-                .await?;
-            tmp.file
-                .as_file_mut()
-                .write_all(&bytes)
-                .map_err(|_| storage())?;
-        }
-        tmp.file
-            .as_file_mut()
-            .seek(SeekFrom::Start(0))
-            .map_err(|_| storage())?;
-        Ok(tmp)
     }
     pub async fn stream(
         self,

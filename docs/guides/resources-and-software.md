@@ -8,9 +8,9 @@ Resource 持有唯一不可变软件定义，企业目录持有来源与版本�
 
 EXE 固定安装/升级/卸载调用、完整离线文件布局和独立检测。DMG 明确一个 volume，以及 AppCopy 或 ContainedPkg；应用身份和目标名称不能由扫描猜测；AppCopy 使用完整 DMG 长度/SHA-256，不要求 App 目录摘要。内含 PKG 仍声明单文件长度/SHA-256。MSIX 明确 Package 或 Bundle、精确包/依赖/member 身份以及 TargetUserRegistration 或 DeviceProvisioning，两者不能互相满足结果。原生行为没有脚本兜底；脚本只出现在明确的 Bundle 或受控检测中。
 
-完整长度/SHA-256 是内容基本检查。未签名内容可以启用；需要签名时必须显式冻结 mechanism/publisher，变更要求会改变摘要。启用不代表已通过 Windows/Apple 信任检查。服务端核对 MSIX 的实际 XML 命名空间、包身份、依赖和选定 bundle member 字节，不调用平台安装或信任工具。DMG 内部声明仍须由设备执行端核实。
+完整长度/SHA-256 是内容基本检查。未签名内容可以启用；需要签名时必须显式冻结 mechanism/publisher，变更要求会改变摘要。启用不代表已通过 Windows/Apple 信任检查。服务端可从 MSIX 固定清单辅助识别元数据，不逐成员解压、验证子包或调用平台安装及信任工具。发布与安装使用管理员明确提交的完整定义，不以服务端解析成功作为额外准入条件。DMG 内部声明仍须由设备执行端核实。
 
-所有材料、行为、依赖、来源证据和导出元数据参与冻结摘要。同版本不得换字节，生命周期绑定不能用于另一份定义。软件版本保存为草稿，Enable 或 Publish 经技术校验后才可用；Resource.Active 只表示资源默认版本，不决定软件可用性，Archived 仍禁止使用；撤回阻止新准入、下载和启动，不自动卸载。历史回执和未知事实保留。已授权任务可处理匹配的用户已有安装；目标已满足可无修改完成，核实成功不代表本次发生安装，也不伪造历史安装来源或原生管理状态。
+所有材料、行为、依赖、来源证据和导出元数据参与冻结摘要。同版本不得换字节，生命周期绑定不能用于另一份定义。软件版本保存为草稿，Enable 或 Publish 经当前权限、完整文件绑定及定义合法性检查后才可用；Resource.Active 只表示资源默认版本，不决定软件可用性，Archived 仍禁止使用；撤回阻止新准入、下载和启动，不自动卸载。历史回执和未知事实保留。已授权任务可处理匹配的用户已有安装；目标已满足可无修改完成，核实成功不代表本次发生安装，也不伪造历史安装来源或原生管理状态。
 
 管理写使用 `operationId`、`expectedRevision` 和 `input`；相同身份重放相同请求，更换内容冲突。以下路径位于 `/api/v1`：
 
@@ -41,7 +41,7 @@ Brew 使用完整消费的受限静态解析，不执行 Ruby。只接受固定 
 
 文件落盘不表示数据库提交或启用。CommitUnknown 保留 operationId 查询/重放，不换键。下载支持单段 Range、ETag、If-Range 和 416；每个新请求重新授权，客户端仍核对完整 hash/长度。上传与 MSIX 嵌套 member 临时文件共享跨进程磁盘预算；超过预算拒绝，不无限解包。
 
-RSS Bundle 的 manifest 位于 `behavior.manifest`，ZIP `manifest.json` 为规范紧凑 JSON；entries 明确全部普通成员长度/hash。Windows 固定 install.ps1，macOS 固定 install.sh；卸载同样明确 entry。拒绝穿越、大小写冲突、重复成员、链接、加密、未声明文件、重叠布局、尾随数据和数量/展开预算超限。
+RSS Bundle 的 manifest 位于 `behavior.manifest`，entries 声明普通成员长度/hash。Windows 固定 install.ps1，macOS 固定 install.sh；卸载同样明确 entry。上传完成时校验原文件完整性，小包可从 ZIP `manifest.json` 辅助识别声明目标；不逐成员解压或计算成员摘要，也不承诺服务端验证了所有安装内容。目录定位与默认元数据读取受资源预算限制；超限或缺少必需文件只使辅助解析失败。终端在使用前负责安全解包、内容验证和执行结果核实。
 
 ## 派生导出、自托管与恢复
 

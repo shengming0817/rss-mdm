@@ -123,21 +123,14 @@ async fn save_bytes(
             None,
         )
         .await?;
-    ensure!(inspected.0 == StatusCode::OK && inspected.1["facts"]["format"] == suffix);
-    if suffix == "exe" {
-        ensure!(inspected.1["facts"]["version"].is_null());
-    }
-    let invalid = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":if suffix == "exe" {Value::Null}else{json!("mismatch")},"target":{"platform":platform,"architecture":architecture}});
     ensure!(
-        user.call(
-            &f.router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(invalid)
-        )
-        .await?
-        .0 == StatusCode::BAD_REQUEST
+        inspected.0 == StatusCode::OK
+            && inspected.1["format"] == suffix
+            && inspected.1["inspection"]["status"] == "parsed"
     );
+    if suffix == "exe" {
+        ensure!(inspected.1["inspection"]["facts"]["version"].is_null());
+    }
     let wrong_target = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":version,"target":{"platform":if platform == "windows" {"macos"} else {"windows"},"architecture":architecture}});
     ensure!(
         user.call(
@@ -1900,5 +1893,95 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         Ok(())
     }).await?;
     c.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: persisted observations and administrator declarations do not reread installer bytes"]
+async fn installer_observations_are_optional_and_reused_without_payload_reads() -> Result<()> {
+    let f = fixture().await?;
+    let mut user = f.user.clone();
+    let bytes = installer_fixtures::exe("1");
+    let id = stage_upload(&f, &mut user, "exe", &bytes).await?;
+    let path = format!("/api/v1/agent-packages/uploads/{id}");
+    let observed = user.call(&f.router, Method::GET, &path, None).await?;
+    ensure!(observed.0 == StatusCode::OK && observed.1["inspection"]["status"] == "parsed");
+    let digest = rss_mdm_resource::Digest::of(&bytes)
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let object = pg(&format!(
+        "SELECT document->'value'->'pieces'->0->'coordinate'->>'id' FROM mdm_content.manifests WHERE tenant_id='{}' AND sha256=decode('{digest}','hex') AND length={}",
+        case_tenant(),
+        bytes.len()
+    ))?;
+    let original = f.directory.join(case_tenant()).join(object.trim());
+    let moved = original.with_extension("inspection-reuse");
+    std::fs::rename(&original, &moved)?;
+    let result: Result<w::configuration::Package> = async {
+        ensure!(user.call(&f.router, Method::GET, &path, None).await? == observed);
+        ensure!(user.call(&f.router, Method::POST, &path, None).await? == observed);
+        let saved = user.call(&f.router, Method::POST, "/api/v1/agent-packages/save",
+            Some(json!({"operationId":Uuid::new_v4(),"packageId":id,"version":"admin-declared","target":{"platform":"windows","architecture":"x86_64"}}))).await?;
+        ensure!(saved.0 == StatusCode::OK, "save must use completed integrity and explicit declaration: {saved:?}");
+        let published = user.call(&f.router, Method::POST, "/api/v1/agent-packages",
+            Some(json!({"operationId":Uuid::new_v4(),"packageId":id}))).await?;
+        ensure!(published.0 == StatusCode::OK, "publication must not reread bytes: {published:?}");
+        let package: w::configuration::Package = serde_json::from_value(published.1)?;
+        let download = f.client.get(format!("{}/api/v1/agent/enroll/packages/{}/content",f.origin,package.release_id))
+            .header("host","mdm.example.test:9445").send().await?;
+        ensure!(!download.status().is_success(), "real download must still reject missing bytes");
+        Ok(package)
+    }.await;
+    std::fs::rename(&moved, &original)?;
+    let package = result?;
+    let download = f
+        .client
+        .get(format!(
+            "{}/api/v1/agent/enroll/packages/{}/content",
+            f.origin, package.release_id
+        ))
+        .header("host", "mdm.example.test:9445")
+        .send()
+        .await?;
+    ensure!(
+        download.status() == StatusCode::OK && download.bytes().await?.as_ref() == bytes.as_slice()
+    );
+
+    let rejected = stage_upload(
+        &f,
+        &mut user,
+        "pkg",
+        b"not a package; intact distribution material",
+    )
+    .await?;
+    let inspected = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-packages/uploads/{rejected}"),
+            None,
+        )
+        .await?;
+    ensure!(inspected.0 == StatusCode::OK && inspected.1["inspection"]["status"] == "rejected");
+    let saved = user.call(&f.router, Method::POST, "/api/v1/agent-packages/save",
+        Some(json!({"operationId":Uuid::new_v4(),"packageId":rejected,"version":"manual","target":{"platform":"macos","architecture":"aarch64"}}))).await?;
+    ensure!(
+        saved.0 == StatusCode::OK,
+        "failed auxiliary inspection must not block declarations: {saved:?}"
+    );
+    let published = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(json!({"operationId":Uuid::new_v4(),"packageId":rejected})),
+        )
+        .await?;
+    ensure!(
+        published.0 == StatusCode::OK,
+        "rejected auxiliary metadata does not reject intact bytes: {published:?}"
+    );
     Ok(())
 }

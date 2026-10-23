@@ -17,7 +17,7 @@ mod reader;
 mod upload;
 pub use backend::{S3Storage, Storage};
 pub use budget::UploadBudget;
-pub use reader::Verified;
+pub use reader::{Pinned, Verified};
 use rss_mdm_resource::Artifact;
 use rss_request_context::{Clock, Deadline};
 use serde::{Deserialize, Serialize};

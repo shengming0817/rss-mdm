@@ -1,12 +1,12 @@
-//! Bounded ZIP validation without extraction or execution.
+//! Published content pins and bounded ZIP directory location.
 //! ref: zip-rs v8.6.0 src/read/zip_archive.rs
 use super::*;
-use rss_mdm_resource::{BundleManifest, Declaration, SoftwareDefinition, Version};
+use rss_mdm_resource::{Declaration, Version};
 use rss_mdm_software_service::catalog::{self, ContentPort, VerifiedContent};
 use std::collections::BTreeSet;
 struct PinnedSoftware {
     digest: [u8; 32],
-    _files: Vec<Verified>,
+    _files: Vec<crate::reader::Pinned>,
 }
 impl VerifiedContent for PinnedSoftware {
     fn resource_digest(&self) -> [u8; 32] {
@@ -28,8 +28,8 @@ impl ContentPort for Store {
                     }
                 }
             }
-            let mut files = self
-                .verify_materials(&materials)
+            let files = self
+                .pin_materials(&materials)
                 .await
                 .map_err(|_| catalog::Error::Content)?;
             for variant in version.variants() {
@@ -42,12 +42,8 @@ impl ContentPort for Store {
                             return Err(catalog::Error::Input);
                         }
                         let artifact = evidence.artifact().map_err(|_| catalog::Error::Input)?;
-                        let file = files
-                            .iter()
-                            .find(|v| v.artifact() == &artifact)
-                            .ok_or(catalog::Error::Content)?;
-                        let mut tmp = file
-                            .materialize(0)
+                        let file = self
+                            .verify_ready_report(&artifact)
                             .await
                             .map_err(|_| catalog::Error::Content)?;
                         #[derive(serde::Deserialize)]
@@ -58,12 +54,8 @@ impl ContentPort for Store {
                             publisher: String,
                             verified: bool,
                         }
-                        tmp.file
-                            .as_file_mut()
-                            .rewind()
-                            .map_err(|_| catalog::Error::Content)?;
-                        let report: Report = serde_json::from_reader(tmp.file.as_file_mut())
-                            .map_err(|_| catalog::Error::Content)?;
+                        let report: Report =
+                            serde_json::from_slice(&file).map_err(|_| catalog::Error::Content)?;
                         let installer = definition
                             .spec()
                             .artifacts
@@ -78,80 +70,6 @@ impl ContentPort for Store {
                         }
                     }
                 }
-                if definition
-                    .spec()
-                    .behavior
-                    .as_ref()
-                    .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
-                    .is_some()
-                    || matches!(
-                        definition.spec().behavior,
-                        Some(rss_mdm_resource::SoftwareBehavior::Msix(_))
-                    )
-                {
-                    let file = files
-                        .iter()
-                        .find(|v| v.artifact() == definition.primary())
-                        .ok_or(catalog::Error::Content)?;
-                    let extra = match &definition.spec().behavior {
-                        Some(rss_mdm_resource::SoftwareBehavior::Msix(msix)) => {
-                            match &msix.container {
-                                rss_mdm_resource::MsixContainer::Bundle { members, .. } => members
-                                    .iter()
-                                    .map(|m| m.length)
-                                    .max()
-                                    .ok_or(catalog::Error::Content)?,
-                                _ => 0,
-                            }
-                        }
-                        _ => 0,
-                    };
-                    let mut tmp = file
-                        .materialize(extra)
-                        .await
-                        .map_err(|_| catalog::Error::Content)?;
-                    let definition = definition.clone();
-                    let config = self.config.clone();
-                    let timer = self.timer.clone();
-                    let deadline = file.deadline;
-                    tokio::task::spawn_blocking(move || {
-                        if definition
-                            .spec()
-                            .behavior
-                            .as_ref()
-                            .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
-                            .is_some()
-                        {
-                            validate(
-                                tmp.file.as_file_mut(),
-                                &definition,
-                                &config,
-                                timer.as_ref(),
-                                deadline,
-                            )?;
-                        }
-                        if let Some(rss_mdm_resource::SoftwareBehavior::Msix(msix)) =
-                            &definition.spec().behavior
-                        {
-                            super::native::msix(
-                                tmp.file.as_file_mut(),
-                                msix,
-                                &config,
-                                timer.as_ref(),
-                                deadline,
-                            )?;
-                        }
-                        Ok::<_, Error>(())
-                    })
-                    .await
-                    .map_err(|_| catalog::Error::Content)?
-                    .map_err(|_| catalog::Error::Content)?;
-                }
-            }
-            // Reading is complete. Transaction settlement still owns every deletion pin,
-            // but must not reserve a transfer slot needed by subsequent material reads.
-            for file in &mut files {
-                file.release_transfer();
             }
             Ok(Box::new(PinnedSoftware {
                 digest: version.digest().bytes(),
@@ -216,7 +134,7 @@ pub(super) fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), 
         return Err(invalid());
     }
     if count == 0
-        || count > config.max_bundle_entries as u64 + 1
+        || count > config.max_bundle_entries as u64
         || size > 32 * 1024 * 1024
         || offset.checked_add(size) != Some(directory_end)
     {
@@ -258,143 +176,4 @@ pub(super) fn directory(file: &mut File, config: &Config) -> Result<(u64, u64), 
         return Err(invalid());
     }
     Ok((count, offset))
-}
-pub(super) fn validate(
-    file: &mut File,
-    definition: &SoftwareDefinition,
-    config: &Config,
-    timer: &dyn Clock,
-    deadline: Deadline,
-) -> Result<(), Error> {
-    let expected = definition
-        .spec()
-        .behavior
-        .as_ref()
-        .and_then(rss_mdm_resource::SoftwareBehavior::bundle)
-        .ok_or_else(invalid)?;
-    let (count, central) = directory(file, config)?;
-    let mut local = file.try_clone().map_err(|_| invalid())?;
-    let mut archive = zip::ZipArchive::with_config(
-        zip::read::Config {
-            archive_offset: zip::read::ArchiveOffset::Known(0),
-        },
-        file,
-    )
-    .map_err(|_| invalid())?;
-    if archive.len() as u64 != count
-        || archive.len() != expected.entries.len() + 1
-        || archive.has_overlapping_files().map_err(|_| invalid())?
-    {
-        return Err(invalid());
-    }
-    let mut total = 0u64;
-    for index in 0..archive.len() {
-        if timer.now() >= deadline.instant() {
-            return Err(storage());
-        }
-        let entry = archive.by_index_raw(index).map_err(|_| invalid())?;
-        let name = entry.name().map_err(|_| invalid())?.into_owned();
-        if entry.encrypted()
-            || !entry.is_file()
-            || entry
-                .unix_mode()
-                .is_some_and(|m| !matches!(m & 0o170000, 0 | 0o100000))
-            || !matches!(
-                entry.compression(),
-                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
-            )
-        {
-            return Err(invalid());
-        }
-        let h = read_at::<30>(&mut local, entry.header_start())?;
-        if &h[..4] != b"PK\x03\x04" || u16le(&h[26..28]) != name.len() as u64 {
-            return Err(invalid());
-        }
-        let central_header = read_at::<46>(&mut local, entry.central_header_start())?;
-        if h[6..10] != central_header[8..12]
-            || u16le(&h[6..8]) & !0x080e != 0
-            || u16le(&h[28..30]) > 4096
-        {
-            return Err(invalid());
-        }
-        let descriptor = u16le(&h[6..8]) & 8 != 0;
-        for (local_field, central_field) in [
-            (&h[14..18], &central_header[16..20]),
-            (&h[18..22], &central_header[20..24]),
-            (&h[22..26], &central_header[24..28]),
-        ] {
-            if local_field != central_field && !(descriptor && u32le(local_field) == 0) {
-                return Err(invalid());
-            }
-        }
-        let mut raw = vec![0; name.len()];
-        local
-            .seek(SeekFrom::Start(entry.header_start() + 30))
-            .map_err(|_| invalid())?;
-        local.read_exact(&mut raw).map_err(|_| invalid())?;
-        if raw != name.as_bytes() {
-            return Err(invalid());
-        }
-        let data = entry.data_start().ok_or_else(invalid)?;
-        if data
-            .checked_add(entry.compressed_size())
-            .is_none_or(|end| end > central)
-        {
-            return Err(invalid());
-        }
-        total = total.checked_add(entry.size()).ok_or_else(invalid)?;
-        if total > config.max_bundle_bytes
-            || entry.size()
-                > entry
-                    .compressed_size()
-                    .max(1)
-                    .saturating_mul(config.max_expansion_ratio)
-        {
-            return Err(invalid());
-        }
-        drop(entry);
-        let mut entry = archive.by_index(index).map_err(|_| invalid())?;
-        if name == "manifest.json" {
-            if entry.size() > 1_048_576 {
-                return Err(invalid());
-            }
-            let mut bytes = Vec::new();
-            Read::by_ref(&mut entry)
-                .take(1_048_577)
-                .read_to_end(&mut bytes)
-                .map_err(|_| invalid())?;
-            let actual: BundleManifest = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
-            if &actual != expected
-                || bytes != serde_json::to_vec(expected).map_err(|_| invalid())?
-            {
-                return Err(invalid());
-            }
-        } else {
-            let expected = expected.entries.get(name.as_str()).ok_or_else(invalid)?;
-            if entry.size() != expected.length {
-                return Err(invalid());
-            }
-            let mut hash = Sha256::new();
-            let mut buffer = [0; 65_536];
-            let mut length = 0u64;
-            loop {
-                if timer.now() >= deadline.instant() {
-                    return Err(storage());
-                }
-                let n = entry.read(&mut buffer).map_err(|_| invalid())?;
-                if n == 0 {
-                    break;
-                }
-                length += n as u64;
-                if length > expected.length {
-                    return Err(invalid());
-                }
-                hash.update(&buffer[..n]);
-            }
-            if length != expected.length || hash.finalize().as_slice() != expected.sha256 {
-                return Err(invalid());
-            }
-        }
-    }
-    Ok(())
 }

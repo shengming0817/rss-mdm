@@ -240,6 +240,12 @@ async fn resolve_in(
     };
     Ok(Binding {
         purpose: crate::Purpose::Resource(crate::ResourceBinding {
+            inspection: match variant.declaration() {
+                r::Declaration::Software { definition } if definition.primary() == &artifact => {
+                    Some(definition.spec().material.format)
+                }
+                _ => None,
+            },
             storage_class: if matches!(variant.declaration(), r::Declaration::Configuration { .. })
             {
                 crate::StorageClass::NativeConfiguration

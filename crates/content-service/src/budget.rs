@@ -58,8 +58,9 @@ pub(crate) struct UploadLease {
     key: uuid::Uuid,
     epoch: uuid::Uuid,
     budget: UploadBudget,
-    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    permit: Option<std::sync::Arc<tokio::sync::OwnedSemaphorePermit>>,
     released: bool,
+    temporary: u64,
 }
 impl UploadLease {
     pub(crate) fn new(
@@ -74,9 +75,13 @@ impl UploadLease {
             key,
             epoch,
             budget,
-            permit: Some(permit),
+            permit: Some(std::sync::Arc::new(permit)),
             released: false,
+            temporary: 0,
         }
+    }
+    pub(crate) fn temporary(&mut self, length: u64) {
+        self.temporary = length;
     }
     pub(crate) fn complete(mut self) {
         self.released = true;
@@ -84,7 +89,7 @@ impl UploadLease {
     pub(crate) async fn release(mut self) -> Result<(), Error> {
         let result = self
             .budget
-            .cleanup(self.store.release(self.key, self.epoch))
+            .cleanup(self.store.release(self.key, self.epoch, self.temporary))
             .await;
         // A failed bounded release remains fenced until its persisted expiry; don't spin/retry.
         self.released = true;
@@ -102,10 +107,11 @@ impl Drop for UploadLease {
         let store = self.store.clone();
         let (key, epoch, budget) = (self.key, self.epoch, self.budget);
         let permit = self.permit.take();
+        let temporary = self.temporary;
         if tokio::runtime::Handle::try_current().is_ok() {
             self.store.cleanup_tasks.spawn(async move {
                 let _permit = permit;
-                if budget.cleanup(store.release(key, epoch)).await.is_err() {
+                if budget.cleanup(store.release(key, epoch, temporary)).await.is_err() {
                     tracing::warn!(upload=%key, epoch=%epoch, "cancelled upload cleanup unconfirmed");
                 }
             });

@@ -101,8 +101,22 @@ pub async fn inspect<C: ManagementContentPort>(
         .inspect_upload(id, &actor(p), &id.to_string())
         .await?;
     Ok(
-        json!({"packageId":id,"filename":file.filename,"length":file.artifact.length,"sha256":file.artifact.sha256,"facts":file.facts}),
+        json!({"packageId":id,"filename":file.filename,"length":file.artifact.length,"sha256":file.artifact.sha256,"format":file.format,"inspection":file.inspection}),
     )
+}
+/// Explicit opt-in; querying the upload never starts parsing.
+pub async fn parse<C: ManagementContentPort>(
+    app: &Access<C>,
+    p: &AuthorizedPrincipal,
+    id: Uuid,
+) -> Result<Value, Error> {
+    authorize(app, p).await?;
+    app.content
+        .as_ref()
+        .ok_or(Error::Unsupported)?
+        .parse_upload(id, &actor(p), &id.to_string())
+        .await?;
+    inspect(app, p, id).await
 }
 /// Save the original operation; replay precedes upload expiry and all external I/O.
 pub async fn save<C: ManagementContentPort>(
@@ -190,7 +204,7 @@ pub async fn save<C: ManagementContentPort>(
         TaskArchitecture::Aarch64 => r::Architecture::Aarch64,
     };
     if !matches!(
-        (file.facts.format, platform),
+        (file.format, platform),
         (
             r::SoftwareFormat::Exe | r::SoftwareFormat::Msi | r::SoftwareFormat::Msix,
             r::Platform::Windows
@@ -198,13 +212,17 @@ pub async fn save<C: ManagementContentPort>(
     ) {
         return Err(Error::Malformed);
     }
-    if !file.facts.architectures.is_empty() && !file.facts.architectures.contains(&arch) {
-        return Err(Error::Malformed);
-    }
-    let version = match (&file.facts.version, &input.version) {
-        (Some(observed), Some(submitted)) if observed != submitted => return Err(Error::Malformed),
-        (Some(v), _) | (_, Some(v)) => v.clone(),
-        _ => return Err(Error::Malformed),
+    let version = input
+        .version
+        .clone()
+        .filter(|v| !v.is_empty())
+        .or_else(|| file.inspection.facts().and_then(|f| f.version.clone()))
+        .ok_or(Error::Malformed)?;
+    let declared = InstallerFacts {
+        format: file.format,
+        version: Some(version.clone()),
+        architectures: vec![arch],
+        bundle_id: file.inspection.facts().and_then(|f| f.bundle_id.clone()),
     };
     let now = app
         .clock
@@ -216,11 +234,12 @@ pub async fn save<C: ManagementContentPort>(
         app.tenant,
         audit,
         (
-            app, p, audit, input, hash, file, version, platform, arch, now,
+            app, p, audit, input, hash, file, declared, version, platform, arch, now,
         ),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, p, audit, input, hash, file, version, platform, arch, now) = ctx;
+                let (app, p, audit, input, hash, file, declared, version, platform, arch, now) =
+                    ctx;
                 let snapshot = transaction::current(tx, p).await?;
                 snapshot.require(p, Permission::SoftwareWrite, None)?;
                 snapshot.require(p, Permission::ResourceWrite, None)?;
@@ -236,7 +255,7 @@ pub async fn save<C: ManagementContentPort>(
                         &id,
                         &file.artifact,
                         &file.filename,
-                        &file.facts,
+                        declared,
                         input.behavior.as_ref(),
                         version,
                         *platform,

@@ -36,6 +36,7 @@ async fn cleanup_preserves_resource_references(
     let binding = rss_mdm_content_service::Binding {
         purpose: rss_mdm_content_service::Purpose::Resource(
             rss_mdm_content_service::ResourceBinding {
+                inspection: None,
                 storage_class: rss_mdm_content_service::StorageClass::Artifact,
                 resource: "orphan".into(),
                 version: "1".into(),
@@ -146,6 +147,7 @@ async fn gc_reference_race(
             rss_mdm_content_service::Binding {
                 purpose: rss_mdm_content_service::Purpose::Resource(
                     rss_mdm_content_service::ResourceBinding {
+                        inspection: None,
                         storage_class: rss_mdm_content_service::StorageClass::Artifact,
                         resource: resource.as_str().into(),
                         version: "v1".into(),
