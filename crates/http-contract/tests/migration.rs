@@ -30,7 +30,9 @@ fn number(expr: &Expr) -> u32 {
     };
     n.base10_parse().unwrap()
 }
-fn prior(source: &str) -> (BTreeSet<(String, String, u32)>, BTreeSet<(String, u32)>) {
+type OperationGaps = BTreeSet<(String, String, u32)>;
+type QueryGaps = BTreeSet<(String, u32)>;
+fn prior(source: &str) -> (OperationGaps, QueryGaps) {
     let file = syn::parse_file(source).unwrap();
     let mut gaps = BTreeSet::new();
     let mut pending = BTreeSet::new();
@@ -64,10 +66,10 @@ fn prior(source: &str) -> (BTreeSet<(String, String, u32)>, BTreeSet<(String, u3
                     .find(|f| matches!(&f.member,Member::Named(n) if n==name))
                     .map(|f| &f.expr)
             };
-            if let (Some(id), Some(Expr::Call(q))) = (field("id"), field("query")) {
-                if text(&q.func) == "Pending" {
-                    pending.insert((text(id), number(&q.args[0])));
-                }
+            if let (Some(id), Some(Expr::Call(q))) = (field("id"), field("query"))
+                && text(&q.func) == "Pending"
+            {
+                pending.insert((text(id), number(&q.args[0])));
             }
         }
     }

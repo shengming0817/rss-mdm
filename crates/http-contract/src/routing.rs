@@ -1,11 +1,10 @@
 use crate::{Endpoint, Operation, Resource};
+type Ownership = (&'static Resource, &'static [Operation]);
+type MethodBinding = (&'static str, Option<Ownership>);
 #[derive(Clone)]
 pub struct MethodRouter<S = ()> {
     pub(crate) inner: axum::routing::MethodRouter<S>,
-    pub(crate) bindings: Vec<(
-        &'static str,
-        Option<(&'static Resource, &'static [Operation])>,
-    )>,
+    pub(crate) bindings: Vec<MethodBinding>,
 }
 impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
     /// Bind the last added method to its semantic owner. Missing bindings fail at registration.

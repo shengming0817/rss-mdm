@@ -63,11 +63,11 @@ pub enum Description {
     /// The current query decoder and generated documentation consume Resource::FIELDS directly.
     /// Only the ResourceV1 policy may use this owner, never another resource's exemption.
     ResourceOwner,
-    Current(Current),
+    Current(&'static Current),
 }
 macro_rules! describe {
     ($name:ident,$source:literal,$page:expr,$order:expr,$direction:expr,$filters:expr,$sort:expr,$output:expr,$projection:expr,$note:literal) => {
-        pub static $name: Description = Description::Current(Current {
+        pub static $name: Description = Description::Current(&Current {
             source: $source,
             pagination: $page,
             default_sort: $order,

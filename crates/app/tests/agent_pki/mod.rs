@@ -276,7 +276,8 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     );
     let router = Router::new().nest(
         "/api/v1/agent/enroll",
-        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test").await?),
+        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test").await?)
+            .into_axum(),
     );
     let request = wire::RenewalStatusRequest {
         wire_version: 1,
@@ -394,7 +395,8 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
     use tower::ServiceExt;
     let router = Router::new().nest(
         "/api/v1/agent/enroll",
-        rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?),
+        rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?)
+            .into_axum(),
     );
     let mut failures = Vec::new();
     let mut owner =
@@ -558,7 +560,8 @@ async fn envelope(host: &str) -> anyhow::Result<rss_mdm_agent_channel::boundary:
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<()> {
-    use axum::{Router, body::Body, http::Request, middleware, routing::get};
+    use axum::{body::Body, http::Request, middleware};
+    use rss_mdm_http_contract::{Operation, Router, catalog::PROTOCOL_AGENT_CHANNEL, routing::get};
     use tokio::sync::{Barrier, mpsc};
     use tower::ServiceExt;
     let envelope = envelope("mdm.example.test").await?;
@@ -584,7 +587,8 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
             release.wait().await;
             "done"
         }
-    });
+    })
+    .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]);
     let router = rss_mdm_agent_channel::boundary::wrap(
         Router::new().route("/held", held).route(
             "/ready",
@@ -594,11 +598,13 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
                     calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     axum::http::StatusCode::NO_CONTENT
                 }
-            }),
+            })
+            .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
         ),
         envelope,
     )
-    .layer(middleware::from_fn(crate::native::admission::admit_agent));
+    .layer(middleware::from_fn(crate::native::admission::admit_agent))
+    .into_axum();
     let mut running = Vec::new();
     for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
         let request = Request::get("/held")

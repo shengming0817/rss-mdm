@@ -91,23 +91,22 @@ struct Inventory {
 }
 impl<'ast> Visit<'ast> for Inventory {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
-        if let syn::Expr::Path(p) = node.func.as_ref() {
-            if p.path
+        if let syn::Expr::Path(p) = node.func.as_ref()
+            && p.path
                 .segments
                 .last()
                 .is_some_and(|s| s.ident == "from_identity_router")
-            {
-                assert_eq!(
-                    self.file, "crates/app/src/api.rs",
-                    "external router admission escaped the Identity composition"
-                );
-                assert_eq!(node.args.len(), 1);
-                assert_eq!(
-                    path_name(&node.args[0]),
-                    "authentication",
-                    "only the actual Identity router is external"
-                );
-            }
+        {
+            assert_eq!(
+                self.file, "crates/app/src/api.rs",
+                "external router admission escaped the Identity composition"
+            );
+            assert_eq!(node.args.len(), 1);
+            assert_eq!(
+                path_name(&node.args[0]),
+                "authentication",
+                "only the actual Identity router is external"
+            );
         }
         visit::visit_expr_call(self, node);
     }
