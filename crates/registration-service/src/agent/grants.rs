@@ -28,7 +28,7 @@ impl Service {
                 .bind(&tenant).fetch_one(&mut *c).await.map_err(db)?;
             if pending>=1000{return Err(Error::Capacity);}
             let id=Uuid::new_v4();
-            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',clock_timestamp()+make_interval(secs=>$9))")
+            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',statement_timestamp(),statement_timestamp()+make_interval(secs=>$9))")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(Uuid::new_v4().to_string()).bind(platform(input.platform))
                 .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*bound).bind(f64::from(values.grant_seconds)).execute(&mut *c).await.map_err(db)?;
             Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})
@@ -341,6 +341,7 @@ secret_digest,
 request_digest,
 spki,
 state,
+created_at,
 expires_at,
 target_registration,
 predecessor)
@@ -356,7 +357,8 @@ $8,
 $9,
 $10,
 'available',
-clock_timestamp()+make_interval(secs=>$11),
+statement_timestamp(),
+statement_timestamp()+make_interval(secs=>$11),
 $12,
 $13)
 "#,
@@ -525,6 +527,7 @@ secret_digest,
 request_digest,
 spki,
 state,
+created_at,
 expires_at,
 target_registration,
 predecessor)
@@ -540,7 +543,8 @@ $8,
 $9,
 $10,
 'available',
-clock_timestamp()+make_interval(secs=>$11),
+statement_timestamp(),
+statement_timestamp()+make_interval(secs=>$11),
 $12,
 $13)
 "#,

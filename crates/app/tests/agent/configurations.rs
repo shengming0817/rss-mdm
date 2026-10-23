@@ -1148,7 +1148,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
         assigned.1["grantId"].as_str().unwrap()
     ))?;
     let grant_times: Value = serde_json::from_str(&grant_times)?;
-    ensure!((grant_times[0].as_f64().unwrap() - 604800.0).abs() < 1.0);
+    ensure!(grant_times[0].as_f64() == Some(604800.0));
     ensure!(
         assigned.1["expiresAt"] == grant_times[1]
             && assigned.1["expiresAt"] != json!(file.configuration.expires_at)

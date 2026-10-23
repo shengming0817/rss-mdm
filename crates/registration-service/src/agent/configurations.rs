@@ -391,7 +391,7 @@ impl Service {
             }
             let id=Uuid::new_v4();
             let binding=serde_json::json!({"runtime":input.runtime,"installation":input.installation});
-            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',clock_timestamp()+make_interval(secs=>$11),$12,$13)")
+            sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',statement_timestamp(),statement_timestamp()+make_interval(secs=>$11),$12,$13)")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(config.try_get::<String,_>("creator").map_err(db)?).bind(config.try_get::<String,_>("instance").map_err(db)?).bind(Uuid::new_v4().to_string()).bind(platform(input.runtime.platform))
                 .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*spki).bind(f64::from(values.grant_seconds)).bind(cfg.configuration_id).bind(binding).execute(&mut *c).await.map_err(db)?;
             Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})

@@ -307,7 +307,7 @@ class ExternalGatewayTests(unittest.TestCase):
         directory=self.certificates()
         tls=self.env.gateway_settings()
         generated={'ui.json':dict(canonicalOrigin='https://mdm.example.test',oidcEnabled=False),
-                   'mdm.json':dict(canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')}
+                   'mdm.json':dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')}
         def compose(*args):
             if 'public-host-config' in args:return json.dumps(generated)
             return '0.0.0.0:443' if args[0]=='port' else ''
@@ -321,7 +321,9 @@ class ExternalGatewayTests(unittest.TestCase):
         for name in ('ui.json','mdm.json'):
             self.assertEqual(json.loads((container/'gateway'/name).read_text()),generated[name])
         nginx=(container/'gateway/nginx.conf').read_text()
-        self.assertIn('listen 127.0.0.1:8445 ssl proxy_protocol;',nginx)
+        self.assertIn('listen 8443 ssl;',nginx)
+        self.assertIn('proxy_pass http://172.29.0.3:8081;',nginx)
+        self.assertIn('proxy_set_header X-RSS-Public-Origin',nginx)
         self.assertIn('server_name mdm.example.test;',nginx)
         self.assertIn('ssl_certificate /certs/server.crt;',nginx)
         self.assertNotIn('localhost',nginx)

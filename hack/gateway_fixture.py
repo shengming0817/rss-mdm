@@ -7,7 +7,7 @@ import tempfile
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           public_port=8443, http_port=None, certificates='/certs', web=True, plain=False):
+           public_port=8443, certificates='/certs', web=True, plain=False):
     source = Path(directory) / 'render_gateway.py'
     spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
     renderer = importlib.util.module_from_spec(spec)

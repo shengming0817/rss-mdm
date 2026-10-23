@@ -59,7 +59,7 @@ make ci-full
 | `publication.{winget,brew,mapping,withdrawal,recovery,artifact}` | Software Service 验证自托管发布、ring、持久意图和未知结果恢复；artifact-only 不启动 PG。 |
 | `planning.resource_archive` | 产品引用和 Resource archive 的同对象竞争，保留 App owner。 |
 | `sources.{winget,brew_git,brew_recovery}` | Sources 自有真实 HTTPS/TLS/凭据及 Git/ref/ACK 协议，无产品 PG/Identity。 |
-| `native.tls`、`windows.{issuance,enrollment,management,commands,retention,limits}` | TLS 生命周期、签发/注册、会话/nonce、轻量注册→命令、保留期和限流。 |
+| `windows.{issuance,enrollment,management,commands,retention,limits}` | 受信网关证书证据、签发/注册、会话/nonce、轻量注册→命令、保留期和业务限流；公网 TLS 由 Nginx 接缝验证。 |
 | `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host,commands,users,ddm,status}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
 | `catalog.contract`、`gateway.admission` | 正式迁移后的全部 SQL catalog 在一个环境核对；真实 nginx 来源/限流/安全头单独验证。 |
 
