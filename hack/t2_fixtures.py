@@ -417,7 +417,8 @@ class RunFixtures:
         try:
             environment.prepare_inputs(certificates=False)
             directory = environment.root / 'probe' / uuid.uuid4().hex
-            environment.extra = {**getattr(environment, 'extra', {}), 'MDM_GATEWAY_PROBE_DIRECTORY': str(directory)}
+            environment.extra = {**getattr(environment, 'extra', {}),
+                'MDM_GATEWAY_PROBE_DIRECTORY': str(directory), 'MDM_GATEWAY_PROBE_USER': f'{os.getuid()}:{os.getgid()}'}
             private(directory / 'nginx.conf', config)
             for name,value in (files or {}).items():
                 if Path(name).name!=name:raise ValueError('gateway fixture filename required')

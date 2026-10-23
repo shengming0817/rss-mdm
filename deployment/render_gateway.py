@@ -235,6 +235,9 @@ http {
     large_client_header_buffers 4 32k;
     client_body_temp_path /tmp/mdm-body;
     proxy_temp_path /tmp/mdm-proxy;
+    fastcgi_temp_path /tmp/mdm-fastcgi;
+    uwsgi_temp_path /tmp/mdm-uwsgi;
+    scgi_temp_path /tmp/mdm-scgi;
 ''' + ''.join(blocks) + '}\n'
     write(root / 'nginx.conf', configuration)
     publish_host = '[' + publish_address + ']' if ':' in publish_address else publish_address

@@ -42,7 +42,7 @@ def verify(context):
             time.sleep(.1)
         # Synthetic route payload only; registry-backed production generation is covered by management_tenant.
         public=dict(serviceId='33333333-3333-4333-8333-333333333333',canonicalOrigin='https://mdm.example.test',tenant='11111111-1111-4111-8111-111111111111',managementTenant='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
-        subprocess.run(['docker','exec','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
+        subprocess.run(['docker','exec','--user','0','-i',name,'sh','-ec','mkdir -p /run/config; cat > /run/config/mdm.json; chmod 644 /run/config/mdm.json'],input=json.dumps(public),check=True,capture_output=True,text=True,timeout=10)
         status,body=request('/api/v1/mdm-host/config.json',method='GET')
         if status!=200 or json.loads(body)!=public:raise RuntimeError('MDM host configuration was not served by the exact static route')
         status,body=request('/api/unsupported-test',method='GET')
