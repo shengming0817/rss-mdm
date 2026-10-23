@@ -58,7 +58,7 @@ pub(crate) struct UploadLease {
     key: uuid::Uuid,
     epoch: uuid::Uuid,
     budget: UploadBudget,
-    permit: Option<std::sync::Arc<tokio::sync::OwnedSemaphorePermit>>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
     released: bool,
     temporary: u64,
 }
@@ -75,7 +75,7 @@ impl UploadLease {
             key,
             epoch,
             budget,
-            permit: Some(std::sync::Arc::new(permit)),
+            permit: Some(permit),
             released: false,
             temporary: 0,
         }

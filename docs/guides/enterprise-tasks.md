@@ -16,7 +16,7 @@ Resource.Script 和 Resource.Software 分别持有不可变执行定义。管理
     "max_uploads": 4,
     "transfer_seconds": 1800,
     "retention_seconds": 86400,
-    
+
     "max_bundle_entries": 4096,
     "max_expansion_ratio": 100
   },

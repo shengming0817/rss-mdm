@@ -501,6 +501,7 @@ async fn seed_version(
             let binding = rss_mdm_content_service::Binding {
                 purpose: rss_mdm_content_service::Purpose::Resource(
                     rss_mdm_content_service::ResourceBinding {
+                        inspection: None,
                         storage_class: rss_mdm_content_service::StorageClass::Artifact,
                         resource: key.as_str().into(),
                         version: version.label().as_str().into(),
@@ -832,7 +833,6 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
             max_uploads: 64,
             transfer_seconds: 30,
             retention_seconds: 3600,
-            max_bundle_bytes: 16 * 1024 * 1024,
             max_bundle_entries: 256,
             max_expansion_ratio: 100,
         },
