@@ -120,7 +120,7 @@ async fn migrate_units(
     // Replay never changes an installation addressed by different coordinates.
     if installed
         .iter()
-        .any(|(name, _, _)| name == "identity-authority-v15")
+        .any(|(name, _, _)| name == "identity-authority-v16")
     {
         verify_installation(conn, installation, instance).await?;
     }
@@ -166,7 +166,7 @@ async fn apply_unit(
             .execute(&mut *tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v15" {
+    } else if name == "identity-authority-v16" {
         install_identity_in(&mut tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
