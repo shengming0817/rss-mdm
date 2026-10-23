@@ -265,11 +265,14 @@ async fn register_key(
     Ok(receipt)
 }
 fn apv(key: &PublicKey, nonce: &str) -> Result<String> {
-    let mut bytes = b"Apple".to_vec();
-    bytes.push(4);
-    bytes.extend(crypto::decode(&key.x)?);
-    bytes.extend(crypto::decode(&key.y)?);
-    bytes.extend(nonce.as_bytes());
+    let mut point = vec![4];
+    point.extend(crypto::decode(&key.x)?);
+    point.extend(crypto::decode(&key.y)?);
+    let mut bytes = Vec::new();
+    for part in [b"Apple".as_slice(), point.as_slice(), nonce.as_bytes()] {
+        bytes.extend((part.len() as u32).to_be_bytes());
+        bytes.extend(part);
+    }
     Ok(crypto::encode(&bytes))
 }
 fn decrypt(key: &Key, token: &str) -> Result<Value> {
