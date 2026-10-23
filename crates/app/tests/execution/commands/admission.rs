@@ -25,6 +25,43 @@ async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
     Ok(())
 }
 impl Client {
+    async fn storage_admitted(&self) -> anyhow::Result<bool> {
+        use rss_mdm_execution_service::{Error, Failure, transaction::Fault};
+        let admission = self
+            .app
+            .execution_runtime
+            .local_tx(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                rss_mdm_execution_service::deadline(),
+                |tx| {
+                    Box::pin(async move { Ok(rss_mdm_execution_service::storage::admit(tx).await) })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |error| {
+                    Err(anyhow::anyhow!(
+                        "admission transaction not started: {error:?}"
+                    ))
+                },
+                |error| {
+                    Err(anyhow::anyhow!(
+                        "admission transaction rolled back: {error:?}"
+                    ))
+                },
+                |error| Err(anyhow::anyhow!("admission rollback unconfirmed: {error:?}")),
+                |error| Err(anyhow::anyhow!("admission commit unknown: {error:?}")),
+                |error| Err(anyhow::anyhow!("admission transaction failed: {error:?}")),
+            )?;
+        match admission {
+            Ok(()) => Ok(true),
+            Err(Fault::Request(Error::Unavailable(Failure::CommandInvariant))) => Ok(false),
+            Err(error) => Err(anyhow::anyhow!(
+                "unexpected command admission error: {error:?}"
+            )),
+        }
+    }
     async fn admission_transactions(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
         let old_id = Uuid::new_v4();
@@ -341,6 +378,10 @@ impl Client {
                     .await?;
             ensure!(permitted, "missing rollout admission input {relation}");
         }
+        ensure!(
+            self.storage_admitted().await?,
+            "valid command storage rejected"
+        );
         for (damage, restore) in [
             (
                 "GRANT UPDATE(confirmed) ON mdm_webhook.key_materials TO mdm_command_runtime",
@@ -412,14 +453,15 @@ impl Client {
             ),
         ] {
             sqlx::raw_sql(damage).execute(&mut pg).await?;
-            let response = self
-                .call(Method::GET, &format!("/{}", self.operation), None)
-                .await?;
+            let admitted = self.storage_admitted().await;
             sqlx::raw_sql(restore).execute(&mut pg).await?;
             ensure!(
-                response.0 == StatusCode::SERVICE_UNAVAILABLE,
-                "command admission accepted drift {:?}",
-                response
+                !admitted?,
+                "command startup admission accepted drift: {damage}"
+            );
+            ensure!(
+                self.storage_admitted().await?,
+                "command storage did not readmit after {damage}"
             );
             ensure!(
                 self.call(Method::GET, &format!("/{}", self.operation), None)

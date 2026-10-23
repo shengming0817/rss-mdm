@@ -10,10 +10,11 @@
 
 内容上传和清理由 PostgreSQL 控制状态协调；恢复须使用配套数据库、完整物理内容和密钥，不能仅降级二进制。卷目录中的 `.<id>.lock` 是跨实例物理发布锁，删除后保留的标记阻止迟到写者重新发布，必须随完整租户目录一起备份，不得手工删除。暂存文件由对应持久对象意图回收。
 
-Audit、Ledger 与产品 receipts 的完整结构/权限检查只在构造和显式启动验证执行。
+Command、Inventory、Audit、Ledger 与产品 receipts 的完整结构/权限检查只在构造、显式启动和受控变更重新准入时执行。
 变更相关角色、函数或结构前，停止相关写实例并排空事务，再执行受控变更；使用 access、
 flow、command、software、租户注册、管理员初始化和 Identity audit worker 各自实际连接重新验证，成功后才恢复接流。
-验证失败保持停机。业务操作仍检查租户、必要隔离和持久材料一致性，并传播真实 SQL 权限失败；
+目标数据库、角色或部署版本变化时停止并重建相关 runtime，使用新连接完成启动准入后才接流；验证失败保持停机。
+业务操作仍检查租户、必要隔离和持久材料一致性，并传播真实 SQL 权限失败；
 不承诺逐次调用发现管理员带外配置漂移，不支持滚动混跑旧、新契约。
 
 ## 就绪、停机与恢复
@@ -78,7 +79,7 @@ Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID �
 | `commit_unknown` / `CommitUnknown` | 首次出现即告警；按原 operationId 查询并精确重放，不能换 ID、清 Outbox 或当作回滚 |
 | `invariant` / `Invariant`、`StorageContract`、`Permanent`，尤其 `phase=runner` | 立即告警；关键 worker 退出由统一运行时关闭服务。核对候选、迁移账本、角色/ACL/RLS 与固定 catalog，修复根因后重启同一身份的服务 |
 
-relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 的 operation，`action.<UUID>` 关联企业任务 run；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。候选契约可用 `make t2 MODULE=catalog.contract` 离线校验，生产修复是否满足契约仍由启动/事务准入判断，禁止导出漂移生产结构覆盖固定 JSON。
+relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 的 operation，`action.<UUID>` 关联企业任务 run；recovery 的 `target` 是设备文本 ID 的 SHA-256 scope，结合 `mdm_commands.devices` 定位。使用有设备读取权限的管理查询查看 command、最新 attempt 和 CollectionRun。`phase` 区分 claim、accept、settle 与 runner/scan；日志不携带预期值、原生正文或浏览器凭据。恢复后确认告警停止、同一 command 可继续收敛；终态任务不得因重启复活。候选契约可用 `make t2 MODULE=catalog.contract` 离线校验，生产修复是否满足契约仍由启动/受控变更重新准入判断，禁止导出漂移生产结构覆盖固定 JSON。
 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 

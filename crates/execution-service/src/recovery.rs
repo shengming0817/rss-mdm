@@ -384,7 +384,6 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
             let (service,entity,audit,failure) = *ctx;
             let result:Result<bool>=async {
-                storage::admit(tx).await?;
                 if let Some(id)=crate::unmanage::operation(entity){return service.advance_retirement_in(tx,id,audit).await;}
                 if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::step(service,tx,work).await; }
                 if let Some(id)=actions::recovery::policy_id(entity) {

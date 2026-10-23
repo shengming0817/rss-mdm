@@ -114,9 +114,6 @@ where
                     if let Err(error) = audit_store.lock_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure));
                     }
-                    if let Err(e) = crate::storage::admit(tx).await {
-                        return Err(rejection(e, failure));
-                    }
                     if let Err(error) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {
