@@ -23,7 +23,7 @@ from t2_environment import Environment, private, run
 from t2_registry import IDENTITY_SETUP
 from s3_fixtures import S3Environment
 from t2_model import ROOT
-from t2_processes import diagnostic_phase, owned_by
+from t2_processes import diagnostic_phase, owned_by, subprocess
 from verification_result import require
 
 
