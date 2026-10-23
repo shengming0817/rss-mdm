@@ -178,3 +178,21 @@ fn decode_value(field: &rss_mdm_inventory::FieldDefinition, value: String) -> Re
     field.validate_scalar(&scalar)?;
     Ok(scalar)
 }
+
+/// Read one current field across datasets of an already authorized exact registration/source epoch.
+/// The caller owns registration validity and business authorization in this borrowed transaction.
+pub async fn field_in(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    registration: uuid::Uuid,
+    source: rss_mdm_inventory::ReportSource,
+    epoch: uuid::Uuid,
+    field: FieldKey,
+) -> Result<Vec<InventoryField>> {
+    assert_tenant(c, tenant).await?;
+    let projection = super::projection_scope(tenant);
+    let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.registration=$4 AND i.source=$5 AND i.epoch=$6 AND i.field=$7 ORDER BY i.scope,i.field_scope,i.collection_sequence DESC LIMIT 129")
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(registration.to_string()).bind(source.as_str()).bind(epoch.to_string()).bind(field.as_str()).fetch_all(c).await?;
+    ensure!(rows.len() <= 128, "field evidence budget exceeded");
+    decode_rows(rows)
+}

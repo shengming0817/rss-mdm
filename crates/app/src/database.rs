@@ -218,7 +218,7 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
-    rss_identity_postgres::verify_profile_source_admission(
+    rss_identity_postgres::verify_platform_subject_admission(
         &mut tx,
         rss_identity_core::InstanceId::parse(&instance)
             .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?,

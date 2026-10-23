@@ -265,6 +265,10 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
         config,
         fixture_materials(&f.root)?,
         f.app.clock.unix_seconds()?,
+        (
+            "https://mdm.example.test",
+            rss_request_context::TenantId::parse(case_tenant())?,
+        ),
         super::fixture_providers(&f.root)?,
     )?;
     let trust = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(

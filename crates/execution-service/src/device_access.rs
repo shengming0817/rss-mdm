@@ -78,6 +78,42 @@ impl Admission for ExecutionService {
 }
 
 impl ExecutionService {
+    /// Bootstrap may precede the native integration's Applied receipt. It still requires an
+    /// authorized current binding and the exact native local account; never admits a login.
+    pub async fn registration_access_binding_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        device: &rss_mdm_registration_service::DevicePrincipal,
+        id: Uuid,
+        generation: i64,
+    ) -> std::result::Result<access::Binding, AccessError> {
+        if device.tenant() != self.tenant {
+            return Err(AccessError::Forbidden);
+        }
+        let tenant = Uuid::parse_str(&self.tenant.to_string()).map_err(|_| AccessError::Corrupt)?;
+        let binding = access::storage::locked_in(c, tenant, id).await?;
+        if binding.generation != generation
+            || binding.state == access::State::Revoked
+            || binding.device != device.device()
+            || binding.registration != device.registration()
+            || binding.registration_generation != device.generation()
+            || !binding.configuration.enabled
+            || binding.account.is_none()
+        {
+            return Err(AccessError::Forbidden);
+        }
+        let local = self.local_session(c, device).await?;
+        if binding.account.as_ref() != Some(&local.account) {
+            return Err(AccessError::Forbidden);
+        }
+        let selected = self
+            .policy(c, tenant, &binding.device, binding.policy)
+            .await?;
+        if selected.version != binding.policy_version || !selected.configuration.enabled {
+            return Err(AccessError::Forbidden);
+        }
+        Ok(binding)
+    }
     /// Product seam for a platform verifier: keep registration, binding and current Policy/Scope
     /// locks on the Identity caller's connection. Identity still verifies the account/member.
     pub async fn active_access_binding_on(

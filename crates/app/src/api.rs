@@ -387,6 +387,7 @@ pub(crate) async fn from_compiled(
     )?;
     let roots_available = roots.is_some();
     let apple_material_roots = Arc::new(roots.unwrap_or_default());
+    let platform_origin = config.product_origin.clone();
     let mut apple = if let Some(config) = config.native_protocols.apple {
         if !roots_available {
             None
@@ -409,6 +410,7 @@ pub(crate) async fn from_compiled(
                             config,
                             materials,
                             clock.unix_seconds()?,
+                            (&platform_origin, identity.tenant),
                             providers.clone(),
                         ),
                     )?
@@ -611,6 +613,10 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        platform_sso: state.apple.as_ref().and_then(|a| a.platform_sso.clone()),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+            state.audit_store.clone(),
+        )),
         material_roots: state.apple_material_roots.clone(),
         account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
         authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
@@ -639,6 +645,11 @@ pub(crate) fn from_state(
         ),
         requests: state.requests.clone(),
     });
+    state
+        .identity
+        .platform
+        .bind(&apple_state)
+        .expect("single platform composition");
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
@@ -946,6 +957,10 @@ pub(crate) fn from_state(
                 access: Arc::new(state.access.agent_store()),
                 execution: state.execution.clone(),
             }),
+            envelope.clone(),
+        ));
+        let runtime = runtime.merge(rss_mdm_agent_channel::boundary::wrap(
+            rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
             envelope.clone(),
         ));
         let router = Router::new().nest("/api/v1/agent/runtime", runtime).nest(

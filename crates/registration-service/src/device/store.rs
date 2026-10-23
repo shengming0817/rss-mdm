@@ -904,3 +904,15 @@ pub async fn collection_stream_retired_on(
     sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND r.id=$3 AND r.channel='agent' AND r.purpose='primary' AND r.state='active' AND s.source=$4 AND s.epoch=$5 AND s.enabled)")
         .bind(tenant.to_string()).bind(device).bind(registration).bind(source.as_str()).bind(epoch).fetch_one(c).await.map_err(db)
 }
+
+/// Current report epoch for a channel owner borrowing an already authorized device transaction.
+/// Caller holds the device/channel lifecycle lock; no new transaction or authority is created.
+pub async fn report_epoch_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    registration: Uuid,
+    source: rss_mdm_inventory::ReportSource,
+) -> Result<Option<Uuid>, Error> {
+    sqlx::query_scalar("SELECT s.epoch FROM mdm_access.report_sources s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE s.tenant_id=$1::uuid AND s.registration=$2 AND s.source=$3 AND s.enabled AND r.state='active'")
+        .bind(tenant).bind(registration).bind(source.as_str()).fetch_optional(c).await.map_err(db)
+}

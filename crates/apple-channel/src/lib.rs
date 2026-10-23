@@ -18,6 +18,7 @@ mod material;
 mod native;
 mod operations;
 mod organizations;
+pub mod platform_sso;
 mod profiles;
 mod protection;
 pub mod push;
@@ -51,6 +52,7 @@ pub struct IdentitySeed {
     pub notify_id: String,
 }
 pub struct Apple {
+    pub(crate) platform_sso: Option<Arc<platform_sso::Runtime>>,
     #[cfg(feature = "integration")]
     pub(crate) ade_fixture: Option<ade::Fixture>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
@@ -157,6 +159,7 @@ impl Apple {
     ) -> Self {
         let configuration = protocol_identity(&config);
         Self {
+            platform_sso: None,
             #[cfg(feature = "integration")]
             ade_fixture: None,
             protection,
@@ -176,6 +179,10 @@ impl Apple {
     #[cfg(feature = "integration")]
     pub fn with_ade_fixture(mut self, fixture: ade::Fixture) -> Self {
         self.ade_fixture = Some(fixture);
+        self
+    }
+    pub fn with_platform_sso(mut self, runtime: Option<Arc<platform_sso::Runtime>>) -> Self {
+        self.platform_sso = runtime;
         self
     }
     pub fn with_account_keys(
@@ -230,6 +237,7 @@ pub fn management_routes(app: Arc<HttpState>) -> axum::Router {
     account_enrollment::management_routes()
         .merge(ade::management_routes())
         .merge(runtime_materials::routes())
+        .merge(platform_sso::management_routes())
         .with_state(app)
 }
 pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
@@ -243,6 +251,7 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
             .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
             .route("/api/v1/apple/scep/notify", post(enrollment::notify))
             .merge(account_enrollment::routes())
+            .merge(platform_sso::browser_routes())
             .merge(ade::routes())
             .layer(axum::middleware::from_fn_with_state(
                 app.clone(),
@@ -353,6 +362,8 @@ impl Apple {
 }
 
 pub struct HttpState {
+    pub platform_sso: Option<Arc<platform_sso::Runtime>>,
+    pub platform_objects: Arc<rss_mdm_device_service::planning::PlanningObjects>,
     /// Deployment-approved signing roots; tenant requests cannot add trust anchors.
     pub material_roots: Arc<Vec<Vec<u8>>>,
     pub authentication: account_enrollment::Authentication,
@@ -386,6 +397,8 @@ pub async fn retire_in(
     sqlx::query("UPDATE mdm_apple.ade_enrollments SET revoked=true WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.account_flows SET revoked=true,material=NULL,profile=NULL WHERE tenant_id=$1::uuid AND enrollment=(SELECT request_id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2)")
         .bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("UPDATE mdm_apple.psso_sources SET revoked=true,version=version+1,document=jsonb_set(jsonb_set(document,'{revoked}','true'::jsonb),'{version}',to_jsonb(version+1)) WHERE tenant_id=$1::uuid AND registration=$2 AND NOT revoked").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("DELETE FROM mdm_apple.psso_tokens WHERE tenant_id=$1::uuid AND source IN(SELECT id FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND registration=$2)").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.devices SET state='retired',bootstrap=NULL WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.channels SET state='retired',material=NULL,material_digest=NULL,push_lease_until=NULL WHERE tenant_id=$1::uuid AND registration=$2").bind(tenant).bind(registration).execute(&mut *tx).await.map_err(db)?;
     sqlx::query("UPDATE mdm_apple.scep_attempts SET state='superseded' WHERE tenant_id=$1::uuid AND registration=$2::uuid").bind(tenant).bind(registration.to_string()).execute(&mut *tx).await.map_err(db)?;

@@ -582,6 +582,11 @@ async fn send_command(
         match &command.request {
             A::Command { command } => command.compile(&target),
             A::InstallProfile { profile } => {
+                if !crate::platform_sso::deployment::admit_profile(c, apple, p, profile, now)
+                    .await?
+                {
+                    return Ok(AppleDispatch::Waiting);
+                }
                 let profile = match profile.compile(&target) {
                     Ok(profile) => profile,
                     Err(error) => return Ok(AppleDispatch::Rejected(error)),

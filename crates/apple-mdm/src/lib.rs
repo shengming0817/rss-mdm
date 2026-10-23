@@ -1,6 +1,7 @@
 //! Bounded Apple MDM wire codecs and the shipped device Profile format.
 pub mod applicability;
 pub mod native;
+pub mod platform_sso;
 pub mod profile;
 pub mod protocol;
 pub mod software;

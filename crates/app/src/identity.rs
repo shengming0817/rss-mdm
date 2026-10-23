@@ -56,6 +56,7 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
     }
 }
 pub(crate) struct Identity {
+    pub(crate) platform: Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>,
     pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
@@ -129,17 +130,36 @@ impl Identity {
         acquire(rss_runtime::DynManagedResource::new_box(RuntimeResource(
             runtime.clone(),
         )));
+        {
+            use sqlx::Connection;
+            let admission = async {
+                let mut c = sqlx::PgConnection::connect_with(&config.identity.database.options()?)
+                    .await
+                    .map_err(|_| invalid())?;
+                rss_mdm_apple_channel::platform_sso::verify_runtime(&mut c)
+                    .await
+                    .map_err(|_| invalid())?;
+                c.close().await.map_err(|_| invalid())
+            };
+            tokio::time::timeout(Duration::from_secs(10), admission)
+                .await
+                .map_err(|_| invalid())??;
+        }
         let kdf = Arc::new(PasswordKdf::new());
         acquire(rss_runtime::DynManagedResource::new_box(KdfResource(
             kdf.clone(),
         )));
+        let platform = Arc::new(rss_mdm_apple_channel::platform_sso::bridge::Verifier::new(
+            &config.product_origin,
+        ));
         let authority = Authority::connect_runtime(
             runtime,
             kdf.clone(),
             authority_config(
                 instance,
                 tenants.iter().map(|(tenant, _)| *tenant).collect(),
-            )?,
+            )?
+            .with_platform(platform.clone()),
             policy.clone(),
             deadline(),
         )
@@ -185,6 +205,7 @@ impl Identity {
             );
         }
         Ok(Self {
+            platform,
             instance,
             authority,
             tenant,
