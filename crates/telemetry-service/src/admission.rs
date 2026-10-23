@@ -265,7 +265,7 @@ pub(crate) async fn status_on(
         return Err(Error::Denied);
     }
     let row = sqlx::query("SELECT received_at,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 AND device=$4")
-        .bind(service.tenant.to_string()).bind(batch).bind(principal.registration()).bind(principal.device()).fetch_optional(c).await?.ok_or(Error::Denied)?;
+        .bind(service.tenant.to_string()).bind(batch).bind(principal.registration()).bind(principal.device()).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok(TelemetryReceipt {
         batch_id: batch,
         received_at: row.try_get("received_at")?,
