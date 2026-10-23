@@ -926,6 +926,29 @@ async fn superseded_group_links_reused_successor() {
         .local_tx_with_context(tenant(), deadline(), &service, |s, tx| {
             Box::pin(async move {
                 async {
+                    s.audit_store.bind_in(tx).await?;
+                    let tenant = tx.tenant_id();
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                        })
+                    })
+                    .await?;
+                    rss_mdm_flow_service::transaction::lock(tx).await?;
+                    let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, first).await?;
+                    let crate::automation::JobInput::Group { group, .. } = &job else {
+                        panic!("successor fixture requires a group job");
+                    };
+                    // JobInput::audit_partition is crate-private; derive this fixture's
+                    // group identity from the persisted job using the public source API.
+                    let audit_partition = rss_mdm_audit_integration::source_partition(
+                        tx.tenant_id(),
+                        "group",
+                        &job.target(),
+                    )?;
+                    let group_partition = s.groups.partition(&group.to_string())?;
+                    tx.prepare_outbox_partitions(&[audit_partition, group_partition])
+                        .await?;
                     crate::automation::jobs::finish_job_in(
                         tx,
                         &s.audit_store,
@@ -1741,9 +1764,14 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         }
     }
     let device = first[0].device.clone();
-    sql(&format!(
+    let revoke = format!(
         "SET rss.tenant_id='{t}';UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{t}' AND registration IN(SELECT id FROM mdm_access.registrations WHERE tenant_id='{t}' AND device='{device}')"
-    ));
+    );
+    // The credential trigger takes the watermark also held by the live automation
+    // task. Keep the runtime available while the synchronous fixture waits for it.
+    tokio::task::spawn_blocking(move || sql(&revoke))
+        .await
+        .expect("credential revocation fixture failed");
     let old = rss_mdm_registration_service::device::endpoints::lifecycle_page_at(
         &mut c,
         &t.to_string(),

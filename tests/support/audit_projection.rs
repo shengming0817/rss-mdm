@@ -106,9 +106,21 @@ pub async fn drain_in(
                 )
                 .await?;
             if report.projected == 0 && report.deferred == 0 {
-                break;
+                // Another installed worker may own a lease: no claimable row is not a drained source.
+                let pending = tokio::time::timeout_at(cutoff.instant().into(), async {
+                let mut tx = pool.begin().await?;
+                sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                    .bind(tenant.to_string()).execute(&mut *tx).await?;
+                let pending: bool = sqlx::query_scalar(
+                    "SELECT EXISTS(SELECT FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND projected_at IS NULL)",
+                ).bind(tenant.to_string()).fetch_one(&mut *tx).await?;
+                tx.rollback().await?;
+                Ok::<bool, anyhow::Error>(pending)
+                }).await??;
+                if !pending { break; }
             }
-            if report.deferred > 0 {
+            if report.projected == 0 || report.deferred > 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }

@@ -998,6 +998,10 @@ async fn renew(
     let device: String = sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.locator=$2")
         .bind(case_tenant()).bind(format!("{:x}",sha2::Sha256::digest(certificate))).fetch_one(&mut blocker).await?;
     let mut lock = blocker.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *lock)
+        .await?;
     rss_mdm_registration_service::device::store::lock_channel(
         &mut lock,
         case_tenant(),
