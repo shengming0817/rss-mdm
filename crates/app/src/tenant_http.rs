@@ -262,7 +262,7 @@ impl Service {
         let budget = AuditBudget::new(Duration::from_secs(6));
         let outcome = self.audit.write(self.management, &budget.source_control(), (self, proof, audit, input, fact), move |(service, proof, audit, input, fact), tx| Box::pin(async move {
             let mut context = (&**service, *proof, &*input);
-            let result = tx.with_connection_context(&mut context, |(service, proof, input), c| Box::pin(async move {
+            let result = tx.with_connection_context(&mut context, |(service, proof, input), c| Box::pin(async move { async {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_| Reason::Storage)?;
                 service.authorize(c, proof, permission).await?;
                 let actor = serde_json::json!({"kind":"session","tenantId":proof.tenant_id(),"instanceId":proof.instance_id(),"principalId":proof.principal_id()});
@@ -270,7 +270,7 @@ impl Service {
                 let result = apply_on(c, input).await?;
                 scope(c, proof.tenant_id()).await?;
                 Ok::<_, Reason>(result)
-            })).await.map_err(project)?;
+            }.await.map_err(project) })).await?;
             let receipt = match result {
                 Outcome::Replay(receipt) => { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); receipt }
                 Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await?; receipt }
