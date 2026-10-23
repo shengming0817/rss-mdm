@@ -32,10 +32,10 @@ pub(crate) struct Readiness {
     task: OnceLock<TaskStatus>,
 }
 impl Readiness {
-    fn progress(&self, claimed: usize, retried: usize) {
-        if retried > 0 {
+    fn progress(&self, projected: usize, deferred: usize) {
+        if deferred > 0 {
             self.retrying.store(true, Ordering::Release);
-        } else if claimed > 0 {
+        } else if projected > 0 {
             self.retrying.store(false, Ordering::Release);
         }
         *self.phase.lock().expect("audit health") = if self.retrying.load(Ordering::Acquire) {
@@ -190,7 +190,7 @@ impl Worker {
             instance,
             vec![tenant, management_tenant],
             budget,
-            config.native_protection.load()?,
+            config.native_protector()?,
         )
         .await
         .map_err(|error| {
@@ -257,7 +257,7 @@ impl Worker {
                     .expect("bounded batch"),
             )
             .await?;
-        let wait = should_wait(report.projected(), report.deferred());
+        let wait = report.projected() == 0 || report.deferred() > 0;
         self.readiness
             .progress(report.projected(), report.deferred());
         if !wait {
@@ -318,9 +318,6 @@ impl Idle {
             .unwrap_or(cap)
             .min(cap)
     }
-}
-fn should_wait(projected: usize, deferred: usize) -> bool {
-    projected == 0 || deferred > 0
 }
 fn diagnose(error: AuditDeliveryError) {
     eprintln!(

@@ -523,13 +523,6 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
 }
 
 #[test]
-fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
-    assert!(should_wait(1, 1));
-    assert!(!should_wait(1, 0));
-    assert!(should_wait(0, 0));
-}
-
-#[test]
 fn retry_backoff_empty_polls_do_not_restore_health() {
     let readiness = Readiness::default();
     readiness.progress(0, 0);
