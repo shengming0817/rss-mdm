@@ -46,6 +46,7 @@ pub enum ConfigIssue {
     RecoveryCredentials,
     Audit,
     AppleListeners,
+    ApplePlatformSso,
     AppleScep,
     AppleProfileSigner,
     AppleApns,

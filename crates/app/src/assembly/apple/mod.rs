@@ -6,6 +6,7 @@ use std::sync::Arc;
 #[path = "../../../tests/apple/certificate_support.rs"]
 mod certificate;
 pub(crate) struct Apple {
+    pub(crate) platform_sso: Option<Arc<rss_mdm_apple_channel::platform_sso::Runtime>>,
     pub(crate) channel: Arc<rss_mdm_apple_channel::Apple>,
     pub(crate) config: config::Config,
 }
@@ -15,6 +16,7 @@ impl Apple {
         config: config::Config,
         materials: rss_mdm_apple_channel::runtime_materials::runtime::Loaded,
         now: i64,
+        platform: (&str, rss_request_context::TenantId),
         providers: Arc<rss_mdm_pki_service::providers::Providers>,
     ) -> Result<Self, Error> {
         let trust = crate::device_pki::load(
@@ -45,6 +47,11 @@ impl Apple {
                 notify_id: config.identity_seed.notify_id.clone(),
             },
         };
+        let platform_sso = config
+            .platform_sso
+            .as_ref()
+            .map(|c| c.load(platform.0, platform.1))
+            .transpose()?;
         let channel = Arc::new(
             rss_mdm_apple_channel::Apple::new(
                 protection,
@@ -56,9 +63,14 @@ impl Apple {
                 webhooks,
                 providers,
             )
-            .with_account_keys(materials.accounts),
+            .with_account_keys(materials.accounts)
+            .with_platform_sso(platform_sso.clone()),
         );
-        Ok(Self { config, channel })
+        Ok(Self {
+            config,
+            channel,
+            platform_sso,
+        })
     }
 }
 fn load_push(

@@ -63,12 +63,10 @@ impl Configuration {
         tenant: Uuid,
         id: Uuid,
         payload_id: Uuid,
-        registration_token: &str,
     ) -> Result<ProfileInput, Error> {
         self.validate()?;
         let endpoints = Endpoints::new(origin, tenant)?;
-        if id.is_nil() || payload_id.is_nil() || payload_id == id || registration_token.len() != 43
-        {
+        if id.is_nil() || payload_id.is_nil() || payload_id == id {
             return Err(Error::Malformed);
         }
         let mut fields = plist::Dictionary::new();
@@ -82,7 +80,6 @@ impl Configuration {
             "URLs".into(),
             plist::Value::Array(vec![format!("{}/browser/", endpoints.base).into()]),
         );
-        fields.insert("RegistrationToken".into(), registration_token.into());
         let mut platform = plist::Dictionary::new();
         platform.insert("AuthenticationMethod".into(), "UserSecureEnclaveKey".into());
         platform.insert("UseSharedDeviceKeys".into(), true.into());
@@ -180,7 +177,6 @@ mod tests {
                 Uuid::new_v4(),
                 Uuid::new_v4(),
                 Uuid::new_v4(),
-                &"a".repeat(43),
             )
             .unwrap();
         let context = Context {

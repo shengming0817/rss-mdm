@@ -12,6 +12,41 @@ impl PlanningObjects {
     pub fn new(audit: std::sync::Arc<rss_mdm_audit_integration::AuditStore>) -> Self {
         Self { audit }
     }
+
+    /// Current verified paired object for a device-bound authentication ceremony. The input
+    /// projection is read under the same watermark fence and revalidated by this owner.
+    pub async fn paired_in(
+        &self,
+        c: &mut PgConnection,
+        tenant: TenantId,
+        device: &str,
+    ) -> Result<DeviceObject, sqlx::Error> {
+        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+        let rows: Vec<serde_json::Value> = sqlx::query_scalar("WITH current AS (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1) SELECT o.input FROM mdm_devices.input_objects o JOIN current s ON s.id=o.snapshot WHERE o.tenant_id=$1::uuid AND o.devices @> ARRAY[$2::text] AND o.object LIKE 'association:%' LIMIT 2")
+            .bind(tenant.to_string()).bind(device).fetch_all(&mut *c).await?;
+        if rows.len() != 1 {
+            return Err(storage("paired device unavailable"));
+        }
+        let input: DeviceObject = serde_json::from_value(
+            rows.into_iter()
+                .next()
+                .ok_or_else(|| storage("paired device unavailable"))?,
+        )
+        .map_err(storage)?;
+        if input.members.len() != 2
+            || self
+                .validate(c, tenant, &input, rss_mdm_inventory::Channel::Agent)
+                .await?
+                .is_none()
+            || self
+                .validate(c, tenant, &input, rss_mdm_inventory::Channel::Mdm)
+                .await?
+                .is_none()
+        {
+            return Err(storage("paired device unavailable"));
+        }
+        Ok(input)
+    }
 }
 mod snapshots;
 fn storage<E>(_: E) -> sqlx::Error {
