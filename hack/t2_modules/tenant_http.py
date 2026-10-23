@@ -80,6 +80,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     login(other,tenant,'tenant-admin-two')
     require(other.call('POST',f"/api/v1/identity/tenants/{tenant}/accounts/{first['result']['principalId']}/password",dict(password=password+'rotated'))[0] == 200, 'target password reset failed')
     require(call('POST',path,request,admin_key) == (200,first), 'password change invalidated immutable replay')
+    target_host.close()
     audit_backpressure(target_config, admin, other, management, tenant, password, sql, builds, root, stack, owner, database)
 
     grant_id = str(uuid.uuid4())
@@ -100,7 +101,6 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(call('POST',path,request,admin_key)[0] == 403, 'expired recent authentication allowed replay')
     sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at+301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
     # Optional block controls all registry routes, not a partial startup mode.
-    target_host.close()
     absent = deepcopy(target_config)
     del absent['tenant_administration']
     absent_host = Host(builds,private(root/'without-registry.json',absent),root/'without-registry-host',require_ready=False)
