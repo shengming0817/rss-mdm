@@ -724,20 +724,34 @@ pub async fn host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> rss_mdm_software_service::Host {
-    rss_mdm_software_service::Host {
+    try_host(runtime, audit).await.unwrap()
+}
+
+pub async fn try_host(
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> std::result::Result<rss_mdm_software_service::Host, rss_mdm_audit_integration::Error> {
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let audit = Arc::new(
+        audit
+            .on_runtime(runtime.clone(), tenant(), &budget.control())
+            .await?,
+    );
+    Ok(rss_mdm_software_service::Host {
         runtime,
         audit: Arc::new(TestAudit(audit)),
         content: stored_content().await,
         credentials: Arc::new(TestCredentials),
-    }
+    })
 }
 struct TestAudit(Arc<rss_mdm_audit_integration::AuditStore>);
 impl rss_mdm_software_service::AuditPort for TestAudit {
-    fn lock_in<'a>(
+    fn bind_in<'a>(
         &'a self,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     ) -> rss_mdm_software_service::AuditFuture<'a> {
-        Box::pin(async move { self.0.lock_in(tx).await })
+        Box::pin(async move { self.0.bind_in(tx).await })
     }
     fn append_in<'a>(
         &'a self,
@@ -747,14 +761,13 @@ impl rss_mdm_software_service::AuditPort for TestAudit {
     ) -> rss_mdm_software_service::AuditFuture<'a> {
         Box::pin(async move { self.0.append_in(tx, fact, replayed).await })
     }
-    fn append_request_in<'a>(
+    fn prepare_in<'a>(
         &'a self,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         request: &'a rss_mdm_audit_integration::RequestAudit,
-        status: u16,
-        result: &'a str,
+        partitions: &'a [rss_transactional_messaging::message::PartitionIdentity],
     ) -> rss_mdm_software_service::AuditFuture<'a> {
-        Box::pin(async move { self.0.append_request_in(tx, request, status, result).await })
+        Box::pin(async move { self.0.prepare_in(tx, request, partitions).await })
     }
 }
 struct TestCredentials;
@@ -835,6 +848,14 @@ async fn admit_private_source(source: &str) -> resource::SoftwareSource {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
     let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let audit = Arc::new(
+        audit
+            .on_runtime(runtime.clone(), tenant(), &budget.control())
+            .await
+            .unwrap(),
+    );
     let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
     let definition = c::SourceDefinition {
         id: source.into(),
@@ -886,6 +907,14 @@ async fn admit_version(version: &resource::Version) {
     use rss_mdm_software_service::catalog::{self as c, ContentPort};
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
     let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let audit = Arc::new(
+        audit
+            .on_runtime(runtime.clone(), tenant(), &budget.control())
+            .await
+            .unwrap(),
+    );
     let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
     let content = stored_content()
         .await
@@ -918,6 +947,7 @@ async fn admit_version(version: &resource::Version) {
                             version.label().as_str(),
                             op,
                             Some(content.as_ref()),
+                            &[],
                         )
                         .await
                         .map(|_| Ok(()))
@@ -938,7 +968,15 @@ async fn admit_version(version: &resource::Version) {
 pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = Arc::new(TestAudit(pg::audit_store_for("mdm_flow_runtime").await));
+    let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let audit = Arc::new(TestAudit(Arc::new(
+        audit
+            .on_runtime(runtime.clone(), tenant(), &budget.control())
+            .await
+            .unwrap(),
+    )));
     let catalog = c::Catalog::new(runtime.clone(), tenant(), audit.clone());
     let request =
         rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
@@ -955,6 +993,28 @@ pub async fn withdraw_version(input: &PublishInput) {
             (&catalog, &request, &op, input, audit.as_ref()),
             |(catalog, request, op, input, audit), tx| {
                 Box::pin(async move {
+                    catalog
+                        .reader()
+                        .lock_in(tx)
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    let records = rss_mdm_software_service::publication::withdrawal_records_in(
+                        tx,
+                        input.resource.as_str(),
+                        input.version.as_str(),
+                    )
+                    .await?;
+                    let partitions = records
+                        .iter()
+                        .map(|record| {
+                            rss_mdm_audit_integration::source_partition(
+                                tx.tenant_id(),
+                                "mdm",
+                                record,
+                            )
+                        })
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
                     let value = catalog
                         .version_change_in(
                             tx,
@@ -963,6 +1023,7 @@ pub async fn withdraw_version(input: &PublishInput) {
                             input.version.as_str(),
                             op,
                             None,
+                            &partitions,
                         )
                         .await
                         .map_err(|_| {
@@ -972,8 +1033,7 @@ pub async fn withdraw_version(input: &PublishInput) {
                         })?;
                     rss_mdm_software_service::publication::withdraw_version_in(
                         tx,
-                        input.resource.as_str(),
-                        input.version.as_str(),
+                        &records,
                         value["lifecycle"]["at"].as_i64().unwrap(),
                         *audit,
                         &input.actor,

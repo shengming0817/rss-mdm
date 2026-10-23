@@ -316,7 +316,7 @@ impl Host {
             store.registration(),
             case_tenant().into(),
             store
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
         ));
         let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
@@ -325,7 +325,7 @@ impl Host {
             rss_request_context::TenantId::parse(case_tenant())?,
             monotonic(),
             store
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
         )
         .await?;
@@ -333,7 +333,7 @@ impl Host {
         let (management, timeline) =
             management(&config, &store, runtime.clone(), resources).await?;
         let command_audit = store
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
         let content = {
             let _guard = crate::test_support::software::content_setup_guard().await?;
@@ -444,7 +444,7 @@ impl Host {
         crate::test_support::pki::seed_trust(&store.archive_pool(), pki.bindings()).await?;
         let associations = Arc::new(rss_mdm_device_service::Associations::new(
             store
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             rss_request_context::TenantId::parse(case_tenant())?,
             &[7; 32],
@@ -467,6 +467,7 @@ impl Host {
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
+            audit_projection_health: Default::default(),
             channels: execution.channels.clone(),
             telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
@@ -1151,7 +1152,7 @@ async fn management(
         .open(
             inventory,
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             tenant,
             Arc::new(crate::clock::SystemClock),
@@ -1161,7 +1162,7 @@ async fn management(
         .await?;
     let timeline = access.timeline(
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
         tenant,
         &flow.cursor_key,
@@ -1185,7 +1186,7 @@ pub(crate) async fn sign_certificate(
 ) -> anyhow::Result<Vec<u8>> {
     let access = Database::connect(options("mdm_access")?).await?;
     let audit = access
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     let providers = fixture_providers()?;
     let registry = rss_mdm_pki_service::registry::Registry::new(

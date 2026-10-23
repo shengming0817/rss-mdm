@@ -85,7 +85,7 @@ impl Planning {
                     Box::pin(async move {
                         service
                             .audit_store
-                            .lock_in(tx)
+                            .bind_in(tx)
                             .await
                             .map_err(PgError::from)?;
                         rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_, tx| {

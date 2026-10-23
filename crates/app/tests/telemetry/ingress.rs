@@ -748,6 +748,18 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
             );
             proof.bind_audit(&audit)?;
             let store = f.content.as_ref().unwrap();
+            let budget =
+                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let content_audit = Arc::new(
+                identity
+                    .audit
+                    .on_runtime(
+                        f.plan_runtime.clone(),
+                        identity.identity.tenant,
+                        &budget.control(),
+                    )
+                    .await?,
+            );
             let app = content::Access {
                 sessions: crate::authorization::session::SessionAuthority::new(
                     identity.identity.authority.clone(),
@@ -755,7 +767,7 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
                 ),
                 authorization: identity.access.authorization_store(),
                 runtime: f.plan_runtime.clone(),
-                audit_store: identity.audit.clone(),
+                audit_store: content_audit,
                 tenant: identity.identity.tenant,
                 content: f.content.clone(),
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(

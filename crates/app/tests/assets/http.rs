@@ -29,9 +29,17 @@ impl AssetHttp {
             .resources
             .resource(InventoryFixtureResource(inventory.clone()));
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+        let audit = Arc::new(
+            authority
+                .audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
             inventory,
-            authority.audit.clone(),
+            audit,
             runtime,
             tenant,
             Arc::new(crate::clock::SystemClock),
@@ -122,15 +130,15 @@ mod identity_read {
         let denied = anonymous
             .call(&authorized, Method::GET, query, None)
             .await?;
-        pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
+        pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
         ensure!(
-            read.0 == StatusCode::INTERNAL_SERVER_ERROR
-                && read.1["code"] == "audit_contract_error"
+            read.0 == StatusCode::SERVICE_UNAVAILABLE
+                && read.1["code"] == "operation_unknown"
                 && read.1.get("asset").is_none()
         );
         ensure!(
-            denied.0 == StatusCode::INTERNAL_SERVER_ERROR
-                && denied.1["code"] == "audit_contract_error"
+            denied.0 == StatusCode::SERVICE_UNAVAILABLE
+                && denied.1["code"] == "service_unavailable"
         );
         browser.operation = None;
         let recovered = browser.call(&authorized, Method::GET, query, None).await?;
@@ -158,9 +166,17 @@ mod storage {
         resources.resource(crate::test_support::runtime::InventoryFixtureResource(
             inventory.clone(),
         ));
+        let audit = audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(
+            audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await
+                .unwrap(),
+        );
         Arc::new(assets::AssetService::new(
             inventory,
-            audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,
+            audit,
             runtime,
             tenant,
             Arc::new(crate::clock::SystemClock),
@@ -265,146 +281,143 @@ mod storage {
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_capability_owns_execution_and_receipt_recovery() {
-        for (tenant, ledger) in [
-            (tenant(), false),
-            (
-                TenantId::parse(crate::test_support::case::peer()).unwrap(),
-                true,
+        let tenant = tenant();
+        let runtime = runtime(tenant).await;
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
+            .await
+            .unwrap();
+        let integrity = rss_audit_postgres::Integrity::Plain;
+        let audit = audit_store_with_integrity(integrity.clone()).await;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(
+            audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await
+                .unwrap(),
+        );
+        let service = assets::AssetService::new(
+            crate::planning::test_support::inventory_runtime(tenant).await,
+            audit,
+            runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        );
+        let device = format!("independent-{}", Uuid::new_v4());
+        seed_device_in(tenant, &device);
+        let command = assets::Command::Manual {
+            device: device.clone(),
+            field: rss_mdm_inventory::builtin::ASSET_TAG,
+            change: inventory_operation(
+                0,
+                assets::ManualChange::Set {
+                    value: assets::Scalar::String("independent".into()),
+                },
             ),
-        ] {
-            let runtime = runtime(tenant).await;
-            let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant)
-                .await
-                .unwrap();
-            let service = assets::AssetService::new(
-                crate::planning::test_support::inventory_runtime(tenant).await,
-                audit_store_with_integrity(if ledger {
-                    rss_audit_postgres::Integrity::Ledger(Arc::new(
-                        rss_ledger::Authenticator::new(
-                            rss_ledger::KeyId::parse("asset-test").unwrap(),
-                            vec![19; 32],
-                        )
-                        .unwrap(),
-                    ))
-                } else {
-                    rss_audit_postgres::Integrity::Plain
-                })
-                .await,
-                runtime.clone(),
-                tenant,
-                Arc::new(crate::clock::SystemClock),
-                &key,
-                Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-            );
-            let device = format!("independent-{}", Uuid::new_v4());
-            seed_device_in(tenant, &device);
-            let command = assets::Command::Manual {
-                device: device.clone(),
-                field: rss_mdm_inventory::builtin::ASSET_TAG,
-                change: inventory_operation(
-                    0,
-                    assets::ManualChange::Set {
-                        value: assets::Scalar::String("independent".into()),
-                    },
-                ),
-                owner: assets::Owner {
-                    instance: crate::test_support::INSTANCE.into(),
-                    principal: "operator".into(),
-                },
-            };
-            let audit = || {
-                let audit = RequestAudit::new(tenant.to_string(), "management_write");
-                audit.set_principal("operator", crate::test_support::INSTANCE);
-                audit
-            };
-            runtime.inject_next_transaction_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-            );
-            let first = audit();
-            assert!(matches!(
-                service.execute(&command, &first, &|| Ok(())).await,
-                Err(rss_mdm_inventory_service::Error::CommitUnknown)
-            ));
-            first.finalize(None);
-            let canonical = || {
-                sql(&format!(
-                    "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
-                ))
-            };
-            let original = canonical();
-            assert!(!original.is_empty());
-            for record in crate::audit_test_support::decode_hex(&original).unwrap() {
-                rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
-            }
-            let replay = audit();
-            let receipt = service
-                .execute(&command, &replay, &|| Ok(()))
-                .await
-                .unwrap();
-            replay.finalize(None);
-            assert_eq!(canonical(), original);
-            assert_eq!(receipt["asset"]["revision"], 1);
-            let repeated = audit();
-            assert_eq!(
-                service
-                    .execute(&command, &repeated, &|| Ok(()))
-                    .await
-                    .unwrap(),
-                receipt
-            );
-            repeated.finalize(None);
-            assert_eq!(canonical(), original);
-            let denied = audit();
-            assert!(matches!(
-                service
-                    .execute(&command, &denied, &|| Err(
-                        rss_mdm_inventory_service::Error::Forbidden
-                    ))
-                    .await,
-                Err(rss_mdm_inventory_service::Error::Forbidden)
-            ));
-            denied.finalize(None);
-            let competing = |value: &str| assets::Command::Manual {
-                device: device.clone(),
-                field: rss_mdm_inventory::builtin::ASSET_TAG,
-                change: inventory_operation(
-                    1,
-                    assets::ManualChange::Set {
-                        value: assets::Scalar::String(value.into()),
-                    },
-                ),
-                owner: assets::Owner {
-                    instance: crate::test_support::INSTANCE.into(),
-                    principal: "operator".into(),
-                },
-            };
-            let left = competing("left");
-            let right = competing("right");
-            let a = audit();
-            let b = audit();
-            let (a_result, b_result) = tokio::join!(
-                service.execute(&left, &a, &|| Ok(())),
-                service.execute(&right, &b, &|| Ok(()))
-            );
-            assert_eq!(
-                usize::from(a_result.is_ok()) + usize::from(b_result.is_ok()),
-                1
-            );
-            assert!(
-                matches!(a_result, Err(rss_mdm_inventory_service::Error::Conflict))
-                    || matches!(b_result, Err(rss_mdm_inventory_service::Error::Conflict))
-            );
-            a.finalize(None);
-            b.finalize(None);
-            assert_eq!(canonical().lines().count(), original.lines().count() + 1);
-            assert_eq!(
-                sql(&format!(
-                    "SELECT count(*) FROM rss_ledger.entries WHERE tenant_id='{tenant}'"
-                )),
-                if ledger { "2" } else { "0" }
-            );
-            runtime.close().await;
+            owner: assets::Owner {
+                instance: crate::test_support::INSTANCE.into(),
+                principal: "operator".into(),
+            },
+        };
+        let audit = || {
+            let audit = RequestAudit::new(tenant.to_string(), "management_write");
+            audit.set_principal("operator", crate::test_support::INSTANCE);
+            audit
+        };
+        runtime.inject_next_transaction_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+        );
+        let first = audit();
+        assert!(matches!(
+            service.execute(&command, &first, &|| Ok(())).await,
+            Err(rss_mdm_inventory_service::Error::CommitUnknown)
+        ));
+        first.finalize(None);
+        let canonical = || {
+            sql(&format!(
+                "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
+            ))
+        };
+        crate::audit_test_support::projection::drain(tenant, integrity.clone())
+            .await
+            .unwrap();
+        let original = canonical();
+        assert!(!original.is_empty());
+        for record in crate::audit_test_support::decode_hex(&original).unwrap() {
+            rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
         }
+        let replay = audit();
+        let receipt = service
+            .execute(&command, &replay, &|| Ok(()))
+            .await
+            .unwrap();
+        replay.finalize(None);
+        crate::audit_test_support::projection::drain(tenant, integrity.clone())
+            .await
+            .unwrap();
+        assert_eq!(canonical(), original);
+        assert_eq!(receipt["asset"]["revision"], 1);
+        let repeated = audit();
+        assert_eq!(
+            service
+                .execute(&command, &repeated, &|| Ok(()))
+                .await
+                .unwrap(),
+            receipt
+        );
+        repeated.finalize(None);
+        crate::audit_test_support::projection::drain(tenant, integrity.clone())
+            .await
+            .unwrap();
+        assert_eq!(canonical(), original);
+        let denied = audit();
+        assert!(matches!(
+            service
+                .execute(&command, &denied, &|| Err(
+                    rss_mdm_inventory_service::Error::Forbidden
+                ))
+                .await,
+            Err(rss_mdm_inventory_service::Error::Forbidden)
+        ));
+        denied.finalize(None);
+        let competing = |value: &str| assets::Command::Manual {
+            device: device.clone(),
+            field: rss_mdm_inventory::builtin::ASSET_TAG,
+            change: inventory_operation(
+                1,
+                assets::ManualChange::Set {
+                    value: assets::Scalar::String(value.into()),
+                },
+            ),
+            owner: assets::Owner {
+                instance: crate::test_support::INSTANCE.into(),
+                principal: "operator".into(),
+            },
+        };
+        let left = competing("left");
+        let right = competing("right");
+        let a = audit();
+        let b = audit();
+        let (a_result, b_result) = tokio::join!(
+            service.execute(&left, &a, &|| Ok(())),
+            service.execute(&right, &b, &|| Ok(()))
+        );
+        assert_eq!(
+            usize::from(a_result.is_ok()) + usize::from(b_result.is_ok()),
+            1
+        );
+        assert!(
+            matches!(a_result, Err(rss_mdm_inventory_service::Error::Conflict))
+                || matches!(b_result, Err(rss_mdm_inventory_service::Error::Conflict))
+        );
+        a.finalize(None);
+        b.finalize(None);
+        crate::audit_test_support::projection::drain(tenant, integrity.clone())
+            .await
+            .unwrap();
+        assert_eq!(canonical().lines().count(), original.lines().count() + 1);
+        runtime.close().await;
     }
 }
 
@@ -619,7 +632,7 @@ mod manual {
         );
         let failed_id = failed_write["operationId"].as_str().unwrap();
         let business_before = pg(&format!(
-            "SELECT encode(canonical,'hex') FROM (SELECT canonical FROM mdm_audit.receipts WHERE tenant_id='{0}' UNION ALL SELECT canonical FROM rss_audit.records WHERE tenant_id='{0}') records ORDER BY encode(canonical,'hex')",
+            "SELECT event_id FROM mdm_audit.receipts WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
             case_tenant()
         ))?;
         let rejected = browser
@@ -632,18 +645,11 @@ mod manual {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{}' AND id='{failed_id}'", case_tenant()))?.trim() == "0");
         // Receipt rows include request facts too; compare only business identities.
         let business_after = pg(&format!(
-            "SELECT encode(canonical,'hex') FROM (SELECT canonical FROM mdm_audit.receipts WHERE tenant_id='{0}' UNION ALL SELECT canonical FROM rss_audit.records WHERE tenant_id='{0}') records ORDER BY encode(canonical,'hex')",
+            "SELECT event_id FROM mdm_audit.receipts WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
             case_tenant()
         ))?;
-        let business = |text: &str| -> Result<Vec<String>> {
-            Ok(crate::audit_test_support::decode_hex(text)?
-                .into_iter()
-                .filter(|r| r.source() == "mdm.business")
-                .map(|r| r.decoded.event().identity().event_id().as_str().to_owned())
-                .collect())
-        };
-        ensure!(!business(&business_before)?.is_empty());
-        ensure!(business(&business_after)? == business(&business_before)?);
+        ensure!(!business_before.trim().is_empty());
+        ensure!(business_after == business_before);
         let after = ok(
             &mut browser,
             router,

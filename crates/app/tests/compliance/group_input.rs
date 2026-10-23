@@ -67,7 +67,9 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     )
     .await?;
     ensure!(
-        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_superseded")? == 1
+        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_superseded")
+            .await?
+            == 1
     );
     ensure!(
         pg(&format!(

@@ -47,25 +47,22 @@ pub async fn read_source<C: ManagementContentPort>(
 ) -> Result<Value, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action("management_read");
+    audit.require_request_settlement();
     audit.target(&id);
-    transaction::run(
-        &app.audit,
+    transaction::inspect(
         &app.runtime,
         app.tenant,
-        audit,
-        (&app, &auth, &id, &revision, &audit),
+        (&app, &auth, &id, &revision),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, proof, id, revision, audit) = *ctx;
+                let (app, proof, id, revision) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
                 let value = app
                     .catalog
                     .reader()
                     .source_read_in(tx, id, revision)
                     .await?;
-                app.audit
-                    .append_request_in(tx, audit, 200, "success")
-                    .await?;
+
                 Ok(value)
             })
         },
@@ -117,16 +114,15 @@ pub async fn read_version<C: ManagementContentPort>(
 ) -> Result<Value, Error> {
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action("management_read");
+    audit.require_request_settlement();
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
-    transaction::run(
-        &app.audit,
+    transaction::inspect(
         &app.runtime,
         app.tenant,
-        audit,
-        (&app, &auth, &id, &version, &audit),
+        (&app, &auth, &id, &version),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, proof, id, version, audit) = *ctx;
+                let (app, proof, id, version) = *ctx;
                 authorize(tx, proof, Permission::SoftwareRead).await?;
                 let mut value = app
                     .catalog
@@ -143,9 +139,7 @@ pub async fn read_version<C: ManagementContentPort>(
                 value["presentation"] =
                     serde_json::Value::Object(resource.resource.snapshot().presentation);
                 value["resourceRevision"] = serde_json::json!(resource.storage_revision);
-                app.audit
-                    .append_request_in(tx, audit, 200, "success")
-                    .await?;
+
                 Ok(value)
             })
         },
@@ -222,15 +216,26 @@ pub async fn write_version<C: ManagementContentPort>(
             Box::pin(async move {
                 let (app, proof, id, version, op, audit, verified) = *ctx;
                 authorize(tx, proof, permission).await?;
+                app.catalog.reader().lock_in(tx).await?;
+                let records = if matches!(op.input, VersionChange::Withdraw) {
+                    crate::publication::withdrawal_records_in(tx, id, version).await?
+                } else {
+                    Vec::new()
+                };
+                let partitions = records
+                    .iter()
+                    .map(|record| {
+                        rss_mdm_audit_integration::source_partition(tx.tenant_id(), "mdm", record)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let value = app
                     .catalog
-                    .version_change_in(tx, audit, id, version, op, verified)
+                    .version_change_in(tx, audit, id, version, op, verified, &partitions)
                     .await?;
                 if matches!(op.input, VersionChange::Withdraw) {
                     crate::publication::withdraw_version_in(
                         tx,
-                        id,
-                        version,
+                        &records,
                         value["lifecycle"]["at"].as_i64().ok_or(Error::Conflict)?,
                         app.audit.as_ref(),
                         &rss_mdm_software_release::ActorId::new(
@@ -517,8 +522,9 @@ pub async fn sources<C: ManagementContentPort>(
     }
     auth.require(Permission::SoftwareRead, None)?;
     audit.set_action("management_read");
-    transaction::run(&app.audit,&app.runtime,app.tenant,audit,(app,auth,audit,&q,after),|ctx,tx|Box::pin(async move {
-        let (app,proof,audit,q,after)=ctx;
+    audit.require_request_settlement();
+    transaction::inspect(&app.runtime, app.tenant,(app,auth,&q,after),|ctx,tx|Box::pin(async move {
+        let (app,proof,q,after)=ctx;
         authorize(tx,proof,Permission::SoftwareRead).await?;
         let tenant=tx.tenant_id().to_string();let after=after.clone();let source=q.source.clone();let protocol=q.protocol.clone();let state=q.state.clone();let limit=q.limit;
         let mut keys=tx.with_connection(move|c|Box::pin(async move {
@@ -529,7 +535,7 @@ pub async fn sources<C: ManagementContentPort>(
         let next=if more{keys.last().map(serde_json::to_string).transpose().map_err(|_|Error::Malformed)?}else{None};
         let mut items=Vec::new();for (id,revision) in keys {items.push(app.catalog.reader().source_read_in(tx,&id,&revision).await?);}
         authorize(tx,proof,Permission::SoftwareRead).await?;
-        app.audit.append_request_in(tx,audit,200,"success").await?;
+
         Ok(serde_json::json!({"items":items,"nextCursor":next}))
     }),TransactionOwner::SoftwareCatalog).await
 }

@@ -4,7 +4,6 @@ use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     queries::Queries,
-    transaction::*,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_policy::Action;
@@ -38,7 +37,7 @@ pub async fn preview(
     authorize_policy_snapshot(proof.authorization()?, proof, &input.definition)?;
     let request = PublicationInput::try_from(&input.definition.action)?;
     let verified = s.inputs.prepare_resource(request.resource()).await?;
-    run(&s.audit_store,&s.runtime,s.tenant,audit,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
+    crate::transaction::inspect(&s.runtime, s.tenant,(s,proof,audit,input,verified.as_ref()),|ctx,tx|Box::pin(async move {
         let (s,proof,audit,input,verified)=*ctx;
         let authorization=crate::action_admission::current(tx,proof).await?;
         authorization.require(proof,Permission::PolicyRead,None)?;
@@ -46,7 +45,7 @@ pub async fn preview(
         authorize_policy_snapshot(&authorization,proof,&input.definition)?;
         if matches!(input.definition.action, Action::UnmanageDevice {..}) {
             let preview=super::lifecycle::preview_in(s,tx,input).await?;
-            s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             return Ok(preview);
         }
         let prepared = s.inputs.preview_in(tx, &PublicationInput::try_from(&input.definition.action)?, verified, proof, &authorization).await?;
@@ -97,7 +96,7 @@ pub async fn preview(
             if task_admission.as_ref().is_some_and(|a|!software::TaskAdmission::is_eligible(a)) {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("target_unavailable".into());}
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"eligibility":object.admission,"taskAdmission":task_admission}));
         }
-        s.audit_store.append_request_in(tx,audit,200,"success").await?;
+        audit.require_request_settlement();
         super::records::decode(json!({"action":input.definition.action,"scopeResult":result,"items":items,"nextCursor":next}))
     })).await.map_err(Into::into)
 }

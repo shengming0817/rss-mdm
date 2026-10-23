@@ -54,9 +54,10 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     assert_eq!(facts["projections"].as_array().unwrap().len(), 1);
     assert_eq!(facts["slots"].as_array().unwrap().len(), 1);
     assert!(facts["slots"][0]["operation"].is_null());
-    assert_publication_audit(&p, &input.record, "applied");
+    assert_publication_audit(&p, &input.record, "applied").await;
     assert_eq!(
         audit_records()
+            .await
             .iter()
             .filter(|r| r.event().facts().action().as_str() == "software_result"
                 && r.event().facts().resource().id().as_str() == input.record.value())
@@ -79,6 +80,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     assert_eq!(server.state.lock().unwrap().posts, 0);
     assert_eq!(
         audit_records()
+            .await
             .iter()
             .filter(|r| r.event().facts().action().as_str() == "software_result"
                 && r.event().facts().resource().id().as_str() == input.record.value())
@@ -104,7 +106,7 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         )),
         "1"
     );
-    assert_publication_audit(&p, &input.record, "applied");
+    assert_publication_audit(&p, &input.record, "applied").await;
     assert_eq!(
         committed(),
         before,

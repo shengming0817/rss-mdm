@@ -113,7 +113,6 @@ async fn change_authorization<T: serde::Serialize + Sync>(
     .map_err(Error::from)?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let context = ChangeContext {
         proof,
         table,
@@ -127,7 +126,7 @@ async fn change_authorization<T: serde::Serialize + Sync>(
         .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (store, context, fact),
             |(store, context, fact), tx| {
                 Box::pin(async move {
@@ -458,7 +457,6 @@ pub(crate) async fn initialize_verified_user(
     };
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("authorization_initialize:{}:{}", user.principal_id, key),
@@ -471,7 +469,7 @@ pub(crate) async fn initialize_verified_user(
     let attempt = store
         .write(
             rss_request_context::TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (store, &user, &operation, audit, fact),
             |(store, user, operation, audit, fact), tx| {
                 Box::pin(async move {

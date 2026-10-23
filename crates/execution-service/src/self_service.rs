@@ -470,7 +470,7 @@ impl ExecutionService {
         if input.after.is_some_and(|id| id.is_nil()) {
             return Err(Error::Malformed);
         }
-        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit), |ctx, tx| Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, input, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, input, audit) = *ctx;
             storage::lock(tx, p.device()).await?;
             crate::actions::agent::principal(service, tx, p).await?;
@@ -490,7 +490,7 @@ impl ExecutionService {
                 items.push(wire::SelfServiceDirectoryItem { policy_id: id, policy_revision: policy.revision as u64, policy_version: policy.version, subject, self_service: metadata, task: prepared.task });
             }
             if let Some(proof) = proof { proof.check_live()?; }
-            service.audit_store.append_request_in(tx, audit, 200, "success").await?;
+            audit.require_request_settlement();
             json(&wire::SelfServiceDirectoryResponse { items, next_cursor: next, as_of: now })
         })).await
     }
@@ -516,8 +516,13 @@ impl ExecutionService {
             return Err(Error::Malformed);
         }
         audit.operation(input.operation_id, "command_accept");
-        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit), |ctx, tx| Box::pin(async move {
-            let (service, p, proof, input, audit) = *ctx;
+        let id = Uuid::new_v4();
+        let partition =
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", &id.to_string())
+                .map_err(Error::from)?;
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit, id, &partition), |ctx, tx| Box::pin(async move {
+            let (service, p, proof, input, audit, id, partition) = *ctx;
+            crate::transaction::lock_authority(service,tx).await?;
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let policy = crate::sources::storage::read_in(&service.policy_reader, tx, input.policy_id).await?.ok_or(Error::NotFound)?;
             if policy.version != input.policy_version || policy.revision as u64 != input.policy_revision { return Err(Error::Conflict.into()); }
@@ -528,6 +533,7 @@ impl ExecutionService {
             let subject = access::qualify_in(service, tx, config, &basis).await?.ok_or(Error::Forbidden)?;
             let actor = actor(p, &subject); let hash = fingerprint(input)?; let event_key = format!("{actor}:{}", input.operation_id); let now = storage::now(tx).await?;
             let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
+            service.audit_store.prepare_in(tx,audit,std::slice::from_ref(partition)).await?;
             if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {
                 let run = db::load_run(tx, checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?).await?;
                 crate::actions::agent::belongs(&run, p)?;
@@ -541,7 +547,6 @@ impl ExecutionService {
             let decision = wire::TaskAuthorization::SelfService { request_id: input.operation_id, subject, source: input.source, policy_id: policy.id, policy_revision: input.policy_revision, policy_version: policy.version, allow_ai, risk_level: risk, confirmed: input.confirmed };
             checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
             let invocation = Invocation { authorization: decision, parameters: prepared.parameters, basis, execution_target: prepared.execution_target };
-            let id = Uuid::new_v4();
             production::queue_run_in(service, tx, production::RunInput { triggered_at: None, source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
             if let Some(effect) = prepared.effect { crate::actions::software::persist_effect_in(tx, id, &effect).await?; }
             let tenant = tx.tenant_id().to_string(); let document = json(&invocation)?;
@@ -565,7 +570,7 @@ impl ExecutionService {
         if request.is_nil() {
             return Err(Error::Malformed);
         }
-        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, request, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, request, audit) = *ctx;
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let mut actors = vec![actor(p, &wire::SelfServiceSubject::Device {})];
@@ -607,7 +612,7 @@ impl ExecutionService {
                 _ => None,
             };
             if let Some(proof) = proof { proof.check_live()?; }
-            service.audit_store.append_request_in(tx, audit, 200, "success").await?;
+            audit.require_request_settlement();
             json(&wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
         })).await
     }

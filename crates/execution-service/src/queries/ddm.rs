@@ -40,11 +40,9 @@ impl Queries {
         }
         audit.target_device(device);
         audit.set_action("command_read");
-        crate::transaction::run(
-            &self.audit_store,
+        crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            audit,
             (self, proof, device, query, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -86,9 +84,7 @@ impl Queries {
                         if q.cursor.is_some() {
                             return Err(Error::Conflict.into());
                         }
-                        s.audit_store
-                            .append_request_in(tx, audit, 200, "success")
-                            .await?;
+                        audit.require_request_settlement();
                         return Ok(Page {
                             items: Vec::new(),
                             next_cursor: None,
@@ -204,9 +200,7 @@ impl Queries {
                         None
                     };
                     p.check_live()?;
-                    s.audit_store
-                        .append_request_in(tx, audit, 200, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok(Page {
                         items,
                         next_cursor: next,

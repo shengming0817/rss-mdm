@@ -85,31 +85,31 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     first.operation = Some(Uuid::new_v4());
     let mut second = other.clone();
     second.operation = Some(Uuid::new_v4());
-    // Block the tenant's real quota lock. One HTTP transaction must reach it
-    // while the other waits on that transaction's earlier Audit head lock.
+    // Hold publication until both enrollment producers overlap; quota must follow it.
     let mut root =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
     let mut holder = root.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2670))")
-        .bind(case_tenant())
-        .execute(&mut *holder)
-        .await?;
+    crate::Database::configure_transaction(&mut holder,case_tenant()).await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(&mut holder,rss_request_context::TenantId::parse(case_tenant())?).await?;
     let release = async {
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 let competing: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_access' AND audit.usename='mdm_access' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%pg_advisory_xact_lock(hashtextextended($1,2670))%' AND audit.query LIKE '%rss_audit.reserve%' AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)))"
+                    "WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*)=2 FROM blocked"
                 ).fetch_one(&mut *holder).await?;
                 if competing { return Ok::<_, sqlx::Error>(()); }
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *holder).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await;
-        // Release on both success and timeout so neither HTTP request is stranded.
+        let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2670))")
+            .bind(case_tenant()).fetch_one(&mut *holder).await?;
+        // Always release before asserting, so both HTTP requests can terminate.
         holder.rollback().await?;
+        ensure!(free,"registration admission acquired quota before publication watermark");
         observed.context(
-            "both self-enrollment requests must overlap in the actual Audit/quota lock chain",
+            "both self-enrollment requests must overlap in the actual quota lock chain",
         )??;
         Ok::<_, anyhow::Error>(())
     };
@@ -503,7 +503,8 @@ async fn channel_admission_is_independent_and_replayable() -> Result<()> {
             ensure!(
                 audit_count(|r| r.source() == "mdm.business"
                     && r.operation() == Some(operation.as_str())
-                    && r.result() == "success")?
+                    && r.result() == "success")
+                .await?
                     == 1
             );
 

@@ -198,12 +198,11 @@ async fn change(
     let fingerprint = rss_mdm_registration_service::enrollment::digest(&(id, &input));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (app, proof, audit, id, operation, &input, &fingerprint),
             |(app, proof, audit, id, operation, input, fingerprint), tx| {
                 Box::pin(async move {

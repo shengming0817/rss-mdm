@@ -190,8 +190,8 @@ async fn report_inner(
         Sha256::digest(input.canonical().map_err(|_| Error::Malformed)?).into()
     };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-    let control = budget.control();
-    let attempt = app.audit_store.write(principal.tenant(), &control,
+    let attempt = app.audit_store.write(principal.tenant(),
+            &budget.source_control(),
         (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
         |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),

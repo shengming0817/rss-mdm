@@ -371,7 +371,7 @@ pub(crate) async fn grant_fault(
     _router: &Router,
     peer: &BootstrapPeer,
     input: &Value,
-    fault: Option<rss_audit_postgres::PgFault>,
+    fault: Option<rss_transactional_messaging_postgres::PgTransactionFault>,
 ) -> Result<GrantResponse> {
     let routers = crate::api::from_state(
         peer.app.clone(),

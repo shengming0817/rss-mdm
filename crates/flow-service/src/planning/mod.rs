@@ -164,6 +164,7 @@ impl Planning {
         admit_in(tx).await?;
         crate::transaction::lock(tx).await?;
         authorize()?;
+        self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = storage::identity(command, audit)?;
         if let Some(id) = operation
             && let Some(old) =

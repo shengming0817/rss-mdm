@@ -84,11 +84,10 @@ async fn prepare(
     audit.identify_service("service:certificate-renewal");
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = store
         .write(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (store, apple, tenant, now, &candidate, &audit),
             |(store, apple, tenant, now, candidate, audit), tx| {
                 Box::pin(async move {
@@ -323,8 +322,8 @@ pub async fn challenge(
 ) -> Result<bool, Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, csr, secret, transaction, provisioner, issuer, audit),
+    let outcome = app.audit_store.write(app.identity.tenant(),
+            &budget.source_control(), (app, csr, secret, transaction, provisioner, issuer, audit),
         |(app, csr, secret, transaction, provisioner, issuer, audit), tx| Box::pin(async move {
             let replayed = tx.with_connection_context(&mut (*app, *csr, *secret, *transaction, *provisioner, *issuer, *audit), |(app, csr, secret, transaction, provisioner, issuer, audit), c| Box::pin(async move {
                 let app = *app; let csr = *csr; let secret = *secret; let transaction = *transaction; let provisioner=*provisioner; let issuer=*issuer; let audit = *audit;
@@ -377,12 +376,11 @@ pub async fn notify(
 ) -> Result<bool, Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (app, leaf, csr, transaction, audit),
             |(app, leaf, csr, transaction, audit), tx| {
                 Box::pin(async move {
@@ -492,8 +490,8 @@ pub async fn activate(
     let audit = RequestAudit::new(app.identity.tenant().to_string(), "apple_renewal");
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, leaf, udid, &audit),
+    let outcome = app.audit_store.write(app.identity.tenant(),
+            &budget.source_control(), (app, leaf, udid, &audit),
         |(app, leaf, udid, audit), tx| Box::pin(async move {
             let changed = tx.with_connection_context(&mut (*app, *leaf, *udid, *audit),
                 |(app, leaf, udid, audit), c| Box::pin(async move {
@@ -559,8 +557,8 @@ pub async fn management(
 ) -> Result<Option<Vec<u8>>, Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control, (app, p, d, bytes, audit),
+    let outcome = app.audit_store.write(app.identity.tenant(),
+            &budget.source_control(), (app, p, d, bytes, audit),
         |(app, p, d, bytes, audit), tx| Box::pin(async move {
             let result = tx.with_connection_context(&mut (*p, *d, *bytes, app.protection.clone()), |(p, d, bytes, protection), c| Box::pin(async move {
                 let p = *p; let d = *d; let bytes = *bytes;
@@ -596,7 +594,7 @@ pub async fn management(
     Ok::<_, Error>(result)
             })).await?;
             if result.is_some() {
-                app.audit_store.append_request(tx, audit, 200, "success").await.map_err(Error::from)?;
+                audit.require_request_settlement();
                 audit.mark_commit_started();
             }
             Ok(result)

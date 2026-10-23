@@ -153,7 +153,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
         audit_count(|r| r.source() == "mdm.business"
             && r.operation() == Some(browser.operation.unwrap().to_string().as_str())
             && r.action() == "credential_revoke"
-            && r.result() == "success")?
+            && r.result() == "success").await?
             == 1
     );
     Ok(())

@@ -150,8 +150,8 @@ impl Management {
         a.operation(input.operation_id, "windows_entra_policy");
         let digest = crate::enrollment::digest(input);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-        let control = budget.control();
-        let result=self.audit.write(self.tenant,&control,(self,p,input,a,&digest),|(this,p,input,a,digest),tx|Box::pin(async move {
+        let result=self.audit.write(self.tenant,
+            &budget.source_control(),(self,p,input,a,&digest),|(this,p,input,a,digest),tx|Box::pin(async move {
             let (this,p,input,a,digest)=(*this,*p,*input,*a,*digest);
             let (value,replayed)=tx.with_connection_context(&mut (p,input,digest),|(p,input,digest),c|Box::pin(async move {
                 let (p,input,digest)=(*p,*input,*digest);

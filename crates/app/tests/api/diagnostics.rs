@@ -9,7 +9,9 @@ async fn management_audit_failure_logs_preserve_action_and_redaction() {
     use tower::ServiceExt;
     const CHILD: &str = "MDM_AUDIT_LOG_TEST";
     if std::env::var_os(CHILD).is_some() {
-        let (pool, audit_store) = crate::audit_test_support::request_store().await.unwrap();
+        let (pool, runtime, audit_store) =
+            crate::audit_test_support::request_store().await.unwrap();
+        runtime.close().await;
         pool.close().await;
         let admission = Arc::new(tokio::sync::Semaphore::new(0));
         let entered = Arc::new(AtomicUsize::new(0));
@@ -238,7 +240,7 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
     use rss_mdm_audit_integration::{RequestAudit, WriteOutcome as W};
     use rss_mdm_management_http::Error as E;
     use tower::ServiceExt;
-    let (pool, store) = crate::audit_test_support::request_store().await?;
+    let (pool, runtime, store) = crate::audit_test_support::request_store().await?;
     let request = || {
         Request::builder()
             .uri(protocol.path())
@@ -258,6 +260,7 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
         .oneshot(request())
         .await?;
     assert_eq!(healthy.status(), StatusCode::OK);
+    runtime.close().await;
     pool.close().await;
     let operation = uuid::Uuid::new_v4();
     for (outcome, original, expected) in [

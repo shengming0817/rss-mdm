@@ -171,9 +171,9 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .is_success(),
         "exported BST must not authenticate"
     );
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    host.app.audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let unknown = post(wire.clone()).send().await?;
     ensure!(
         unknown.status() == StatusCode::INTERNAL_SERVER_ERROR,

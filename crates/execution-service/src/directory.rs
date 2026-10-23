@@ -61,7 +61,7 @@ impl crate::queries::Queries {
         proof
             .authorization()?
             .devices_for(proof, Permission::OperationRead)?;
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,page,audit),|ctx,tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,page,audit),|ctx,tx|Box::pin(async move {
             let (s,a,page,audit)=*ctx;
             let current=crate::action_admission::current(tx,a).await?;
             let allowed=current.devices_for(a,Permission::OperationRead)?.map(|v|v.into_iter().collect::<Vec<_>>());
@@ -100,7 +100,7 @@ impl crate::queries::Queries {
                 items.push(ExecutionSummary { metadata: item.metadata, evidence });
             }
             a.check_live()?;
-            s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             Ok(Directory { items, next_cursor: raw.next_cursor, statistics: raw.statistics, as_of: raw.as_of })
         })).await.map_err(Into::into)
     }

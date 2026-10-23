@@ -515,6 +515,11 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         ),
         "policy storage failure was reported as authorization"
     );
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let canonical: Vec<u8> = sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.request' ORDER BY position DESC LIMIT 1").bind(case_tenant()).fetch_one(&mut fault).await?;
     let record = rss_audit_core::decode_untrusted(&canonical)?;
     let payload: Value = serde_json::from_slice(record.event().context().payload().as_bytes())?;
@@ -812,9 +817,9 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     );
 
     // A durable commit with a lost acknowledgement must remain unknown at the ingress.
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    host.app.audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let committed_key = Uuid::new_v4();
     let committed = update(1, committed_key);
     let (status, body) = admin
@@ -831,9 +836,9 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     );
 
     // A conflict drives rollback; lost rollback acknowledgement must not become a conflict.
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::RollbackFailedAfterAck);
+    host.app.audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::RollbackFailedAfterAck,
+    );
     let (status, body) = admin
         .call(
             &host.browser,
@@ -848,7 +853,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     );
     ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
 
-    // Missing runtime privileges are an audit contract failure, before a policy write starts.
+    // Missing source receipt privileges prevent the policy transaction from committing.
     owner
         .execute("REVOKE SELECT ON mdm_audit.receipts FROM mdm_access")
         .await?;
@@ -865,7 +870,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
         .await?;
     let (status, body) = failure?;
     ensure!(
-        status == StatusCode::INTERNAL_SERVER_ERROR && body["code"] == "audit_contract_error",
+        status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "service_unavailable",
         "contract: {status} {body}"
     );
     ensure!(admin.call(&host.browser, Method::GET, path, None).await?.1["revision"] == 2);
@@ -875,14 +880,14 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
         "e-{:x}",
         Sha256::digest(format!("windows-entra-policy:{key}").as_bytes())
     );
-    let original: Vec<u8> = sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+    let original: Vec<u8> = sqlx::query_scalar("SELECT source_bytes FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
         .bind(case_tenant()).bind(&event).fetch_one(&mut owner).await?;
-    sqlx::query("UPDATE mdm_audit.receipts SET canonical=decode('01','hex') WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+    sqlx::query("UPDATE mdm_audit.receipts SET source_bytes=decode('01','hex') WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
         .bind(case_tenant()).bind(&event).execute(&mut owner).await?;
     let failure = admin
         .call(&host.browser, Method::PUT, path, Some(input))
         .await;
-    sqlx::query("UPDATE mdm_audit.receipts SET canonical=$3 WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+    sqlx::query("UPDATE mdm_audit.receipts SET source_bytes=$3 WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
         .bind(case_tenant()).bind(&event).bind(original).execute(&mut owner).await?;
     let (status, body) = failure?;
     ensure!(
@@ -894,9 +899,9 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     // The business commit also makes request-settlement admission fail. Completion must
     // preserve the original unknown result instead of replacing it with audit_contract_error.
     owner.execute("CREATE FUNCTION mdm_audit.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN REVOKE SELECT ON mdm_audit.receipts FROM mdm_access; RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER break_management_settlement AFTER UPDATE ON mdm_windows.entra_policy DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mdm_audit.break_management_settlement()").await?;
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    host.app.audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let unknown = update(2, Uuid::new_v4());
     let failure = admin
         .call(&host.browser, Method::PUT, path, Some(unknown.clone()))

@@ -346,7 +346,7 @@ async fn native_accounts(
             Some(json!({"login":"managed-user","password":PASSWORD})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
+    pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();

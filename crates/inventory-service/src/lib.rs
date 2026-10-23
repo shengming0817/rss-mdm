@@ -43,3 +43,6 @@ pub async fn admit_storage_in(
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 pub const GROUP_SELECTIONS_SQL: &str = include_str!("../schema/group-selections.sql");
+
+/// Current scalar sources and hardware-key qualification used by association writers.
+pub const SOURCE_FACTS_SQL: &str = include_str!("../schema/source-facts.sql");

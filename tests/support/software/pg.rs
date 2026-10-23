@@ -94,6 +94,9 @@ pub async fn audit_store_for(role: &str) -> Arc<rss_mdm_audit_integration::Audit
         rss_mdm_audit_integration::AuditStore::new(
             pool,
             rss_audit_postgres::Integrity::Plain,
+            runtime_at(None, role).await,
+            tenant(),
+            Default::default(),
             &control,
         )
         .await
@@ -144,7 +147,12 @@ pub fn cutoff() -> Deadline {
     Deadline::from_timeout(&Timer, Duration::from_secs(60)).unwrap()
 }
 
-pub fn audit_records() -> Vec<rss_audit_core::DecodedAuditV1> {
+#[path = "../audit_projection.rs"]
+pub(crate) mod projection;
+pub async fn audit_records() -> Vec<rss_audit_core::DecodedAuditV1> {
+    projection::drain(tenant(), rss_audit_postgres::Integrity::Plain)
+        .await
+        .unwrap();
     sql(&format!("SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", tenant()))
         .lines()
         .filter(|line| !line.is_empty())

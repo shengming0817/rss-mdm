@@ -373,8 +373,8 @@ async fn complete(
     )
     .credential(leaf.fingerprint())?;
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
-    let result = app.audit_store.write(parent.tenant(),&control,(app,parent,id,intent,certificate,audit,&credential,digest,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,digest,facts),tx|Box::pin(async move {
+    let result = app.audit_store.write(parent.tenant(),
+            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,digest,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,digest,facts),tx|Box::pin(async move {
         let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
             crate::device::store::revalidate_management(c,parent).await?;

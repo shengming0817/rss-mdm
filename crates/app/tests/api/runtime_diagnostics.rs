@@ -32,7 +32,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         r.action() == "runtime_diagnostics_read"
                             && r.status() == 200
                             && r.actor() == Some(subject.as_str())
-                    })?;
+                    })
+                    .await?;
                     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
                     ensure!(status == StatusCode::OK, "{status} {value}");
                     ensure!(value.as_object().unwrap().len() == 4);
@@ -41,6 +42,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         &value["components"],
                         &[
                             "inventory",
+                            "audit_source",
+                            "audit_projection",
                             "identity_audit",
                             "automation",
                             "execution_recovery",
@@ -49,7 +52,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                     ensure!(
                         audit_count(|r| r.action() == "runtime_diagnostics_read"
                             && r.status() == 200
-                            && r.actor() == Some(subject.as_str()))?
+                            && r.actor() == Some(subject.as_str()))
+                        .await?
                             == before + 1
                     );
                     set_management_grants(&subject, json!([])).await?;
@@ -110,6 +114,8 @@ impl Fixture {
             execution.providers.clone(),
         ));
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            audit_store: flow.planning.audit_store.clone(),
+            mdm_audit: Default::default(),
             channels: execution.channels.clone(),
             pki: pki.clone(),
             registration: Arc::new(crate::registration_channels::Channels {

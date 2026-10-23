@@ -1,4 +1,5 @@
-//! Test assertions decode the component's canonical records, including their source identity.
+pub(crate) use crate::publication_support::pg::projection;
+// Test assertions decode the component's canonical records, including their source identity.
 use rss_audit_core::DecodedAuditV1;
 use serde_json::Value;
 
@@ -55,6 +56,7 @@ impl Record {
     }
 }
 pub(crate) async fn read(connection: &mut sqlx::PgConnection) -> anyhow::Result<Vec<Record>> {
+    project_case().await?;
     let rows: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY tenant_id,position")
             .fetch_all(connection)
@@ -78,6 +80,7 @@ pub(crate) fn decode_hex(lines: &str) -> anyhow::Result<Vec<Record>> {
 
 pub(crate) async fn request_store() -> anyhow::Result<(
     sqlx::PgPool,
+    std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
     std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
 )> {
     use rss_audit_postgres::{Control, Integrity};
@@ -101,19 +104,131 @@ pub(crate) async fn request_store() -> anyhow::Result<(
         let cutoff = deadline;
         Control::new(&timer, cutoff, cutoff, &cancel)
     };
-    let store = AuditStore::new(pool.clone(), Integrity::Plain, &control).await?;
-    Ok((pool, std::sync::Arc::new(store)))
+    let tenant = rss_request_context::TenantId::parse(crate::test_support::case::tenant())?;
+    let runtime = source_runtime(&pool, tenant).await?;
+    let store = AuditStore::new(
+        pool.clone(),
+        Integrity::Plain,
+        runtime.clone(),
+        tenant,
+        Default::default(),
+        &control,
+    )
+    .await?;
+    Ok((pool, runtime, std::sync::Arc::new(store)))
 }
 
-pub(crate) fn audit_records() -> anyhow::Result<Vec<crate::audit_test_support::Record>> {
+async fn project_case() -> anyhow::Result<()> {
+    let mode = match std::env::var("MDM_TEST_CONFIG") {
+        Ok(path) => {
+            let config: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+            serde_json::from_value::<crate::config::AuditConfig>(config["audit"].clone())?
+                .integrity()?
+        }
+        Err(_) => rss_audit_postgres::Integrity::Plain,
+    };
+    projection::drain(
+        rss_request_context::TenantId::parse(crate::test_support::runtime::case_tenant())?,
+        mode,
+    )
+    .await
+}
+
+pub(crate) async fn audit_records() -> anyhow::Result<Vec<crate::audit_test_support::Record>> {
+    project_case().await?;
     crate::audit_test_support::decode_hex(&crate::test_support::process::pg(&format!(
         "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position",
         TENANT = crate::test_support::runtime::case_tenant()
     ))?)
 }
 
-pub(crate) fn audit_count(
+pub(crate) async fn audit_count(
     predicate: impl Fn(&crate::audit_test_support::Record) -> bool,
 ) -> anyhow::Result<usize> {
-    Ok(audit_records()?.iter().filter(|r| predicate(r)).count())
+    Ok(audit_records()
+        .await?
+        .iter()
+        .filter(|r| predicate(r))
+        .count())
+}
+
+// Existing application fixtures share the case tenant and installed storage identity.
+impl crate::Database {
+    pub(crate) async fn audit_store_fixture(
+        &self,
+        config: &crate::config::AuditConfig,
+    ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, crate::Error> {
+        let tenant = rss_request_context::TenantId::parse(crate::test_support::case::tenant())
+            .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
+        let runtime = self
+            .fixture_source_runtime
+            .get_or_try_init(|| async { source_runtime(&self.archive_pool(), tenant).await })
+            .await
+            .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
+        self.audit_store(config, runtime.clone(), tenant, Default::default())
+            .await
+    }
+}
+
+pub(crate) async fn source_runtime(
+    pool: &sqlx::PgPool,
+    tenant: rss_request_context::TenantId,
+) -> anyhow::Result<std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>> {
+    use rss_transactional_messaging::fence::{Epoch, ExecutionBinding, StorageIdentity};
+    use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
+    let options = pool.connect_options();
+    let ca = match std::env::var("PG_CA_FILE") {
+        Ok(path) => std::fs::read(path)?,
+        Err(_) => {
+            let fixture: Value =
+                serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
+            std::fs::read(
+                fixture["ca"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("fixture CA"))?,
+            )?
+        }
+    };
+    let password = if options.get_username() == "mdm_access" {
+        "access-fixture"
+    } else {
+        "runtime-fixture"
+    };
+    let config = PgConfig::new(
+        options.get_host(),
+        options.get_port(),
+        options
+            .get_database()
+            .ok_or_else(|| anyhow::anyhow!("fixture database"))?,
+        options.get_username(),
+        PgPassword::new(password),
+        PgPrivateCa::from_pem(ca)?,
+    );
+    let mut tenants = vec![(tenant, Epoch::new(1)?)];
+    if tenant.to_string() == crate::test_support::case::tenant() {
+        let peer = rss_request_context::TenantId::parse(crate::test_support::case::peer())?;
+        if peer != tenant {
+            tenants.push((peer, Epoch::new(1)?));
+        }
+    }
+    if options.get_username() == "mdm_access" {
+        let management: String =
+            sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")
+                .fetch_one(pool)
+                .await?;
+        let management = rss_request_context::TenantId::parse(&management)?;
+        if !tenants.iter().any(|(tenant, _)| *tenant == management) {
+            tenants.push((
+                management,
+                Epoch::new(rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH)?,
+            ));
+        }
+    }
+    let binding = ExecutionBinding::new(StorageIdentity::new([1; 16], [2; 16])?, tenants)?;
+    let runtime = if options.get_username() == "mdm_command_runtime" {
+        PgRuntime::connect(config, crate::lifecycle::RuntimeTimer, binding).await?
+    } else {
+        PgRuntime::connect_producer(config, crate::lifecycle::RuntimeTimer, binding).await?
+    };
+    Ok(std::sync::Arc::new(runtime))
 }

@@ -72,12 +72,11 @@ pub(super) async fn start(
     let previous = cookie(&headers).ok();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (&app, &tenant, id, &name, &secret, &previous, &audit),
             |(app, tenant, id, name, secret, previous, audit), tx| {
                 Box::pin(async move {
@@ -211,12 +210,11 @@ pub(super) async fn finish(
     let tenant = proof.tenant_id().to_owned();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (&app, &proof, &tenant, id, &secret, &audit),
             |(app, proof, tenant, id, secret, audit), tx| {
                 Box::pin(async move {

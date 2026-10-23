@@ -127,7 +127,7 @@ impl Fixture {
             .await?,
         );
         let access = database(&base).await?;
-        let audit = access.audit_store(&config.audit).await?;
+        let audit = access.audit_store_fixture(&config.audit).await?;
         let (router, execution, plan_runtime, _, resources) = crate::api::application_fixture(
             config,
             Arc::new(crate::clock::SystemClock),

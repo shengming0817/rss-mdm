@@ -148,13 +148,13 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                     let mut observe = input(3, false);
                     observe["intent"]["capabilities"]["smtp"] = json!({"kind":"configure"});
                     put(&mut admin, &restarted, PATH, observe).await?;
-                    let before = audit_count(|r| r.action() == "first_use_read")?;
+                    let before = audit_count(|r| r.action() == "first_use_read").await?;
                     let progress = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
                     ensure!(progress["steps"].as_array().unwrap().iter().any(|s| s["id"]
                         == "smtp"
                         && !s["evidence"].as_array().unwrap().is_empty()));
                     ensure!(
-                        audit_count(|r| r.action() == "first_use_read")? == before + 1,
+                        audit_count(|r| r.action() == "first_use_read").await? == before + 1,
                         "owner observations changed the enclosing Audit action"
                     );
                     // A valid peer-tenant credential cannot be used against this host.
@@ -204,7 +204,7 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
             let digest = store::fingerprint(&proof, &update)?;
             fixture
                 .audit
-                .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+                .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
             ensure!(matches!(
                 store::update(&fixture.audit, &proof, &audit, id, &update, &digest, None).await,
                 Err(Error::CommitUnknown)
@@ -255,7 +255,7 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
         proof.bind_audit(&conflict_audit)?;conflict_audit.operation(conflict_id,"first_use_update");
         let fact=rss_mdm_audit_integration::Fact::business(&conflict_audit,&format!("first-use:{}:{}:{conflict_id}",proof.instance_id(),proof.principal_id()),b"different-request",200,"success",None)?;
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
-        let staged=fixture.audit.write(fixture.identity.tenant,&budget.control(),(&fixture.audit,&fact),|(store,fact),tx|Box::pin(async move {store.append(tx,fact,false).await})).await;
+        let staged=fixture.audit.write(fixture.identity.tenant,&budget.source_control(),(&fixture.audit,&fact),|(store,fact),tx|Box::pin(async move {store.append(tx,fact,false).await})).await;
         ensure!(staged.fold(|_|true,|_|false,|_|false,|_|false,|_|false,|_|false));
         let conflict_input:Update=serde_json::from_value(input(1,false))?;
         let conflict_digest=store::fingerprint(&proof,&conflict_input)?;

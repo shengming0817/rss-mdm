@@ -407,8 +407,9 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
             let audit = RequestAudit::new(case_tenant().into(), "user_attribute_definition_change");
             p.bind_audit(&audit)?;
             audit.operation(input.operation_id, "user_attribute_definition_change");
-            f.audit
-                .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+            f.audit.inject_next_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            );
             ensure!(matches!(
                 store::change(&f.audit, &p, &audit, id, &input).await,
                 Err(Error::CommitUnknown)
@@ -461,7 +462,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                 .audit
                 .write(
                     f.identity.tenant,
-                    &budget.control(),
+                    &budget.source_control(),
                     (&f.audit, &fact),
                     |(store, fact), tx| {
                         Box::pin(async move { store.append(tx, fact, false).await })

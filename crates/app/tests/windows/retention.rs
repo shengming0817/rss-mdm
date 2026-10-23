@@ -83,6 +83,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         .await?;
     ensure!(response.status() == StatusCode::OK);
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    crate::audit_test_support::audit_records().await?;
     let before = history(&mut pg, tenant).await?;
     let live: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid",
@@ -108,7 +109,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     );
     tx.rollback().await?;
     let audit_store = store
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     // Only the deadline query uses ceil(numeric); other empty work succeeds.
     pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
@@ -239,7 +240,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         rss_mdm_windows_channel::retention::registration(
             restarted.windows_store(),
             restarted
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             tenant.to_owned(),
             host.notifications

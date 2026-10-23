@@ -26,53 +26,21 @@ impl ExecutionService {
     ) -> std::result::Result<Value, Error> {
         input.action.confirmation()?;
         proof.require(input.action.kind().permission(), Some(device))?;
-        let failure = Mutex::new(None);
-        let timer = recovery::Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let attempt = self
-            .runtime
-            .local_tx_with_context(
-                self.tenant,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                    control.remaining(),
-                ),
-                (
-                    self,
-                    target(self.tenant, device).clone(),
-                    (self, proof, device, input, audit, &failure),
-                ),
-                |(service, target, context), tx| {
-                    Box::pin(async move {
-                        if let Err(error) = service.audit_store.lock_in(tx).await {
-                            return Err(rejection(Error::from(error).into(), context.5));
-                        }
-                        rss_reconcile_postgres::messaging::wake_in(
-                            tx,
-                            target,
-                            context,
-                            |ctx, tx| {
-                                Box::pin(async move {
-                                    let (service, proof, device, input, audit, failure) = **ctx;
-                                    match service
-                                        .create_control_in(tx, proof, device, input, audit)
-                                        .await
-                                    {
-                                        Ok(v) => {
-                                            audit.mark_commit_started();
-                                            Ok(v)
-                                        }
-                                        Err(e) => Err(rejection(e, failure)),
-                                    }
-                                })
-                            },
-                        )
+        crate::transaction::run(
+            &self.audit_store,
+            &self.runtime,
+            self.tenant,
+            audit,
+            (self, proof, device, input, audit),
+            |ctx, tx| {
+                Box::pin(async move {
+                    ctx.0
+                        .create_control_in(tx, ctx.1, ctx.2, ctx.3, ctx.4)
                         .await
-                    })
-                },
-            )
-            .await;
-        settle(attempt, audit, failure)
+                })
+            },
+        )
+        .await
     }
     async fn create_control_in(
         &self,
@@ -83,10 +51,16 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<Value> {
         require_tenant(self.tenant, proof)?;
+        crate::transaction::lock_authority(self, tx).await?;
         let action = input.action.kind();
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
-        storage::lock(tx, device).await?;
+        actions::native_recovery::lock_device(tx, device).await?;
+        self.audit_store.prepare_in(tx, audit, &[]).await?;
+        rss_reconcile_postgres::messaging::wake_in(tx, &target(self.tenant, device), (), |_, _| {
+            Box::pin(async { Ok(()) })
+        })
+        .await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
@@ -486,6 +460,7 @@ impl ExecutionService {
         }
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,reauthorization,audit) = *ctx;
+            crate::transaction::lock_authority(service,tx).await?;
             let reauthorize = reauthorization.is_some();
             let op=storage::load(tx,&service.protection,id).await?;
             if op.device != device { return Err(Error::Forbidden.into()); }
@@ -500,7 +475,8 @@ impl ExecutionService {
             }
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
-            storage::lock(tx,&format!("request:{}",change.request_id)).await?;storage::lock(tx,device).await?;
+            storage::lock(tx,&format!("request:{}",change.request_id)).await?;actions::native_recovery::lock_device(tx,device).await?;
+            service.audit_store.prepare_in(tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}

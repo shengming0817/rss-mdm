@@ -128,7 +128,7 @@ impl Groups {
             rss_mdm_audit_integration::TargetKind::Group,
             &id.to_string(),
         );
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,q,audit,flow,cursor),|ctx,tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,proof,q,audit,flow,cursor),|ctx,tx|Box::pin(async move {
             let (s,p,q,audit,flow,cursor)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let authority=tx.with_connection(move|c|Box::pin(async move {
@@ -158,7 +158,7 @@ impl Groups {
                 let mut bytes=checked_input(serde_json::to_vec(&Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view,after:visible.last().ok_or(Error::Conflict)?.key()}))?;
                 bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
             }else{None};
-            p.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            p.check_live()?;audit.require_request_settlement();
             Ok(serde_json::json!({"items":visible,"nextCursor":next,"deletionBlocked":blocked}))
         }),TransactionOwner::Assets).await
     }

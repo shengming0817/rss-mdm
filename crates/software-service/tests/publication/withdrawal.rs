@@ -109,6 +109,7 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
     );
     assert_eq!(
         audit_records()
+            .await
             .iter()
             .map(audit_payload)
             .filter(|fact| fact["software"]["stage"] == "queue_withdrawal"
@@ -198,9 +199,28 @@ async fn global_withdrawal_settles_an_unstarted_attempt_once() {
     withdraw_version(&input).await;
     let reconcile = || service.reconcile_withdrawal(p.id(), p.attempt, cutoff());
     assert_eq!(reconcile().await.unwrap(), Withdrawal::Complete);
-    let settled = audit_records().len();
+    let publication: String = p
+        .id()
+        .digest()
+        .bytes()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
+    let settled = audit_records()
+        .await
+        .iter()
+        .filter(|r| audit_payload(r)["software"]["publication"] == publication)
+        .count();
+    assert!(settled > 0);
     assert_eq!(reconcile().await.unwrap(), Withdrawal::Complete);
-    assert_eq!(audit_records().len(), settled);
+    assert_eq!(
+        audit_records()
+            .await
+            .iter()
+            .filter(|r| audit_payload(r)["software"]["publication"] == publication)
+            .count(),
+        settled
+    );
     assert!(
         service
             .reconciliation_page("", 32, cutoff())

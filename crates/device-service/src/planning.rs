@@ -136,7 +136,7 @@ impl ObjectReader for PlanningObjects {
                 )
                 .await
                 .fold(
-                    |v| Ok(v.into_value()),
+                    Ok,
                     |e| Err(storage(crate::model::transaction_error(e))),
                     |e| Err(storage(crate::model::transaction_error(e))),
                     |_| Err(sqlx::Error::Protocol("audit read rollback".into())),

@@ -173,7 +173,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         config.flow.storage.epoch
     );
     let access = database(&base).await?;
-    let audit = access.audit_store(&config.audit).await?;
+    let audit = access.audit_store_fixture(&config.audit).await?;
     let (router, execution, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),

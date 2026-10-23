@@ -114,6 +114,12 @@ pub(super) async fn lock(
     })
     .await
 }
+pub(super) fn audit_partition(
+    tenant: rss_request_context::TenantId,
+    target: &str,
+) -> std::result::Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
+    rss_mdm_audit_integration::source_partition(tenant, "mdm", target).map_err(PgError::from)
+}
 pub(super) fn fact(
     tenant: rss_request_context::TenantId,
     actor: &rel::ActorId,

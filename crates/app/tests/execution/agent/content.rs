@@ -69,10 +69,11 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
                                 "success"
                             } else {
                                 "failed"
-                            })?
+                            })
+                    .await?
                         == 1
                 );
-                ensure!(audit_count(|record| record.request() == Some(request_id))? == 1);
+                ensure!(audit_count(|record| record.request() == Some(request_id)).await? == 1);
                 if status.is_success() {
                     ensure!(response.headers().contains_key("etag"));
                     ensure!(response.into_body().collect().await?.to_bytes().as_ref() == bytes);
@@ -98,7 +99,8 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
             ensure!(
                 audit_count(|record| record.request() == Some(request_id)
                     && record.status() == 400
-                    && record.result() == "failed")?
+                    && record.result() == "failed")
+                .await?
                     == 1
             );
             let wrong = path.replace(

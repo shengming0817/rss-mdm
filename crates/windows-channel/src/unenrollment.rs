@@ -98,9 +98,9 @@ pub(crate) async fn requested(
         )
         .map_err(|_| Error::Unavailable(crate::Failure::Protocol))?;
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let mut facts = Vec::new();
-    let outcome = app.audit_store.write(principal.tenant(), &control,
+    let outcome = app.audit_store.write(principal.tenant(),
+            &budget.source_control(),
         (app, principal, audit, &mut facts, &digest, &sealed, message.header.session_id),
         |(app,p,audit,facts,digest,sealed,session),tx| Box::pin(async move {
             let replay = tx.with_connection_context(&mut (*app,*p,&mut **facts,*digest,*sealed,*session),
@@ -126,7 +126,7 @@ pub(crate) async fn requested(
             facts.push(fact);
             } else { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             for fact in facts.iter() { app.audit_store.append(tx,fact,false).await.map_err(Error::from)?; }
-            if replay.is_none() { app.audit_store.append_request(tx,audit,200,"success").await.map_err(Error::from)?; }
+            if replay.is_none() { audit.require_request_settlement(); }
             audit.mark_commit_started();
             Ok(replay)
         })).await;

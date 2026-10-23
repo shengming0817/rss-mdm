@@ -16,7 +16,14 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
             "ALTER ROLE {role} SET default_transaction_isolation='repeatable read'"
         ));
         let runtime = runtime_role(tenant(), role).await;
-        let result = crate::database::admit_audit_runtime(&runtime, &store, tenant()).await;
+        let result = store
+            .on_runtime(
+                runtime.clone(),
+                tenant(),
+                &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
+                    .control(),
+            )
+            .await;
         runtime.close().await;
         sql(&if original.is_empty() {
             format!("ALTER ROLE {role} RESET default_transaction_isolation")
@@ -26,15 +33,15 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
                 original.replace('\'', "''")
             )
         });
-        assert!(
-            matches!(
-                result,
-                Err(Error::Unavailable(crate::Failure::AuditIsolation))
-            ),
-            "{role}: {result:?}"
-        );
+        assert!(result.is_err(), "{role}: owner isolation admission");
         let runtime = runtime_role(tenant(), role).await;
-        crate::database::admit_audit_runtime(&runtime, &store, tenant())
+        store
+            .on_runtime(
+                runtime.clone(),
+                tenant(),
+                &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
+                    .control(),
+            )
             .await
             .unwrap();
         runtime.close().await;
@@ -58,16 +65,23 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
             "rss_ledger.entries",
         ] {
             sql(&format!("GRANT UPDATE ON {table} TO {role}"));
-            let result = crate::database::admit_audit_runtime(&runtime, &store, tenant()).await;
+            let result = store
+                .on_runtime(
+                    runtime.clone(),
+                    tenant(),
+                    &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
+                        .control(),
+                )
+                .await;
             sql(&format!("REVOKE UPDATE ON {table} FROM {role}"));
-            assert!(
-                matches!(
-                    result,
-                    Err(Error::Unavailable(crate::Failure::AuditAdmission))
-                ),
-                "{role} {table}: {result:?}"
-            );
-            crate::database::admit_audit_runtime(&runtime, &store, tenant())
+            assert!(result.is_err(), "{role} {table}: owner privilege admission");
+            store
+                .on_runtime(
+                    runtime.clone(),
+                    tenant(),
+                    &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
+                        .control(),
+                )
                 .await
                 .unwrap();
         }

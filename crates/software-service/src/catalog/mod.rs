@@ -354,14 +354,20 @@ impl Catalog {
         }
     }
 
-    async fn begin(&self, tx: &mut PgTransaction<'_>, key: &str) -> Result<()> {
+    async fn begin(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        audit: &RequestAudit,
+        key: &str,
+    ) -> Result<()> {
         if tx.tenant_id() != self.tenant {
             return Err(Error::NotAdmitted);
         }
-        tx.prepare_outbox_partitions(&[event::partition(self.tenant, key)?])
+        storage::lock(tx).await?;
+        self.audit
+            .prepare_in(tx, audit, &[event::partition(self.tenant, key)?])
             .await?;
-        self.audit.lock_in(tx).await?;
-        storage::lock(tx).await
+        Ok(())
     }
     async fn record(
         &self,
@@ -395,7 +401,7 @@ impl Catalog {
         r::Id::new(id).map_err(|_| Error::Input)?;
         r::Id::new(revision).map_err(|_| Error::Input)?;
         let key = format!("source/{id}/{revision}");
-        self.begin(tx, &key).await?;
+        self.begin(tx, audit, &key).await?;
         self.source_prepared_in(tx, audit, id, revision, op).await
     }
     /// The composing catalog operation has declared all partitions and acquired catalog locks.
@@ -458,6 +464,10 @@ impl Catalog {
         Ok(value)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the borrowed transaction declares content and all ordered message partitions together"
+    )]
     pub async fn version_change_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -466,10 +476,15 @@ impl Catalog {
         label: &str,
         op: &Operation<VersionChange>,
         content: Option<&dyn VerifiedContent>,
+        additional: &[rss_transactional_messaging::message::PartitionIdentity],
     ) -> Result<Value> {
         check_operation(op.operation_id, op.expected_revision)?;
         let key = format!("resource/{resource}/{label}");
-        self.begin(tx, &key).await?;
+        self.reader().tenant(tx)?;
+        storage::lock(tx).await?;
+        let mut partitions = additional.to_vec();
+        partitions.push(event::partition(self.tenant, &key)?);
+        self.audit.prepare_in(tx, audit, &partitions).await?;
         let actor = actor(audit)?;
         let hash = fingerprint(&(self.tenant.to_string(), &actor, resource, label, op))?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {

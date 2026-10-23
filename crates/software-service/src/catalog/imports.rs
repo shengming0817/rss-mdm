@@ -53,13 +53,17 @@ impl Catalog {
             "resource/{}/{}",
             op.input.resource, op.input.resource_version
         );
-        tx.prepare_outbox_partitions(&[
-            event::partition(self.tenant, &key)?,
-            resources.partition(&op.input.resource)?,
-        ])
-        .await?;
-        self.audit.lock_in(tx).await?;
         storage::lock(tx).await?;
+        self.audit
+            .prepare_in(
+                tx,
+                audit,
+                &[
+                    event::partition(self.tenant, &key)?,
+                    resources.partition(&op.input.resource)?,
+                ],
+            )
+            .await?;
         if let Some(value) = storage::replay(tx, op.operation_id, &hash).await? {
             self.record(tx, audit, (&key, op.operation_id, &hash), &value, true)
                 .await?;

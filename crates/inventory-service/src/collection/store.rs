@@ -414,12 +414,11 @@ impl Delivery {
             rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
         audit.identify_service("service:inventory-delivery");
         let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
-        let control = budget.control();
         let attempt = self
             .audit_store
             .write(
                 rss_request_context::TenantId::parse(tenant).map_err(|_| corrupt())?,
-                &control,
+                &budget.source_control(),
                 (&self.audit_store, tenant, &audit),
                 |(store, tenant, audit), tx| {
                     Box::pin(async move {
@@ -428,7 +427,16 @@ impl Delivery {
                             .with_connection_context(
                                 &mut (*tenant, &mut facts),
                                 |(tenant, facts), c| {
-                                    Box::pin(async move { expire_timed(c, facts, tenant).await })
+                                    Box::pin(async move {
+                                        rss_mdm_inventory_postgres::lock_watermark_in(
+                                            c,
+                                            rss_request_context::TenantId::parse(tenant)
+                                                .map_err(|_| corrupt())?,
+                                        )
+                                        .await
+                                        .map_err(db)?;
+                                        expire_timed(c, facts, tenant).await
+                                    })
                                 },
                             )
                             .await?;

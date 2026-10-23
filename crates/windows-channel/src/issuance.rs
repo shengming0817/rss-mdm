@@ -298,11 +298,10 @@ pub(crate) async fn complete(
         IssuanceAuthority::Password(_, _) => Operation::from_coordinates(&d, &digest),
     };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
-    let control = budget.control();
     let attempt = store
         .write(
             TenantId::parse(&d.tenant).map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (
                 store,
                 CompletionInputs {

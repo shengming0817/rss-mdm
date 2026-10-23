@@ -138,7 +138,7 @@ impl Timeline {
             )
             .await
             .fold(
-                |v| Ok(v.into_value()),
+                Ok,
                 transaction_error,
                 transaction_error,
                 transaction_error,
@@ -200,7 +200,7 @@ impl Timeline {
         })).await;
         // Only acknowledged, ordinary budget exhaustion permits a partial indexed response.
         attempt.fold(
-            |v| Ok(Some(v.into_value())),
+            |v| Ok(Some(v)),
             limited_transaction,
             limited_transaction,
             transaction_error,
@@ -561,17 +561,25 @@ fn audit_error(error: rss_audit_postgres::Error) -> Error {
         _ => Error::Integrity,
     }
 }
-fn transaction_error<R>(error: rss_audit_postgres::TransactionError<Error>) -> Result<R, Error> {
-    use rss_audit_postgres::TransactionError as E;
+fn source_error(error: rss_mdm_audit_integration::Error) -> Error {
+    match error {
+        rss_mdm_audit_integration::Error::Audit(error) => audit_error(error),
+        _ => Error::Integrity,
+    }
+}
+fn transaction_error<R>(
+    error: rss_mdm_audit_integration::TransactionError<Error>,
+) -> Result<R, Error> {
+    use rss_mdm_audit_integration::TransactionError as E;
     Err(match error {
         E::Operation(e) => e,
-        E::Audit(e) => audit_error(e),
+        E::Storage(e) => source_error(e),
         E::Rollback {
             operation,
             settlement,
         } => {
             let original = transaction_error::<()>(*operation).expect_err("transaction failure");
-            let cleanup = audit_error(settlement);
+            let cleanup = source_error(settlement);
             if matches!(original, Error::Integrity) || matches!(cleanup, Error::Integrity) {
                 Error::Integrity
             } else {
@@ -581,7 +589,7 @@ fn transaction_error<R>(error: rss_audit_postgres::TransactionError<Error>) -> R
     })
 }
 fn limited_transaction<R>(
-    error: rss_audit_postgres::TransactionError<Error>,
+    error: rss_mdm_audit_integration::TransactionError<Error>,
 ) -> Result<Option<R>, Error> {
     match transaction_error::<()>(error).expect_err("transaction failure") {
         Error::Deadline => Ok(None),
@@ -606,11 +614,11 @@ mod tests {
     use super::*;
     #[test]
     fn rollback_failure_cannot_hide_original_integrity_failure() {
-        let error = rss_audit_postgres::TransactionError::Rollback {
-            operation: Box::new(rss_audit_postgres::TransactionError::Operation(
+        let error = rss_mdm_audit_integration::TransactionError::Rollback {
+            operation: Box::new(rss_mdm_audit_integration::TransactionError::Operation(
                 Error::Integrity,
             )),
-            settlement: rss_audit_postgres::Error::from(sqlx::Error::PoolTimedOut),
+            settlement: rss_audit_postgres::Error::from(sqlx::Error::PoolTimedOut).into(),
         };
         assert!(matches!(
             limited_transaction::<()>(error),

@@ -28,11 +28,9 @@ pub async fn read(
         &id.to_string(),
     );
     auth.manage(Permission::PolicyRead)?;
-    run(
-        &service.audit_store,
+    crate::transaction::inspect(
         &service.runtime,
         service.tenant,
-        audit,
         (&service, &auth, &audit),
         |ctx, tx| {
             Box::pin(async move {
@@ -50,9 +48,7 @@ pub async fn read(
                         ),
                     ))?;
                 let value = storage::view(&policy)?;
-                s.audit_store
-                    .append_request_in(tx, audit, 200, "success")
-                    .await?;
+                audit.require_request_settlement();
                 Ok(value)
             })
         },
@@ -106,7 +102,7 @@ pub async fn list(
     }
     auth.manage(Permission::PolicyRead)?;
     audit.set_action("management_read");
-    run(&service.audit_store,&service.runtime,service.tenant,audit,(service,auth,audit,query),|ctx,tx|Box::pin(async move {
+    crate::transaction::inspect(&service.runtime, service.tenant,(service,auth,audit,query),|ctx,tx|Box::pin(async move {
         let (s,a,audit,q)=*ctx;
         let snapshot=crate::action_admission::current(tx,a).await?;
         snapshot.require(a,Permission::PolicyRead,None)?;
@@ -132,7 +128,7 @@ pub async fn list(
             let mut bytes=checked_input(serde_json::to_vec(&Cursor{family:"policies".into(),tenant:s.tenant.to_string(),authority,query:binding,after}))?;
             bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
         }else{None};
-        a.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
+        a.check_live()?;audit.require_request_settlement();
         Ok(json!({"items":items,"nextCursor":next}))
     }),TransactionOwner::Planning).await
 }

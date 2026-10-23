@@ -403,11 +403,13 @@ async fn group_scope_replay_and_audit_atomicity() {
         },
     )
     .await;
-    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
+    sql(
+        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+    );
     assert!(matches!(
         result,
         Err(Error::Inventory(rss_mdm_inventory_service::Error::Audit(e)))
-            if matches!(e.class(), rss_mdm_audit_integration::ErrorClass::AuditAdmission)
+            if matches!(e.class(), rss_mdm_audit_integration::ErrorClass::Audit)
     ));
     assert_eq!(
         sql(&format!(

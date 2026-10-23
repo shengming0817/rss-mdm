@@ -35,6 +35,21 @@ pub enum JobInput {
     },
 }
 impl JobInput {
+    pub(crate) fn audit_partition(
+        &self,
+        tenant: rss_request_context::TenantId,
+    ) -> Result<
+        rss_transactional_messaging::message::PartitionIdentity,
+        rss_mdm_audit_integration::Error,
+    > {
+        let kind = match self {
+            Self::Group { .. } => "group",
+            Self::Scope { .. } => "scope",
+            Self::PolicyReconcile { .. } => "policy",
+            _ => "mdm",
+        };
+        rss_mdm_audit_integration::source_partition(tenant, kind, &self.target())
+    }
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Compliance { .. } => "compliance",

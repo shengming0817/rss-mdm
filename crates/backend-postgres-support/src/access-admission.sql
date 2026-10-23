@@ -15,7 +15,13 @@ SELECT current_user=$1 AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT EXISTS(SELECT 1 FROM schemas WHERE NOT has_schema_privilege(current_user,schema,'USAGE'))
  AND (SELECT count(*) FROM owned)=(SELECT count(*) FROM contract)
- AND NOT EXISTS(SELECT 1 FROM relations WHERE relkind NOT IN('r','i') OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
+ AND NOT EXISTS(SELECT 1 FROM relations WHERE
+  (relkind NOT IN('r','i') AND NOT (relkind='v' AND $2->'external_relations' ? (schema||'.'||relname)
+   AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+   AND reloptions @> ARRAY['security_barrier=true']
+   AND NOT has_table_privilege(current_user,oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+   AND NOT has_any_column_privilege(current_user,oid,'INSERT,UPDATE,REFERENCES')))
+  OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
  AND NOT EXISTS(SELECT 1 FROM owned WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR has_table_privilege(current_user,oid,'SELECT')<>(read_write OR read_only)
   OR NOT (read_write OR read_only) AND has_any_column_privilege(current_user,oid,'SELECT')

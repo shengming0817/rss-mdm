@@ -173,12 +173,11 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let control = budget.control();
         let out = self
             .audit
             .write(
                 self.tenant,
-                &control,
+                &budget.source_control(),
                 (&self.audit, a, (self.tenant.to_string(), context, Some(f))),
                 |ctx, tx| {
                     Box::pin(async move {

@@ -30,8 +30,8 @@ pub struct Snapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelName {
-    Apple,
     Windows,
+    Apple,
     Agent,
     WindowsPush,
     AgentBootstrap,
@@ -76,6 +76,8 @@ pub struct Component {
     pub runner: Option<Runner>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_backlog: Option<rss_mdm_audit_integration::BacklogSnapshot>,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +86,8 @@ pub enum ComponentName {
     Telemetry,
     Inventory,
     IdentityAudit,
+    AuditProjection,
+    AuditSource,
     Automation,
     ExecutionRecovery,
 }
@@ -142,6 +146,9 @@ pub enum Reason {
     OwnershipLost,
     WorkRejected,
     ObservationLimit,
+    AuditBacklogWarning,
+    AuditBackpressure,
+    AuditReserveExhausted,
 }
 #[derive(Serialize)]
 pub struct Dependency {

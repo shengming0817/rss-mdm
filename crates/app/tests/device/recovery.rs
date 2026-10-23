@@ -50,9 +50,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         Err(Error::Forbidden)
     ));
     // Real commit succeeds but its ACK is lost; recreate the owner and recover by original key.
-    service
-        .fixture_audit_store()
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    service.fixture_audit_store().inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     assert!(matches!(
         service
             .revoke(
@@ -73,7 +73,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         restart_access.registration(),
         case_a().into(),
         restart_access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let receipt = restart
@@ -168,7 +168,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::Audit(_))
     ));
-    root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
+    root.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
         service
@@ -178,9 +178,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND request_id=$2::uuid").bind(case_a()).bind(pending.request_id.to_string()).fetch_one(&mut root).await?;
     assert_eq!(count, 0);
-    service
-        .fixture_audit_store()
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    service.fixture_audit_store().inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     assert!(matches!(
         service.bind(&admin_a, &third_proof, pending.clone()).await,
         Err(Error::CommitUnknown)
@@ -230,7 +230,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::Audit(_))
     ));
-    root.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
+    root.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
         .await?;
     assert!(
         service
@@ -240,9 +240,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     );
     // Replacement commits with its old generation still active, then loses its ACK.
     let fourth_proof = proof(case_a(), Channel::Mdm, 4);
-    service
-        .fixture_audit_store()
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    service.fixture_audit_store().inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     assert!(matches!(
         service.bind(&admin_a, &fourth_proof, replace.clone()).await,
         Err(Error::CommitUnknown)
@@ -328,8 +328,16 @@ async fn commit_deadlines(
 ) -> anyhow::Result<()> {
     let mut outcomes = Vec::new();
     for (number, fault, committed) in [
-        (3, rss_audit_postgres::PgFault::BeforeCommitPending, false),
-        (4, rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+        (
+            3,
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
+            false,
+        ),
+        (
+            4,
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            true,
+        ),
     ] {
         let device = format!(
             "{}-{number}",
@@ -346,11 +354,7 @@ async fn commit_deadlines(
         };
         service.fixture_audit_store().inject_next_fault(fault);
         let result = service.bind(admin, &credential, command.clone()).await;
-        outcomes.push(if committed {
-            matches!(result, Err(Error::CommitUnknown))
-        } else {
-            matches!(result, Err(Error::RollbackFailed))
-        });
+        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
         let stored: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )
@@ -366,11 +370,7 @@ async fn commit_deadlines(
         let result = service
             .revoke(admin, &device, receipt.registration, key)
             .await;
-        outcomes.push(if committed {
-            matches!(result, Err(Error::CommitUnknown))
-        } else {
-            matches!(result, Err(Error::RollbackFailed))
-        });
+        outcomes.push(matches!(result, Err(Error::CommitUnknown)));
         let stored: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM mdm_access.registration_operations WHERE operation_id=$1::uuid",
         )

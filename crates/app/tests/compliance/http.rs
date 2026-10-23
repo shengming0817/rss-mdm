@@ -76,7 +76,7 @@ async fn history_boundaries(
     let tenant = case::peer();
     let config = crate::test_support::identity::config(tenant)?;
     let access = database(base).await?;
-    let audit = access.audit_store(&config.audit).await?;
+    let audit = access.audit_store_fixture(&config.audit).await?;
     let (other_router, _, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
@@ -323,7 +323,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .iter()
             .all(|v| tasks.contains(v["task"].as_str().unwrap()))
     );
-    ensure!(audit_count(|r| r.action() == "compliance_read")? > 0);
+    ensure!(audit_count(|r| r.action() == "compliance_read").await? > 0);
     crate::test_support::runtime::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())

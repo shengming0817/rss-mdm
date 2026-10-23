@@ -44,7 +44,7 @@ SELECT
  WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
  AND c.relkind IN ('r','v','m','f')
  AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
- AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_software','sources'),('mdm_software','versions'),('mdm_software','materials'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','api_keys'),('public','mdm_installation'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_audit','backlog'),('mdm_software','sources'),('mdm_software','versions'),('mdm_software','materials'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','api_keys'),('public','mdm_installation'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
@@ -52,7 +52,7 @@ SELECT
  AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema')
- AND p.oid NOT IN ('mdm_content.reference_ready()'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
+ AND p.oid NOT IN ('mdm_content.reference_ready()'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
  AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass)
  AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]

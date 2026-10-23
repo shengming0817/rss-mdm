@@ -65,6 +65,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         "/identity/database/name",
         "/identity/audit_worker/name",
         "/access_database/name",
+        "/audit_projection/database/name",
         "/runtime_database/name",
         "/execution/database/name",
         "/flow/storage/database/name",
@@ -207,7 +208,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     // Disposable fault injection: source acknowledgement loss must retain bytes and IDs.
     manipulate(
         &observer,
-        "UPDATE rss_transactional_messaging.outbox SET status='pending' WHERE status='published'",
+        "UPDATE rss_transactional_messaging.outbox SET status='pending' WHERE status='published' AND tenant_id=current_setting('rss.tenant_id')::uuid",
     )
     .await?;
     run_worker(&config, &observer, expected, false).await?;
@@ -246,7 +247,7 @@ async fn exercise(ledger: bool) -> Result<()> {
         .execute(&observer)
         .await?;
     if !ledger {
-        manipulate(&observer, "UPDATE rss_transactional_messaging.outbox SET status='dead_letter' WHERE status='published'").await?;
+        manipulate(&observer, "UPDATE rss_transactional_messaging.outbox SET status='dead_letter' WHERE status='published' AND tenant_id=current_setting('rss.tenant_id')::uuid").await?;
         rejected(&config).await?;
     }
     drop(identity);
@@ -261,6 +262,10 @@ async fn exercise(ledger: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one isolated installation verifies management-only Ledger admission and closes its owned runtimes"
+)]
 async fn management_only_startup_integrity(
     config: &Config,
     value: &serde_json::Value,
@@ -275,9 +280,26 @@ async fn management_only_startup_integrity(
     )
     .await?;
     let access = crate::Database::connect(config.access_options()?).await?;
-    let store = access.audit_store(&config.audit).await?;
+    let runtime = crate::identity::open_runtime(
+        &config.access_database,
+        &config.flow.storage.target,
+        &config.flow.storage.lineage,
+        &[(
+            management,
+            rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+        )],
+    )
+    .await?;
+    let store = access
+        .audit_store(
+            &config.audit,
+            runtime.clone(),
+            management,
+            Default::default(),
+        )
+        .await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    let control = budget.control();
+    let control = budget.source_control();
     let request = RequestAudit::new(management.to_string(), "management_startup_integrity");
     let fact = Fact::business(
         &request,
@@ -304,7 +326,17 @@ async fn management_only_startup_integrity(
         |_| false
     ));
     request.finalize(None);
+    runtime.close().await;
     access.close().await;
+    let mut projection_config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
+    projection_config["database"] = value["audit_projection"]["database"]["name"].clone();
+    crate::audit_test_support::projection::drain_in(
+        management,
+        config.audit.integrity()?,
+        &projection_config,
+    )
+    .await?;
     let business_records: i64 =
         sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
@@ -523,11 +555,10 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
 }
 
 #[test]
-fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
-    assert_eq!(should_wait(1, 0, 1), Err(AuditDeliveryError::OwnershipLost));
-    assert_eq!(should_wait(1, 1, 0), Ok(true));
-    assert_eq!(should_wait(1, 0, 0), Ok(false));
-    assert_eq!(should_wait(0, 0, 0), Ok(true));
+fn deferred_and_empty_progress_wait_before_retrying() {
+    assert!(should_wait(1, 1));
+    assert!(!should_wait(1, 0));
+    assert!(should_wait(0, 0));
 }
 
 #[test]

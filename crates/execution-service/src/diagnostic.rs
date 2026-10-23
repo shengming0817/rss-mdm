@@ -45,6 +45,8 @@ pub enum Failure {
     AuditIntegrity,
     AuditIsolation,
     AuditContract,
+    AuditBackpressure,
+    AuditReserveExhausted,
     AuditAdmission,
     InventoryQuery,
     AssetCandidates,

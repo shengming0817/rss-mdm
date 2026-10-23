@@ -27,7 +27,7 @@ impl Associations {
         let budget = AuditBudget::new(Duration::from_secs(15));
         let audit = RequestAudit::new(self.tenant.to_string(), "device_association_automatic");
         audit.identify_service("device-associations");
-        let attempt = self.audit.write(self.tenant,&budget.control(),(self,&audit),|(service,audit),tx|Box::pin(async move {
+        let attempt = self.audit.write(self.tenant,&budget.source_control(),(self,&audit),|(service,audit),tx|Box::pin(async move {
             let results=tx.with_connection_context(service,|service,c|Box::pin(async move {
                 let tenant=service.tenant.to_string();
                 let watermark=rss_mdm_inventory_postgres::lock_watermark_in(c,service.tenant).await?;
@@ -84,7 +84,7 @@ impl Associations {
         let result = attempt.fold(
             |v| {
                 audit.mark_committed();
-                Ok(v.into_value())
+                Ok(v)
             },
             |e| Err(model::transaction_error(e)),
             |e| {

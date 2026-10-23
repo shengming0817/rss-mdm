@@ -35,7 +35,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     rss_mdm_pki_service::registry::Registry::new(
         store.archive_pool(),
         store
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
         vec![w.channel.ca.trust.clone()],
         fixture_providers()?,
@@ -43,6 +43,10 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .admit(rss_request_context::TenantId::parse(case_tenant())?, now())
     .await?;
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
     let receipt = create(
@@ -150,13 +154,13 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     .credential(checked.fingerprint())?;
     let access = Arc::new(store);
     let audit_store = access
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     let service = crate::device::DeviceService::new(
         access.registration(),
         case_tenant().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     ensure!(
@@ -175,7 +179,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ));
     ensure!(service.management_principal(&credential).await.is_err());
     // Failed final write leaves only the exact immutable intent.
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+    audit_store
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(
         complete(&audit_store, &w, &auth, &proof, &intent, &cert)
             .await
@@ -201,7 +206,9 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             && saved.registration == intent.registration
             && sign_certificate(&restarted_ca.channel.ca, &saved).await? == cert
     );
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     ensure!(matches!(
         complete(&audit_store, &w, &auth, &proof, &intent, &cert).await,
         Err(Error::Windows(
@@ -210,7 +217,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ));
     complete(
         restarted
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?
             .as_ref(),
         &restarted_ca,
@@ -270,9 +277,9 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         .await?;
         let c = sign_certificate(&w.channel.ca, &i).await?;
         audit_store.inject_next_fault(if fault == 3 {
-            rss_audit_postgres::PgFault::BeforeCommitPending
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitPending
         } else {
-            rss_audit_postgres::PgFault::CommitUnknownAfterAck
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck
         });
         if fault == 3 {
             let request_audit = audit(&proof, a.operation, &a.device, "enrollment_issue");
@@ -333,7 +340,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let a = audit(&proof, resume_key, "windows-device", "enrollment_resume");
     crate::enrollment::store::change_enrollment(
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?
             .as_ref(),
         proof.enrollment("windows-device")?,
@@ -410,7 +417,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             let a = audit(&proof, key, device, "enrollment_cancel");
             crate::enrollment::store::change_enrollment(
                 access
-                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
                     .await?
                     .as_ref(),
                 proof.enrollment(device)?,
@@ -495,17 +502,17 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     let failed = complete(&audit_store, &w, &a, &proof, &i, &c).await;
     let reopened = Database::connect(options("mdm_access")?).await?;
     let rejected = reopened
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await
         .is_err();
     reopened.close().await;
-    pg.execute("GRANT INSERT ON mdm_audit.receipts TO mdm_access")
+    pg.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
         .await?;
     ensure!(rejected);
     ensure!(matches!(
         failed,
         Err(Error::Windows(rss_mdm_windows_channel::Error::Unavailable(
-            rss_mdm_windows_channel::Failure::AuditAdmission
+            rss_mdm_windows_channel::Failure::Audit
         )))
     ));
     complete(&audit_store, &w, &a, &proof, &i, &c).await?;
@@ -595,7 +602,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     ensure!(
         crate::enrollment::store::change_enrollment(
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?
                 .as_ref(),
             proof.enrollment("windows-device")?,
@@ -618,8 +625,8 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             "REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access",
         ),
         (
-            "GRANT UPDATE(canonical) ON mdm_audit.receipts TO mdm_access",
-            "REVOKE UPDATE(canonical) ON mdm_audit.receipts FROM mdm_access",
+            "GRANT UPDATE(source_bytes) ON mdm_audit.receipts TO mdm_access",
+            "REVOKE UPDATE(source_bytes) ON mdm_audit.receipts FROM mdm_access",
         ),
     ] {
         pg.execute(grant).await?;
@@ -627,7 +634,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             Err(_) => true,
             Ok(store) => {
                 let rejected = store
-                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
                     .await
                     .is_err();
                 store.close().await;

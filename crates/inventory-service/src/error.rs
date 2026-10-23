@@ -47,6 +47,8 @@ pub enum Failure {
     AuditAdmission,
     AuditIsolation,
     AuditContract,
+    AuditBackpressure,
+    AuditReserveExhausted,
 }
 impl From<rss_mdm_audit_integration::Error> for Error {
     fn from(e: rss_mdm_audit_integration::Error) -> Self {

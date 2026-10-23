@@ -209,7 +209,7 @@ impl PublicationService {
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
-                            .lock_in(tx)
+                            .bind_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         input!(
@@ -219,8 +219,11 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
-                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
-                            .await?;
+                        tx.prepare_outbox_partitions(&[
+                            db::audit_partition(tx.tenant_id(), &t.record)?,
+                            s.releases.partition(&t.record)?,
+                        ])
+                        .await?;
                         let id = db::required(
                             "recover_result",
                             rel::PublicationKey::new(s.tenant(), &t.record),
@@ -330,7 +333,7 @@ impl PublicationService {
                     move |(s, t), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -340,6 +343,11 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
+                            tx.prepare_outbox_partitions(&[db::audit_partition(
+                                tx.tenant_id(),
+                                &t.record,
+                            )?])
+                            .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let key = if matches!(table, Table::Publish) {
@@ -453,7 +461,7 @@ impl PublicationService {
                     move |(s, t), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -463,6 +471,11 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
+                            tx.prepare_outbox_partitions(&[db::audit_partition(
+                                tx.tenant_id(),
+                                &t.record,
+                            )?])
+                            .await?;
                             let key = if matches!(table, Table::Publish) {
                                 t.key()
                             } else {
@@ -627,7 +640,7 @@ impl PublicationService {
                     move |(s, t), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -637,8 +650,11 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
-                                .await?;
+                            tx.prepare_outbox_partitions(&[
+                                db::audit_partition(tx.tenant_id(), &t.record)?,
+                                s.releases.partition(&t.record)?,
+                            ])
+                            .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let id = db::required(
@@ -749,11 +765,14 @@ impl PublicationService {
                     |(s, id, r, access), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                            tx.prepare_outbox_partitions(&[s.releases.partition(id.value())?])
-                                .await?;
+                            tx.prepare_outbox_partitions(&[
+                                db::audit_partition(tx.tenant_id(), id.value())?,
+                                s.releases.partition(id.value())?,
+                            ])
+                            .await?;
                             input!(access.check(tx).await);
                             input!(
                                 s.catalog
@@ -849,7 +868,7 @@ impl PublicationService {
                     |(s, key), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -899,7 +918,7 @@ impl PublicationService {
                     move |(s, t), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -909,8 +928,11 @@ impl PublicationService {
                                     .await
                                     .map_err(|_| Error::Content)
                             );
-                            tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
-                                .await?;
+                            tx.prepare_outbox_partitions(&[
+                                db::audit_partition(tx.tenant_id(), &t.record)?,
+                                s.releases.partition(&t.record)?,
+                            ])
+                            .await?;
                             db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                 .await?;
                             let call = db::call(tx, Table::Publish, &t.key())
@@ -1108,11 +1130,9 @@ impl PublicationService {
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
-                            .lock_in(tx)
+                            .bind_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                        tx.prepare_outbox_partitions(&[s.releases.partition(&t.record)?])
-                            .await?;
                         input!(
                             s.catalog
                                 .reader()
@@ -1120,6 +1140,11 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
+                        tx.prepare_outbox_partitions(&[
+                            db::audit_partition(tx.tenant_id(), &t.record)?,
+                            s.releases.partition(&t.record)?,
+                        ])
+                        .await?;
                         let id = input!(
                             rel::PublicationKey::new(s.tenant(), &t.record)
                                 .map_err(|_| Error::Identity)
@@ -1189,7 +1214,7 @@ impl PublicationService {
                     |(s, key), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -1205,6 +1230,11 @@ impl PublicationService {
                             if call.complete {
                                 return Ok(Ok(()));
                             }
+                            tx.prepare_outbox_partitions(&[db::audit_partition(
+                                tx.tenant_id(),
+                                &call.target.record,
+                            )?])
+                            .await?;
                             db::complete_noop(tx, key).await?;
                             let fact = db::fact(
                                 tx.tenant_id(),
@@ -1348,7 +1378,7 @@ impl PublicationService {
                         |(s, t), tx| {
                             Box::pin(async move {
                                 s.audit_store
-                                    .lock_in(tx)
+                                    .bind_in(tx)
                                     .await
                                     .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                                 input!(
@@ -1358,6 +1388,11 @@ impl PublicationService {
                                         .await
                                         .map_err(|_| Error::Content)
                                 );
+                                tx.prepare_outbox_partitions(&[db::audit_partition(
+                                    tx.tenant_id(),
+                                    &t.record,
+                                )?])
+                                .await?;
                                 db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot))
                                     .await?;
                                 if db::projection(tx, t).await?.as_deref() == Some(&t.publication) {
@@ -1421,7 +1456,7 @@ impl PublicationService {
                     |(s, t), tx| {
                         Box::pin(async move {
                             s.audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                             input!(
@@ -1456,7 +1491,7 @@ impl PublicationService {
                 .local_tx_with_context(self.tenant(), budget(cutoff), (self, t), |(s, t), tx| {
                     Box::pin(async move {
                         s.audit_store
-                            .lock_in(tx)
+                            .bind_in(tx)
                             .await
                             .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                         input!(
@@ -1466,6 +1501,11 @@ impl PublicationService {
                                 .await
                                 .map_err(|_| Error::Content)
                         );
+                        tx.prepare_outbox_partitions(&[db::audit_partition(
+                            tx.tenant_id(),
+                            &t.record,
+                        )?])
+                        .await?;
                         db::lock(tx, "source", &format!("{}:{}", hex(&t.binding), t.slot)).await?;
                         let call = db::call(tx, Table::Withdraw, &t.withdrawal_key())
                             .await?

@@ -34,7 +34,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             (&mut admin, 200),
             (&mut member, if allowed { 200 } else { 403 }),
         ] {
-            let before = audit_count(|r| r.action() == action && r.status() == expected)?;
+            let before = audit_count(|r| r.action() == action && r.status() == expected).await?;
             ensure!(
                 browser
                     .call(&router, Method::GET, &path, None)
@@ -43,7 +43,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
                     .as_u16()
                     == expected
             );
-            let after = audit_count(|r| r.action() == action && r.status() == expected)?;
+            let after = audit_count(|r| r.action() == action && r.status() == expected).await?;
             ensure!(
                 after == before + 1,
                 "authorization read audit action missing: {action}"
@@ -112,7 +112,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     let release = async {
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)) AND business.query LIKE '%pg_advisory_xact_lock%' AND audit.query LIKE '%rss_audit.reserve%')").fetch_one(&mut *hold).await?;
+                let waiting: bool = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*)=2 FROM blocked").fetch_one(&mut *hold).await?;
                 if waiting { return Ok::<_, sqlx::Error>(()); }
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -170,7 +170,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     ensure!(
         audit_count(|r| r.source() == "mdm.business"
             && r.operation() == Some(key.to_string().as_str())
-            && r.result() == "success")?
+            && r.result() == "success").await?
             == 1
     );
     // A proof loaded before revocation cannot later mutate authorization state.
@@ -231,7 +231,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     foreign_audit.finalize(None);
     stale.bind_audit(&audit).unwrap();
     let stale_key = Uuid::new_v4();
-    let rejected = crate::authorization::store::change_rule(store.audit_store(&crate::config::AuditConfig::Plain).await?.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
+    let rejected = crate::authorization::store::change_rule(store.audit_store_fixture(&crate::config::AuditConfig::Plain).await?.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
         operation_id:stale_key, expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
     audit.finalize(None);
@@ -273,7 +273,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     ensure!(group.0 == StatusCode::OK && group.1["revision"] == 1 && group.1["items"] == json!([]));
     for operation in [stale_key, escalation_key] {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{}' AND operation_id='{operation}'", case_tenant()))?.trim() == "0");
-        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(operation.to_string().as_str()) && r.result() == "success")? == 0);
+        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(operation.to_string().as_str()) && r.result() == "success").await? == 0);
     }
 
     ensure!(
@@ -323,13 +323,13 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         service: Arc::new(EnrollmentService::new(
             access.registration(),
             Arc::new(Credentials::new(monotonic.clone(), 16)),
-            access.audit_store(&config.audit).await?,
+            access.audit_store_fixture(&config.audit).await?,
         )),
         devices: Arc::new(crate::device::DeviceService::new(
             access.registration(),
             case_tenant().into(),
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
         )),
         apple: false,
@@ -339,7 +339,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
         .nest(
             "/api/v1",
             crate::authorization::http::routes().with_state(Arc::new(HttpState {
-                audit_store: access.audit_store(&config.audit).await?,
+                audit_store: access.audit_store_fixture(&config.audit).await?,
             })),
         )
         .nest(
@@ -357,7 +357,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
                 admission: Arc::new(tokio::sync::Semaphore::new(32)),
                 host: "mdm.example.test".into(),
                 clock: monotonic,
-                audit_store: access.audit_store(&config.audit).await?,
+                audit_store: access.audit_store_fixture(&config.audit).await?,
                 requests,
                 tenant: case_tenant().into(),
             },
@@ -443,12 +443,12 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             Some(json!({})),
         )
         .await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access")?;
+    pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
     let rejected = rejected?;
-    ensure!(rejected.0 == StatusCode::INTERNAL_SERVER_ERROR);
-    ensure!(rejected.1["code"] == "audit_contract_error");
+    ensure!(rejected.0 == StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(rejected.1["code"] == "service_unavailable");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registration_operations WHERE tenant_id='{}' AND operation_id='{cancel_key}'", case_tenant()))?.trim() == "0");
-    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(cancel_key.to_string().as_str()) && r.result() == "success")? == 0);
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(cancel_key.to_string().as_str()) && r.result() == "success").await? == 0);
 
     ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
     crate::test_support::identity::set_grants(case_tenant(), &subject, vec![]).await?;

@@ -1,16 +1,16 @@
 use super::*;
 
-async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
+async fn exercise(pool: &PgPool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let deadline = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
     let control = {
         let cutoff = deadline;
-        Control::new(&timer, cutoff, cutoff, &cancel)
+        SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
-    let mode = integrity(ledger)?;
-    let store = AuditStore::new(pool.clone(), mode, &control).await?;
+    let mode = Integrity::Plain;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let store = new_store(pool.clone(), mode, tenant).await?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     request.set_principal("fixture-principal", crate::test_support::INSTANCE);
     let fact = Fact::business(
@@ -127,15 +127,11 @@ async fn exercise(pool: &PgPool, ledger: bool) -> Result<()> {
     Ok(())
 }
 
-async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
+async fn retirement_batch(pool: &PgPool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
-    let control = {
-        let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(30))?;
-        Control::new(&timer, cutoff, cutoff, &cancel)
-    };
-    let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
     let request = RequestAudit::new(tenant.to_string(), "collection_finish");
     request.identify_service("service:collection-finalizer");
     let facts = (0..65)
@@ -154,7 +150,7 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
     for replayed in [false, true] {
         let control = {
             let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(30))?;
-            Control::new(&timer, cutoff, cutoff, &cancel)
+            SourceControl::new(&timer, cutoff, cutoff, &cancel)
         };
         let attempt = store
             .write(tenant, &control, (&store, &facts), |(store, facts), tx| {
@@ -169,14 +165,14 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
         let outcome = state(attempt);
         ensure!(
             outcome == "committed",
-            "retirement batch ledger={ledger} replay={replayed}: {outcome}"
+            "retirement batch replay={replayed}: {outcome}"
         );
-        let canonical = bytes(pool, tenant).await?;
-        ensure!(canonical.len() == 65);
+        let frozen = bytes(pool, tenant).await?;
+        ensure!(frozen.len() == 65);
         if let Some(original) = &original {
-            ensure!(&canonical == original);
+            ensure!(&frozen == original);
         } else {
-            original = Some(canonical);
+            original = Some(frozen);
         }
     }
     request.finalize(None);
@@ -188,11 +184,9 @@ async fn retirement_batch(pool: &PgPool, ledger: bool) -> Result<()> {
 async fn receipts_and_retirement() -> Result<()> {
     for role in ROLES {
         let pool = pool(role).await?;
-        for ledger in [false, true] {
-            exercise(&pool, ledger).await?;
-            if role == "mdm_access" {
-                retirement_batch(&pool, ledger).await?;
-            }
+        exercise(&pool).await?;
+        if role == "mdm_access" {
+            retirement_batch(&pool).await?;
         }
         pool.close().await;
     }

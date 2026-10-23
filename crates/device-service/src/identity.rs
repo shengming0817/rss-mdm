@@ -197,7 +197,7 @@ impl World {
         a
     }
 }
-/// The caller holds Audit (for mutations) and the asset watermark before taking channel locks.
+/// The asset watermark precedes authorization and channel locks; source facts flush last.
 pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<World> {
     let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let mut after = String::new();
@@ -233,6 +233,49 @@ pub(crate) async fn world(c: &mut PgConnection, tenant: TenantId) -> Result<Worl
             world.associations.push(a);
         }
         tokio::task::yield_now().await;
+    }
+    Ok(world)
+}
+/// Local display universe: current page members and at most three distinct competitors
+/// per exact canonical hardware key. No tenant-wide endpoint/history materialization.
+pub(crate) async fn local_world(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    ids: &[String],
+    associations: &[uuid::Uuid],
+) -> Result<World> {
+    if ids.len() > 200 || associations.len() > 100 {
+        return Err(Error::Malformed);
+    }
+    let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+    let mut world = endpoint_world(endpoint_page(c, tenant, watermark, ids).await?);
+    world.watermark = watermark;
+    world.associations = read::load_page(c, &tenant.to_string(), associations).await?;
+    let keys = world
+        .endpoints
+        .iter()
+        .flat_map(|e| {
+            e.hardware
+                .keys()
+                .map(|(kind, value)| (kind.to_owned(), value.clone()))
+        })
+        .collect::<BTreeSet<_>>();
+    let (kinds, values): (Vec<_>, Vec<_>) = keys.into_iter().unzip();
+    let peers:Vec<(String,String,String)>=sqlx::query_as("SELECT q.kind,q.value,p.device FROM unnest($2::text[],$3::text[]) q(kind,value) CROSS JOIN LATERAL (SELECT DISTINCT device FROM mdm_assets.hardware_keys h WHERE h.tenant_id=$1::uuid AND h.kind=q.kind AND h.value=q.value ORDER BY device LIMIT 3) p")
+        .bind(tenant.to_string()).bind(kinds).bind(values).fetch_all(c).await?;
+    for (kind, value, device) in peers {
+        let kind = match kind.as_str() {
+            "serial" => "serial",
+            "uuid" => "uuid",
+            _ => return Err(Error::Storage),
+        };
+        world
+            .by_hardware
+            .entry(kind)
+            .or_default()
+            .entry(value)
+            .or_default()
+            .insert(device);
     }
     Ok(world)
 }
@@ -284,11 +327,17 @@ pub(crate) async fn endpoint_page(
         .devices_on(c, watermark, ids, &catalog, true)
         .await
         .map_err(|_| Error::Storage)?;
+    let primary = endpoints::current_page_in(c, &tenant.to_string(), ids)
+        .await?
+        .into_iter()
+        .map(|member| ((member.device.clone(), member.channel.as_str()), member))
+        .collect::<BTreeMap<_, _>>();
     let mut result = Vec::new();
     for device in devices {
         for channel in [Channel::Mdm, Channel::Agent] {
-            let Some(member) =
-                endpoints::current_in(c, &tenant.to_string(), &device.device, channel).await?
+            let Some(member) = primary
+                .get(&(device.device.clone(), channel.as_str()))
+                .cloned()
             else {
                 continue;
             };

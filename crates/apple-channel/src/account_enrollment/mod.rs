@@ -243,12 +243,11 @@ pub(crate) async fn reauthentication(
     let flow = Uuid::new_v4();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (app, &tenant, enrollment, flow, audit),
             |(app, tenant, enrollment, flow, audit), tx| {
                 Box::pin(async move {

@@ -228,9 +228,9 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
 
     fixture
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     let failure = service.activate(&peer, &input, &a()).await.unwrap_err();
-    ensure!(failure.code == wire::ErrorCode::ActivationUnknown && matches!(failure.source, Some(rss_mdm_registration_service::Error::RollbackFailed)));
+    ensure!(failure.code == wire::ErrorCode::ActivationUnknown && matches!(failure.source, Some(rss_mdm_registration_service::Error::CommitUnknown)));
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim() == "1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_issuances WHERE tenant_id='{}' AND id='{}' AND credential IS NULL AND activation_result IS NULL", case_tenant(), input.issuance_id))?.trim() == "1");
     ensure!(
@@ -241,7 +241,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     );
     fixture
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
     let failure = service.activate(&peer, &input, &a()).await.unwrap_err();
     ensure!(failure.code == wire::ErrorCode::ActivationUnknown && matches!(failure.source, Some(rss_mdm_registration_service::Error::CommitUnknown)));
     ensure!(pg(&format!("SELECT jsonb_build_array(count(*) FILTER(WHERE state='active'),count(*) FILTER(WHERE state='superseded'))::text FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?.trim() == "[1, 1]");

@@ -319,12 +319,11 @@ async fn commit(
     a.identify_service("service:windows-entra-terms");
     a.operation(stored.id, action);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-    let control = budget.control();
     let result = app
         .audit_store
         .write(
             entra.tenant,
-            &control,
+            &budget.source_control(),
             (app, entra, subject, stored, decision, a),
             |(app, entra, subject, stored, decision, a), tx| {
                 Box::pin(async move {

@@ -297,9 +297,9 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
             let mut other = authority.browser("other")?;
             other.network = network;
             ensure!(other.call(&router, Method::GET, &url, None).await?.0 == StatusCode::FORBIDDEN);
-            authority
-                .audit
-                .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+            authority.audit.inject_next_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            );
             let (status, failed) = admin.call(&router, Method::GET, &url, None).await?;
             ensure!(!status.is_success() && !failed.to_string().contains(secret));
             identity::set_grants(
@@ -333,7 +333,7 @@ async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Resul
         storage::ingest_in(&mut tx,&first,&coordinates,operation,secret.as_bytes()).await?;
         ensure!(storage::ingest_in(&mut tx,&first,&coordinates,operation,b"different").await.is_err());
         storage::validate_keys_in(&mut tx,coordinates.tenant,&first).await?;
-        let next=keys("next",true);ensure!(storage::rewrap_in(&mut tx,coordinates.tenant,&next).await?==1);
+        let next=keys("next",true);let prepared=storage::prepare_rewrap_in(&mut tx,coordinates.tenant,&next).await?;ensure!(storage::rewrap_in(&mut tx,prepared,&next).await?==1);
         tx.commit().await?;
         let restarted=keys("next",false);let mut tx=begin(&authority).await?;
         ensure!(storage::secret_in(&mut tx,&restarted,&coordinates).await?.expose()==secret.as_bytes());

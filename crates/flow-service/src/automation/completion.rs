@@ -73,9 +73,44 @@ impl DurableStore for Automation {
                             Box::pin(async move {
                                 service
                                     .audit_store
-                                    .lock_in(tx)
+                                    .bind_in(tx)
                                     .await
                                     .map_err(PgError::from)?;
+                                let tenant = tx.tenant_id();
+                                tx.with_connection(move |c| {
+                                    Box::pin(async move {
+                                        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                                            .await
+                                    })
+                                })
+                                .await?;
+                                crate::transaction::lock(tx)
+                                    .await
+                                    .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                let partition = if let Some(id) = id {
+                                    let (job, _, _, _, _) =
+                                        crate::automation::jobs::read_in(tx, id)
+                                            .await
+                                            .map_err(|e| fault(e, &Mutex::new(None)))?;
+                                    Some(
+                                        job.audit_partition(tx.tenant_id())
+                                            .map_err(PgError::from)?,
+                                    )
+                                } else if completion != Completion::Converged {
+                                    Some(
+                                        rss_mdm_audit_integration::source_partition(
+                                            tx.tenant_id(),
+                                            "mdm",
+                                            "asset_ingress",
+                                        )
+                                        .map_err(PgError::from)?,
+                                    )
+                                } else {
+                                    None
+                                };
+                                if let Some(partition) = partition {
+                                    tx.prepare_outbox_partitions(&[partition]).await?;
+                                }
                                 rss_reconcile_postgres::messaging::protect_in(
                                     tx,
                                     claim,

@@ -79,7 +79,16 @@ async fn publish_scope_without_assignments(
             &audit,
             (service, task, scope),
             |ctx, tx| {
-                Box::pin(async move { ctx.0.advance_scope_job_in(tx, ctx.1, ctx.2, None).await })
+                Box::pin(async move {
+                    rss_mdm_flow_service::transaction::lock(tx).await?;
+                    let partition = rss_mdm_audit_integration::source_partition(
+                        tx.tenant_id(),
+                        "scope",
+                        &ctx.2.to_string(),
+                    )?;
+                    tx.prepare_outbox_partitions(&[partition]).await?;
+                    ctx.0.advance_scope_job_in(tx, ctx.1, ctx.2, None).await
+                })
             },
             rss_mdm_flow_service::transaction::TransactionOwner::Planning,
         )

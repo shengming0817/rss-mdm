@@ -73,7 +73,7 @@ impl Associations {
             .audit
             .write(
                 self.tenant,
-                &budget.control(),
+                &budget.source_control(),
                 (self, proof, &change, audit, &digest),
                 |(service, proof, change, audit, digest), tx| {
                     Box::pin(
@@ -85,7 +85,7 @@ impl Associations {
         attempt.fold(
             |v| {
                 audit.mark_committed();
-                Ok(v.into_value())
+                Ok(v)
             },
             |e| Err(model::transaction_error(e)),
             |e| {
@@ -100,9 +100,9 @@ impl Associations {
             |e| Err(model::transaction_error(e)),
         )
     }
-    async fn change_in<T: rss_request_context::ExecutionTimer>(
+    async fn change_in(
         &self,
-        tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+        tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
         proof: &AuthorizedPrincipal,
         change: &Change<'_>,
         audit: &RequestAudit,
@@ -112,7 +112,10 @@ impl Associations {
             .with_connection_context(
                 &mut (proof, change, audit, digest),
                 |(proof, change, audit, digest), c| {
-                    Box::pin(write_on(c, proof, change, audit, digest, None))
+                    Box::pin(async move {
+                        let prepared = prepare_on(c, proof, change).await?;
+                        write_on(c, proof, change, audit, digest, (&prepared.0, &prepared.1)).await
+                    })
                 },
             )
             .await?;
@@ -123,9 +126,9 @@ impl Associations {
         audit.mark_commit_started();
         Ok(result)
     }
-    async fn record_change<T: rss_request_context::ExecutionTimer>(
+    async fn record_change(
         &self,
-        tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+        tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
         change: &Change<'_>,
         audit: &RequestAudit,
         digest: &[u8],
@@ -149,22 +152,45 @@ impl Associations {
         Ok(result)
     }
 }
+async fn prepare_on(
+    c: &mut PgConnection,
+    proof: &AuthorizedPrincipal,
+    change: &Change<'_>,
+) -> Result<(rss_mdm_authorization_service::Snapshot, identity::World)> {
+    let tenant = TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?;
+    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+    let snapshot = read::authorization(c, proof).await?;
+    let members = match change {
+        Change::Confirm(r) => vec![r.mdm.clone(), r.agent.clone()],
+        Change::Revoke { id, .. } => read::load(c, proof.tenant_id(), *id).await?.members,
+    };
+    let ids = members
+        .iter()
+        .map(|member| member.device.clone())
+        .collect::<Vec<_>>();
+    let associations = match change {
+        Change::Confirm(request) => request.association_id.into_iter().collect::<Vec<_>>(),
+        Change::Revoke { id, .. } => vec![*id],
+    };
+    let world = identity::local_world(
+        c,
+        TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+        &ids,
+        &associations,
+    )
+    .await?;
+    Ok((snapshot, world))
+}
 async fn write_on(
     c: &mut PgConnection,
     proof: &AuthorizedPrincipal,
     change: &Change<'_>,
     _audit: &RequestAudit,
     digest: &[u8],
-    prepared: Option<(&rss_mdm_authorization_service::Snapshot, &identity::World)>,
+    prepared: (&rss_mdm_authorization_service::Snapshot, &identity::World),
 ) -> Result<(Association, bool)> {
-    let loaded_snapshot;
-    let snapshot = if let Some((snapshot, _)) = prepared {
-        snapshot
-    } else {
-        loaded_snapshot = read::authorization(c, proof).await?;
-        &loaded_snapshot
-    };
-    // Audit lock is already held. Operation identity is tenant-wide and never transferable.
+    let (snapshot, world) = prepared;
+    // Operation identity is tenant-wide and never transferable; its lock is product-owned.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2578))")
         .bind(format!("{}:{}", proof.tenant_id(), change.operation()))
         .execute(&mut *c)
@@ -188,17 +214,6 @@ async fn write_on(
         Change::Revoke { id, .. } => read::load(c, proof.tenant_id(), *id).await?.members,
     };
     read::authorize(snapshot, proof, &members, true)?;
-    let loaded_world;
-    let world = if let Some((_, world)) = prepared {
-        world
-    } else {
-        loaded_world = identity::world(
-            c,
-            TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
-        )
-        .await?;
-        &loaded_world
-    };
     let result = match change {
         Change::Confirm(r) => {
             persist(
