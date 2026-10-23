@@ -833,7 +833,7 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
             max_uploads: 64,
             transfer_seconds: 30,
             retention_seconds: 3600,
-            max_bundle_entries: 256,
+            max_bundle_entries: 4096,
             max_expansion_ratio: 100,
         },
         &tenant().to_string(),

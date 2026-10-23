@@ -12,7 +12,7 @@ fn config(directory: PathBuf) -> Config {
         transfer_seconds: 60,
         retention_seconds: 3600,
 
-        max_bundle_entries: 100,
+        max_bundle_entries: 4096,
         max_expansion_ratio: 100,
     }
 }

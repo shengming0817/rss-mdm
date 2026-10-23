@@ -165,7 +165,7 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
     write(
         &root.join("content.json"),
         &serde_json::to_vec(&json!({
-            "storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_entries":100,"max_expansion_ratio":100
+            "storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_entries":4096,"max_expansion_ratio":100
         }))?,
     )?;
     let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
