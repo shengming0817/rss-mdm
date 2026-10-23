@@ -608,7 +608,7 @@ async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
         };
         let mut profile = configuration.profile(
             "https://vendor.example",
-            Uuid::parse_str(&case_tenant())?,
+            Uuid::parse_str(case_tenant())?,
             Uuid::new_v4(),
             Uuid::new_v4(),
         )?;
