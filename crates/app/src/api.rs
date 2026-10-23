@@ -717,6 +717,7 @@ pub(crate) fn from_state(
                     state.access.archive_pool(),
                     state.audit_store.clone(),
                     p.keys.clone(),
+                    state.execution.clone(),
                 ))
             }),
             certificate_archive: state.certificate_archive.clone(),

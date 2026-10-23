@@ -86,6 +86,10 @@ impl ResourcePreparation<'_> {
 
 /// Material to freeze inside the caller's original transaction.
 pub enum PublicationInput<'a> {
+    DeviceAccess {
+        self_enrollment: bool,
+        role: Option<rss_mdm_policy::AccessRole>,
+    },
     Unmanage {
         schedule: &'a Schedule,
         lifetime: u32,
@@ -159,7 +163,8 @@ impl<'a> PublicationInput<'a> {
             }
             Self::Configuration { binding, .. } => ResourcePreparation::Configuration { binding },
             Self::Software { binding, .. } => ResourcePreparation::Software { binding },
-            Self::Unmanage { .. }
+            Self::DeviceAccess { .. }
+            | Self::Unmanage { .. }
             | Self::Credential { .. }
             | Self::Enrollment { .. }
             | Self::AgentInstall { .. } => {
@@ -172,7 +177,16 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
     type Error = crate::Error;
     fn try_from(action: &'a Action) -> Result<Self, Self::Error> {
         Ok(match action {
-            Action::TelemetryProfile { .. } => return Err(crate::Error::Unsupported),
+            Action::DeviceAccess {
+                self_enrollment,
+                role,
+            } => Self::DeviceAccess {
+                self_enrollment: *self_enrollment,
+                role: *role,
+            },
+            Action::TelemetryProfile { .. } => {
+                return Err(crate::Error::Unsupported);
+            }
             Action::UnmanageDevice {
                 schedule,
                 run_lifetime_seconds,

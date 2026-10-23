@@ -62,4 +62,5 @@ pub mod first_use;
 
 pub mod telemetry;
 
+mod device_access;
 pub mod user_profiles;

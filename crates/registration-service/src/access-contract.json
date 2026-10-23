@@ -215,6 +215,37 @@
         "confirmed_at"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "device_access_bindings",
+      "read_write": true,
+      "updates": [
+        "instance",
+        "principal",
+        "generation",
+        "revision",
+        "state",
+        "account",
+        "document"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "device_access_ceremonies",
+      "read_write": true,
+      "updates": [
+        "consumed"
+      ],
+      "delete_policy": "expires_at<clock_timestampandconsumedisnull"
+    },
+    {
+      "schema": "mdm_access",
+      "table": "device_access_results",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

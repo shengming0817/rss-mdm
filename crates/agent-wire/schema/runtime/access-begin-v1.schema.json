@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Begin the first association; neither account nor person is caller-selected.",
+  "properties": {
+    "operationId": {
+      "description": "Unique ceremony identity. A lost nonce requires a new ceremony.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policy": {
+      "description": "One enabled Device Access policy eligible for this device.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "policy"
+  ],
+  "title": "AccessBegin",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/access-begin.schema.json"
+}

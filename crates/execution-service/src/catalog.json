@@ -209,6 +209,15 @@
     ],
     [
       "action_runs",
+      "access_binding",
+      "jsonb",
+      false,
+      null,
+      "",
+      ""
+    ],
+    [
+      "action_runs",
       "policy_version",
       "uuid",
       false,
@@ -1616,6 +1625,13 @@
     ],
     [
       "action_runs",
+      "action_runs_access_binding_check",
+      "c",
+      "CHECK (((access_binding IS NULL) OR (octet_length((access_binding)::text) <= 16384)))",
+      true
+    ],
+    [
+      "action_runs",
       "action_runs_available_at_check",
       "c",
       "CHECK ((available_at >= 0))",
@@ -1625,7 +1641,7 @@
       "action_runs",
       "action_runs_check",
       "c",
-      "CHECK (((source_kind = 'policy'::text) AND (policy_version IS NOT NULL)))",
+      "CHECK (((source_kind = ANY (ARRAY['policy'::text, 'device_access'::text])) AND (policy_version IS NOT NULL)))",
       true
     ],
     [

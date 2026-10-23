@@ -18,6 +18,15 @@ use uuid::Uuid;
     deny_unknown_fields
 )]
 pub enum CredentialSubject {
+    /// RSS additional-factor recovery material, separate from local-account passwords.
+    RssLogin {
+        /// Stable Device Access association.
+        binding: Uuid,
+        /// Exact association generation.
+        binding_generation: i64,
+        /// Stable local account SID.
+        sid: String,
+    },
     /// Numerical recovery protector on a stable volume.
     Bitlocker {
         /// Stable WMI volume DeviceID.
@@ -36,6 +45,17 @@ impl CredentialSubject {
     pub fn validate(&self) -> Result<(), WireError> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
+            Self::RssLogin {
+                binding,
+                binding_generation,
+                sid,
+            } => {
+                !binding.is_nil()
+                    && *binding_generation > 0
+                    && super::AccessAccount::Windows { sid: sid.clone() }
+                        .validate()
+                        .is_ok()
+            }
             Self::Bitlocker { volume, protector } => bounded(volume) && !protector.is_nil(),
             Self::LocalAdministrator { sid } => {
                 bounded(sid)
@@ -62,6 +82,24 @@ impl CredentialSubject {
     deny_unknown_fields
 )]
 pub enum CredentialOperation {
+    /// Rotate the RSS offline additional-factor recovery secret for one current binding.
+    RotateRssLogin {
+        /// Stable Device Access association.
+        binding: Uuid,
+        /// Exact association generation.
+        binding_generation: i64,
+        /// Stable local Windows account.
+        sid: String,
+    },
+    /// Reconcile the original RSS recovery mutation without generating another candidate.
+    VerifyRssLogin {
+        /// Stable Device Access association.
+        binding: Uuid,
+        /// Exact association generation.
+        binding_generation: i64,
+        /// Stable local Windows account.
+        sid: String,
+    },
     /// Read numerical recovery protectors from system and fixed data volumes.
     CollectBitlocker,
     /// Verify an existing protector without creating or deleting one.
@@ -93,6 +131,21 @@ impl CredentialOperation {
     /// Reject unsupported or ambiguous object identities.
     pub fn validate(&self) -> Result<(), WireError> {
         match self {
+            Self::RotateRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            }
+            | Self::VerifyRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            } => CredentialSubject::RssLogin {
+                binding: *binding,
+                binding_generation: *binding_generation,
+                sid: sid.clone(),
+            }
+            .validate(),
             Self::CollectBitlocker => Ok(()),
             Self::VerifyBitlocker { volume, protector }
             | Self::RotateBitlocker { volume, protector } => CredentialSubject::Bitlocker {
@@ -203,13 +256,21 @@ impl CredentialTaskSpec {
     /// Validate coordinates and capability without granting execution authority.
     pub fn validate(&self) -> Result<(), WireError> {
         self.operation.validate()?;
+        if matches!(
+            self.operation,
+            CredentialOperation::RotateRssLogin { .. } | CredentialOperation::VerifyRssLogin { .. }
+        ) && self.architecture != TaskArchitecture::X86_64
+        {
+            return Err(WireError::InvalidValue);
+        }
         if let Some(recovery) = &self.recovery
             && (recovery.task_id.is_nil()
                 || recovery.attempt_id.is_nil()
                 || recovery.task_id == self.task_id
                 || !matches!(
                     self.operation,
-                    CredentialOperation::VerifyBitlocker { .. }
+                    CredentialOperation::VerifyRssLogin { .. }
+                        | CredentialOperation::VerifyBitlocker { .. }
                         | CredentialOperation::VerifyLocalAdministrator { .. }
                 ))
         {

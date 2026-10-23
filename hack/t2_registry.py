@@ -227,7 +227,7 @@ add('deployment.management-tenant', build=None, profile='empty', python='managem
     sources=('crates/app/src/identity.rs','crates/app/src/identity_audit.rs','crates/app/src/api.rs','crates/app/src/database.rs','crates/app/src/migration.rs','crates/app/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','crates/app/src/tenant_http.rs','crates/app/src/tenant_administrator.rs','crates/app/src/tenant_registry.rs','crates/app/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
 MODULES['deployment.management-tenant'] = replace(MODULES['deployment.management-tenant'], db_mode='fresh', scope='objects')
-add('recovery-credentials.http',fixtures=('identity',),selectors=('recovery_credentials_tests::',),
+add('recovery-credentials.http',fixtures=('identity','agent_pki'),selectors=('recovery_credentials_tests::',),
     sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs'),
     tests=('crates/app/tests/recovery_credentials/mod.rs',),support=('crates/app/tests/support/authority.rs','crates/app/tests/support/inventory.rs','crates/app/tests/support/planning_http.rs'))
 MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],scope='tenant',db_mode='fresh')
@@ -2071,3 +2071,23 @@ consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current
 MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
+
+# Device Access owns the joint human/device ceremony and exact application receipts.
+add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','shared_worker'),
+    sources=('crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
+    tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
+MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
+consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
+consume(('crates/agent-wire/src/device_access.rs','crates/execution-service/src/device_access.rs','crates/registration-service/src/device_access*','crates/registration-service/src/device_access/*'),'recovery-credentials.http execution.agent.delivery')
+T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)
+
+consume(('crates/execution-service/src/actions/agent.rs','crates/execution-service/src/actions/storage.rs','crates/execution-service/src/input_preparation.rs','crates/execution-service/src/input_preparation/*'), 'device-access.http')
+
+MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],support_inputs=tuple(dict.fromkeys((*MODULES['recovery-credentials.http'].support_inputs,*(p for p in MODULES['agent.current_user'].support_inputs if p != 'crates/app/tests/agent/mod.rs')))))
+
+consume(('crates/authorization-service/src/authority.rs','crates/registration-service/src/operations.rs','crates/policy/src/*','crates/flow-service/src/planning/policies/*','crates/flow-service/src/planning/execution_source.rs','crates/flow-service/src/planning/targets.rs'), 'device-access.http')
+
+consume(('crates/agent-channel/schema/install.sql',), 'device-access.http')
+
+consume(('crates/registration-service/src/lifecycle.rs',), 'device-access.http')
+MODULES['device-access.http']=replace(MODULES['device-access.http'],support_inputs=tuple(dict.fromkeys((*MODULES['device-access.http'].support_inputs,'crates/app/tests/support/task_signature.rs'))))

@@ -6,3 +6,4 @@ pub(crate) mod reports;
 pub(crate) mod configurations;
 
 mod current_user;
+mod device_access;

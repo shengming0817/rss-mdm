@@ -161,6 +161,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let public_packages =
         crate::software_catalog::agent_packages_public(state.software_catalog.clone());
     let operations = Router::new()
+        .merge(crate::device_access::routes(
+            state.agent_enrollment.clone(),
+            state.execution.clone(),
+        ))
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::windows_entra::routes(state.windows_entra))
         .merge(crate::execution::routes(state.queries.clone()).with_state(execution))

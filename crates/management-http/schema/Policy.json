@@ -1,8 +1,53 @@
 {
   "$defs": {
+    "AccessRole": {
+      "description": "Explicit local account role managed by Device Access policy.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring device account-management authority.",
+          "type": "string"
+        }
+      ]
+    },
     "Action": {
       "description": "Each action owns its inputs; registration never requires a fictitious resource.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device Access admission and desired local-account role, without a script schedule.",
+          "properties": {
+            "kind": {
+              "const": "device_access",
+              "type": "string"
+            },
+            "role": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit role management; absent preserves existing privilege, creates standard users."
+            },
+            "selfEnrollment": {
+              "description": "Permit first association to the authenticated current interactive local account.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "selfEnrollment"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Periodic telemetry configuration resolved at authenticated Agent check-in.",
@@ -449,6 +494,68 @@
     "CredentialOperation": {
       "description": "Product-owned native credential intent; scheduling remains ordinary Policy behavior.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Rotate the RSS offline additional-factor recovery secret for one current binding.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rotate_rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local Windows account.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reconcile the original RSS recovery mutation without generating another candidate.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "verify_rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local Windows account.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Collect system and fixed-volume recovery protectors.",

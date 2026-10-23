@@ -207,3 +207,35 @@ Agent 登录使用现有后端 Identity 用户；设备绑定入口是 `GET/PUT/
 PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的资产所有人；DELETE 使用设备身份和 CAS 退出，不依赖尚未过期的企业会话。未知结果保留原 operationId 和输入，精确重放返回原回执，不再次填充所有人；旧 revision 不能覆盖新登录或退出新用户。读取在释放设备事务后重新核验保留会话，再用短事务确认设备有效性和绑定 revision；核验期间发生切换或退出时返回 409，客户端应重新读取。失效返回 invalidated，Identity 依赖故障返回不可用。confirmedAt 是服务器上次确认时间，active 表示会话有效，不证明设备在线。
 
 此合同只保存不可用于认证的可信 SessionReference，不保存企业会话秘密或复制人员目录。桌面/Agent 后续需在登录、切换和退出生命周期接入这些端点；后台不会从普通网站登录或 OS 用户观察猜测设备当前使用者。
+
+
+## Device Access 账号关联与应用
+
+`device_access.v1` 是独立原生能力。首次开通使用设备认证与 `x-rss-user-session` 的真实 RSS 会话，
+依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
+不接受 principal 或本地账号；返回 120 秒挑战及当前交互会话。Agent 必须从受保护的本机 broker
+重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认；Windows 域/Entra/MSA、RDP 不属于本期。
+普通进程上报、软件清单和最近登录记录不能替代该核验。用户名仅用于显示或新建目标，不能接管同名账号。
+
+首次开通只用于尚未建立 Device Access 关联的当前注册；之后由 RSS 后台管理员修改或新增。
+确认使用稳定 operationId；响应丢失重试原请求，不换 nonce 或账号。Begin 的 nonce 不入库存储，
+响应丢失后重新发起新 ceremony；并发 ceremony 仍只有一个能够完成首次关联。
+每设备每注册最多保留 128 个绑定记录及 128 个未清理 ceremony，失效绑定保留，过期未消费 ceremony 可清理。
+
+签名 `device_access` task 复用 Offer/Received/Start，包含人员、注册/绑定代际、配置 revision 和摘要。
+收到 Offer 不能执行；Start 前重新核验目标、权限及本机条件。Create 的系统密码只经本机交互设置，
+同名冲突必须失败，不能自动关联现有账号。Unbind 只清理 RSS 集成，不删除账号、数据或 Secure Token。
+收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 Secure Token、volume ownership 和
+FileVault 解锁观察，未知必须保持 unknown。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
+
+Windows RSS 恢复使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
+每账号绑定及代际独立。材料是 CSPRNG 生成的 32 字节、规范无填充 base64url 编码；
+没有到期或一次性消费语义。托管确认后才能原子替换本机 verifier，旧版保留至实际应用确认。
+`/device-access/recovery-uses` 接收无秘密的离线使用事实，operationId 去重；每个材料 entry 最多 4096 条事实，
+满额拒绝新的补报但不使本机密钥失效。使用时间和服务端接收时间独立。
+
+本后端契约不证明 Agent、Windows CP 或 Apple PSSO 的真实执行；对应消费和平台证据由 #2870–#2876 承接。
+
+平台 verifier 的 resolve/recheck 必须在 Identity 提供的原 PG connection 上调用
+`ExecutionService::active_access_binding_on`，同时核对当前注册、绑定代际和 Policy/Scope。
+普通 Binding JSON、清单或历史状态不能作为有效会话证明；Identity 继续独占账户/成员有效性与会话签发。

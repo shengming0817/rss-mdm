@@ -192,7 +192,9 @@ pub async fn accept_for_device(
                 format!("scope:{}", definition.policy.definition.scope),
             )
         }
-        db::ScheduledPolicy::Retirement(_) | db::ScheduledPolicy::Software(_) => return Ok(()),
+        db::ScheduledPolicy::DeviceAccess(_)
+        | db::ScheduledPolicy::Retirement(_)
+        | db::ScheduledPolicy::Software(_) => return Ok(()),
     };
     let native = matches!(policy, db::ScheduledPolicy::Native(_));
     if native == matches!(trigger, AdmissionTrigger::Agent(_)) {
@@ -339,7 +341,11 @@ pub async fn queue_run_in(
     let tenant = tx.tenant_id();
     let scope = policy.definition.scope;
     let device = target.device.clone();
-    let evidence = if retirement {
+    // Device Access carries its own exact binding and rechecks its current scope at Start.
+    // Unlink cleanup must also be dispatchable after that scope has excluded the device.
+    let evidence = if matches!(source, db::Source::DeviceAccess { .. }) {
+        vec![]
+    } else if retirement {
         let t = tenant.to_string();
         let value=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_scalar::<_,serde_json::Value>("SELECT o.target FROM mdm_devices.retirements o JOIN mdm_devices.retirement_work w ON(w.tenant_id,w.operation)=(o.tenant_id,o.id) WHERE w.tenant_id=$1::uuid AND w.execution=$2")

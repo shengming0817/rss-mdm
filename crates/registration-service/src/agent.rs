@@ -98,8 +98,8 @@ pub trait NativeAdmission: Send + Sync {
     ) -> Pending<'a, ()>;
 }
 pub struct Service {
-    tenant: rss_request_context::TenantId,
-    store: Arc<Store>,
+    pub(crate) tenant: rss_request_context::TenantId,
+    pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
     issuer: Arc<AgentIssuer>,
     clock: Arc<dyn Clock>,
@@ -123,10 +123,10 @@ pub struct Assembly {
     pub installations: Arc<dyn configurations::InstallationAdmission>,
     pub bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
-struct Change<R> {
-    value: R,
-    replay: bool,
-    digest: String,
+pub(crate) struct Change<R> {
+    pub(crate) value: R,
+    pub(crate) replay: bool,
+    pub(crate) digest: String,
 }
 impl Service {
     pub fn new(a: Assembly) -> Result<Self, Error> {
@@ -150,14 +150,14 @@ impl Service {
     pub fn now(&self) -> Result<i64, Error> {
         self.clock.unix_seconds()
     }
-    fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
+    pub(crate) fn proof(&self, p: &AuthorizedPrincipal, a: &RequestAudit) -> Result<(), Error> {
         if p.tenant_id() != self.tenant.to_string() || a.tenant() != p.tenant_id() {
             return Err(Error::Forbidden);
         }
         p.check_live()?;
         p.bind_audit(a).map_err(Into::into)
     }
-    async fn write<C: Send, R: Send>(
+    pub(crate) async fn write<C: Send, R: Send>(
         &self,
         a: &RequestAudit,
         context: C,

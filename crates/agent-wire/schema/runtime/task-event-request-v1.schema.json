@@ -1,5 +1,235 @@
 {
   "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "properties": {
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the authenticated native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessEffect": {
+      "description": "Effect receipt. Received/start ACKs are carried by the existing task protocol separately.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The exact requested configuration has been durably installed and read back.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Identity actually changed or confirmed."
+            },
+            "mac": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessMacFacts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "macOS-specific facts; required on macOS and absent on Windows."
+            },
+            "role": {
+              "$ref": "#/$defs/AccessRole",
+              "description": "Actual native privilege after the operation."
+            },
+            "state": {
+              "const": "applied",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "account",
+            "role"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The integration was removed, preserving the OS account and its data.",
+          "properties": {
+            "state": {
+              "const": "unbound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The device cannot yet establish the effect of the original attempt.",
+          "properties": {
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A known failure without claiming the requested state was installed.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/AccessFailure",
+              "description": "Bounded public failure reason."
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessFailure": {
+      "description": "Closed native failure classes; never include command output or user credentials.",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "The native integration is not installed or supported.",
+          "type": "string"
+        },
+        {
+          "const": "account_changed",
+          "description": "The exact local identity or current login changed.",
+          "type": "string"
+        },
+        {
+          "const": "name_conflict",
+          "description": "A requested name already belongs to a different account.",
+          "type": "string"
+        },
+        {
+          "const": "recovery_account_protected",
+          "description": "An operation would remove the last administrator or recovery-capable account.",
+          "type": "string"
+        },
+        {
+          "const": "needs_user",
+          "description": "User input is needed locally; no password is returned to the server.",
+          "type": "string"
+        },
+        {
+          "const": "native_failure",
+          "description": "Native persistence or read-back failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessMacFacts": {
+      "additionalProperties": false,
+      "description": "Apple account facts are separate from PSSO registration and Secure Enclave keys.",
+      "properties": {
+        "filevaultUnlock": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
+        },
+        "secureToken": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "The account's Secure Token status, not Bootstrap Token custody."
+        },
+        "volumeOwner": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Apple silicon volume ownership."
+        }
+      },
+      "required": [
+        "secureToken",
+        "volumeOwner",
+        "filevaultUnlock"
+      ],
+      "type": "object"
+    },
+    "AccessObservation": {
+      "description": "One independent native capability observation, never inferred from transport success.",
+      "oneOf": [
+        {
+          "const": "present",
+          "description": "The capability has been verified for this exact local account.",
+          "type": "string"
+        },
+        {
+          "const": "absent",
+          "description": "Native inspection verified the capability is absent.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Inspection could not establish the capability.",
+          "type": "string"
+        },
+        {
+          "const": "needs_administrator",
+          "description": "A qualified local administrator must authorize the operation.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
     "CredentialEnvelope": {
       "additionalProperties": false,
       "description": "Ciphertext only; this structure is safe to persist in the ordinary communication journal.",
@@ -155,6 +385,37 @@
     "CredentialSubject": {
       "description": "An exact Windows object, never an account display name or drive letter.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS additional-factor recovery material, separate from local-account passwords.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Numerical recovery protector on a stable volume.",
@@ -1412,6 +1673,56 @@
     "TaskEvent": {
       "description": "A task receipt, start request, or bounded execution result; none proves applied state.",
       "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Exact Device Access effect, separate from delivery acknowledgements.",
+          "properties": {
+            "bindingGeneration": {
+              "description": "Fences replacement/revocation of the personnel association.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "bindingId": {
+              "description": "Stable business binding identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "definitionDigest": {
+              "description": "Digest frozen into the signed task.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
+            },
+            "effect": {
+              "$ref": "#/$defs/AccessEffect",
+              "description": "Actual native effect."
+            },
+            "kind": {
+              "const": "device_access_result",
+              "type": "string"
+            },
+            "revision": {
+              "description": "Exact desired configuration revision.",
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "bindingId",
+            "bindingGeneration",
+            "revision",
+            "definitionDigest",
+            "effect"
+          ],
+          "type": "object"
+        },
         {
           "additionalProperties": false,
           "description": "Encrypted material batch; acknowledgment proves durable escrow only.",

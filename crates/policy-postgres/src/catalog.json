@@ -363,7 +363,7 @@
       "versions",
       "versions_action_kind_check",
       "c",
-      "CHECK ((action_kind = ANY (ARRAY['credential'::text, 'execution'::text, 'agent_collection'::text, 'telemetry_profile'::text, 'native_collection'::text, 'configuration'::text, 'software'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text, 'unmanage_device'::text])))",
+      "CHECK ((action_kind = ANY (ARRAY['device_access'::text, 'credential'::text, 'execution'::text, 'agent_collection'::text, 'telemetry_profile'::text, 'native_collection'::text, 'configuration'::text, 'software'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text, 'unmanage_device'::text])))",
       true
     ],
     [
@@ -377,7 +377,7 @@
       "versions",
       "versions_check1",
       "c",
-      "CHECK (((action_kind = ANY (ARRAY['credential'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text, 'unmanage_device'::text])) = (resource IS NULL)))",
+      "CHECK (((action_kind = ANY (ARRAY['device_access'::text, 'credential'::text, 'ensure_agent_installed'::text, 'request_mdm_enrollment'::text, 'unmanage_device'::text])) = (resource IS NULL)))",
       true
     ],
     [

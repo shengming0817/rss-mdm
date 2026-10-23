@@ -24,9 +24,10 @@ impl ScheduledInput for FrozenCredential {
 }
 pub fn permission(operation: &Operation) -> Permission {
     match operation {
-        Operation::RotateLocalAdministrator { .. } | Operation::VerifyLocalAdministrator { .. } => {
-            Permission::AccountWrite
-        }
+        Operation::RotateRssLogin { .. }
+        | Operation::VerifyRssLogin { .. }
+        | Operation::RotateLocalAdministrator { .. }
+        | Operation::VerifyLocalAdministrator { .. } => Permission::AccountWrite,
         _ => Permission::SecurityOperate,
     }
 }
@@ -36,6 +37,7 @@ impl FrozenCredential {
     }
     pub async fn authorized_in(
         &self,
+        service: &ExecutionService,
         tx: &mut PgTransaction<'_>,
         target: &Target,
         now: i64,
@@ -49,8 +51,86 @@ impl FrozenCredential {
         };
         let grants = grants.clone();
         let permission = self.permission();
+        let operation = self.operation.clone();
+        let target = target.clone();
+        let agent_store = service.agent_store.clone();
+        let source = service.source.clone();
+        let scope = service.tenant;
+        let tenant = checked_input(Uuid::parse_str(&scope.to_string()))?;
+
         tx.with_connection(move |c| {
             Box::pin(async move {
+                if let Operation::RotateRssLogin {
+                    binding,
+                    binding_generation,
+                    sid,
+                }
+                | Operation::VerifyRssLogin {
+                    binding,
+                    binding_generation,
+                    sid,
+                } = &operation
+                {
+                    let native = agent_store
+                        .binding(c, tenant.to_string(), target.registration)
+                        .await
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("RSS recovery capability unavailable".into())
+                        })?;
+                    if !native.is_some_and(|b| {
+                        b.platform == "windows"
+                            && b.architecture == "x86_64"
+                            && b.capabilities.contains(&wire::Capability::DeviceAccessV1)
+                    }) {
+                        return Ok(false);
+                    }
+                    let b = match rss_mdm_registration_service::device_access::storage::locked_in(
+                        c, tenant, *binding,
+                    )
+                    .await
+                    {
+                        Ok(b) => b,
+                        Err(
+                            rss_mdm_registration_service::Error::Forbidden
+                            | rss_mdm_registration_service::Error::Conflict
+                            | rss_mdm_registration_service::Error::NotFound,
+                        ) => return Ok(false),
+                        Err(_) => {
+                            return Err(sqlx::Error::Protocol(
+                                "RSS recovery binding unavailable".into(),
+                            ));
+                        }
+                    };
+                    if b.device != target.device
+                        || b.registration != target.registration
+                        || b.registration_generation != target.generation
+                        || b.generation != *binding_generation
+                        || !b.accepts_login()
+                        || !matches!(&b.account,Some(wire::AccessAccount::Windows{sid:s}) if s==sid)
+                    {
+                        return Ok(false);
+                    }
+                    match crate::device_access::policy_on(
+                        source,
+                        scope,
+                        c,
+                        tenant,
+                        &target.device,
+                        b.policy,
+                    )
+                    .await
+                    {
+                        Ok(p) if p.version == b.policy_version => {}
+                        Ok(_) | Err(rss_mdm_registration_service::Error::Forbidden) => {
+                            return Ok(false);
+                        }
+                        Err(_) => {
+                            return Err(sqlx::Error::Protocol(
+                                "RSS recovery policy unavailable".into(),
+                            ));
+                        }
+                    }
+                }
                 for grant in grants {
                     if grant.valid(c, permission, now).await.map_err(|_| {
                         sqlx::Error::Protocol("credential authority unavailable".into())
@@ -89,6 +169,24 @@ pub async fn eligible(
 }
 fn operation(value: &Operation) -> wire::CredentialOperation {
     match value {
+        Operation::RotateRssLogin {
+            binding,
+            binding_generation,
+            sid,
+        } => wire::CredentialOperation::RotateRssLogin {
+            binding: *binding,
+            binding_generation: *binding_generation,
+            sid: sid.clone(),
+        },
+        Operation::VerifyRssLogin {
+            binding,
+            binding_generation,
+            sid,
+        } => wire::CredentialOperation::VerifyRssLogin {
+            binding: *binding,
+            binding_generation: *binding_generation,
+            sid: sid.clone(),
+        },
         Operation::CollectBitlocker => wire::CredentialOperation::CollectBitlocker,
         Operation::VerifyBitlocker { volume, protector } => {
             wire::CredentialOperation::VerifyBitlocker {
@@ -166,7 +264,8 @@ pub async fn task(
     let operation = operation(&policy.frozen.operation);
     let recovery = if matches!(
         operation,
-        wire::CredentialOperation::VerifyBitlocker { .. }
+        wire::CredentialOperation::VerifyRssLogin { .. }
+            | wire::CredentialOperation::VerifyBitlocker { .. }
             | wire::CredentialOperation::VerifyLocalAdministrator { .. }
     ) {
         let registration = target.registration;
@@ -188,6 +287,18 @@ pub async fn task(
                 return Err(Error::Conflict.into());
             };
             let matching = match (&operation, &original_task.operation) {
+                (
+                    wire::CredentialOperation::VerifyRssLogin {
+                        binding,
+                        binding_generation,
+                        sid,
+                    },
+                    wire::CredentialOperation::RotateRssLogin {
+                        binding: b,
+                        binding_generation: g,
+                        sid: s,
+                    },
+                ) => binding == b && binding_generation == g && sid == s,
                 (
                     wire::CredentialOperation::VerifyBitlocker { volume, protector },
                     wire::CredentialOperation::RotateBitlocker {
@@ -253,6 +364,15 @@ pub async fn task(
 }
 fn subject(value: &wire::CredentialSubject) -> vault::Subject {
     match value {
+        wire::CredentialSubject::RssLogin {
+            binding,
+            binding_generation,
+            sid,
+        } => vault::Subject::RssLogin {
+            binding: *binding,
+            binding_generation: *binding_generation,
+            sid: sid.clone(),
+        },
         wire::CredentialSubject::Bitlocker { volume, protector } => vault::Subject::Bitlocker {
             volume: volume.clone(),
             protector: *protector,
@@ -264,6 +384,23 @@ fn subject(value: &wire::CredentialSubject) -> vault::Subject {
 }
 fn allowed_subject(task: &wire::CredentialTaskSpec, value: &wire::CredentialSubject) -> bool {
     match (&task.operation, value) {
+        (
+            wire::CredentialOperation::RotateRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            }
+            | wire::CredentialOperation::VerifyRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            },
+            wire::CredentialSubject::RssLogin {
+                binding: b,
+                binding_generation: g,
+                sid: s,
+            },
+        ) => binding == b && binding_generation == g && sid == s,
         (
             wire::CredentialOperation::VerifyBitlocker { volume, protector },
             wire::CredentialSubject::Bitlocker {
@@ -347,7 +484,8 @@ pub async fn escrow(
                     };
                     let verifying = matches!(
                         task.operation,
-                        wire::CredentialOperation::VerifyBitlocker { .. }
+                        wire::CredentialOperation::VerifyRssLogin { .. }
+                            | wire::CredentialOperation::VerifyBitlocker { .. }
                             | wire::CredentialOperation::VerifyLocalAdministrator { .. }
                     );
                     let coordinates = if let Some(recovery) = &task.recovery {
@@ -711,7 +849,8 @@ pub async fn start(
     };
     if matches!(
         task.operation,
-        wire::CredentialOperation::RotateBitlocker { .. }
+        wire::CredentialOperation::RotateRssLogin { .. }
+            | wire::CredentialOperation::RotateBitlocker { .. }
             | wire::CredentialOperation::RotateLocalAdministrator { .. }
     ) {
         tx.with_connection(move |c| {

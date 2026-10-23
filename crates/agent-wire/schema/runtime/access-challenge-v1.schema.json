@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "properties": {
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the authenticated native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessLocalSession": {
+      "additionalProperties": false,
+      "description": "Exact account and login session attested by the authenticated native Agent ingress.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccessAccount",
+          "description": "Current account, not selected by the browser."
+        },
+        "sessionId": {
+          "description": "Native login instance; logoff/switch invalidates the pending ceremony.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Short-lived, one-use association challenge. This is never an Identity login credential.",
+  "properties": {
+    "expiresAt": {
+      "description": "Server UTC expiry of this ceremony, unrelated to recovery-secret lifetime.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "id": {
+      "description": "Exact ceremony identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "localSession": {
+      "$ref": "#/$defs/AccessLocalSession",
+      "description": "Exact native login which the Agent must recheck before confirmation."
+    },
+    "nonce": {
+      "$ref": "#/$defs/Secret",
+      "description": "One-use secret; persisted only as a hash on the server."
+    }
+  },
+  "required": [
+    "id",
+    "nonce",
+    "expiresAt",
+    "localSession"
+  ],
+  "title": "AccessChallenge",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/access-challenge.schema.json"
+}

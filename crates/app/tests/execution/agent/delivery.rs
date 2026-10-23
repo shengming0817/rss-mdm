@@ -1534,7 +1534,15 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             }}).await??;
             let scope=json!({"kind":"native_certificates","platform":platform,"store":store,"owner":if !user {Value::Null}else if macos {json!({"kind":"macos","uid":n,"generated_uid":guid})}else{json!({"kind":"windows","sid":sid})}});
             let escaped=scope.to_string().replace('\'',"''");
-            let saved=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+            // Observation delivery precedes asynchronous inventory projection.
+            let saved=tokio::time::timeout(Duration::from_secs(20),async {loop {
+                let value=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+                if !value.trim().is_empty() {
+                    let parsed:Value=serde_json::from_str(value.trim())?;
+                    if parsed["value"].as_array().context("certificate projection")?.len()==if stage==5 {0}else{1} {break Ok::<_,anyhow::Error>(value);}
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }}).await??;
             let parsed:Value=serde_json::from_str(saved.trim())?;
             ensure!(parsed["value"].as_array().unwrap().len()==if stage==5 {0}else{1},"wrong store replacement: {parsed}");
             if stage==1 {prior_user=saved.clone();}
@@ -1817,4 +1825,88 @@ async fn recover_unknown_after_restart(
             Ok(())
         })
         .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=execution.agent.delivery: RSS login binding, uncertain escrow recovery, disclosure and offline usage"]
+async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Result<()> {
+    use rss_mdm_agent_wire::runtime as wire;
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
+        let sid="S-1-5-21-101-202-303-1001";
+        let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        f.grants.extend(identity::device_grants(None,&["account_write","credentials"])?);
+        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        let policy=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","selfEnrollment":true,"role":null}}}})).await?;
+        let binding=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",case_device_id());
+        let associated=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","sid":sid}}}}))).await?;
+        ensure!(associated.0==StatusCode::OK,"associate {associated:?}");
+        let claim=tokio::time::timeout(Duration::from_secs(30),async {loop {
+            let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
+            ensure!(response.0==StatusCode::OK,"access claim {response:?}");
+            if !response.1["task"].is_null() {break Ok::<_,anyhow::Error>(response);}
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }}).await??;
+        ensure!(claim.0==StatusCode::OK,"access claim {claim:?}");
+        let signed:wire::SignedTask=serde_json::from_value(claim.1["task"].clone())?;
+        let verification=crate::test_support::task_signature::TaskVerification {
+            key_id:"t2",public_key:f.key.public_key().as_ref(),tenant_id:Uuid::parse_str(case_tenant())?,
+            device_id:registration["deviceId"].as_str().context("enrolled device")?,
+            platform:wire::TaskPlatform::Windows,architecture:wire::TaskArchitecture::X86_64,
+            registration_id:serde_json::from_value(registration["registrationId"].clone())?,generation:registration["generation"].as_u64().context("enrolled generation")?,
+            task_id:signed.payload.task_id(),attempt_id:signed.payload.attempt_id(),permit:wire::TaskPermit::Offer,
+            now:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+        };
+        crate::test_support::task_signature::verify(&signed,&verification)?;
+        let spec=&claim.1["task"]["payload"]["task"];
+        for event in [json!({"kind":"received"}),json!({"kind":"start"}),json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null}})] {
+            let starting=event["kind"]=="start";
+            let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",spec["taskId"].as_str().context("access task")?),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec["attemptId"],"executionContext":context,"event":event}))).await?;
+            ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
+            if starting {
+                let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
+                crate::test_support::task_signature::verify(&ack.into_permit().context("access start permit")?,&crate::test_support::task_signature::TaskVerification{permit:wire::TaskPermit::Start,..verification})?;
+            }
+        }
+        credential_policy(&mut f,json!({"kind":"rotate_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;
+        let original=claim_credential(&f,&context).await?;
+        for kind in ["received","start"] {ensure!(credential_event(&f,&context,&original,json!({"kind":kind})).await?.0==StatusCode::OK);}
+        let subject=wire::CredentialSubject::RssLogin{binding,binding_generation:1,sid:sid.into()};
+        let secret="R0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0dHR0c";
+        let envelope=credential_envelope(&original,subject.clone(),secret.as_bytes())?;
+        let escrow=credential_event(&f,&context,&original,serde_json::to_value(wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:original.definition_digest,materials:vec![envelope]}))?).await?;
+        ensure!(escrow.0==StatusCode::OK,"escrow {escrow:?}");
+        let uncertain=wire::CredentialResult{recovery:None,definition_digest:original.definition_digest,complete:true,failure:None,items:vec![wire::CredentialItemResult{subject:subject.clone(),outcome:wire::CredentialOutcome::Escrowed}]};
+        ensure!(credential_event(&f,&context,&original,serde_json::to_value(wire::TaskEvent::CredentialResult(uncertain))?).await?.0==StatusCode::OK);
+        ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),original.task_id))?.trim()=="unknown");
+        credential_policy(&mut f,json!({"kind":"verify_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;
+        let verify=claim_credential(&f,&context).await?;
+        ensure!(verify.recovery==Some(wire::CredentialRecovery{task_id:original.task_id,attempt_id:original.attempt_id}));
+        for kind in ["received","start"] {ensure!(credential_event(&f,&context,&verify,json!({"kind":kind})).await?.0==StatusCode::OK);}
+        let envelope=credential_envelope(&verify,subject.clone(),secret.as_bytes())?;
+        ensure!(credential_event(&f,&context,&verify,serde_json::to_value(wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:verify.definition_digest,materials:vec![envelope]}))?).await?.0==StatusCode::OK);
+        let result=wire::CredentialResult{recovery:Some(wire::CredentialRecoveryOutcome::Applied),definition_digest:verify.definition_digest,complete:true,failure:None,items:vec![wire::CredentialItemResult{subject,outcome:wire::CredentialOutcome::Verified}]};
+        let applied=credential_event(&f,&context,&verify,serde_json::to_value(wire::TaskEvent::CredentialResult(result))?).await?;
+        ensure!(applied.0==StatusCode::OK,"verified {applied:?}");
+        let list=format!("/api/v1/devices/{}/recovery-credentials",case_device_id());
+        let materials=f.author.call(&f.router,Method::GET,&list,None).await?;
+        ensure!(materials.0==StatusCode::OK,"materials {materials:?}");
+        let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login").context("RSS material")?;
+        let secret_path=format!("{list}/{}/versions/{}/secret",material["id"].as_str().context("material id")?,material["version"]);
+        let disclosed=f.author.call(&f.router,Method::GET,&secret_path,None).await?;
+        ensure!(disclosed.0==StatusCode::OK && disclosed.1["secret"]==secret,"disclose {disclosed:?}");
+        let used=json!({"operationId":Uuid::new_v4(),"material":material["id"],"version":material["version"],"usedAt":crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?});
+        for _ in 0..2 {let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/device-access/recovery-uses",Some(case_credential()),Some(used.clone())).await?;ensure!(response.0==StatusCode::OK,"use {response:?}");}
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.rss_login_uses WHERE tenant_id='{}'",case_tenant()))?.trim()=="1");
+        let unbound=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+        ensure!(unbound.0==StatusCode::OK);
+        ensure!(!f.author.call(&f.router,Method::GET,&secret_path,None).await?.0.is_success());
+        let late=credential_event(&f,&context,&original,json!({"kind":"start"})).await?;
+        ensure!(!late.0.is_success());
+        Ok(())
+    }).await
 }
