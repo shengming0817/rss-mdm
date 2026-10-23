@@ -113,12 +113,20 @@ pub(crate) async fn admit_profile(
     profile: &rss_mdm_apple_mdm::native::profiles::ProfileInput,
     now: i64,
 ) -> Result<bool, Error> {
-    let relevant = profile.payloads.iter().any(|p| {
-        p.schema == "mdm/profiles/com.apple.extensiblesso.yaml"
-            && p.fields
-                .to_plist()
-                .is_ok_and(|f| f.contains_key("PlatformSSO"))
-    });
+    // PlatformSSO is an Apple capability shared by independent providers.
+    let relevant = profile.identifier.starts_with("rss.platform-sso.")
+        || apple.platform_sso.as_deref().is_some_and(|rt| {
+            profile.payloads.iter().any(|p| {
+                p.schema == "mdm/profiles/com.apple.extensiblesso.yaml"
+                    && p.fields.to_plist().is_ok_and(|f| {
+                        f.get("TeamIdentifier").and_then(plist::Value::as_string)
+                            == Some(rt.configuration.team_id.as_str())
+                            && f.get("ExtensionIdentifier")
+                                .and_then(plist::Value::as_string)
+                                == Some(rt.configuration.extension_id.as_str())
+                    })
+            })
+        });
     if !relevant {
         return Ok(true);
     }

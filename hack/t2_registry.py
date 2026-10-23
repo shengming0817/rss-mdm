@@ -464,9 +464,9 @@ add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='
              'crates/app/src/assembly/apple/*','crates/app/src/api.rs','crates/app/src/identity.rs','crates/app/schema/platform-sso-identity.sql',
              'crates/device-service/src/planning.rs','crates/device-service/src/planning/*','crates/inventory-postgres/src/reader.rs',
              'crates/execution-service/src/device_access.rs','crates/registration-service/src/device/store.rs'),
-    support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/lifecycle.rs','crates/app/tests/apple/policy.rs','crates/app/tests/apple/support/scep.rs','crates/app/tests/support/agent.rs'),
+    support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/lifecycle.rs','crates/app/tests/apple/policy.rs','crates/app/tests/apple/support/scep.rs'),
     tests=('crates/app/tests/apple/platform_sso.rs',))
-MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],policies=(CasePolicy('apple::tests::platform_sso::nonce_is_bounded_and_never_stored_in_plaintext','reuse','tenant'),))
+MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],scope='tenant')
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
@@ -912,7 +912,7 @@ for name in ('inventory.runtime', 'agent.reports', 'assets.group_input', 'assets
              'compliance.evaluation', 'execution.agent.delivery'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/inventory_runtime/support.rs',))
-for name in ('assets.sources', 'assets.group_input', 'compliance.evaluation', 'planning.http'):
+for name in ('assets.sources', 'assets.group_input', 'compliance.evaluation', 'planning.http', 'apple.platform_sso'):
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs +
         ('crates/app/tests/support/inventory.rs',))
 
@@ -1022,6 +1022,7 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 # Direct test callers only. A setup helper does not expand into its callers.
 APP_HELPER_CONSUMERS = {
     'support/software_execution.rs': (
+        'apple.platform_sso',
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
         'apple.onboarding', 'execution.agent.delivery', 'execution.agent.poll', 'execution.commands.onboarding',
         'execution.software.content', 'execution.software.offer', 'execution.software.recovery', 'planning.agent_policy',
@@ -1123,6 +1124,7 @@ APP_HELPER_CONSUMERS = {
         'windows.management',
     ),
     'support/agent.rs': (
+        'apple.platform_sso',
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',
         'apple.onboarding', 'diagnostics.http', 'execution.agent.content', 'execution.agent.delivery',
         'execution.agent.poll', 'execution.agent.task_trust', 'execution.commands.onboarding', 'execution.software.content',
@@ -1140,6 +1142,7 @@ APP_HELPER_CONSUMERS = {
         'telemetry.ingress.timescale_shared', 'timeline.http',
     ),
     'support/identity.rs': (
+        'apple.platform_sso',
         'agent.configurations', 'agent.pki', 'api.identity_context', 'apple.account_enrollment',
         'apple.ade', 'apple.collection', 'apple.ddm', 'apple.host',
         'apple.onboarding', 'apple.policy', 'apple.scep', 'assets.group_input',

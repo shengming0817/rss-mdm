@@ -518,9 +518,10 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let agent_device=agent_receipt["deviceId"].as_str().context("Agent device")?;
         let mdm=pair(&f,agent_device).await?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"application/profile observations are required");
-        installed_application(mdm.registration_id).await?;
         let profile=f.ade.platform_sso.as_ref().unwrap().profile()?;
         let (_,operation)=f.configuration_policy(json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),None,"retain").await?;
+        ensure!(peer.manage("Idle",None,None).await?.is_empty(),"RSS profile waits for application observation");
+        installed_application(mdm.registration_id).await?;
         let (execute,_)=peer.next("InstallProfile").await?;
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
@@ -530,9 +531,14 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
         let device=Key::new()?;let device_encryption=Key::new()?;let user=Key::new()?;let encryption=Key::new()?;
+        let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
+        ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",case_tenant()),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         let registered_device=register_key(&f,"device",None,agent_registration,&device,&device_encryption).await?;
         let binding=binding(&mut f,agent_device).await?;
         let registered=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
+        sqlx::query("DELETE FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND purpose='login'").bind(case_tenant()).execute(&mut c).await?;
+        c.close().await?;
         let pending=login_request(&f,&device,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&pending).await?.0==StatusCode::BAD_REQUEST,"pending binding cannot log in");
         applied_binding(binding).await?;
@@ -573,4 +579,45 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
     ensure!(worker.shutdown().join().await?.is_clean());
     f.close().await?;
     result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=apple.platform_sso: independent providers bypass RSS deployment prerequisites"]
+async fn third_party_profile_dispatch_with_and_without_rss_runtime() -> Result<()> {
+    for enabled in [false, true] {
+        let mut f = Fixture::with_options(None, None, false, None, false, enabled).await?;
+        let worker = f.policy_worker().await?;
+        let result: Result<()> = async {
+            let (peer, _) = f.ready_local_peer().await?;
+            grants(&f).await?;
+            let configuration = Configuration {
+                team_id: "THIRDPARTY".into(),
+                extension_id: "com.vendor.extension".into(),
+                application_id: "com.vendor.application".into(),
+                application_version: "1.0".into(),
+                client_id: Uuid::new_v4(),
+            };
+            let mut profile = configuration.profile(
+                "https://vendor.example",
+                Uuid::parse_str(&case_tenant())?,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+            )?;
+            profile.identifier = format!("com.vendor.profile.{}", profile.uuid);
+            profile.payloads[0].identifier = format!("{}.extension", profile.identifier);
+            f.configuration_policy(
+                json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),
+                None,
+                "retain",
+            )
+            .await?;
+            peer.next("InstallProfile").await?;
+            Ok(())
+        }
+        .await;
+        ensure!(worker.shutdown().join().await?.is_clean());
+        f.close().await?;
+        result?;
+    }
+    Ok(())
 }

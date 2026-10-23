@@ -176,9 +176,10 @@ async fn challenge(
     let tenant = app.tenant.to_string();
     store::cleanup(c, &tenant, now).await?;
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid",
+        "SELECT count(*) FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND (purpose='login')=$2",
     )
     .bind(&tenant)
+    .bind(purpose == "login")
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;
