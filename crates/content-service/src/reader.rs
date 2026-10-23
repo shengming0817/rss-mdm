@@ -167,17 +167,11 @@ impl Store {
                 .backend
                 .read(&p.coordinate, p.content, 0, p.content.length, deadline)
                 .await?;
-            let expected = p.content;
             let class = c;
             let store = self.clone();
             let artifact = a.clone();
             let length = p.length;
             let (next_hash, logical) = tokio::task::spawn_blocking(move || {
-                if physical.len() as u64 != expected.length
-                    || Sha256::digest(&physical).as_slice() != expected.sha256
-                {
-                    return Err(Error::Invariant);
-                }
                 let logical = if class.protected() {
                     store.plaintext(&physical, &artifact, class, length)?
                 } else {

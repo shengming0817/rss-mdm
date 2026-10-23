@@ -227,20 +227,27 @@ impl Store {
     }
     pub(super) async fn put_piece(
         &self,
-        lease: (Uuid, Uuid),
+        lease: (Uuid, Uuid, Arc<crate::budget::UploadLease>),
         offset: u64,
         length: u64,
         bytes: Vec<u8>,
         expires: i64,
         deadline: Deadline,
     ) -> Result<Piece, Error> {
-        let (owner, epoch) = lease;
+        let (owner, epoch, capacity) = lease;
         self.check_deadline(deadline)?;
         let id = Uuid::new_v4();
-        let content = Content {
-            length: bytes.len() as u64,
-            sha256: Sha256::digest(&bytes).into(),
-        };
+        let (bytes, content) = tokio::task::spawn_blocking(move || {
+            let _capacity = capacity;
+            let content = Content {
+                length: bytes.len() as u64,
+                sha256: Sha256::digest(&bytes).into(),
+            };
+            (bytes, content)
+        })
+        .await
+        .map_err(|_| storage())?;
+        self.check_deadline(deadline)?;
         let intent = self.backend.intent(id, content)?;
         let mut tx = self.tx().await?;
         self.quota(&mut tx, 0).await?;
@@ -300,15 +307,9 @@ impl Store {
         .await
         .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         commit(tx).await?;
-        let verified = self
-            .backend
+        self.backend
             .read(&coordinate, content, 0, content.length, deadline)
             .await?;
-        if verified.len() as u64 != content.length
-            || Sha256::digest(&verified).as_slice() != content.sha256
-        {
-            return Err(Error::Invariant);
-        }
         let mut tx = self.tx().await?;
         sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;

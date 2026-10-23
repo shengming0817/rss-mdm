@@ -193,24 +193,34 @@ impl Store {
             .map_err(|_| Error::Conflict)?;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let lease = crate::budget::UploadLease::new(self, key, epoch, permit);
+        let lease = Arc::new(crate::budget::UploadLease::new(self, key, epoch, permit));
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result = budget
             .work(async {
                 let (saved, epoch) = self
                     .claim(actor, id, Some(offset), now, epoch, budget)
                     .await?;
-                self.append_claimed(saved, epoch, body, budget.operation, &commit_started)
-                    .await
+                self.append_claimed(
+                    saved,
+                    (epoch, lease.clone()),
+                    body,
+                    budget.operation,
+                    &commit_started,
+                )
+                .await
             })
             .await;
         match result {
             Ok(value) => {
-                lease.complete();
+                if let Ok(lease) = Arc::try_unwrap(lease) {
+                    lease.complete();
+                }
                 Ok(value)
             }
             Err(error) => {
-                let _ = lease.release().await;
+                if let Ok(lease) = Arc::try_unwrap(lease) {
+                    let _ = lease.release().await;
+                }
                 if matches!(error, Error::Deadline)
                     && commit_started.load(std::sync::atomic::Ordering::Acquire)
                 {
@@ -225,13 +235,14 @@ impl Store {
     async fn append_claimed<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         mut saved: journal::Saved,
-        epoch: Uuid,
+        lease: (Uuid, Arc<crate::budget::UploadLease>),
         mut body: R,
         deadline: Deadline,
         commit_started: &std::sync::atomic::AtomicBool,
     ) -> Result<Upload, Error> {
         use tokio::io::AsyncReadExt;
         use zeroize::Zeroizing;
+        let (epoch, capacity) = lease;
         let start = saved.upload.offset;
         if start >= saved.upload.binding.length {
             return Err(Error::Conflict);
@@ -296,7 +307,7 @@ impl Store {
                 let offset = saved.pieces.last().map_or(0, |p| p.offset + p.length);
                 saved.pieces.push(
                     self.put_piece(
-                        (key, epoch),
+                        (key, epoch, capacity.clone()),
                         offset,
                         journal::CHUNK,
                         bytes,
@@ -324,7 +335,7 @@ impl Store {
             };
             saved.pieces.push(
                 self.put_piece(
-                    (key, epoch),
+                    (key, epoch, capacity.clone()),
                     offset,
                     length,
                     bytes,
