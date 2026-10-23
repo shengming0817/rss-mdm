@@ -153,7 +153,7 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
     assert_eq!(
         store
             .backend
-            .read(&coordinate, content, 1, 3, d)
+            .read(&coordinate, content, 1, 3, d, ())
             .await
             .unwrap(),
         b"bc"
@@ -174,7 +174,7 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
     assert!(
         store
             .backend
-            .read(&coordinate, content, 0, 3, d)
+            .read(&coordinate, content, 0, 3, d, ())
             .await
             .is_err()
     );
