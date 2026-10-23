@@ -83,6 +83,15 @@ async fn pool(role: &str) -> Result<PgPool> {
 }
 
 async fn new_store(pool: PgPool, integrity: Integrity, tenant: TenantId) -> Result<AuditStore> {
+    new_store_with_limits(pool, integrity, tenant, Default::default()).await
+}
+
+async fn new_store_with_limits(
+    pool: PgPool,
+    integrity: Integrity,
+    tenant: TenantId,
+    limits: rss_mdm_audit_integration::BacklogLimits,
+) -> Result<AuditStore> {
     // Random tenants isolate receipt and integrity observations in the existing fixture DB.
     use sqlx::Connection;
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
@@ -98,13 +107,5 @@ async fn new_store(pool: PgPool, integrity: Integrity, tenant: TenantId) -> Resu
     owner.close().await?;
     let runtime = crate::audit_test_support::source_runtime(&pool, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    Ok(AuditStore::new(
-        pool,
-        integrity,
-        runtime,
-        tenant,
-        Default::default(),
-        &budget.control(),
-    )
-    .await?)
+    Ok(AuditStore::new(pool, integrity, runtime, tenant, limits, &budget.control()).await?)
 }

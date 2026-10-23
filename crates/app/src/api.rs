@@ -682,6 +682,7 @@ pub(crate) fn from_state(
         inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
         mdm_audit: state.audit_projection_health.clone(),
+        management_tenant: state.identity.management_tenant,
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),

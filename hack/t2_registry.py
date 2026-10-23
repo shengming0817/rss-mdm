@@ -319,6 +319,7 @@ add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=
 MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
     CasePolicy('api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
     CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
+    CasePolicy('api::t2::runtime_diagnostics::management_audit_capacity_is_visible_without_cross_tenant_counts', 'reuse', 'pair'),
 ))
 add('host.lifecycle', build=None, python='host', fixtures=('identity',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs', 'crates/app/src/audit_health.rs', 'crates/app/src/audit_projection.rs'),
@@ -1793,6 +1794,7 @@ for owner in ('agent-channel', 'apple-channel', 'windows-channel',
     if owner not in {'pki-service', 'device-service', 'timeline-service', 'certificate-archive-service'}:
         consume((f'crates/{owner}/schema/relations.sql',), consumers)
 
+consume(('crates/inventory-service/schema/source-facts.sql',), 'device.associations')
 consume(('crates/inventory-service/schema/group-selections.sql',),
         'assets.http assets.queries assets.sources assets.group_input inventory.runtime '
         'agent.reports windows.management apple.collection planning.onboarding')

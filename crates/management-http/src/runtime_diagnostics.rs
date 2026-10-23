@@ -116,7 +116,7 @@ pub enum Task {
     Completed,
     Failed,
 }
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Reason {
     MaterialNotSelected,

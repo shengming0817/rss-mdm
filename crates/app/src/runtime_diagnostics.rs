@@ -20,6 +20,7 @@ pub(crate) struct RuntimeDiagnostics {
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
+    pub management_tenant: rss_request_context::TenantId,
     pub instance: String,
 }
 impl Source for RuntimeDiagnostics {
@@ -328,40 +329,62 @@ impl RuntimeDiagnostics {
     }
     async fn source_health(&self, cutoff: Instant) -> Component {
         let mut component = component(ComponentName::AuditSource, false);
-        let remaining = cutoff
-            .saturating_duration_since(rss_request_context::Clock::now(
-                &crate::lifecycle::RuntimeTimer,
-            ))
-            .min(std::time::Duration::from_secs(1));
-        match self
-            .audit_store
-            .backlog(
-                self.tenant,
-                rss_transactional_messaging::policy::OperationDeadline::from_remaining(remaining),
-            )
-            .await
-        {
-            Ok(backlog) => {
-                if backlog.reserve_exhausted {
-                    component.reasons.push(Reason::AuditReserveExhausted);
-                } else if backlog.admission_closed {
-                    component.reasons.push(Reason::AuditBackpressure);
-                } else {
-                    component.readiness = Readiness::Ready;
+        component.readiness = Readiness::Ready;
+        component.health = Health::Healthy;
+        let tenants = if self.tenant == self.management_tenant {
+            vec![self.tenant]
+        } else {
+            vec![self.tenant, self.management_tenant]
+        };
+        for tenant in tenants {
+            let remaining = cutoff
+                .saturating_duration_since(rss_request_context::Clock::now(
+                    &crate::lifecycle::RuntimeTimer,
+                ))
+                .min(std::time::Duration::from_secs(1));
+            match self
+                .audit_store
+                .backlog(
+                    tenant,
+                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                        remaining,
+                    ),
+                )
+                .await
+            {
+                Ok(backlog) => {
+                    if backlog.reserve_exhausted {
+                        component.readiness = Readiness::NotReady;
+                        component.reasons.push(Reason::AuditReserveExhausted);
+                    } else if backlog.admission_closed {
+                        component.readiness = Readiness::NotReady;
+                        component.reasons.push(Reason::AuditBackpressure);
+                    }
+                    if backlog.warning {
+                        component.reasons.push(Reason::AuditBacklogWarning);
+                    }
+                    // Host admission includes management operations; detailed counters remain tenant-scoped.
+                    if tenant == self.tenant {
+                        component.audit_backlog = Some(backlog);
+                    }
                 }
-                if backlog.warning {
-                    component.reasons.push(Reason::AuditBacklogWarning);
+                Err(_) => {
+                    component.readiness = Readiness::NotReady;
+                    component.reasons.push(Reason::DependencyUnavailable);
                 }
-                component.health = if component.reasons.is_empty() {
-                    Health::Healthy
-                } else {
-                    Health::Degraded
-                };
-                component.audit_backlog = Some(backlog);
             }
-            Err(_) => {
-                component.reasons.push(Reason::DependencyUnavailable);
+        }
+        let mut unique = Vec::new();
+        component.reasons.retain(|reason| {
+            if unique.contains(reason) {
+                false
+            } else {
+                unique.push(*reason);
+                true
             }
+        });
+        if !component.reasons.is_empty() {
+            component.health = Health::Degraded;
         }
         component
     }

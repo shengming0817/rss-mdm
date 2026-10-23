@@ -192,3 +192,132 @@ async fn receipts_and_retirement() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=audit.receipts: source capacity rolls back business writes and projection restores admission"]
+async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
+    use rss_mdm_audit_integration::BacklogLimits;
+    use rss_transactional_messaging::policy::OperationDeadline;
+    let pool = pool("mdm_access").await?;
+    let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let store = new_store_with_limits(
+        pool.clone(),
+        Integrity::Plain,
+        tenant,
+        BacklogLimits::new(1, 1_000_000)?,
+    )
+    .await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
+    let request = RequestAudit::new(tenant.to_string(), "capacity_test");
+    let normal = Fact::business(&request, "normal", b"normal", 200, "success", None)?;
+    let denied = Fact::business(&request, "denied", b"denied", 403, "denied", None)?;
+    let excess = Fact::business(&request, "excess", b"excess", 403, "denied", None)?;
+    let write = store
+        .write(
+            tenant,
+            &budget.source_control(),
+            (&store, &normal),
+            |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+        )
+        .await;
+    ensure!(state(write) == "committed");
+    let before = store
+        .backlog(
+            tenant,
+            OperationDeadline::from_remaining(Duration::from_secs(5)),
+        )
+        .await?;
+    ensure!(before.events == 1 && before.source_bytes > 0 && before.admission_closed);
+    let rejected = Fact::business(&request, "blocked", b"blocked", 200, "success", None)?;
+    let blocked = store
+        .write(
+            tenant,
+            &budget.source_control(),
+            (&store, &rejected),
+            |(store, fact), tx| {
+                Box::pin(async move { recovery::crash_write(store, tx, fact).await })
+            },
+        )
+        .await;
+    ensure!(blocked.fold(
+        |_| false,
+        |_| false,
+        |error| matches!(error, TransactionError::Operation(Error::BacklogFull)),
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    let device_count = crate::planning::test_support::sql(&format!(
+        "SELECT count(*) FROM mdm_access.devices WHERE tenant_id='{tenant}' AND id='crash-device'"
+    ));
+    ensure!(
+        device_count == "0",
+        "capacity rejection committed business mutation"
+    );
+    for (fact, expected) in [(&denied, "committed"), (&excess, "rolled_back")] {
+        let result = store
+            .write(
+                tenant,
+                &budget.source_control(),
+                (&store, fact),
+                |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+            )
+            .await;
+        if expected == "committed" {
+            ensure!(state(result) == expected);
+        } else {
+            ensure!(result.fold(
+                |_| false,
+                |_| false,
+                |error| matches!(error, TransactionError::Operation(Error::ReserveExhausted)),
+                |_| false,
+                |_| false,
+                |_| false
+            ));
+        }
+    }
+    let full = store
+        .backlog(
+            tenant,
+            OperationDeadline::from_remaining(Duration::from_secs(5)),
+        )
+        .await?;
+    ensure!(full.events == 1 && full.source_bytes == before.source_bytes);
+    ensure!(full.reserved_events == 1 && full.reserved_source_bytes > 0 && full.reserve_exhausted);
+    ensure!(bytes(&pool, tenant).await?.len() == 2);
+    crate::audit_test_support::projection::drain(tenant, Integrity::Plain).await?;
+    let empty = store
+        .backlog(
+            tenant,
+            OperationDeadline::from_remaining(Duration::from_secs(5)),
+        )
+        .await?;
+    ensure!(
+        (
+            empty.events,
+            empty.source_bytes,
+            empty.reserved_events,
+            empty.reserved_source_bytes
+        ) == (0, 0, 0, 0)
+    );
+    ensure!(!empty.admission_closed && !empty.reserve_exhausted && empty.oldest_seconds.is_none());
+    let resumed = store
+        .write(
+            tenant,
+            &budget.source_control(),
+            (&store, &rejected),
+            |(store, fact), tx| {
+                Box::pin(async move { recovery::crash_write(store, tx, fact).await })
+            },
+        )
+        .await;
+    ensure!(state(resumed) == "committed");
+    ensure!(
+        crate::planning::test_support::sql(&format!(
+            "SELECT count(*) FROM mdm_access.devices WHERE tenant_id='{tenant}' AND id='crash-device'"
+        )) == "1"
+    );
+    request.finalize(None);
+    pool.close().await;
+    Ok(())
+}
