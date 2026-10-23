@@ -525,11 +525,15 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
         let repaired=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
         ensure!(repaired["sourceVersion"]==2);
-        let valid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&valid).await?.0==StatusCode::OK);
+        let valid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
+        let (status,response)=token(&f,&valid).await?;ensure!(status==StatusCode::OK);
+        let current_tokens=decrypt(&encryption,&response)?;
+        let current_access=current_tokens["access_token"].as_str().context("current native token")?;
+        ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::OK,"token is valid immediately before logout");
         let revoked=agent(&f,&format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap()),json!({})).await?;
         ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true);
         let invalid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
-        ensure!(browser_exchange(&f,binding,&user,&repaired,tokens["access_token"].as_str().unwrap()).await?.0==StatusCode::UNAUTHORIZED);
+        ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::UNAUTHORIZED);
         Ok(())
     }.await;
     ensure!(worker.shutdown().join().await?.is_clean());

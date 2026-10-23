@@ -25,6 +25,7 @@ pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
         .route("/platform-sso/register", post(register))
         .route("/platform-sso/sources/{id}/revoke", post(revoke))
         .layer(DefaultBodyLimit::max(65536))
+        .layer(axum::middleware::map_response(private_response))
         .with_state(AgentState { app, service })
 }
 pub fn browser_routes() -> Router<Arc<HttpState>> {
@@ -334,7 +335,7 @@ async fn configuration(
     let profile = rt.profile()?;
     auth.proof.check_live()?;
     Ok(Json(
-        json!({"configuration":rt.configuration,"endpoints":rt.endpoints,"profile":profile,"protocolVersion":"1.0","authenticationMethod":"UserSecureEnclaveKey","minimumTestedSdk":"26.4","registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false,"refreshMethod":"fresh_native_login","deploymentOrder":["signed_application","extensible_sso_profile","device_registration","user_registration","login_ready"]}),
+        json!({"configuration":rt.configuration,"endpoints":rt.endpoints,"profile":profile,"protocolVersion":"1.0","authenticationMethod":"UserSecureEnclaveKey","targetSdk":"26.4","registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false,"refreshMethod":"fresh_native_login","deploymentOrder":["signed_application","extensible_sso_profile","device_registration","user_registration","login_ready"]}),
     ))
 }
 

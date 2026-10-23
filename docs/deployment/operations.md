@@ -89,7 +89,7 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 `identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多两条，与 Audit 连接池容量一致；成功投递后立即继续；空闲等待通知、持久化重试/租约最近期限或三十秒恢复补扫。复用产品唯一 LISTEN 连接，监听可信实例的业务与管理租户 Identity 频道；空 payload 只作唤醒提示，不作为提交、领取或授权证明。所有订阅完成后及重连后补扫；空领取即使仍有到期候选也仅立即复查一次，随后有界等待，避免行锁竞争自旋。基础设施暂时失败保留至多一秒退避，由已知更早持久期限收紧，通知不能绕过退避。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
 
-组件日志 `component=identity-audit` 中的 `transactional_messaging.outbox.*` 提供发布、重试和租约信息；成功 claim 的耗时 tick 不写日志，避免空轮询噪声；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际领取并成功处理事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
+组件日志 `component=identity-audit event=audit_projection` 使用 `phase=transaction` 的 `status=commit_unknown|rollback_failed` 报告事务不确定性，使用 `phase=resolve` 的 `status=confirmed|unresolved|failed` 报告持久恢复核对结果。提交未知后保留原事件身份，先观察 resolve，再核对 Outbox 终态与 Inbox 回执，不将 unknown 或 unresolved 当作回滚或成功。正常投影与空闲轮询不逐条输出日志；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障令 readiness 为 false，后续成功轮询可恢复。若已有事件报告重试，则保持不就绪，直到实际投影或持久恢复确认事件；退避中的空轮询不恢复就绪，初始空闲仍可就绪；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
 
 只读查询示例（psql 的 `tenant_id` 变量由已授权操作员提供）：
 

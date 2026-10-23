@@ -49,8 +49,8 @@ impl Configuration {
             || self.application_version.len() > 64
             || !self
                 .application_version
-                .bytes()
-                .all(|c| c.is_ascii_digit() || c == b'.')
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|c| c.is_ascii_digit()))
         {
             return Err(Error::Malformed);
         }
@@ -208,6 +208,11 @@ mod tests {
         assert_eq!(psso["UseSharedDeviceKeys"].as_boolean(), Some(true));
         assert!(!psso.contains_key("EnableCreateUserAtLogin"));
         assert!(!psso.contains_key("LoginPolicy"));
+        for version in [".", "1..0", ".1", "1."] {
+            let mut bad = config.clone();
+            bad.application_version = version.into();
+            assert!(bad.validate().is_err());
+        }
     }
     #[test]
     fn endpoints_are_exact_https_tenant_authorities() {

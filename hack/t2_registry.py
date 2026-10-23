@@ -466,6 +466,7 @@ add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='
              'crates/execution-service/src/device_access.rs','crates/registration-service/src/device/store.rs'),
     support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/lifecycle.rs','crates/app/tests/apple/policy.rs','crates/app/tests/apple/support/scep.rs','crates/app/tests/support/agent.rs'),
     tests=('crates/app/tests/apple/platform_sso.rs',))
+MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],policies=(CasePolicy('apple::tests::platform_sso::nonce_is_bounded_and_never_stored_in_plaintext','reuse','tenant'),))
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
