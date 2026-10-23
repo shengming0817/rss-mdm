@@ -2,20 +2,28 @@
   "tables": [],
   "functions": [
     {
-      "name": "rss_audit.reserve",
-      "search_path": "search_path=pg_catalog, rss_audit"
+      "name": "rss_transactional_messaging.check_execution",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
-      "name": "rss_audit.append",
-      "search_path": "search_path=pg_catalog, rss_audit"
+      "name": "rss_transactional_messaging.prepare_outbox_partitions",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
-      "name": "rss_ledger.prepare_append",
-      "search_path": "search_path=pg_catalog, rss_ledger"
+      "name": "rss_transactional_messaging.append_outbox",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
-      "name": "rss_ledger.insert_entry",
-      "search_path": "search_path=pg_catalog, rss_ledger"
+      "name": "rss_transactional_messaging.consumer_domain_allowed",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    },
+    {
+      "name": "rss_transactional_messaging.consumer_inbox_allowed",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
+    },
+    {
+      "name": "rss_transactional_messaging.projection_scope_matches",
+      "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     }
   ],
   "external_relations": [
@@ -23,7 +31,10 @@
     "rss_audit.records",
     "rss_ledger.heads",
     "rss_ledger.entries",
-    "mdm_audit.receipts"
+    "mdm_audit.receipts",
+    "mdm_audit.backlog",
+    "rss_transactional_messaging.policy",
+    "rss_transactional_messaging.outbox"
   ],
   "verified_schemas": []
 }

@@ -5,6 +5,8 @@ use rss_request_context::{RequestId, TenantId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details";
+
 /// Source-owned fact. A stable key identifies the operation and phase, never its outcome.
 pub struct Fact {
     identity: RecordIdentity,
@@ -122,11 +124,15 @@ impl Fact {
         ))
         .map_err(|_| InvalidFact::Payload)?;
         let fingerprint = Sha256::digest(&facts).into();
-        let source = SourceIdentity::new(SourceId::parse(source).map_err(|_| InvalidFact::Contract)?, SourceContract::new(
-            ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact::Contract)?,
-            ContractVersion::from_major(1).map_err(|_| InvalidFact::Contract)?,
-            SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details"))).map_err(|_| InvalidFact::Contract)?,
-        ));
+        let source = SourceIdentity::new(
+            SourceId::parse(source).map_err(|_| InvalidFact::Contract)?,
+            SourceContract::new(
+                ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact::Contract)?,
+                ContractVersion::from_major(1).map_err(|_| InvalidFact::Contract)?,
+                SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(SOURCE_SCHEMA)))
+                    .map_err(|_| InvalidFact::Contract)?,
+            ),
+        );
         let identity = RecordIdentity::new(
             TenantId::parse(context.tenant()).map_err(|_| InvalidFact::Tenant)?,
             source,
