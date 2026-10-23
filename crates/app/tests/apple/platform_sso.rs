@@ -354,6 +354,30 @@ async fn binding(f: &mut Fixture, device: &str) -> Result<Uuid> {
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
     let policy = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","selfEnrollment":true,"role":null}}})).await?;
+    // Policy publication starts scope reconciliation; first association requires its current result.
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut c)
+        .await?;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let state: String =
+                sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,$2)->>'state'")
+                    .bind(scope)
+                    .bind(device)
+                    .fetch_one(&mut c)
+                    .await?;
+            if state == "fresh" {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await??;
+    c.close().await?;
     let user_call = |path: &str, input: Value| {
         let request = Request::builder()
             .method(Method::POST)
