@@ -14,11 +14,11 @@ pub use http::{agent_routes, browser_routes, management_routes};
 use rss_mdm_apple_mdm::platform_sso::{Configuration, Endpoints};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Deployment-owned signing ring. Dropping a key stops advertising it; no HTTP key upload exists.
 pub(super) fn browser_audience(origin: &str) -> String {
     format!("{origin}/login")
 }
 
+/// Deployment-owned signing ring. Dropping a key stops advertising it; no HTTP key upload exists.
 pub struct Runtime {
     pub configuration: Configuration,
     pub endpoints: Endpoints,
