@@ -367,7 +367,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
                 )
                 .bind(&tenant)
                 .bind(*id)
-                .fetch_one(c)
+                .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
                 let value = candidate(&g, &row)?;
