@@ -622,7 +622,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
             ensure!(retained.trim() == "1","Unknown must retain material");
             cleared["effect"]=json!({"state":"unbound"});
             ensure!(event(&f,&unbind,&c,&registration,cleared).await?.0 == StatusCode::OK);
-            verify_unbound_retention(&receipt).await?;
+            verify_unbound_retention(&f.base,&receipt).await?;
             return Ok(());
         }
         let ready = directory(&f,true).await?;
@@ -640,19 +640,19 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
     }).await
 }
 
-async fn verify_unbound_retention(receipt: &wire::CredentialReceipt) -> Result<()> {
+async fn verify_unbound_retention(base: &Value, receipt: &wire::CredentialReceipt) -> Result<()> {
     use rss_mdm_recovery_credentials::storage;
     use sqlx::Connection;
-    let mut c =
-        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_runtime")?)
-            .await?;
+    let config: crate::config::Config = serde_json::from_value(base.clone())?;
+    let mut connection = sqlx::PgConnection::connect_with(&config.access_options()?).await?;
+    let mut c = connection.begin().await?;
     let tenant = Uuid::parse_str(case_tenant())?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
-        .execute(&mut c)
+        .execute(&mut *c)
         .await?;
     let invalidated:bool=sqlx::query_scalar("SELECT invalidated_at IS NOT NULL AND NOT pending AND sealed IS NOT NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
-        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut c).await?;
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut *c).await?;
     ensure!(invalidated, "native Unbound must start retention");
     ensure!(
         !storage::expired_in(&mut c, tenant)
@@ -661,7 +661,7 @@ async fn verify_unbound_retention(receipt: &wire::CredentialReceipt) -> Result<(
             .any(|m| m.id == receipt.material && m.version == receipt.version)
     );
     sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2 AND version=$3")
-        .bind(tenant).bind(receipt.material).bind(receipt.version).execute(&mut c).await?;
+        .bind(tenant).bind(receipt.material).bind(receipt.version).execute(&mut *c).await?;
     ensure!(
         storage::expired_in(&mut c, tenant)
             .await?
@@ -670,8 +670,9 @@ async fn verify_unbound_retention(receipt: &wire::CredentialReceipt) -> Result<(
     );
     storage::clear_expired_in(&mut c, tenant, receipt.material, receipt.version).await?;
     let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
-        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut c).await?;
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut *c).await?;
     ensure!(erased, "expired material must be erased");
-    c.close().await?;
+    c.commit().await?;
+    connection.close().await?;
     Ok(())
 }
