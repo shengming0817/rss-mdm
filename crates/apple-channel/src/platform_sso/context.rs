@@ -54,7 +54,10 @@ impl Binding {
     pub fn matches(&self, c: &Context) -> bool {
         self.tenant == c.tenant
             && self.instance == c.instance
-            && Arc::ptr_eq(&self.access, &c.access)
+            && Arc::ptr_eq(&self.access.registration, &c.access.registration)
+            && Arc::ptr_eq(&self.access.authorization, &c.access.authorization)
+            && Arc::ptr_eq(&self.audit_store, &c.audit_store)
+            && Arc::ptr_eq(&self.protection, &c.protection)
             && Weak::ptr_eq(&self.execution, &Arc::downgrade(&c.execution))
             && match (&self.configuration, &c.platform_sso) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),

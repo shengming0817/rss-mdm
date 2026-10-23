@@ -218,7 +218,7 @@ async fn installed_application(registration: Uuid) -> Result<()> {
         "psso-applications",
     )?
     .encode()?;
-    let value = serde_json::to_value(Scalar::Array(vec![Scalar::Object(
+    let value = serde_json::to_string(&Scalar::Array(vec![Scalar::Object(
         [
             ("id".into(), Scalar::String("com.rss.psso".into())),
             ("version".into(), Scalar::String("1.0".into())),
@@ -226,7 +226,7 @@ async fn installed_application(registration: Uuid) -> Result<()> {
         .into(),
     )]))?;
     sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{\"kind\":\"device\"}',$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,'known',$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,$6,'mdm.apple',$7,1)")
-        .bind(case_tenant()).bind(scope).bind(serde_json::to_value(definition.coverage()?)?).bind(key.as_str()).bind(value).bind(registration).bind(epoch).execute(&mut c).await?;
+        .bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(value).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut c).await?;
     c.close().await?;
     Ok(())
 }
