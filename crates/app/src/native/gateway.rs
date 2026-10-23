@@ -119,7 +119,7 @@ fn attest(request: &mut Request) -> Result<(String, IpAddr), ()> {
         .filter(|name| {
             name.as_str() == "forwarded"
                 || name.as_str().starts_with("x-forwarded-")
-                || name.as_str().starts_with("x-rss-")
+                || matches!(name.as_str(), "x-rss-public-origin" | "x-rss-client-cert")
                 || name.as_str().starts_with("x-ssl-")
                 || matches!(
                     name.as_str(),

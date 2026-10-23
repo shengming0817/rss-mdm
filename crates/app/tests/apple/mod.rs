@@ -323,7 +323,7 @@ impl Fixture {
             .iter()
             .position(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         {
-            router = router.merge(listeners.remove(i).1.router);
+            router = crate::test_support::gateway::browser_agent(router, listeners.remove(i).1.router, "mdm.example.test");
         }
         ensure!(listeners.len() == 1, "Apple-only assembly loaded Windows");
         let (_, native) = listeners.pop().unwrap();

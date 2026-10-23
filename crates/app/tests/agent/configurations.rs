@@ -1809,7 +1809,7 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(user.call(&f.router,Method::PUT,"/api/v1/agent-connections",Some(save)).await?.0==StatusCode::OK);
         let retire=json!({"operationId":Uuid::new_v4(),"expectedRevision":3});
         let blocked=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire.clone())).await?;
-        ensure!(blocked==(StatusCode::CONFLICT,json!({"code":"connection_retirement_blocked"})),"retirement stranded an active peer: {blocked:?}");
+        ensure!(blocked.0==StatusCode::CONFLICT && blocked.1["code"]=="connection_retirement_blocked","retirement stranded an active peer: {blocked:?}");
         let failed=json!({"operationId":Uuid::new_v4(),"revision":2,"reason":"persistence_failed"});
         ensure!(client_a.post(url(tls_a.address,"/api/v1/agent/enroll/connections/failures")).header("host",a.trim_start_matches("https://")).json(&failed).send().await?.status()==StatusCode::NO_CONTENT);
         let device=url::form_urlencoded::byte_serialize(runtime["deviceId"].as_str().unwrap().as_bytes()).collect::<String>();

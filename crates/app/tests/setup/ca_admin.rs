@@ -437,10 +437,10 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
         let agent_origin = format!("https://agent-{index}.example.test");
         let windows_origin = format!("https://windows-{index}.example.test");
         let agent: crate::agent_pki::Config = serde_json::from_value(json!({"mode":"step_ca",
-            "endpoint":{"origin":agent_origin,"listen":"127.0.0.1:9445","certificate_file":"/unused.crt","private_key_file":"/unused.pk8"},
+            "endpoint":{"origin":agent_origin},
             "bootstrap":{}}))?;
         let mut runtime = json!({"product_origin":format!("https://tenant-{index}.example.test"),
-            "identity":{"tenant_id":tenant},"runtime_binding":{"host_id":Uuid::new_v4()},
+            "identity":{"tenant_id":tenant,"instance_id":crate::test_support::identity::INSTANCE},"runtime_binding":{"host_id":Uuid::new_v4()},
             "device_pki":[],"native_protocols":{
                 "windows":{"trust_file":"","management":{"origin":windows_origin}},
                 "apple":{"trust_file":"","webhooks":[],"management":{"origin":format!("https://apple-{index}.example.test")}}

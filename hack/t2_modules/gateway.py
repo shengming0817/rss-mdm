@@ -250,6 +250,7 @@ def verify_sni(context):
                         valid=certificate==expected
                     except (ValueError,TypeError):valid=False
                     valid=valid and self.headers.get('X-RSS-Public-Origin')=='https://device.example.test'
+                    valid=valid and self.headers.get('X-RSS-User-Session')=='device-user-session'
                     valid=valid and not any(self.headers.get(name) for name in ('Cookie','Authorization','X-Client-Cert','X-Device-ID','X-Tenant-ID','Forwarded'))
                     source=self.headers.get('X-Forwarded-For')
                     valid=valid and bool(source) and source!='203.0.113.9' and ',' not in source
@@ -270,7 +271,7 @@ def verify_sni(context):
                     with socket.create_connection(('127.0.0.1',port),timeout=5) as raw:
                         with tls.wrap_socket(raw,server_hostname=host) as stream:
                             extra='X-RSS-Client-Cert: forged\r\nX-RSS-Public-Origin: https://evil.example.test\r\nX-Forwarded-For: 203.0.113.9\r\nX-Client-Cert: forged\r\nX-Device-ID: forged\r\nX-Tenant-ID: forged\r\nForwarded: for=forged\r\nCookie: session=secret\r\nAuthorization: Bearer secret\r\n' if forged else ''
-                            stream.sendall(('GET '+path+' HTTP/1.1\r\nHost: '+(authority or host)+'\r\n'+extra+'Connection: close\r\n\r\n').encode())
+                            stream.sendall(('GET '+path+' HTTP/1.1\r\nHost: '+(authority or host)+'\r\nX-RSS-User-Session: device-user-session\r\n'+extra+'Connection: close\r\n\r\n').encode())
                             chunks=[]
                             while True:
                                 chunk=stream.recv(8192)

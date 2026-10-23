@@ -245,10 +245,6 @@ impl Host {
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))?;
         value["native_protocols"]["windows"] =
             serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
-        if ca.is_some() {
-            value["native_protocols"]["windows"]["lifetime"] =
-                serde_json::json!({"mode":"development", "seconds":6*86400});
-        }
         value["native_protocols"]["windows"]["enrollment"]["origin"] =
             serde_json::json!(format!("https://localhost:{}", enroll.local_addr()?.port()));
         value["native_protocols"]["windows"]["management"]["origin"] =
@@ -290,7 +286,6 @@ impl Host {
         if push {value["native_protocols"]["windows"]["push"] = serde_json::json!({"revision":1});}
         if let Some(listener) = &additional_manage {
             let mut endpoint = value["native_protocols"]["windows"]["management"].clone();
-            endpoint["listen"] = serde_json::json!(listener.local_addr()?.to_string());
             endpoint["origin"] = serde_json::json!(format!(
                 "https://localhost:{}",
                 listener.local_addr()?.port()
@@ -409,6 +404,13 @@ impl Host {
             crate::device_pki::providers(&config.device_pki)?,
             wns,
         )?;
+        if ca.is_some() {
+            // The production host accepts production lifetimes only. Renewal-window
+            // participants select a short-lived certificate profile at this existing CA seam.
+            let channel = Arc::get_mut(&mut windows.channel).ok_or_else(|| anyhow::anyhow!("unshared renewal fixture channel"))?;
+            channel.ca = rss_mdm_device_trust::windows::WindowsDeviceTrust::from_trust(channel.ca.trust.clone())?
+                .with_lifetime(rss_mdm_certificate::windows::Lifetime::Development { seconds: 6*86400 })?;
+        }
         if let Some((mut binding, verifier, jit)) = entra {
             let view = provider(&identity, &secret, &binding.token, jit).await?;
             binding.provider_id = Uuid::parse_str(&view.id.to_string())?;
@@ -513,7 +515,7 @@ impl Host {
             .iter()
             .position(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         {
-            browser = browser.merge(listeners.remove(i).1.router);
+            browser = crate::test_support::gateway::browser_agent(browser, listeners.remove(i).1.router, "mdm.example.test");
         }
         let root_cert = reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?;
         let client = reqwest::Client::builder()
@@ -554,12 +556,9 @@ impl Host {
         enrollment.router = enrollment.router.route(
             "/accepted-peer",
             axum::routing::get(
-                |axum::Extension(info): axum::Extension<
-                    rss_axum::AcceptedConnectionInfo<(
-                        Option<rss_mdm_certificate::ClientCertificateEvidence>,
-                        admission::RequestGate,
-                    )>,
-                >| async move { info.socket_peer().ip().to_string() },
+                |axum::Extension(source): axum::Extension<
+                    rss_identity_http_axum::ClientAddress,
+                >| async move { source.0.to_string() },
             ),
         );
 

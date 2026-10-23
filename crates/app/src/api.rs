@@ -211,7 +211,11 @@ pub(crate) async fn application_fixture(
         // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
         for (kind, tls) in fixture_routers.listeners {
             if kind == crate::native::ChannelKind::Agent {
-                fixture_routers.browser = fixture_routers.browser.fallback_service(tls.router)
+                fixture_routers.browser = crate::test_support::gateway::browser_agent(
+                    fixture_routers.browser,
+                    tls.router,
+                    "mdm.example.test",
+                )
             }
         }
         Ok((

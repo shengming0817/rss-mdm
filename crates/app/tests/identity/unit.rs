@@ -42,6 +42,10 @@ async fn forwarding_requires_the_actual_accepted_gateway() -> anyhow::Result<()>
                             && !headers.contains_key("forwarded")
                             && !headers.contains_key("x-real-ip")
                     );
+                    assert_eq!(
+                        headers.get("x-rss-user-session").unwrap(),
+                        "device-user-session"
+                    );
                     peer.0.to_string()
                 },
             ),
@@ -77,6 +81,7 @@ async fn forwarding_requires_the_actual_accepted_gateway() -> anyhow::Result<()>
             .header("x-forwarded-for", "203.0.113.7")
             .header("forwarded", "for=forged")
             .header("x-real-ip", "forged")
+            .header("x-rss-user-session", "device-user-session")
             .send()
             .await;
         if expected == StatusCode::FORBIDDEN {

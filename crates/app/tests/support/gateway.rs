@@ -7,6 +7,38 @@ use std::{
     sync::Arc,
 };
 use tokio::net::{TcpListener, TcpStream};
+/// Combine the two complete hosts only for controlled in-process business fixtures.
+/// Dispatch happens above both nested routers, matching production's protocol separation.
+pub(crate) fn browser_agent(
+    browser: axum::Router,
+    agent: axum::Router,
+    console_host: &str,
+) -> axum::Router {
+    use tower::ServiceExt;
+    let console_host = console_host.to_owned();
+    axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let public_package = request
+            .uri()
+            .path()
+            .strip_prefix("/api/v1/agent/enroll/packages")
+            .is_some_and(|p| p.is_empty() || p.starts_with('/'));
+        let console_package = public_package
+            && request.headers().get("host").and_then(|h| h.to_str().ok())
+                == Some(console_host.as_str());
+        let target = if request.uri().path().starts_with("/api/v1/agent/") && !console_package {
+            agent.clone()
+        } else {
+            browser.clone()
+        };
+        async move {
+            target
+                .oneshot(request)
+                .await
+                .unwrap_or_else(|never| match never {})
+        }
+    })
+}
+
 #[derive(Clone)]
 struct Metadata {
     certificate: Option<ClientCertificateEvidence>,

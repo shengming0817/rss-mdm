@@ -58,7 +58,7 @@ pub async fn current(c: &mut PgConnection, tenant: TenantId) -> Result<Trust, Er
     stored_trust(body, revision, &digest, tenant, service)
 }
 async fn installation_service(c: &mut PgConnection) -> Result<Uuid, Error> {
-    sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation WHERE singleton")
+    sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation")
         .fetch_one(c)
         .await
         .map_err(db)
@@ -143,7 +143,7 @@ pub async fn prepare(
             version: 1,
             tenant: Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Malformed)?,
             service_id: sqlx::query_scalar::<_, Uuid>(
-                "SELECT instance_id FROM public.mdm_installation WHERE singleton",
+                "SELECT instance_id FROM public.mdm_installation",
             )
             .fetch_one(&mut *c)
             .await

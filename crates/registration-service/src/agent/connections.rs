@@ -197,7 +197,7 @@ async fn ensure_signer_on(
 }
 
 async fn service_id_on(c: &mut PgConnection) -> Result<Uuid, Error> {
-    sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation WHERE singleton")
+    sqlx::query_scalar("SELECT instance_id FROM public.mdm_installation")
         .fetch_one(c)
         .await
         .map_err(db)
