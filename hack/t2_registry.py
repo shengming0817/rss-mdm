@@ -1298,7 +1298,7 @@ consume(('crates/execution-service/src/queries.rs',
          'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)
 consume(('crates/execution-service/src/queries/assignments.rs',), 'planning.http planning.agent_policy')
 consume(('crates/execution-service/src/queries/preview.rs',), 'planning.agent_policy planning.software planning.policy')
-consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v1.json', 'crates/execution-service/src/actions/dispatch-v1.json'), COMMAND_CONSUMERS)
+consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v1.json'), COMMAND_CONSUMERS)
 consume(('crates/execution-service/src/apple.rs',), 'apple.profile apple.onboarding execution.commands.admission')
 consume(('crates/execution-service/src/apple_push.rs',), 'apple.push apple.fairness apple.host')
 consume(('crates/execution-service/src/protocol.rs',), 'windows.management windows.commands execution.commands.windows execution.commands.configuration execution.commands.onboarding')
@@ -2113,3 +2113,5 @@ consume(('crates/agent-channel/schema/install.sql',), 'device-access.http')
 
 consume(('crates/registration-service/src/lifecycle.rs',), 'device-access.http')
 MODULES['device-access.http']=replace(MODULES['device-access.http'],support_inputs=tuple(dict.fromkeys((*MODULES['device-access.http'].support_inputs,'crates/app/tests/support/task_signature.rs'))))
+
+consume(('crates/execution-service/src/actions/production.rs','crates/execution-service/src/actions/dispatch-v1.json'), 'planning.onboarding execution.agent.delivery device-access.http')
