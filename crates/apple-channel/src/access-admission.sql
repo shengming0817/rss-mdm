@@ -34,3 +34,8 @@ SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
  AND NOT EXISTS(SELECT 1 FROM tables t, LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_apple' AND (a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid,LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)
+ AND NOT EXISTS(SELECT 1 FROM (VALUES
+  ('mdm_devices.input_snapshots'::regclass),('mdm_devices.input_objects'::regclass),('mdm.inventory'::regclass)
+ ) evidence(oid) WHERE NOT has_table_privilege(current_user,evidence.oid,'SELECT')
+  OR has_table_privilege(current_user,evidence.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+  OR has_any_column_privilege(current_user,evidence.oid,'INSERT,UPDATE,REFERENCES'))
