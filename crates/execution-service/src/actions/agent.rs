@@ -198,7 +198,7 @@ impl ExecutionService {
                 wire::TaskEvent::DeviceAccessResult(value) => {
                     if !matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
                     crate::device_access::finish_in(tx,&run,input,value,effect_allowed).await?;
-                    if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id()).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !value.effect.complete() {run.state.uncertain_result(input.attempt_id())?;}
+                    if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. }) || value.effect.complete())).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !value.effect.complete() {run.state.uncertain_result(input.attempt_id())?;}
                     else {run.state.result(input.attempt_id(),value.effect.complete())?;}
                     run.result=Some(checked_input(serde_json::to_value(value))?);
                 }
@@ -269,7 +269,7 @@ impl ExecutionService {
                 },
                 wire::TaskEvent::Cancelled=>{run.state.cancel();
                     if matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) && run.state.started_at.is_some()
-                        && crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id()).await? {
+                        && crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),true).await? {
                         run.state.uncertain_result(input.attempt_id())?;
                     } else { run.state.cancelled(input.attempt_id())?; }super::collection::abandon(service,tx,input.attempt_id(),"revoked").await?;},
                 wire::TaskEvent::Result(result)=>{

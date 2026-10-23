@@ -252,10 +252,17 @@ pub(crate) async fn finish(
         Box::pin(async move {
             let result = async {
                 let mut access =
-                    access::storage::locked_in(c, task.tenant_id, task.binding_id).await?;
+                    access::storage::locked_observation_in(c, task.tenant_id, task.binding_id)
+                        .await?;
                 // A late receipt can settle custody, but cannot restore revoked access or authorize a later factor generation.
                 if access.state == access::State::Revoked
                     || access.generation != task.binding_generation
+                    || !rss_mdm_registration_service::lifecycle::work_allowed_in(
+                        c,
+                        &task.tenant_id.to_string(),
+                        &task.device_id,
+                    )
+                    .await?
                 {
                     return Ok(());
                 }
@@ -329,18 +336,42 @@ pub(crate) async fn unresolved(
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     attempt: Uuid,
+    terminal: bool,
 ) -> Result<bool> {
     let task = task(tx, run.id, attempt).await?;
+    if task.platform != wire::TaskPlatform::Windows {
+        return Ok(false);
+    }
     tx.with_connection(move |c| {
         Box::pin(async move {
             let result = async {
-                let b = access::storage::locked_in(c, task.tenant_id, task.binding_id).await?;
-                if b.state == access::State::Revoked || b.generation != task.binding_generation {
-                    return Ok(false);
-                }
+                let b = access::storage::locked_observation_in(c, task.tenant_id, task.binding_id)
+                    .await?;
+                let withdrawn = b.state == access::State::Revoked
+                    || b.generation != task.binding_generation
+                    || !rss_mdm_registration_service::lifecycle::work_allowed_in(
+                        c,
+                        &task.tenant_id.to_string(),
+                        &task.device_id,
+                    )
+                    .await?;
                 let values =
                     materials::agent_materials_in(c, task.tenant_id, task.task_id, task.attempt_id)
                         .await?;
+                if withdrawn {
+                    if terminal {
+                        for v in values {
+                            let coordinates = vault::Coordinates {
+                                tenant: task.tenant_id,
+                                material: v.id,
+                                version: v.version,
+                                binding: v.binding,
+                            };
+                            materials::settled_in(c, &coordinates, v.operation).await?;
+                        }
+                    }
+                    return Ok(false);
+                }
                 Ok(values
                     .iter()
                     .any(|v| v.validity != vault::Validity::Verified))

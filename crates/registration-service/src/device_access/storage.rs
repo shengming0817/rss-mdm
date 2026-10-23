@@ -59,7 +59,7 @@ pub async fn locked_in(c: &mut PgConnection, tenant: Uuid, id: Uuid) -> Result<B
 }
 
 /// Factual completion is accepted while retirement drains work; it cannot admit new work.
-async fn locked_observation_in(
+pub async fn locked_observation_in(
     c: &mut PgConnection,
     tenant: Uuid,
     id: Uuid,

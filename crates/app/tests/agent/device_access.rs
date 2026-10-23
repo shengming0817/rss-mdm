@@ -212,7 +212,7 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
         ensure!(restarted.0==StatusCode::OK);
         let confirm=json!({"operationId":Uuid::new_v4(),"challenge":restarted.1["id"],"nonce":restarted.1["nonce"],"localSession":restarted.1["localSession"]});
         let accepted=user_call(&f,"confirm",confirm.clone(),true).await?;ensure!(accepted.0==StatusCode::OK,"confirm: {accepted:?}");
-        ensure!(accepted.1["state"]=="pending" && accepted.1["appliedRevision"].is_null());
+        ensure!(accepted.1["revoked"]==false && accepted.1["bindingGeneration"]==1 && accepted.1["factorGeneration"]==1 && accepted.1["appliedRevision"].is_null());
         let switched_again=context(4,Uuid::new_v4(),account);
         ensure!(claim(&f,&switched_again).await?.0==StatusCode::OK);
         ensure!(user_call(&f,"confirm",confirm,true).await?.1==accepted.1);
@@ -507,14 +507,19 @@ fn access_envelope(task: &wire::AccessTaskSpec, sid: &str) -> Result<wire::Crede
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: Windows initialization escrows and applies within one authenticated task"]
 async fn windows_first_setup_is_one_recoverable_task() -> Result<()> {
-    windows_setup(false).await
+    windows_setup(false, false).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: newly created SID is prepared without prematurely marking applied"]
 async fn windows_created_account_is_prepared_before_escrow() -> Result<()> {
-    windows_setup(true).await
+    windows_setup(true, false).await
 }
-async fn windows_setup(create: bool) -> Result<()> {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device-access.http: withdrawn initialization settles custody without restoring access"]
+async fn windows_withdrawn_setup_settles_only_its_attempt() -> Result<()> {
+    windows_setup(false, true).await
+}
+async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -569,8 +574,20 @@ async fn windows_setup(create: bool) -> Result<()> {
         let mut wrong = result.clone();
         if let wire::AccessEffect::Applied { windows:Some(facts),.. } = &mut wrong.effect { facts.recovery.version += 1; }
         ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(wrong))?).await?.0.is_success());
+        if withdraw {
+            let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
+            let reply = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+            ensure!(reply.0 == StatusCode::OK,"unbind {reply:?}");
+        }
         let done = event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(result))?).await?;
         ensure!(done.0 == StatusCode::OK,"applied {done:?}");
+        if withdraw {
+            let state = directory(&f,true).await?;
+            ensure!(state.1["bindings"][0]["revoked"] == true && state.1["bindings"][0]["appliedRevision"].is_null());
+            let pending = pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND pending",case_tenant(),task.task_id))?;
+            ensure!(pending.trim() == "0","withdrawn task left pending materials: {pending}");
+            return Ok(());
+        }
         let ready = directory(&f,true).await?;
         ensure!(ready.1["bindings"][0]["appliedRevision"] == 1 && ready.1["policies"] == json!([]));
         // An ordinary configuration update preserves both identity and factors.
