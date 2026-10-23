@@ -119,7 +119,7 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     config["task_signing"]=None
     config["content"]=dict(storage=dict(kind='volume',directory='/var/lib/mdm/content'),imports={},
         max_artifact_bytes=32*1024*1024,max_temporary_bytes=64*1024*1024,max_uploads=4,
-        transfer_seconds=60,retention_seconds=3600,max_bundle_bytes=64*1024*1024,
+        transfer_seconds=60,retention_seconds=3600,
         max_bundle_entries=100,max_expansion_ratio=100)
     config["native_protocols"]={}
     config["device_pki"]=[]

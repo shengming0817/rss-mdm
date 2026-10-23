@@ -193,7 +193,7 @@ impl Store {
             .map_err(|_| Error::Conflict)?;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let lease = crate::budget::UploadLease::new(self, key, epoch, permit);
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result = budget
             .work(async {
@@ -381,13 +381,12 @@ impl Store {
             self,
             key,
             epoch,
-            budget,
             self.transfers
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| Error::Conflict)?,
         ));
-        budget.work(async {
+        let result = budget.work(async {
             self.claim_parse(actor, id, now, epoch, budget, artifact.length()).await?;
             let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
             let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone());
@@ -409,7 +408,11 @@ impl Store {
             sqlx::query("UPDATE mdm_content.manifests SET document=$5 WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4")
                 .bind(self.tenant.to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).bind(self.sign(&self.manifest_key(class,&artifact), &current)?).execute(&mut *tx).await.map_err(|_| storage())?;
             journal::commit(tx).await
-        }).await
+        }).await;
+        if let Ok(lease) = Arc::try_unwrap(lease) {
+            let _ = lease.release().await;
+        }
+        result
     }
     pub async fn finish(
         &self,
@@ -430,7 +433,7 @@ impl Store {
         let deadline = budget.operation;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let mut lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let mut lease = crate::budget::UploadLease::new(self, key, epoch, permit);
         let kind = old.upload.binding.inspection_kind();
         let automatic = crate::installer::automatic(kind, old.upload.binding.length);
         let lease = if automatic {
@@ -487,6 +490,9 @@ impl Store {
    let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
    self.check_deadline(deadline)?;commit_started.store(true, std::sync::atomic::Ordering::Release);journal::commit(tx).await?;Ok(saved.upload)
   }).await;
+        if let Ok(lease) = Arc::try_unwrap(lease) {
+            let _ = lease.release().await;
+        }
         match result {
             Ok(value) => Ok(value),
             Err(error) => {
