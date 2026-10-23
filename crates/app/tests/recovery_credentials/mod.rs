@@ -461,3 +461,56 @@ async fn unescrowed_agent_mutation_protects_retired_material_from_expiry() -> Re
         ensure!(retained);tx.rollback().await?;Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=recovery-credentials.http: publication and authorization lock order under concurrent HTTP access"]
+async fn disclosure_and_revocation_wait_for_publication_before_authorization() -> Result<()> {
+    use sqlx::Connection;
+    let mut authority = authority::Authority::open().await?;
+    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
+    authority
+        .resources
+        .extend(std::mem::take(&mut fixture.resources));
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let ring = keys("first", true);
+        let router = route(&authority, ring.clone(), fixture.execution.clone())?;
+        let device = case::name("recovery-lock-order");
+        let secret = "recovery-lock-order-canary";
+        let coordinates = seed(&authority, &ring, device, secret).await?;
+        let mut browser = authority.browser("admin")?;
+        let actor = browser_subject(&browser, &router).await?;
+        identity::set_grants(case_tenant(), &actor, identity::device_grants(Some(device), &["credentials", "account_write"])?).await?;
+        let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        for (method, path) in [(Method::GET, secret_url(device, &coordinates)), (Method::POST, secret_url(device, &coordinates).replace("/secret", "/revoke"))] {
+            let mut hold = observer.begin().await?;
+            crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+            rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, rss_request_context::TenantId::parse(case_tenant())?).await?;
+            let release = async {
+                let observed = tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_access' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                        if waiting { break; }
+                        sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                        tokio::task::yield_now().await;
+                    }
+                    let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))").bind(format!("{}:{}", case_tenant(), INSTANCE)).fetch_one(&mut *hold).await?;
+                    ensure!(free, "credential request held authorization while waiting for publication");
+                    Ok::<_, anyhow::Error>(())
+                }).await;
+                hold.rollback().await?;
+                observed.context("credential request must actually wait for publication")??;
+                Ok::<_, anyhow::Error>(())
+            };
+            let (response, released) = tokio::join!(browser.call(&router, method.clone(), &path, None), release);
+            released?;
+            let (status, value) = response?;
+            ensure!(status == StatusCode::OK, "credential lock order request: {status}");
+            if method == Method::GET { ensure!(value["secret"] == secret); }
+            else { ensure!(value["validity"] == "revoked"); }
+        }
+        ensure!(browser.call(&router, Method::GET, &secret_url(device, &coordinates), None).await?.0 == StatusCode::NOT_FOUND);
+        observer.close().await?;
+        Ok(())
+    }).await
+}

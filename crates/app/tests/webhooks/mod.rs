@@ -1,6 +1,7 @@
 //! Product HTTP -> durable fanout -> real HTTPS, with response loss and restart-safe identities.
 use crate::test_support::{http::*, process::*, runtime::*, *};
 use rss_mdm_webhook_service::{events, model::*};
+use sqlx::Connection;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -84,6 +85,37 @@ async fn call(
     ensure!(status == StatusCode::OK, "{path}: {status} {value}");
     Ok(value)
 }
+// Hold authorization and prove a material request has not taken its later source partition.
+async fn authorization_before_partition<T>(
+    c: &mut sqlx::PgConnection,
+    partition: &rss_transactional_messaging::message::PartitionIdentity,
+    operation: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    use anyhow::Context;
+    let mut hold = c.begin().await?;
+    rss_mdm_authorization_service::lock_on(&mut hold, case_tenant(), INSTANCE).await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_command_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%2363%')").fetch_one(&mut *hold).await?;
+                if waiting { break; }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::task::yield_now().await;
+            }
+            let row: Option<i32> = sqlx::query_scalar("SELECT 1 FROM rss_transactional_messaging.outbox_partitions WHERE tenant_id=$1::uuid AND domain=$2 AND partition_key=$3 FOR UPDATE NOWAIT")
+                .bind(case_tenant()).bind(partition.domain().as_str()).bind(partition.key().as_str()).fetch_optional(&mut *hold).await?;
+            ensure!(row == Some(1), "material request partition must exist and remain unlocked");
+            Ok::<_, anyhow::Error>(())
+        }).await;
+        hold.rollback().await?;
+        observed.context("material request must actually wait for authorization")??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (result, released) = tokio::join!(operation, release);
+    released?;
+    result
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=webhooks.product: real PG, management authorization, signed HTTPS and response-loss recovery"]
 async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result<()> {
@@ -126,7 +158,6 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     base["webhooks"]["networks"] = json!([{"tenant":case_tenant(),"reference":"receiver","hostname":"source.invalid","port":port,"addresses":[format!("{address}:{port}")],"cidrs":[format!("{address}/32")],"ca_files":[root.join("ca.pem")]}]);
     let config: Config = serde_json::from_value(base.clone())?;
     {
-        use sqlx::Connection;
         let options = std::env::var("MDM_OWNER_URL")?
             .parse::<sqlx::postgres::PgConnectOptions>()?
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
@@ -174,6 +205,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     );
     let access = database(&base).await?;
     let audit = access.audit_store_fixture(&config.audit).await?;
+    let material_configuration = config.webhooks.material_configuration()?;
     let (router, execution, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),
@@ -198,6 +230,21 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let grants = vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}, Grant {operation:Permission::WebhookRead,scope:Scope::Tenant}, Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant}, Grant {operation:Permission::InventoryRead,scope:Scope::AllDevices}];
         identity::set_grants(case_tenant(),case::admin(),grants.clone()).await?;
         let mut browser=Browser::default();ensure!(browser.login(&router,"admin").await?==StatusCode::OK);
+        let partition = rss_mdm_audit_integration::source_partition(rss_request_context::TenantId::parse(case_tenant())?, "mdm", "request")?;
+        let declared = partition.clone();
+        execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?, crate::webhooks::deadline(), move |tx| Box::pin(async move { tx.prepare_outbox_partitions(&[declared]).await })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+        let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let material = json!({"reference":"lock-order", "expectedRevision":0, "configurationSha256":material_configuration, "endpoint":format!("https://source.invalid:{port}/"), "networkReference":"receiver", "source":{"kind":"generate"}});
+        browser.operation = Some(Uuid::new_v4());
+        let (status, prepared) = authorization_before_partition(&mut observer, &partition, browser.call(&router, Method::POST, "/api/v1/webhooks/materials", Some(material))).await?;
+        ensure!(status == StatusCode::OK && prepared["revision"] == 1);
+        pg(&format!("UPDATE mdm_webhook.key_materials SET confirmed=true,attempted_at=1,confirmed_at=1 WHERE tenant_id='{}' AND reference='lock-order' AND revision=1", case_tenant()))?;
+        let activation = json!({"reference":"lock-order", "expectedRevision":1, "action":{"kind":"activate","materialRevision":1}});
+        browser.operation = Some(Uuid::new_v4());
+        let (status, active) = authorization_before_partition(&mut observer, &partition, browser.call(&router, Method::POST, "/api/v1/webhooks/materials/transitions", Some(activation))).await?;
+        ensure!(status == StatusCode::OK && active["revision"] == 2 && active["activeRevision"] == 1);
+        observer.close().await?;
+        browser.operation = None;
         let device=case::name("webhook-device");pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')",case_tenant(),device))?;
         let tenant=Uuid::parse_str(case_tenant())?;
         let event=Event{event_id:Uuid::new_v4(),event_type:EventType::Registered,version:1,occurred_at:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,tenant_id:tenant,device_id:device.to_owned(),data:EventData::Registration {registration_id:Uuid::new_v4(),generation:1,channel:"agent".into(),state:"active".into()}};

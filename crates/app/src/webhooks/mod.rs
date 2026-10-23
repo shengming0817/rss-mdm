@@ -188,6 +188,24 @@ impl Backend {
                             }
                             PgError::from(error)
                         };
+                        if matches!(
+                            command,
+                            Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
+                        ) {
+                            // The recovery worker takes authorization before this request partition.
+                            let tenant = proof.tenant_id().to_owned();
+                            let instance = proof.instance_id().to_owned();
+                            tx.with_connection(move |c| {
+                                Box::pin(async move {
+                                    Ok(rss_mdm_authorization_service::lock_on(
+                                        c, &tenant, &instance,
+                                    )
+                                    .await)
+                                })
+                            })
+                            .await?
+                            .map_err(|_| PgError::from(webhooks::Error::Storage))?;
+                        }
                         if operation(command).is_some() {
                             backend
                                 .audit
