@@ -789,7 +789,43 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
         "/api/v1/devices/{}/telemetry-configurations",
         case_device_id()
     );
-    let (status, summary) = reader.call(&f.router, Method::GET, &endpoint, None).await?;
+    let (status, summary) = {
+        use sqlx::Connection;
+        let mut observer =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut hold = observer.begin().await?;
+        crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(
+            &mut hold,
+            rss_request_context::TenantId::parse(case_tenant())?,
+        )
+        .await?;
+        let release = async {
+            let observed = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                    if waiting { break; }
+                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                    tokio::task::yield_now().await;
+                }
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))").bind(format!("{}:{}",case_tenant(),INSTANCE)).fetch_one(&mut *hold).await?;
+                ensure!(free,"telemetry configuration reader acquired authorization before publication");
+                Ok::<_,anyhow::Error>(())
+            }).await;
+            hold.rollback().await?;
+            observed
+                .context("telemetry configuration reader must actually wait for publication")??;
+            Ok::<_, anyhow::Error>(())
+        };
+        let (response, released) = tokio::join!(
+            reader.call(&f.router, Method::GET, &endpoint, None),
+            release
+        );
+        released?;
+        observer.close().await?;
+        response?
+    };
     ensure!(
         status == StatusCode::OK
             && summary["configurations"]

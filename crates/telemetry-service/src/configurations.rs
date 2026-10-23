@@ -192,6 +192,9 @@ async fn read_on(
     proof: &AuthorizedPrincipal,
     device: &str,
 ) -> Result<Configurations, Error> {
+    rss_mdm_inventory_postgres::lock_watermark_in(c, service.tenant)
+        .await
+        .map_err(|_| Error::Storage)?;
     rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
         .await
         .map_err(|_| Error::Denied)?;

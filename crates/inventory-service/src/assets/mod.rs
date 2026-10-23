@@ -313,13 +313,6 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, command, audit, authorize, initialization) = *ctx;
-                    let tenant = tx.tenant_id();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                        })
-                    })
-                    .await?;
                     if let Some(proof) = initialization {
                         let target = match command {
                             Command::FieldWrite { field, .. } => field.as_str(),
