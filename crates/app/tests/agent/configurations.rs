@@ -1649,6 +1649,15 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
     );
     let (old_material, _) =
         configuration(&f, &mut user, json!({"kind":"unlimited"}), Some(3600)).await?;
+    let package = publish(&f, &mut user, false).await?;
+    let pending = exchange(&old_material, &package, 0)?;
+    let grant = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &pending).await?;
+    ensure!(grant.0 == StatusCode::OK);
+    let candidate = machine(&f, "/api/v1/agent/enroll/certificates", &json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":grant.1["grantId"],"secret":pending.secret,"csr":pending.csr,"runtime":pending.runtime})).await?;
+    ensure!(
+        candidate.0 == StatusCode::OK,
+        "pending certificate {candidate:?}"
+    );
     let a = "https://mdm.example.test:9445";
     let b = "https://mdm.example.test:10443";
     let mut origins = vec![a, b];
@@ -1813,9 +1822,9 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         identity.extend(openssl::pkey::PKey::private_key_from_der(&std::fs::read(root().join("agent.pk8"))?)?.private_key_to_pem_pkcs8()?);
         let identity=reqwest::Identity::from_pem(&identity)?;
         let ca=reqwest::Certificate::from_pem(&std::fs::read(root().join("ca.crt"))?)?;
-        let client=|address|reqwest::Client::builder().no_proxy().https_only(true).redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5))
-            .identity(identity.clone()).add_root_certificate(ca.clone()).resolve("mdm.example.test",address).build();
-        let client_a=client(tls_a.address)?;let client_b=client(tls_b.address)?;
+        let client=|address,identity: reqwest::Identity|reqwest::Client::builder().no_proxy().https_only(true).redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5))
+            .identity(identity).add_root_certificate(ca.clone()).resolve("mdm.example.test",address).build();
+        let client_a=client(tls_a.address,identity.clone())?;let client_b=client(tls_b.address,identity)?;
         let url=|address:std::net::SocketAddr,path:&str|format!("https://mdm.example.test:{}{path}",address.port());
         let mut ack=json!({"operationId":Uuid::new_v4(),"revision":2,"digest":signed.configuration.digest()?,"origin":b});
         let rejected=client_a.post(url(tls_a.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",a.trim_start_matches("https://")).json(&ack).send().await?;
@@ -1840,6 +1849,23 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(blocked.0==StatusCode::CONFLICT && blocked.1["code"]=="connection_retirement_blocked","old live material stranded: {blocked:?}");
         let revoked=user.call(&f.router,Method::POST,&format!("/api/v1/agent-configurations/{}/revoke",old_material.configuration.configuration_id),Some(json!({"operationId":Uuid::new_v4()}))).await?;
         ensure!(revoked.0==StatusCode::NO_CONTENT);
+        let state=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
+        ensure!(state.1["retirementBlockers"]["configurations"]==1,"issued but unactivated grant lost its last origin: {state:?}");
+        let blocked=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire.clone())).await?;
+        ensure!(blocked.0==StatusCode::CONFLICT && blocked.1["code"]=="connection_retirement_blocked","consumed grant was mistaken for completed registration: {blocked:?}");
+        tls_a.activate(&candidate.1,0).await?;
+        let mut pending_identity=Vec::new();
+        for der in candidate.1["certificateChain"].as_array().unwrap(){pending_identity.extend(openssl::x509::X509::from_der(&STANDARD.decode(der.as_str().unwrap())?)?.to_pem()?);}
+        pending_identity.extend(openssl::pkey::PKey::private_key_from_der(&std::fs::read(root().join("configuration-0.pk8"))?)?.private_key_to_pem_pkcs8()?);
+        let pending_identity=reqwest::Identity::from_pem(&pending_identity)?;
+        let pending_a=client(tls_a.address,pending_identity.clone())?;
+        let pending_b=client(tls_b.address,pending_identity)?;
+        let learned=pending_a.get(url(tls_a.address,"/api/v1/agent/enroll/connections")).header("host",a.trim_start_matches("https://")).send().await?;
+        ensure!(learned.status()==StatusCode::OK && learned.json::<Value>().await?==serde_json::to_value(&signed)?);
+        let mut pending_ack=ack.clone();pending_ack["operationId"]=json!(Uuid::new_v4());
+        ensure!(pending_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&pending_ack).send().await?.status()==StatusCode::NO_CONTENT);
+        let state=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
+        ensure!(state.1["retirementBlockers"]["configurations"]==0,"completed registration retained an installation blocker: {state:?}");
         let mut tx=c.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
         rss_mdm_registration_service::agent::connections::record_deployment_on(&mut tx,Uuid::parse_str(case_tenant())?,b,Uuid::parse_str(crate::test_support::identity::INSTANCE)?,Uuid::new_v4(),1).await?;
@@ -1858,8 +1884,10 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==2 && observed.1["failure"]["report"]["revision"]==3,"late old ACK hid new failure: {observed:?}");
         ack["operationId"]=json!(Uuid::new_v4());ack["revision"]=json!(3);ack["digest"]=json!(serde_json::from_value::<rss_mdm_agent_wire::connections::SignedConfiguration>(retired.1)?.configuration.digest()?);
         ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);
+        pending_ack=ack.clone();pending_ack["operationId"]=json!(Uuid::new_v4());
+        ensure!(pending_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&pending_ack).send().await?.status()==StatusCode::NO_CONTENT);
         let converged=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
-        ensure!(converged.1["convergence"]["activeDevices"]==1 && converged.1["convergence"]["confirmedDevices"]==1,"actual convergence {converged:?}");
+        ensure!(converged.1["convergence"]["activeDevices"]==2 && converged.1["convergence"]["confirmedDevices"]==2,"actual convergence {converged:?}");
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
         let mut inventory_user=authority::Authority::prepared_browser("other").await?;
