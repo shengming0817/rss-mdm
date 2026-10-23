@@ -381,7 +381,7 @@ async fn install_identity_in(
     instance: rss_identity_core::InstanceId,
 ) -> std::result::Result<(), sqlx::Error> {
     rss_identity_postgres::install(tx, instance).await?;
-    rss_identity_postgres::grant_profile_source_admission(tx, "mdm_access").await?;
+    rss_identity_postgres::grant_platform_subject_admission(tx, "mdm_access").await?;
     rss_identity_postgres::grant_profile(
         tx,
         "mdm_identity_runtime",

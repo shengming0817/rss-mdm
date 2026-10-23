@@ -211,6 +211,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
         (
+            "apple-platform-sso-v1",
+            rss_mdm_apple_channel::platform_sso::INSTALL_SQL,
+        ),
+        (
             "windows-entra-policy-v1",
             rss_mdm_registration_service::WINDOWS_ENTRA_POLICY_SQL,
         ),
@@ -284,6 +288,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/user-profiles.sql"),
         ),
         ("first-use-v1", include_str!("../../schema/first-use.sql")),
+        (
+            "platform-sso-identity-v1",
+            include_str!("../../schema/platform-sso-identity.sql"),
+        ),
         (
             "inventory-source-facts-v1",
             rss_mdm_inventory_service::SOURCE_FACTS_SQL,

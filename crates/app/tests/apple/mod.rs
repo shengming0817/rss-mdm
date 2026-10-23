@@ -10,6 +10,7 @@ mod ddm;
 mod lifecycle;
 mod onboarding;
 mod oracle;
+mod platform_sso;
 mod policy;
 mod scep;
 #[path = "support/scep.rs"]
@@ -72,10 +73,10 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
     ) -> Result<Self> {
-        Self::with_options(agent, address, preserve_authorization, ade, false).await
+        Self::with_options(agent, address, preserve_authorization, ade, false, false).await
     }
     async fn with_mdm_software() -> Result<Self> {
-        Self::with_options(None, None, false, None, true).await
+        Self::with_options(None, None, false, None, true, false).await
     }
     async fn with_options(
         agent: Option<serde_json::Value>,
@@ -83,6 +84,7 @@ impl Fixture {
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
         mdm_software: bool,
+        platform_sso: bool,
     ) -> Result<Self> {
         let _ = agent;
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
@@ -110,6 +112,7 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&trust_path, std::fs::Permissions::from_mode(0o600))?;
         apple.trust_file = trust_path;
+        if platform_sso {apple.platform_sso=Some(platform_sso::configuration(&root)?);}
         config.native_protocols.apple = Some(apple);
         let compiled = config.compile()?;
         let config = &compiled.config;
@@ -223,6 +226,7 @@ impl Fixture {
             config.native_protocols.apple.unwrap(),
             fixture_materials(&root)?,
             crate::clock::SystemClock.unix_seconds()?,
+            (&config.product_origin,identity.tenant),
             crate::device_pki::providers(&config.device_pki)?,
         )?;
         if let Some(ade) = ade {
@@ -700,6 +704,10 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
             config,
             fixture_materials(root)?,
             crate::clock::SystemClock.unix_seconds()?,
+            (
+                "https://mdm.example.test",
+                rss_request_context::TenantId::parse(case_tenant())?,
+            ),
             fixture_providers(root)?,
         ) {
             Err(crate::Error::Configuration(issue)) => ensure!(
@@ -714,6 +722,10 @@ fn startup_diagnostics(root: &std::path::Path) -> Result<()> {
         serde_json::from_value(original)?,
         fixture_materials(root)?,
         crate::clock::SystemClock.unix_seconds()?,
+        (
+            "https://mdm.example.test",
+            rss_request_context::TenantId::parse(case_tenant())?,
+        ),
         fixture_providers(root)?,
     )?;
     ensure!(

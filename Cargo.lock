@@ -1390,7 +1390,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3006,7 +3006,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3399,7 +3399,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b19938dc586744cbacfe00a6bf92d738628c6800#b19938dc586744cbacfe00a6bf92d738628c6800"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3421,7 +3421,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b19938dc586744cbacfe00a6bf92d738628c6800#b19938dc586744cbacfe00a6bf92d738628c6800"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3443,7 +3443,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b19938dc586744cbacfe00a6bf92d738628c6800#b19938dc586744cbacfe00a6bf92d738628c6800"
 dependencies = [
  "ipnet",
  "jsonwebtoken",
@@ -3464,7 +3464,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=b19938dc586744cbacfe00a6bf92d738628c6800#b19938dc586744cbacfe00a6bf92d738628c6800"
 dependencies = [
  "futures",
  "rand_core 0.6.4",
@@ -3708,9 +3708,11 @@ dependencies = [
  "rss-mdm-audit-integration",
  "rss-mdm-authorization-service",
  "rss-mdm-certificate",
+ "rss-mdm-device-service",
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
  "rss-mdm-inventory",
+ "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
@@ -5091,7 +5093,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5847,7 +5849,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5977,9 +5979,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",

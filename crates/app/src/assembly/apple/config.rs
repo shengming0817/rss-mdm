@@ -5,6 +5,8 @@ use std::{net::SocketAddr, path::PathBuf};
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub platform_sso: Option<PlatformSso>,
     #[cfg(test)]
     #[serde(skip)]
     pub test_push_transport: Option<(String, PathBuf)>,
@@ -55,5 +57,50 @@ fn unconfigured_seed() -> rss_mdm_apple_channel::IdentitySeed {
     rss_mdm_apple_channel::IdentitySeed {
         challenge_id: String::new(),
         notify_id: String::new(),
+    }
+}
+
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlatformSso {
+    pub configuration: rss_mdm_apple_mdm::platform_sso::Configuration,
+    pub active_key: String,
+    pub signing_keys: std::collections::BTreeMap<String, PathBuf>,
+}
+impl PlatformSso {
+    pub(crate) fn load(
+        &self,
+        origin: &str,
+        tenant: rss_request_context::TenantId,
+    ) -> Result<std::sync::Arc<rss_mdm_apple_channel::platform_sso::Runtime>, Error> {
+        let mut keys = std::collections::BTreeMap::new();
+        for (name, path) in &self.signing_keys {
+            if name.is_empty()
+                || name.len() > 64
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            {
+                return Err(Error::Configuration(ConfigIssue::ApplePlatformSso));
+            }
+            let bytes = crate::config::read(path, 16384, true)?;
+            keys.insert(
+                name.clone(),
+                rss_mdm_apple_channel::platform_sso::crypto::Signer::from_pem(&bytes)
+                    .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?,
+            );
+        }
+        let tenant = uuid::Uuid::parse_str(&tenant.to_string())
+            .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?;
+        Ok(std::sync::Arc::new(
+            rss_mdm_apple_channel::platform_sso::Runtime::new(
+                self.configuration.clone(),
+                origin,
+                tenant,
+                self.active_key.clone(),
+                keys,
+            )
+            .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?,
+        ))
     }
 }

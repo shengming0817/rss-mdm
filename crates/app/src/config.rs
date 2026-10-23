@@ -240,6 +240,15 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::AgentPki));
         }
+        if self
+            .native_protocols
+            .apple
+            .as_ref()
+            .is_some_and(|a| a.platform_sso.is_some())
+            && matches!(self.agent_pki, crate::agent_pki::Config::Disabled {})
+        {
+            return Err(Error::Configuration(ConfigIssue::ApplePlatformSso));
+        }
         if self.apple_material_roots.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::AppleProfileSigner));
         }
