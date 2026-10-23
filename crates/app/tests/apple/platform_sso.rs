@@ -209,7 +209,12 @@ async fn installed_application(registration: Uuid) -> Result<()> {
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple' AND enabled").bind(case_tenant()).bind(registration).fetch_one(&mut c).await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let epoch:Uuid=sqlx::query_scalar("SELECT epoch FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='mdm.apple' AND enabled").bind(case_tenant()).bind(registration).fetch_one(&mut *tx).await?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
         registration,
@@ -226,7 +231,8 @@ async fn installed_application(registration: Uuid) -> Result<()> {
         .into(),
     )]))?;
     sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{\"kind\":\"device\"}',$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,$4,$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,'known',$5,'psso-fixture',floor(extract(epoch FROM clock_timestamp()))::bigint,floor(extract(epoch FROM clock_timestamp()))::bigint,$6,'mdm.apple',$7,1)")
-        .bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(value).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut c).await?;
+        .bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(key.as_str()).bind(value).bind(registration.to_string()).bind(epoch.to_string()).execute(&mut *tx).await?;
+    tx.commit().await?;
     c.close().await?;
     Ok(())
 }
