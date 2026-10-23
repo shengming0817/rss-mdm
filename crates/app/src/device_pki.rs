@@ -62,7 +62,7 @@ pub(crate) fn prepare(
     config: &[Provider],
     channels: &crate::channel_status::Channels,
 ) -> Result<std::sync::Arc<rss_mdm_pki_service::providers::Providers>, Error> {
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     if config.len() > 48
         || config.iter().enumerate().any(|(i, p)| {
             config[..i]

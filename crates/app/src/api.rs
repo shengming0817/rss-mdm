@@ -299,7 +299,7 @@ pub(crate) async fn from_compiled(
         .strip_prefix("https://")
         .ok_or(Error::Configuration(ConfigIssue::ProductOrigin))?
         .to_owned();
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     let windows_push =
         match load_windows_push(&config, identity.tenant, &protection, monotonic.clone()).await {
             Ok(push) => {
@@ -1169,8 +1169,8 @@ fn observe_native_trust(
     agent: &Option<Arc<crate::agent_pki::AgentPki>>,
     channels: &crate::channel_status::Channels,
 ) -> Result<(), Error> {
+    use crate::channel_status::ChannelName;
     use rss_mdm_agent_wire::pki::Purpose;
-    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
     for binding in pki.bindings() {
         let trust = binding
             .public()
@@ -1183,10 +1183,10 @@ fn observe_native_trust(
         };
         channels.loaded(
             name,
-            [(
-                "trust".into(),
-                i64::try_from(trust.revision).map_err(|_| Error::Conflict)?,
-            )],
+            crate::channel_status::LoadedMaterials {
+                trust: Some(i64::try_from(trust.revision).map_err(|_| Error::Conflict)?),
+                ..Default::default()
+            },
         )?;
     }
     if let Some(agent) = agent {
@@ -1201,7 +1201,7 @@ fn fixture_native_listening(
     agent_pki: &Option<Arc<crate::agent_pki::AgentPki>>,
     channels: &crate::channel_status::Channels,
 ) -> Result<(), Error> {
-    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
+    use crate::channel_status::ChannelName;
     for (name, present) in [
         (ChannelName::Windows, windows.is_some()),
         (ChannelName::Apple, apple.is_some()),
@@ -1242,8 +1242,8 @@ async fn admit_native(
     tenant: rss_request_context::TenantId,
     now: i64,
 ) -> Result<(), Error> {
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     use rss_mdm_agent_wire::pki::Purpose;
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
     for (purpose, name) in [
         (Purpose::Windows, ChannelName::Windows),
         (Purpose::Apple, ChannelName::Apple),
@@ -1285,16 +1285,15 @@ fn loaded_native_materials(
     apple: &Option<Arc<crate::apple::Apple>>,
     channels: &crate::channel_status::Channels,
 ) -> Result<(), Error> {
-    use rss_mdm_management_http::runtime_diagnostics::ChannelName;
+    use crate::channel_status::ChannelName;
     if let Some(a) = apple {
         channels.loaded(
             ChannelName::Apple,
-            a.config
-                .materials
-                .apns
-                .map(|v| ("apns".into(), v))
-                .into_iter()
-                .chain(a.config.materials.profile.map(|v| ("profile".into(), v))),
+            crate::channel_status::LoadedMaterials {
+                apns: a.config.materials.apns,
+                profile: a.config.materials.profile,
+                ..Default::default()
+            },
         )?;
     }
     if let Some(w) = windows
@@ -1302,7 +1301,10 @@ fn loaded_native_materials(
     {
         channels.loaded(
             ChannelName::WindowsPush,
-            w.config.push.as_ref().map(|p| ("wns".into(), p.revision)),
+            crate::channel_status::LoadedMaterials {
+                wns: w.config.push.as_ref().map(|p| p.revision),
+                ..Default::default()
+            },
         )?;
     }
     Ok(())
@@ -1313,7 +1315,7 @@ async fn bind_native_channels(
     agent_pki: &mut Option<Arc<crate::agent_pki::AgentPki>>,
     channels: &crate::channel_status::Channels,
 ) -> Result<Vec<(crate::native::NativeListenerKind, tokio::net::TcpListener)>, Error> {
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     let mut bound = Vec::new();
     if let Some(w) = windows.as_ref() {
         let mut endpoints = vec![

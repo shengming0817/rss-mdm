@@ -1,12 +1,54 @@
 //! Local preparation facts, projected through the existing runtime diagnostics owner.
 //! Domain authorities continue to own materials, revocation and request admission.
-use rss_mdm_management_http::runtime_diagnostics::{
-    ChannelName, ChannelState, ChannelStatus, Reason,
-};
 use std::sync::{Arc, OnceLock, RwLock};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelName {
+    Apple,
+    Windows,
+    Agent,
+    WindowsPush,
+    AgentBootstrap,
+    Signing,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelState {
+    Disabled,
+    Waiting,
+    Ready,
+    Degraded,
+}
+#[derive(Clone, Copy)]
+pub(crate) enum Reason {
+    MaterialNotSelected,
+    MaterialUnreadable,
+    MaterialInvalid,
+    TrustConflict,
+    MaterialRevoked,
+    MaterialVersionMismatch,
+    ListenerUnavailable,
+    CertificateExpired,
+    DependencyUnavailable,
+}
+#[derive(Clone, Default)]
+pub(crate) struct LoadedMaterials {
+    pub trust: Option<i64>,
+    pub apns: Option<i64>,
+    pub profile: Option<i64>,
+    pub wns: Option<i64>,
+    pub signing: Option<i64>,
+}
+#[derive(Clone)]
+pub(crate) struct Assembly {
+    pub name: ChannelName,
+    pub state: ChannelState,
+    pub reason: Option<Reason>,
+    pub listening: bool,
+    pub materials: LoadedMaterials,
+}
+
 pub(crate) struct Channels {
-    values: RwLock<Vec<ChannelStatus>>,
+    values: RwLock<Vec<Assembly>>,
     installation: OnceLock<(
         Arc<crate::agent_pki::AgentPki>,
         Arc<rss_mdm_pki_service::registry::Registry>,
@@ -38,20 +80,16 @@ impl Channels {
                     (ChannelName::Signing, config.task_signing.is_some()),
                 ]
                 .into_iter()
-                .map(|(name, enabled)| ChannelStatus {
+                .map(|(name, enabled)| Assembly {
                     name,
                     state: if enabled {
                         ChannelState::Waiting
                     } else {
                         ChannelState::Disabled
                     },
-                    reasons: if enabled {
-                        vec![Reason::MaterialNotSelected]
-                    } else {
-                        vec![]
-                    },
+                    reason: enabled.then_some(Reason::MaterialNotSelected),
                     listening: false,
-                    loaded_materials: Default::default(),
+                    materials: Default::default(),
                 })
                 .collect(),
             ),
@@ -76,7 +114,7 @@ impl Channels {
             return Ok(());
         }
         value.state = state;
-        value.reasons = reason.into_iter().collect();
+        value.reason = reason;
         Ok(())
     }
     pub(crate) fn listening(&self, name: ChannelName) -> Result<(), crate::Error> {
@@ -94,7 +132,7 @@ impl Channels {
     pub(crate) fn loaded(
         &self,
         name: ChannelName,
-        materials: impl IntoIterator<Item = (String, i64)>,
+        materials: LoadedMaterials,
     ) -> Result<(), crate::Error> {
         let mut values = self
             .values
@@ -104,16 +142,16 @@ impl Channels {
             .iter_mut()
             .find(|v| v.name == name)
             .ok_or(crate::Error::Malformed)?;
-        value.loaded_materials.extend(materials);
+        value.materials.trust = materials.trust.or(value.materials.trust);
+        value.materials.apns = materials.apns.or(value.materials.apns);
+        value.materials.profile = materials.profile.or(value.materials.profile);
+        value.materials.wns = materials.wns.or(value.materials.wns);
+        value.materials.signing = materials.signing.or(value.materials.signing);
         Ok(())
     }
-    pub(crate) fn snapshot(&self) -> Vec<ChannelStatus> {
+    pub(crate) fn snapshot(&self) -> Vec<Assembly> {
         match self.values.read() {
-            Ok(values) => {
-                let mut values = values.clone();
-                project_dependents(&mut values);
-                values
-            }
+            Ok(values) => values.clone(),
             Err(_) => vec![], // reason: a poisoned local observation cannot assert any capability ready.
         }
     }
@@ -168,20 +206,32 @@ impl rss_mdm_execution_service::AgentInstallationAdmission for Channels {
     fn ready_signing_revision(&self, now: i64) -> Option<u64> {
         use rss_mdm_agent_wire::pki::Purpose;
         let (agent, pki) = self.installation.get()?;
-        let states = self.snapshot();
-        let ready = [
-            ChannelName::Agent,
-            ChannelName::AgentBootstrap,
-            ChannelName::Signing,
-        ]
-        .into_iter()
-        .all(|name| {
-            states.iter().any(|s| {
-                s.name == name
-                    && s.state == ChannelState::Ready
-                    && (name != ChannelName::Agent || s.listening)
-            })
-        }) && agent.bootstrap.is_some()
+        let revision = {
+            let states = self.values.read().ok()?;
+            let ready = [
+                ChannelName::Agent,
+                ChannelName::AgentBootstrap,
+                ChannelName::Signing,
+            ]
+            .into_iter()
+            .all(|name| {
+                states.iter().any(|s| {
+                    s.name == name
+                        && s.state == ChannelState::Ready
+                        && (name != ChannelName::Agent || s.listening)
+                })
+            });
+            if !ready {
+                return None;
+            }
+            states
+                .iter()
+                .find(|s| s.name == ChannelName::Signing)
+                .and_then(|s| s.materials.signing)
+                .and_then(|revision| u64::try_from(revision).ok())?
+        };
+        // Release the local facts lock before consulting the actual authorities.
+        let ready = agent.bootstrap.is_some()
             && agent.issuance_ready(now)
             && [Purpose::Agent, Purpose::AgentBootstrap]
                 .into_iter()
@@ -193,40 +243,7 @@ impl rss_mdm_execution_service::AgentInstallationAdmission for Channels {
                         })
                         .is_some()
                 });
-        if !ready {
-            return None;
-        }
-        states
-            .iter()
-            .find(|s| s.name == ChannelName::Signing)
-            .and_then(|s| s.loaded_materials.get("signing"))
-            .and_then(|revision| u64::try_from(*revision).ok())
-    }
-}
-
-/// A prepared material is not an available capability when its transport owner is closed.
-pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
-    for (child, parent) in [
-        (ChannelName::WindowsPush, ChannelName::Windows),
-        (ChannelName::AgentBootstrap, ChannelName::Agent),
-    ] {
-        let failed = values
-            .iter()
-            .find(|v| v.name == parent)
-            .filter(|v| v.state != ChannelState::Ready || !v.listening)
-            .map(|v| v.reasons.clone());
-        if let Some(reasons) = failed
-            && let Some(value) = values
-                .iter_mut()
-                .find(|v| v.name == child && v.state == ChannelState::Ready)
-        {
-            value.state = ChannelState::Degraded;
-            value.reasons = if reasons.is_empty() {
-                vec![Reason::ListenerUnavailable]
-            } else {
-                reasons
-            };
-        }
+        ready.then_some(revision)
     }
 }
 
@@ -244,43 +261,20 @@ mod tests {
                     ChannelName::Signing,
                 ]
                 .into_iter()
-                .map(|name| ChannelStatus {
+                .map(|name| Assembly {
                     name,
                     state: ChannelState::Ready,
-                    reasons: vec![],
+                    reason: None,
                     listening: true,
-                    loaded_materials: [("signing".into(), 1)].into(),
+                    materials: LoadedMaterials {
+                        signing: Some(1),
+                        ..Default::default()
+                    },
                 })
                 .collect(),
             ),
             installation: OnceLock::new(),
         };
         assert_eq!(channels.ready_signing_revision(1_800_000_000), None);
-    }
-    #[test]
-    fn closed_parent_prevents_ready_bootstrap_and_preserves_loaded_material_identity() {
-        let mut values = vec![
-            ChannelStatus {
-                name: ChannelName::Agent,
-                state: ChannelState::Degraded,
-                reasons: vec![Reason::ListenerUnavailable],
-                listening: false,
-                loaded_materials: Default::default(),
-            },
-            ChannelStatus {
-                name: ChannelName::AgentBootstrap,
-                state: ChannelState::Ready,
-                reasons: vec![],
-                listening: false,
-                loaded_materials: [("bootstrap".into(), 4)].into(),
-            },
-        ];
-        project_dependents(&mut values);
-        assert_eq!(values[1].state, ChannelState::Degraded);
-        assert!(matches!(
-            values[1].reasons.as_slice(),
-            [Reason::ListenerUnavailable]
-        ));
-        assert_eq!(values[1].loaded_materials["bootstrap"], 4);
     }
 }

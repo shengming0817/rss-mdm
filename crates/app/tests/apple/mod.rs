@@ -266,9 +266,9 @@ impl Fixture {
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         // This handler fixture owns its real transport outside production assembly.
         if let Some(agent) = &agent_pki {
-            execution.channels.set(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent,
-                rss_mdm_management_http::runtime_diagnostics::ChannelState::Ready, None)?;
-            execution.channels.listening(rss_mdm_management_http::runtime_diagnostics::ChannelName::Agent)?;
+            execution.channels.set(crate::channel_status::ChannelName::Agent,
+                crate::channel_status::ChannelState::Ready, None)?;
+            execution.channels.listening(crate::channel_status::ChannelName::Agent)?;
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {

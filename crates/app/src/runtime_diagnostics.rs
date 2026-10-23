@@ -378,7 +378,13 @@ impl RuntimeDiagnostics {
         }
     }
     async fn channel_health(&self, cutoff: Instant) -> Vec<ChannelStatus> {
-        let mut channels = self.channels.snapshot();
+        let mut channels: Vec<_> = self
+            .channels
+            .snapshot()
+            .into_iter()
+            .map(channel_projection)
+            .collect();
+        project_dependents(&mut channels);
         for channel in &mut channels {
             if channel.state != ChannelState::Ready {
                 continue;
@@ -427,7 +433,7 @@ impl RuntimeDiagnostics {
                 channel.reasons = vec![reason];
             }
         }
-        crate::channel_status::project_dependents(&mut channels);
+        project_dependents(&mut channels);
         channels
     }
     async fn apple_failure(&self, now: i64, cutoff: Instant) -> Option<Reason> {
@@ -684,3 +690,118 @@ fn run_result(value: rss_mdm_flow_service::planning::automation::RunObservation)
 #[cfg(test)]
 #[path = "../tests/api/execution_health.rs"]
 mod tests;
+
+/// A prepared material is not an available capability when its transport owner is closed.
+pub(crate) fn project_dependents(values: &mut [ChannelStatus]) {
+    for (child, parent) in [
+        (ChannelName::WindowsPush, ChannelName::Windows),
+        (ChannelName::AgentBootstrap, ChannelName::Agent),
+    ] {
+        let failed = values
+            .iter()
+            .find(|v| v.name == parent)
+            .filter(|v| v.state != ChannelState::Ready || !v.listening)
+            .map(|v| v.reasons.clone());
+        if let Some(reasons) = failed
+            && let Some(value) = values
+                .iter_mut()
+                .find(|v| v.name == child && v.state == ChannelState::Ready)
+        {
+            value.state = ChannelState::Degraded;
+            value.reasons = if reasons.is_empty() {
+                vec![Reason::ListenerUnavailable]
+            } else {
+                reasons
+            };
+        }
+    }
+}
+
+fn channel_projection(value: crate::channel_status::Assembly) -> ChannelStatus {
+    use crate::channel_status as assembly;
+    let name = match value.name {
+        assembly::ChannelName::Apple => ChannelName::Apple,
+        assembly::ChannelName::Windows => ChannelName::Windows,
+        assembly::ChannelName::Agent => ChannelName::Agent,
+        assembly::ChannelName::WindowsPush => ChannelName::WindowsPush,
+        assembly::ChannelName::AgentBootstrap => ChannelName::AgentBootstrap,
+        assembly::ChannelName::Signing => ChannelName::Signing,
+    };
+    let state = match value.state {
+        assembly::ChannelState::Disabled => ChannelState::Disabled,
+        assembly::ChannelState::Waiting => ChannelState::Waiting,
+        assembly::ChannelState::Ready => ChannelState::Ready,
+        assembly::ChannelState::Degraded => ChannelState::Degraded,
+    };
+    let reasons = value
+        .reason
+        .map(|reason| match reason {
+            assembly::Reason::MaterialNotSelected => Reason::MaterialNotSelected,
+            assembly::Reason::MaterialUnreadable => Reason::MaterialUnreadable,
+            assembly::Reason::MaterialInvalid => Reason::MaterialInvalid,
+            assembly::Reason::TrustConflict => Reason::TrustConflict,
+            assembly::Reason::MaterialRevoked => Reason::MaterialRevoked,
+            assembly::Reason::MaterialVersionMismatch => Reason::MaterialVersionMismatch,
+            assembly::Reason::ListenerUnavailable => Reason::ListenerUnavailable,
+            assembly::Reason::CertificateExpired => Reason::CertificateExpired,
+            assembly::Reason::DependencyUnavailable => Reason::DependencyUnavailable,
+        })
+        .into_iter()
+        .collect();
+    let materials = value.materials;
+    let loaded_materials = [
+        ("trust", materials.trust),
+        ("apns", materials.apns),
+        ("profile", materials.profile),
+        ("wns", materials.wns),
+        ("signing", materials.signing),
+    ]
+    .into_iter()
+    .filter_map(|(name, revision)| revision.map(|v| (name.to_owned(), v)))
+    .collect();
+    ChannelStatus {
+        name,
+        state,
+        reasons,
+        listening: value.listening,
+        loaded_materials,
+    }
+}
+
+#[cfg(test)]
+mod channel_projection_tests {
+    use super::*;
+    #[test]
+    fn closed_parent_prevents_ready_bootstrap_and_preserves_loaded_material_identity() {
+        use crate::channel_status as assembly;
+        let facts = [
+            assembly::Assembly {
+                name: assembly::ChannelName::Agent,
+                state: assembly::ChannelState::Degraded,
+                reason: Some(assembly::Reason::ListenerUnavailable),
+                listening: false,
+                materials: Default::default(),
+            },
+            assembly::Assembly {
+                name: assembly::ChannelName::AgentBootstrap,
+                state: assembly::ChannelState::Ready,
+                reason: None,
+                listening: false,
+                materials: assembly::LoadedMaterials {
+                    trust: Some(4),
+                    ..Default::default()
+                },
+            },
+        ];
+        let mut values: Vec<_> = facts.iter().cloned().map(channel_projection).collect();
+        project_dependents(&mut values);
+        assert_eq!(values[1].state, ChannelState::Degraded);
+        assert!(matches!(
+            values[1].reasons.as_slice(),
+            [Reason::ListenerUnavailable]
+        ));
+        assert_eq!(values[1].loaded_materials["trust"], 4);
+        assert!(facts[1].state == assembly::ChannelState::Ready);
+        assert!(facts[1].reason.is_none());
+    }
+}

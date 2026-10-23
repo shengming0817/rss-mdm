@@ -191,7 +191,7 @@ pub(crate) async fn open(
         };
         let bootstrap = channels
             .material(
-                rss_mdm_management_http::runtime_diagnostics::ChannelName::AgentBootstrap,
+                crate::channel_status::ChannelName::AgentBootstrap,
                 config.agent_pki.bootstrap_materials(
                     &providers,
                     time::OffsetDateTime::now_utc().unix_timestamp(),

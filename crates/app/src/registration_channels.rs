@@ -19,7 +19,7 @@ impl Source for Channels {
             Channel::MacosMdm => (self.apple.is_some(), Purpose::Apple),
         };
         if !configured {
-            use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState};
+            use crate::channel_status::{ChannelName, ChannelState};
             let name = match channel {
                 Channel::Agent => ChannelName::Agent,
                 Channel::WindowsMdm => ChannelName::Windows,

@@ -55,7 +55,7 @@ pub(crate) async fn prepare(
     protection: &rss_mdm_native_protection::Protector,
     channels: &crate::channel_status::Channels,
 ) -> Result<Option<rss_mdm_execution_service::task_signing::trust::Loaded>, Error> {
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     let Some(config) = config else {
         return Ok(None);
     };
@@ -64,7 +64,10 @@ pub(crate) async fn prepare(
             channels.set(ChannelName::Signing, ChannelState::Ready, None)?;
             channels.loaded(
                 ChannelName::Signing,
-                [("signing".into(), config.revision as i64)],
+                crate::channel_status::LoadedMaterials {
+                    signing: Some(i64::try_from(config.revision).map_err(|_| Error::Conflict)?),
+                    ..Default::default()
+                },
             )?;
             Ok(Some(value))
         }

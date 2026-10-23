@@ -1965,8 +1965,8 @@ fn installation_counts() -> Result<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn assembled_channel_block_rejects_installation_freeze_without_side_effects() -> Result<()> {
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     use rss_mdm_execution_service::AgentInstallationAdmission;
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
     let (host, mut client, _, commands, owner, policy, _) = start_fixture().await?;
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
@@ -2126,7 +2126,7 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
     post(&peer, &reply(&initial, &execute, false)).await?;
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(owner.shutdown().join().await?.is_clean());
-    use rss_mdm_management_http::runtime_diagnostics::{ChannelName, ChannelState, Reason};
+    use crate::channel_status::{ChannelName, ChannelState, Reason};
     ensure!(
         host.app
             .channels
