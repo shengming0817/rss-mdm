@@ -520,7 +520,9 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"application/profile observations are required");
         let profile=f.ade.platform_sso.as_ref().unwrap().profile()?;
         let (_,operation)=f.configuration_policy(json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),None,"retain").await?;
-        ensure!(peer.manage("Idle",None,None).await?.is_empty(),"RSS profile waits for application observation");
+        let (security,_) = peer.next("SecurityInfo").await?;
+        let waiting = peer.manage("Acknowledged",Some(security),Some(("SecurityInfo",protocol::dictionary([("ManagementStatus",protocol::dictionary([("EnrolledViaDEP",false.into()),("UserApprovedEnrollment",true.into()),("IsUserEnrollment",false.into())]).into())]).into()))).await?;
+        ensure!(waiting.is_empty(),"RSS profile waits for application observation: {}",String::from_utf8_lossy(&waiting));
         installed_application(mdm.registration_id).await?;
         let (execute,_)=peer.next("InstallProfile").await?;
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
@@ -583,41 +585,46 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.platform_sso: independent providers bypass RSS deployment prerequisites"]
-async fn third_party_profile_dispatch_with_and_without_rss_runtime() -> Result<()> {
-    for enabled in [false, true] {
-        let mut f = Fixture::with_options(None, None, false, None, false, enabled).await?;
-        let worker = f.policy_worker().await?;
-        let result: Result<()> = async {
-            let (peer, _) = f.ready_local_peer().await?;
-            grants(&f).await?;
-            let configuration = Configuration {
-                team_id: "THIRDPARTY".into(),
-                extension_id: "com.vendor.extension".into(),
-                application_id: "com.vendor.application".into(),
-                application_version: "1.0".into(),
-                client_id: Uuid::new_v4(),
-            };
-            let mut profile = configuration.profile(
-                "https://vendor.example",
-                Uuid::parse_str(&case_tenant())?,
-                Uuid::new_v4(),
-                Uuid::new_v4(),
-            )?;
-            profile.identifier = format!("com.vendor.profile.{}", profile.uuid);
-            profile.payloads[0].identifier = format!("{}.extension", profile.identifier);
-            f.configuration_policy(
-                json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),
-                None,
-                "retain",
-            )
-            .await?;
-            peer.next("InstallProfile").await?;
-            Ok(())
-        }
-        .await;
-        ensure!(worker.shutdown().join().await?.is_clean());
-        f.close().await?;
-        result?;
+async fn third_party_profile_dispatch_without_rss_runtime() -> Result<()> {
+    third_party_profile_dispatch(false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "MODULE=apple.platform_sso: independent provider with RSS runtime enabled"]
+async fn third_party_profile_dispatch_with_rss_runtime() -> Result<()> {
+    third_party_profile_dispatch(true).await
+}
+async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
+    let mut f = Fixture::with_options(None, None, false, None, false, enabled).await?;
+    let worker = f.policy_worker().await?;
+    let result: Result<()> = async {
+        let (peer, _) = f.ready_local_peer().await?;
+        grants(&f).await?;
+        let configuration = Configuration {
+            team_id: "THIRDPARTY".into(),
+            extension_id: "com.vendor.extension".into(),
+            application_id: "com.vendor.application".into(),
+            application_version: "1.0".into(),
+            client_id: Uuid::new_v4(),
+        };
+        let mut profile = configuration.profile(
+            "https://vendor.example",
+            Uuid::parse_str(&case_tenant())?,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        )?;
+        profile.identifier = format!("com.vendor.profile.{}", profile.uuid);
+        profile.payloads[0].identifier = format!("{}.extension", profile.identifier);
+        f.configuration_policy(
+            json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),
+            None,
+            "retain",
+        )
+        .await?;
+        peer.next("InstallProfile").await?;
+        Ok(())
     }
-    Ok(())
+    .await;
+    ensure!(worker.shutdown().join().await?.is_clean());
+    f.close().await?;
+    result
 }
