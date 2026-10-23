@@ -1,5 +1,6 @@
 //! Real HTTP and PostgreSQL evidence for direct authorized disclosure and material integrity.
 use crate::test_support::{http::*, process::*, runtime::*, *};
+use anyhow::Context;
 use rss_mdm_recovery_credentials::{Binding, Coordinates, Credentials, KeyRing, Subject, storage};
 use sqlx::Row;
 use uuid::Uuid;
@@ -52,7 +53,11 @@ async fn seed(
     tx.commit().await?;
     Ok(coordinates)
 }
-fn route(authority: &authority::Authority, keys: Arc<KeyRing>) -> Result<Router> {
+fn route(
+    authority: &authority::Authority,
+    keys: Arc<KeyRing>,
+    admission: Arc<rss_mdm_execution_service::ExecutionService>,
+) -> Result<Router> {
     authority.router(
         Router::new()
             .nest(
@@ -62,6 +67,7 @@ fn route(authority: &authority::Authority, keys: Arc<KeyRing>) -> Result<Router>
                         authority.access.archive_pool(),
                         authority.audit.clone(),
                         keys,
+                        admission,
                     ),
                 ))),
             )
@@ -76,14 +82,167 @@ fn secret_url(device: &str, c: &Coordinates) -> String {
 }
 
 #[tokio::test]
-#[ignore = "make t2 MODULE=recovery-credentials.http"]
-async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<()> {
+#[ignore = "MODULE=recovery-credentials.http: RSS binding isolation, concurrent rotation and applied-version fencing"]
+async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_application() -> Result<()>
+{
+    use rss_mdm_agent_wire::runtime::{
+        AccessAccount, AccessConfiguration, AccessEffect, AccessRole,
+    };
+    use rss_mdm_registration_service::device_access as access;
     let mut authority = authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
+            let keys = keys("first", true);
+            let device = case::name("rss-login-recovery");
+            let (registration, _) =
+                inventory::seed_source(device, "agent", "agent.builtin", "fixture")?;
+            let tenant = Uuid::parse_str(case_tenant())?;
+            let id = Uuid::new_v4();
+            let sid = "S-1-5-21-100-200-300-1001".to_owned();
+            let account = AccessAccount::Windows { sid: sid.clone() };
+            let b = access::Binding {
+                id,
+                tenant,
+                device: device.into(),
+                registration,
+                registration_generation: 1,
+                person: access::Person {
+                    instance: Uuid::new_v4(),
+                    principal: Uuid::new_v4(),
+                },
+                origin: access::Origin::SelfEnrollment,
+                generation: 1,
+                revision: 1,
+                state: access::State::Active,
+                intent: access::AccountIntent::Existing {
+                    account: account.clone(),
+                },
+                account: Some(account.clone()),
+                policy: Uuid::new_v4(),
+                policy_version: Uuid::new_v4(),
+                configuration: AccessConfiguration {
+                    self_enrollment: true,
+                    enabled: true,
+                    role: None,
+                },
+                received_revision: Some(1),
+                applied_revision: Some(1),
+                effect: Some(AccessEffect::Applied {
+                    account,
+                    role: AccessRole::Standard,
+                    mac: None,
+                }),
+                created_by_rss: false,
+            };
+            let mut tx = begin(&authority).await?;
+            access::storage::insert_in(&mut tx, &b).await?;
+            tx.commit().await?;
+            let binding = Binding {
+                device: device.into(),
+                registration,
+                generation: 1,
+                subject: Subject::RssLogin {
+                    binding: id,
+                    binding_generation: 1,
+                    sid,
+                },
+            };
+            let first_operation = Uuid::new_v4();
+            let secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+            let mut tx = begin(&authority).await?;
+            let first = storage::reserve_in(&mut tx, tenant, &binding, first_operation, 0).await?;
+            storage::ingest_in(&mut tx, &keys, &first, first_operation, secret.as_bytes()).await?;
+            storage::verify_in(&mut tx, &first, first_operation).await?;
+            tx.commit().await?;
+            let reserve = |operation| {
+                let authority = &authority;
+                let binding = binding.clone();
+                async move {
+                    let mut tx = begin(authority).await?;
+                    let result = storage::reserve_in(&mut tx, tenant, &binding, operation, 1).await;
+                    match result {
+                        Ok(c) => {
+                            tx.commit().await?;
+                            Ok::<_, anyhow::Error>(Some((operation, c)))
+                        }
+                        Err(rss_mdm_recovery_credentials::Error::Conflict) => {
+                            tx.rollback().await?;
+                            Ok(None)
+                        }
+                        Err(e) => Err(e.into()),
+                    }
+                }
+            };
+            let (a, z) = tokio::join!(reserve(Uuid::new_v4()), reserve(Uuid::new_v4()));
+            let (a, z) = (a?, z?);
+            ensure!(
+                a.is_some() != z.is_some(),
+                "both concurrent rotations were admitted"
+            );
+            let (operation, next) = a.or(z).context("one rotation admitted")?;
+            let mut tx = begin(&authority).await?;
+            let again = storage::reserve_in(&mut tx, tenant, &binding, operation, 1).await?;
+            ensure!(again.version == next.version);
+            let next_secret = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
+            storage::ingest_in(&mut tx, &keys, &next, operation, next_secret.as_bytes()).await?;
+            let current: Option<i64> = sqlx::query_scalar(
+                "SELECT current_version FROM mdm_recovery.entries WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(tenant)
+            .bind(first.material)
+            .fetch_one(&mut *tx)
+            .await?;
+            ensure!(
+                current == Some(1),
+                "escrow promoted unconfirmed device effect"
+            );
+            storage::verify_in(&mut tx, &next, operation).await?;
+            let current: Option<i64> = sqlx::query_scalar(
+                "SELECT current_version FROM mdm_recovery.entries WHERE tenant_id=$1 AND id=$2",
+            )
+            .bind(tenant)
+            .bind(first.material)
+            .fetch_one(&mut *tx)
+            .await?;
+            ensure!(current == Some(2));
+            tx.commit().await?;
+            let mut tx = begin(&authority).await?;
+            let mut changed = access::storage::locked_in(&mut tx, tenant, id).await?;
+            changed.generation = 2;
+            changed.revision = 2;
+            changed.state = access::State::Revoked;
+            changed.configuration.enabled = false;
+            access::storage::save_in(&mut tx, &changed, 1).await?;
+            tx.commit().await?;
+            let mut tx = begin(&authority).await?;
+            ensure!(storage::active_in(&mut tx, tenant, &binding).await.is_err());
+            tx.rollback().await?;
+            let mut tx = begin(&authority).await?;
+            ensure!(
+                storage::active_in(&mut tx, Uuid::new_v4(), &binding)
+                    .await
+                    .is_err()
+            );
+            tx.rollback().await?;
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=recovery-credentials.http"]
+async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
+    authority
+        .resources
+        .extend(std::mem::take(&mut fixture.resources));
+    let resources = std::mem::take(&mut authority.resources);
+    resources
+        .finish(async {
             let ring = keys("first", true);
-            let router = route(&authority, ring.clone())?;
+            let router = route(&authority, ring.clone(), fixture.execution.clone())?;
             let device = case::name("recovery-device");
             let secret = "recovery-http-canary-2789";
             let coordinates = seed(&authority, &ring, device, secret).await?;
@@ -199,7 +358,7 @@ async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result
         let container=std::env::var("MDM_TEST_PG_CONTAINER")?;
         let dump=command(&["exec","-i",&container,"pg_dump","-U","postgres","-d",&config.access_database.name,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
         ensure!(!dump.contains(secret));
-        pg("TRUNCATE mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
+        pg("TRUNCATE mdm_recovery.rss_login_uses,mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
         command(&["exec","-i",&container,"psql","-Xq","-U","postgres","-d",&config.access_database.name,"-v","ON_ERROR_STOP=1"],Some(&dump))?;
         let mut tx=begin(&authority).await?;
         storage::validate_keys_in(&mut tx,c.tenant,&ring).await?;

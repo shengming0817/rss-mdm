@@ -51,6 +51,33 @@ impl Inputs {
         authority: &PublicationAuthority<'_>,
     ) -> Result<Frozen> {
         let mut frozen = match input {
+            PublicationInput::DeviceAccess {
+                self_enrollment,
+                role,
+            } => {
+                if !self.signing_enabled {
+                    return Err(Error::Unsupported.into());
+                }
+                Frozen::DeviceAccess {
+                    configuration: rss_mdm_agent_wire::runtime::AccessConfiguration {
+                        self_enrollment: *self_enrollment,
+                        enabled: true,
+                        role: role.map(|r| match r {
+                            rss_mdm_policy::AccessRole::Standard => {
+                                rss_mdm_agent_wire::runtime::AccessRole::Standard
+                            }
+                            rss_mdm_policy::AccessRole::Administrator => {
+                                rss_mdm_agent_wire::runtime::AccessRole::Administrator
+                            }
+                        }),
+                    },
+                    grant: crate::authorization::OperationAuthority::all_devices(
+                        authority.snapshot,
+                        authority.proof,
+                        Permission::AccountWrite,
+                    )?,
+                }
+            }
             PublicationInput::Unmanage { schedule, lifetime } => Frozen::UnmanageDevice {
                 schedule: (*schedule).clone(),
                 run_lifetime_seconds: *lifetime,
@@ -266,6 +293,7 @@ pub fn authorize_policy_snapshot(
         Action::Configuration { .. } => Permission::ConfigurationWrite,
         Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
         Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
+        Action::DeviceAccess { .. } => Permission::AccountWrite,
         Action::UnmanageDevice { .. } => Permission::DeviceUnmanage,
     };
     if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {

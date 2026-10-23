@@ -4,6 +4,7 @@ pub mod agent;
 pub mod agent_pki;
 mod database;
 pub mod device;
+pub mod device_access;
 pub mod enrollment;
 mod error;
 pub mod lifecycle;

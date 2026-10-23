@@ -119,6 +119,13 @@ pub enum SoftwareDelivery {
 )]
 /// Each action owns its inputs; registration never requires a fictitious resource.
 pub enum Action {
+    /// Device Access admission and desired local-account role, without a script schedule.
+    DeviceAccess {
+        /// Permit first association to the authenticated current interactive local account.
+        self_enrollment: bool,
+        /// Explicit role management; absent preserves existing privilege, creates standard users.
+        role: Option<AccessRole>,
+    },
     /// Periodic telemetry configuration resolved at authenticated Agent check-in.
     TelemetryProfile {
         /// Immutable Resource profile coordinates.
@@ -232,6 +239,15 @@ pub enum Action {
         /// Bounded lifetime; opening the UI does not complete enrollment.
         run_lifetime_seconds: u32,
     },
+}
+/// Explicit local account role managed by Device Access policy.
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessRole {
+    /// Ordinary local user.
+    Standard,
+    /// Local administrator, requiring device account-management authority.
+    Administrator,
 }
 /// Desired software assignment behavior.
 #[derive(PartialEq, Eq, schemars::JsonSchema, Clone, Copy, Debug, Deserialize, Serialize)]
@@ -441,6 +457,7 @@ impl Action {
     /// Closed action identity persisted alongside its optional resource coordinates.
     pub const fn kind(&self) -> crate::ActionKind {
         match self {
+            Self::DeviceAccess { .. } => crate::ActionKind::DeviceAccess,
             Self::UnmanageDevice { .. } => crate::ActionKind::UnmanageDevice,
             Self::Credential { .. } => crate::ActionKind::Credential,
             Self::Execution { .. } => crate::ActionKind::Execution,
@@ -463,7 +480,8 @@ impl Action {
             | Self::Execution { resource, .. }
             | Self::Configuration { resource, .. } => Some(resource.identity()),
             Self::Software { resource, .. } => Some(resource.identity()),
-            Self::UnmanageDevice { .. }
+            Self::DeviceAccess { .. }
+            | Self::UnmanageDevice { .. }
             | Self::Credential { .. }
             | Self::RequestMdmEnrollment { .. }
             | Self::EnsureAgentInstalled { .. } => None,
@@ -471,6 +489,16 @@ impl Action {
     }
     /// Validate calendar and lifetime semantics without owning any targets.
     pub fn validate(&self) -> Result<(), Error> {
+        if let Action::Credential {
+            operation:
+                CredentialOperation::RotateRssLogin { .. } | CredentialOperation::VerifyRssLogin { .. },
+            architecture,
+            ..
+        } = self
+            && *architecture != Architecture::X86_64
+        {
+            return Err(Error::Malformed);
+        }
         if let Action::AgentCollection {
             schedule,
             frequency,
@@ -505,7 +533,9 @@ impl Action {
                 }
             }
             Self::Credential { operation, .. } => operation.validate()?,
-            Self::RequestMdmEnrollment { .. } | Self::UnmanageDevice { .. } => (),
+            Self::DeviceAccess { .. }
+            | Self::RequestMdmEnrollment { .. }
+            | Self::UnmanageDevice { .. } => (),
         }
         if let Action::Execution {
             parameters,
@@ -592,7 +622,9 @@ impl Action {
                     previous = Some(stage.opens_at);
                 }
             }
-            Action::Configuration { .. } | Action::TelemetryProfile { .. } => {}
+            Action::DeviceAccess { .. }
+            | Action::Configuration { .. }
+            | Action::TelemetryProfile { .. } => {}
             Action::UnmanageDevice {
                 schedule,
                 run_lifetime_seconds,
@@ -788,6 +820,24 @@ mod tests {
     deny_unknown_fields
 )]
 pub enum CredentialOperation {
+    /// Rotate the RSS offline additional-factor recovery secret for one current binding.
+    RotateRssLogin {
+        /// Stable Device Access association.
+        binding: Uuid,
+        /// Exact association generation.
+        binding_generation: i64,
+        /// Stable local Windows account.
+        sid: String,
+    },
+    /// Reconcile the original RSS recovery mutation without generating another candidate.
+    VerifyRssLogin {
+        /// Stable Device Access association.
+        binding: Uuid,
+        /// Exact association generation.
+        binding_generation: i64,
+        /// Stable local Windows account.
+        sid: String,
+    },
     /// Collect system and fixed-volume recovery protectors.
     CollectBitlocker,
     /// Verify an existing protector without creating or deleting one.
@@ -820,6 +870,21 @@ impl CredentialOperation {
     pub fn validate(&self) -> Result<(), Error> {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
+            Self::RotateRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            }
+            | Self::VerifyRssLogin {
+                binding,
+                binding_generation,
+                sid,
+            } => {
+                !binding.is_nil()
+                    && *binding_generation > 0
+                    && bounded(sid)
+                    && sid.starts_with("S-1-5-21-")
+            }
             Self::CollectBitlocker => true,
             Self::VerifyBitlocker { volume, protector }
             | Self::RotateBitlocker { volume, protector } => bounded(volume) && !protector.is_nil(),

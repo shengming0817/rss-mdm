@@ -214,6 +214,11 @@
           "const": "telemetry.counter.local.v1",
           "description": "Durable local baselines for explicitly signed native cumulative counters.",
           "type": "string"
+        },
+        {
+          "const": "device_access.v1",
+          "description": "Typed local-account Device Access operations.",
+          "type": "string"
         }
       ]
     },

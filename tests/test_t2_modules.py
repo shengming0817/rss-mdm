@@ -260,12 +260,21 @@ class ModuleImpactTests(unittest.TestCase):
                          'host.lifecycle', 'api.identity_context'} <= app)
         self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
         self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
-            'agent.current_user','execution.agent.task_trust','planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
+            'device-access.http','agent.current_user','execution.agent.task_trust','planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
             'execution.agent.recovery', 'execution.software.offer',
             'execution.software.content', 'execution.software.recovery'})
         self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
             'windows.enrollment', 'windows.issuance', 'windows.management',
             'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared', 'windows.entra'})
+
+    def test_device_access_direct_execution_consumers_select_http_evidence(self):
+        for path in ('crates/execution-service/src/actions/agent.rs',
+                     'crates/execution-service/src/actions/storage.rs',
+                     'crates/authorization-service/src/authority.rs',
+                     'crates/registration-service/src/lifecycle.rs',
+                     'crates/app/tests/support/task_signature.rs',
+                     'crates/execution-service/src/input_preparation.rs'):
+            self.assertIn('device-access.http', self.selected(path), path)
 
     def test_runtime_diagnostics_has_exact_tests_and_live_owner_inputs(self):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
@@ -299,7 +308,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_test_module_carriers_select_exact_children(self):
         expected = {
-            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports','agent.configurations','agent.current_user'},
+            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports','agent.configurations','agent.current_user','device-access.http'},
             'crates/app/tests/api/mod.rs': {'api.identity_context','diagnostics.http'},
             'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
         }
@@ -316,7 +325,7 @@ class ModuleImpactTests(unittest.TestCase):
 
     def test_app_helpers_select_all_actual_consumers(self):
         self.assertEqual(self.selected('crates/app/tests/support/software.rs'), {
-            'agent.current_user','agent.configurations','planning.agent_policy','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
+            'device-access.http','recovery-credentials.http','agent.current_user','agent.configurations','planning.agent_policy','planning.self_service','software.http','content.http','content.mirror','content.gc','content.storage',
             'planning.software','execution.commands.onboarding','execution.software.offer','execution.software.content','execution.software.recovery',
             'enrollment.quotas','windows.enrollment'})
         process = self.selected('crates/app/tests/support/process.rs')

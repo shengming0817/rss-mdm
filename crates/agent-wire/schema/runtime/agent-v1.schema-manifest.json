@@ -112,6 +112,22 @@
     {
       "type": "CurrentUser",
       "file": "current-user-v1.schema.json"
+    },
+    {
+      "type": "AccessBegin",
+      "file": "access-begin-v1.schema.json"
+    },
+    {
+      "type": "AccessChallenge",
+      "file": "access-challenge-v1.schema.json"
+    },
+    {
+      "type": "AccessConfirm",
+      "file": "access-confirm-v1.schema.json"
+    },
+    {
+      "type": "AccessRecoveryUse",
+      "file": "access-recovery-use-v1.schema.json"
     }
   ],
   "apiVersion": 1

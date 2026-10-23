@@ -8,13 +8,85 @@ use uuid::Uuid;
 macro_rules! select_material { ($suffix:literal) => { concat!("SELECT e.current_version,e.id,e.device,e.registration,e.generation,e.subject,v.version,v.validity,v.operation,v.created_at,v.invalidated_at,v.key_id,v.sealed,v.pending FROM mdm_recovery.entries e JOIN mdm_recovery.versions v ON (v.tenant_id,v.entry)=(e.tenant_id,e.id)", $suffix) }; }
 pub(crate) use select_material;
 
+/// Report historical use by the same registered device, without consuming/revalidating a key.
+pub async fn rss_use_in(
+    c: &mut PgConnection,
+    device: &rss_mdm_registration_service::DevicePrincipal,
+    input: &rss_mdm_agent_wire::runtime::AccessRecoveryUse,
+) -> Result<bool, Error> {
+    input.validate().map_err(|_| Error::Malformed)?;
+    rss_mdm_registration_service::device::store::revalidate_management(c, device).await?;
+    let tenant = Uuid::parse_str(&device.tenant().to_string()).map_err(|_| Error::Malformed)?;
+    let row = sqlx::query(select_material!(
+        " WHERE e.tenant_id=$1 AND e.id=$2 AND v.version=$3 FOR UPDATE OF e"
+    ))
+    .bind(tenant)
+    .bind(input.material)
+    .bind(input.version)
+    .fetch_optional(&mut *c)
+    .await?
+    .ok_or(Error::NotFound)?;
+    let material = decode(&row)?;
+    if material.binding.device != device.device()
+        || material.binding.registration != device.registration()
+        || material.binding.generation != device.generation()
+        || !matches!(material.binding.subject, Subject::RssLogin { .. })
+    {
+        return Err(Error::Forbidden);
+    }
+    if let Some(old)=sqlx::query_as::<_,(Uuid,i64,i64)>("SELECT entry,version,used_at FROM mdm_recovery.rss_login_uses WHERE tenant_id=$1 AND operation=$2")
+        .bind(tenant).bind(input.operation_id).fetch_optional(&mut *c).await? {
+        return if old==(input.material,input.version,input.used_at){Ok(true)}else{Err(Error::Conflict)};
+    }
+    let now: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *c)
+            .await?;
+    if input.used_at > now.saturating_add(300) {
+        return Err(Error::Malformed);
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_recovery.rss_login_uses WHERE tenant_id=$1 AND entry=$2",
+    )
+    .bind(tenant)
+    .bind(input.material)
+    .fetch_one(&mut *c)
+    .await?;
+    if count >= 4096 {
+        return Err(Error::Conflict);
+    }
+    sqlx::query("INSERT INTO mdm_recovery.rss_login_uses(tenant_id,operation,entry,version,used_at,received_at) VALUES($1,$2,$3,$4,$5,$6)")
+        .bind(tenant).bind(input.operation_id).bind(input.material).bind(input.version).bind(input.used_at).bind(now).execute(c).await?;
+    Ok(false)
+}
+
 /// Registration lock precedes material locks everywhere, including disclosure and retirement.
 pub async fn active_in(c: &mut PgConnection, tenant: Uuid, binding: &Binding) -> Result<(), Error> {
     binding.validate()?;
     let channel = match binding.subject {
-        Subject::Bitlocker { .. } | Subject::LocalAdministrator { .. } => Channel::Agent,
+        Subject::RssLogin { .. }
+        | Subject::Bitlocker { .. }
+        | Subject::LocalAdministrator { .. } => Channel::Agent,
         _ => Channel::Mdm,
     };
+    if let Subject::RssLogin {
+        binding: id,
+        binding_generation,
+        sid,
+    } = &binding.subject
+    {
+        let b =
+            rss_mdm_registration_service::device_access::storage::locked_in(c, tenant, *id).await?;
+        if b.generation != *binding_generation
+            || b.state == rss_mdm_registration_service::device_access::State::Revoked
+            || b.device != binding.device
+            || b.registration != binding.registration
+            || b.registration_generation != binding.generation
+            || !matches!(&b.account,Some(rss_mdm_agent_wire::runtime::AccessAccount::Windows{sid:current}) if current==sid)
+        {
+            return Err(Error::Conflict);
+        }
+    }
     let tenant = tenant.to_string();
     rss_mdm_registration_service::device::store::lock_channel(c, &tenant, &binding.device, channel)
         .await
@@ -366,7 +438,7 @@ pub async fn rewrap_in(c: &mut PgConnection, tenant: Uuid, keys: &KeyRing) -> Re
 
 /// The execution owner must scrub its terminal input copies before clearing these bytes.
 pub async fn expired_in(c: &mut PgConnection, tenant: Uuid) -> Result<Vec<Material>, Error> {
-    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending) AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.cleanup_checked_at,v.invalidated_at,e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
+    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND NOT v.pending AND (e.subject->>'kind'<>'rss_login' OR (e.current_version IS NOT NULL AND e.current_version<>v.version) OR EXISTS(SELECT 1 FROM mdm_access.device_access_bindings b WHERE b.tenant_id=e.tenant_id AND b.id=(e.subject->>'binding')::uuid AND b.document->>'appliedRevision'=b.revision::text AND b.document->'effect'->>'state'='unbound')) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending) AND v.sealed IS NOT NULL AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 ORDER BY v.cleanup_checked_at,v.invalidated_at,e.id,v.version LIMIT 100 FOR UPDATE OF v SKIP LOCKED"))
         .bind(tenant).fetch_all(c).await?.iter().map(decode).collect()
 }
 pub async fn clear_expired_in(
@@ -375,7 +447,7 @@ pub async fn clear_expired_in(
     id: Uuid,
     version: i64,
 ) -> Result<(), Error> {
-    sqlx::query("UPDATE mdm_recovery.versions v SET sealed=NULL,key_id=NULL FROM mdm_recovery.entries e WHERE (e.tenant_id,e.id)=(v.tenant_id,v.entry) AND v.tenant_id=$1 AND v.entry=$2 AND v.version=$3 AND NOT v.pending AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending)")
+    sqlx::query("UPDATE mdm_recovery.versions v SET sealed=NULL,key_id=NULL FROM mdm_recovery.entries e WHERE (e.tenant_id,e.id)=(v.tenant_id,v.entry) AND v.tenant_id=$1 AND v.entry=$2 AND v.version=$3 AND NOT v.pending AND (e.subject->>'kind'<>'rss_login' OR (e.current_version IS NOT NULL AND e.current_version<>v.version) OR EXISTS(SELECT 1 FROM mdm_access.device_access_bindings b WHERE b.tenant_id=e.tenant_id AND b.id=(e.subject->>'binding')::uuid AND b.document->>'appliedRevision'=b.revision::text AND b.document->'effect'->>'state'='unbound')) AND v.invalidated_at<=floor(extract(epoch FROM clock_timestamp()))::bigint-7776000 AND NOT EXISTS(SELECT 1 FROM mdm_recovery.agent_guards g WHERE g.tenant_id=e.tenant_id AND g.registration=e.registration AND g.generation=e.generation) AND NOT EXISTS(SELECT 1 FROM mdm_recovery.entries held JOIN mdm_recovery.versions unresolved ON(unresolved.tenant_id,unresolved.entry)=(held.tenant_id,held.id) WHERE held.tenant_id=e.tenant_id AND held.registration=e.registration AND unresolved.pending)")
         .bind(tenant).bind(id).bind(version).execute(c).await?;
     Ok(())
 }

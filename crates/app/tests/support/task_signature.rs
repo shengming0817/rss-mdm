@@ -32,6 +32,12 @@ pub(crate) struct TaskVerification<'a> {
 pub(crate) fn verify(signed: &SignedTask, context: &TaskVerification<'_>) -> Result<(), WireError> {
     let p = &signed.payload;
     let (tenant, device, registration, generation) = match p {
+        TaskPayload::DeviceAccess(v) => (
+            v.tenant_id,
+            v.device_id.as_str(),
+            v.registration_id,
+            v.generation,
+        ),
         TaskPayload::Credential(v) => (
             v.tenant_id,
             v.device_id.as_str(),

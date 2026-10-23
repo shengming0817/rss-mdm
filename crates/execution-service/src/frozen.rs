@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frozen {
+    DeviceAccess {
+        configuration: rss_mdm_agent_wire::runtime::AccessConfiguration,
+        grant: crate::authorization::OperationAuthority,
+    },
     UnmanageDevice {
         schedule: rss_mdm_policy::schedule::Schedule,
         run_lifetime_seconds: u32,

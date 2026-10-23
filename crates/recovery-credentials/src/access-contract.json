@@ -1,10 +1,60 @@
 {
   "tables": [
-    {"schema":"mdm_recovery","table":"agent_guards","read_write":true,"updates":[],"delete_policy":null},
-    {"schema":"mdm_recovery","table":"agent_materials","read_write":true,"updates":[],"delete_policy":null},
-    {"schema":"mdm_recovery","table":"native_actions","read_write":true,"updates":[],"delete_policy":null},
-    {"schema":"mdm_recovery","table":"entries","read_write":true,"updates":["revision","current_version","retired"],"delete_policy":null},
-    {"schema":"mdm_recovery","table":"versions","read_write":true,"updates":["validity","key_id","sealed","invalidated_at","pending","cleanup_checked_at"],"delete_policy":null}
+    {
+      "schema": "mdm_recovery",
+      "table": "agent_guards",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "agent_materials",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "native_actions",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "entries",
+      "read_write": true,
+      "updates": [
+        "revision",
+        "current_version",
+        "retired"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "versions",
+      "read_write": true,
+      "updates": [
+        "validity",
+        "key_id",
+        "sealed",
+        "invalidated_at",
+        "pending",
+        "cleanup_checked_at"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "rss_login_uses",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
+    }
   ],
-  "functions": [], "external_relations": [], "verified_schemas": []
+  "functions": [],
+  "external_relations": [],
+  "verified_schemas": []
 }

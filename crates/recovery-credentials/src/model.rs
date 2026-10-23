@@ -36,6 +36,21 @@ impl From<sqlx::Error> for Error {
         Self::Storage
     }
 }
+impl From<rss_mdm_registration_service::Error> for Error {
+    fn from(value: rss_mdm_registration_service::Error) -> Self {
+        use rss_mdm_registration_service::Error as E;
+        match value {
+            E::Malformed => Self::Malformed,
+            E::Unauthorized => Self::Unauthorized,
+            E::Forbidden => Self::Forbidden,
+            E::NotFound => Self::NotFound,
+            E::Conflict => Self::Conflict,
+            E::CommitUnknown => Self::CommitUnknown,
+            E::RollbackFailed => Self::RollbackFailed,
+            _ => Self::Storage,
+        }
+    }
+}
 impl From<rss_mdm_audit_integration::Error> for Error {
     fn from(_: rss_mdm_audit_integration::Error) -> Self {
         Self::Audit
@@ -66,6 +81,12 @@ impl From<rss_mdm_authorization_service::Error> for Error {
     deny_unknown_fields
 )]
 pub enum Subject {
+    /// RSS offline additional-factor recovery, never the Windows account password.
+    RssLogin {
+        binding: Uuid,
+        binding_generation: i64,
+        sid: String,
+    },
     Bitlocker {
         volume: String,
         protector: Uuid,
@@ -85,6 +106,17 @@ impl Subject {
         let bounded = |s: &str| !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control);
         let valid = match self {
             Self::Bitlocker { volume, protector } => bounded(volume) && !protector.is_nil(),
+            Self::RssLogin {
+                binding,
+                binding_generation,
+                sid,
+            } => {
+                !binding.is_nil()
+                    && *binding_generation > 0
+                    && rss_mdm_agent_wire::runtime::AccessAccount::Windows { sid: sid.clone() }
+                        .validate()
+                        .is_ok()
+            }
             Self::Filevault => true,
             Self::LocalAdministrator { sid } => {
                 sid.starts_with("S-1-5-")
@@ -101,13 +133,27 @@ impl Subject {
     }
     pub fn permission(&self) -> Permission {
         match self {
-            Self::LocalAdministrator { .. } => Permission::AccountWrite,
+            Self::RssLogin { .. } | Self::LocalAdministrator { .. } => Permission::AccountWrite,
             Self::LockPin { .. } => Permission::DeviceControl,
             _ => Permission::SecurityOperate,
         }
     }
     pub(crate) fn validate_secret(&self, value: &[u8]) -> Result<(), Error> {
         let valid = match self {
+            Self::RssLogin { .. } => {
+                use base64::Engine;
+                std::str::from_utf8(value).is_ok_and(|s| {
+                    s.len() == 43
+                        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(s)
+                            .is_ok_and(|bytes| {
+                                bytes.len() == 32
+                                    && base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                        .encode(bytes)
+                                        == s
+                            })
+                })
+            }
             Self::LockPin { .. } => value.len() == 6 && value.iter().all(u8::is_ascii_digit),
             Self::Bitlocker { .. } => std::str::from_utf8(value).is_ok_and(|s| {
                 let groups: Vec<_> = s.split('-').collect();
