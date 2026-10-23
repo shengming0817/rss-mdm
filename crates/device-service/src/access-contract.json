@@ -49,14 +49,16 @@
       "table": "input_snapshots",
       "read_write": false,
       "updates": [],
-      "delete_policy": null
+      "delete_policy": null,
+      "read_only": true
     },
     {
       "schema": "mdm_devices",
       "table": "input_objects",
       "read_write": false,
       "updates": [],
-      "delete_policy": null
+      "delete_policy": null,
+      "read_only": true
     },
     {
       "schema": "mdm_devices",
