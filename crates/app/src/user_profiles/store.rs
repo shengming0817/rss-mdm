@@ -189,11 +189,14 @@ pub(super) async fn change(
     )
     .to_vec();
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt=store.write(tenant(p)?,&budget.control(),(store,p,audit,id,input,&fingerprint),|ctx,tx|Box::pin(async move {
+    let attempt=store.write(tenant(p)?,&budget.source_control(),(store,p,audit,id,input,&fingerprint),|ctx,tx|Box::pin(async move {
         let (store,p,audit,id,input,fingerprint)=*ctx;
         let mut context=(p,id,input,fingerprint);
         let (result,replayed)=tx.with_connection_context(&mut context,|(p,id,input,fingerprint),c|Box::pin(async move {
             authorize(c,p,Some(Permission::UserAttributeDefinitionsWrite),true).await?;
+            // Definitions and the enabled-field ceiling are tenant-wide, including across identity instances.
+            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2890))")
+                .bind(p.tenant_id()).execute(&mut *c).await.map_err(database)?;
             if let Some((previous,result))=receipt(c,p,input.operation_id).await? {if previous.as_slice()!=fingerprint.as_slice(){return Err(Error::Conflict);}return Ok::<_,Error>((result,true));}
             let old=get(c,p,*id).await?;
             if old.as_ref().map_or(0,|d|d.revision)!=input.expected_revision {return Err(Error::Conflict);}
@@ -266,19 +269,17 @@ async fn gate(
             .map_err(database)
     }
 }
-fn transaction(e: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn transaction(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match e {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            rss_mdm_audit_integration::Error::from(e).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => e.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<T>,
-        rss_audit_postgres::TransactionError<Error>,
+        T,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
     write: bool,
@@ -288,7 +289,7 @@ fn settle<T>(
             if write {
                 audit.mark_committed();
             }
-            Ok(v.into_value())
+            Ok(v)
         },
         |e| Err(transaction(e)),
         |e| {

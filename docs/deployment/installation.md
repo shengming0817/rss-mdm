@@ -336,6 +336,12 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 `identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归一次性维护命令。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
 
+MDM 投影使用 `audit_projection.database` 的独立 `mdm_audit_worker` 登录，连接同一实际数据库；固定 domain 为 `mdm.audit`，消费组为 `mdm.audit.v1`。业务角色只可靠入队，不拥有 Audit/Ledger 追加权限。两个审计 worker 都在一个 PostgreSQL 事务中提交 effect、Inbox 与源 Outbox 完成状态；普通 broker 投递不使用这条接缝。
+
+`audit_projection.recovery_keys` 与 `identity.audit_recovery_keys` 各自配置 `active_file` 和 `historical_files`，文件为 32 字节原始密钥、权限 0600，最多 15 个历史钥。两个集合及设备材料保护钥不得复用，历史钥也须保留至相应恢复材料退出；这些文件随运行配置进入联合备份。worker 密码必须与生产角色及另一 worker 分离。
+
+`audit_projection.max_events` 默认 100000，`max_bytes` 默认 1073741824，按租户以先到者为限；字节数指冻结源事件的精确载荷字节，不是 PostgreSQL 物理占用。普通额度之外保留 10% 的失败/拒绝事实容量，未投影及隔离事实继续计费。达到上限拒绝新应审计业务，预留耗尽关闭相应接流，不能递归写入失败事实。80% 或最老未投影事件超过五分钟在诊断中告警。运行诊断分别显示 `audit_source`、`audit_projection` 和 `identity_audit`；投影落后不直接撤销核心 readiness，源容量耗尽、主库不可用和完整性故障仍按接流策略处理。
+
 所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 
 运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。

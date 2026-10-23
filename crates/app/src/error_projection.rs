@@ -42,6 +42,8 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
             A::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
             A::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
             A::AuditContract => Self::Unavailable(Failure::AuditContract),
+            A::AuditBackpressure => Self::Unavailable(Failure::AuditBackpressure),
+            A::AuditReserveExhausted => Self::Unavailable(Failure::AuditReserveExhausted),
         }
     }
 }

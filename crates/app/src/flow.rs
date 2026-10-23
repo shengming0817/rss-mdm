@@ -93,7 +93,13 @@ impl Config {
             runtime: runtime.clone(),
             role: Role::Storage,
         });
-        admit_audit_runtime(&runtime, &audit_store, tenant).await?;
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit_store = Arc::new(
+            audit_store
+                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+                .await?,
+        );
         admit_storage(&runtime, tenant).await?;
         let key = storage::cursor_key(&runtime, tenant).await?;
         let catalog = catalog(audit_store.clone(), runtime.clone(), tenant, clock.clone()).await?;
@@ -149,6 +155,7 @@ impl Config {
                     },
                 ));
                 let mut service = Flow { groups, compliance,
+                    audit_store: audit_store.clone(),
                     cursor_key: key,
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
@@ -225,14 +232,21 @@ impl Config {
             role: Role::Publication,
         });
         planning.publication_runtime = Some(runtime.clone());
-        crate::database::admit_audit_runtime(&runtime, &planning.publications.audit_store, tenant)
-            .await?;
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let publication_audit = Arc::new(
+            planning
+                .publications
+                .audit_store
+                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+                .await?,
+        );
         for source in &self.publication.sources {
             let service = p::PublicationService::connect(
                 rss_mdm_software_service::Host {
                     content: content.clone().ok_or_else(invalid)?,
                     runtime: runtime.clone(),
-                    audit: planning.publications.audit_store.clone(),
+                    audit: publication_audit.clone(),
                     credentials: Arc::new(crate::source_credentials::SourceCredentials::load(
                         tenant,
                         &source.name,
@@ -296,6 +310,7 @@ impl rss_runtime::ManagedResource for Resource {
 mod tests;
 
 pub(crate) struct Flow {
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
@@ -328,18 +343,6 @@ pub(crate) async fn catalog(
 }
 
 use rss_mdm_flow_service::storage;
-
-async fn admit_audit_runtime(
-    runtime: &PgRuntime,
-    audit: &rss_mdm_audit_integration::AuditStore,
-    tenant: TenantId,
-) -> std::result::Result<(), Error> {
-    if let Err(error) = crate::database::admit_audit_runtime(runtime, audit, tenant).await {
-        runtime.close().await;
-        return Err(error);
-    }
-    Ok(())
-}
 
 use rss_mdm_flow_service::transaction::deadline;
 use rss_transactional_messaging_postgres::PgTransaction;

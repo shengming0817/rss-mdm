@@ -40,6 +40,8 @@ class RunFixtures:
         self.root = Path(self.cert_directory.name)
         self.native_key = private(self.root / 'native-data.key', '')
         self.native_key.write_bytes(os.urandom(32))
+        for filename in ('audit-recovery.key', 'identity-audit-recovery.key'):
+            private(self.root / filename, '').write_bytes(os.urandom(32))
         self.certificates = Environment(group='t2-certificates')
         self.certificates.root = self.root / 'certificates'
         self.lock = threading.RLock()
@@ -144,6 +146,12 @@ class RunFixtures:
         config['flow']['storage']['database'] = db(root, database, 'mdm_flow_runtime', 'runtime-fixture')
         config['flow']['publication']['database'] = db(root, database, 'mdm_software_driver', 'runtime-fixture')
         config['webhooks']['recovery_database'] = db(root, database, 'mdm_webhook_operator', 'runtime-fixture')
+        config['audit_projection']['database'] = db(root, database, 'mdm_audit_worker', 'audit-projection-fixture')
+        for owner, key, filename in [(config['audit_projection'], 'recovery_keys', 'audit-recovery.key'),
+                                     (config['identity'], 'audit_recovery_keys', 'identity-audit-recovery.key')]:
+            # Recovery identity is shared by compatible workers for the run, like native keys.
+            path = Path(native_key).parent / filename
+            owner[key] = dict(active_file=str(path), historical_files=[])
         config['identity']['tenant_id'] = tenant
         config['native_protocols'] = {}
         config['device_pki'] = []

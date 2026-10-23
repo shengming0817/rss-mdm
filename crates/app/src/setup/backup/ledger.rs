@@ -40,7 +40,7 @@ async fn verify_pool(runtime: &Value, tenants: &[String], pool: sqlx::PgPool) ->
         serde_json::from_value(runtime["audit"].clone()).map_err(|_| Error::Input)?;
     let result=async {
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-        let store=rss_mdm_audit_integration::AuditStore::new(pool.clone(),audit.integrity().map_err(|_|Error::Corrupt)?,&budget.control()).await.map_err(|_|Error::Corrupt)?;
+        let store=rss_mdm_audit_integration::AuditReadStore::new(pool.clone(),audit.integrity().map_err(|_|Error::Corrupt)?,&budget.control()).await.map_err(|_|Error::Corrupt)?;
         let mut heads=Vec::new();
         for tenant in tenants {
             let id=rss_request_context::TenantId::parse(tenant).map_err(|_|Error::Input)?;

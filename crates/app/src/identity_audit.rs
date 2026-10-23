@@ -5,75 +5,24 @@ use rss_identity_postgres::audit::{AuditDelivery, AuditDeliveryError};
 use rss_request_context::{Clock, Deadline};
 use rss_runtime::{
     DynManagedResource, ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError,
-    TaskStatus,
 };
 use rss_transactional_messaging::policy::{DeliveryBudget, OperationDeadline};
 use rss_transactional_messaging_postgres::PgRuntime;
 use rss_transactional_messaging_runtime::relay::RelayBatchLimit;
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::{
-    num::NonZeroUsize,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 pub(crate) const ROLE: &str = "mdm_identity_audit";
 const RECOVERY: Duration = Duration::from_secs(30);
 const BACKOFF: Duration = Duration::from_secs(1);
-#[derive(Default)]
-pub(crate) struct Readiness {
-    phase: std::sync::Mutex<AuditPhase>,
-    retrying: AtomicBool,
-    task: OnceLock<TaskStatus>,
-}
-impl Readiness {
-    fn progress(&self, claimed: usize, retried: usize) {
-        if retried > 0 {
-            self.retrying.store(true, Ordering::Release);
-        } else if claimed > 0 {
-            self.retrying.store(false, Ordering::Release);
-        }
-        *self.phase.lock().expect("audit health") = if self.retrying.load(Ordering::Acquire) {
-            AuditPhase::Retrying
-        } else {
-            AuditPhase::Healthy
-        };
-    }
-    fn transient_failure(&self) {
-        *self.phase.lock().expect("audit health") = AuditPhase::DependencyUnavailable;
-    }
-    pub(crate) fn health(&self) -> AuditHealth {
-        AuditHealth {
-            phase: *self.phase.lock().expect("audit health"),
-            task: self.task.get().map(TaskStatus::current),
-        }
-    }
-}
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum AuditPhase {
-    #[default]
-    Initializing,
-    Healthy,
-    Retrying,
-    DependencyUnavailable,
-    Stopped,
-}
-pub(crate) struct AuditHealth {
-    pub phase: AuditPhase,
-    pub task: Option<rss_runtime::TaskState>,
-}
-impl AuditHealth {
-    pub fn is_ready(&self) -> bool {
-        self.phase == AuditPhase::Healthy && self.task == Some(rss_runtime::TaskState::Running)
-    }
-}
+use crate::audit_health::{AuditPhase, Readiness};
 pub(crate) struct Worker {
-    delivery: AuditDelivery,
+    delivery: AuditDelivery<rss_mdm_native_protection::Protector>,
     readiness: Arc<Readiness>,
     wake: Arc<Notify>,
     #[cfg(test)]
@@ -190,6 +139,7 @@ impl Worker {
             instance,
             vec![tenant, management_tenant],
             budget,
+            config.identity.audit_recovery_keys.load()?,
         )
         .await
         .map_err(|error| {
@@ -256,8 +206,9 @@ impl Worker {
                     .expect("bounded batch"),
             )
             .await?;
-        let wait = should_wait(report.claimed(), report.retried(), report.fenced())?;
-        self.readiness.progress(report.claimed(), report.retried());
+        let wait = should_wait(report.projected(), report.deferred());
+        self.readiness
+            .progress(report.projected(), report.deferred());
         if !wait {
             idle.rescanned = false;
             return Ok(());
@@ -317,11 +268,8 @@ impl Idle {
             .min(cap)
     }
 }
-fn should_wait(claimed: usize, retried: usize, fenced: usize) -> Result<bool, AuditDeliveryError> {
-    if fenced > 0 {
-        return Err(AuditDeliveryError::OwnershipLost);
-    }
-    Ok(claimed == 0 || retried > 0)
+fn should_wait(projected: usize, deferred: usize) -> bool {
+    projected == 0 || deferred > 0
 }
 fn diagnose(error: AuditDeliveryError) {
     eprintln!(
