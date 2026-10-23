@@ -1,6 +1,6 @@
-//! Native performance publication and endpoint capability negotiation use anyhow::Context;
-use the real product seam.
+//! Native performance publication and endpoint capability negotiation use the real product seam.
 use super::*;
+use anyhow::Context;
 
 pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
     use rss_mdm_inventory as d;
