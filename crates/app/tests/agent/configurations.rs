@@ -1218,18 +1218,6 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
 async fn configuration_scope_follows_current_candidate_admission() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let bad = stage_upload(&f, &mut user, "msi", b"broken").await?;
-    ensure!(
-        user.call(
-            &f.router,
-            Method::GET,
-            &format!("/api/v1/agent-packages/uploads/{bad}"),
-            None
-        )
-        .await?
-        .0 == StatusCode::BAD_REQUEST
-    );
-    ensure!(user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(json!({"operationId":Uuid::new_v4(),"packageId":bad,"version":"1","target":{"platform":"windows","architecture":"x86_64"}}))).await?.0 == StatusCode::BAD_REQUEST);
     let unknown = user
         .call(
             &f.router,

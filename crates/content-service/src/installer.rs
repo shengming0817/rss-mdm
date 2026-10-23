@@ -72,7 +72,7 @@ pub(super) async fn observe(
     deadline: Deadline,
     capacity: Arc<crate::budget::UploadLease>,
     reservation: Option<crate::reader::Pinned>,
-) -> Result<rss_mdm_software_service::management::content::InstallerInspection, Error> {
+) -> rss_mdm_software_service::management::content::InstallerInspection {
     struct ParserClock {
         timer: Arc<dyn Clock>,
         cancel: tokio_util::sync::CancellationToken,
@@ -87,6 +87,9 @@ pub(super) async fn observe(
             }
         }
     }
+    // Auxiliary work must leave time for the required completion transaction.
+    let available = deadline.instant().saturating_duration_since(timer.now());
+    let deadline = Deadline::at(deadline.instant() - available / 4);
     let cancel = tokio_util::sync::CancellationToken::new();
     let _cancel = cancel.clone().drop_guard();
     tokio::task::spawn_blocking(move || {
@@ -96,15 +99,10 @@ pub(super) async fn observe(
             deadline,
         };
         let result = match inspect(file.as_file_mut(), kind.name(), &config, &clock, deadline) {
-            Ok(facts) => Ok(
-                rss_mdm_software_service::management::content::InstallerInspection::Parsed {
-                    facts,
-                },
-            ),
-            Err(Error::Malformed) => {
-                Ok(rss_mdm_software_service::management::content::InstallerInspection::Rejected)
+            Ok(facts) => {
+                rss_mdm_software_service::management::content::InstallerInspection::Parsed { facts }
             }
-            Err(error) => Err(error),
+            Err(_) => rss_mdm_software_service::management::content::InstallerInspection::Rejected,
         };
         drop(file);
         drop(reservation);
@@ -112,7 +110,7 @@ pub(super) async fn observe(
         result
     })
     .await
-    .map_err(|_| Error::Storage)?
+    .unwrap_or(rss_mdm_software_service::management::content::InstallerInspection::Rejected)
 }
 fn invalid() -> Error {
     Error::Malformed

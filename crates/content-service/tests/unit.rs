@@ -11,7 +11,7 @@ fn config(directory: PathBuf) -> Config {
         max_uploads: 4,
         transfer_seconds: 60,
         retention_seconds: 3600,
-        max_bundle_bytes: 64 * 1024 * 1024,
+
         max_bundle_entries: 100,
         max_expansion_ratio: 100,
     }

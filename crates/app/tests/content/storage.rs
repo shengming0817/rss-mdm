@@ -590,7 +590,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     cfg["content"]["storage"] = storage;
     cfg["content"]["max_artifact_bytes"] = json!(4096);
     cfg["content"]["max_temporary_bytes"] = json!(8192);
-    cfg["content"]["max_bundle_bytes"] = json!(4096);
+
     let cfg: crate::config::Config = serde_json::from_value(cfg)?;
     let mut scoped_provider=provider.clone();
     scoped_provider["accessKey"]=json!(access);
@@ -909,4 +909,36 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
             Ok(())
         })
         .await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: auxiliary spool quota does not block completed integrity; explicit parse persists once"]
+async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persistent() -> Result<()> {
+    let (resources, store, second) = stores(None).await?;
+    resources.finish(async {
+        let now = crate::windows::test_support::now();
+        let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
+        let mut b = binding(&bytes, StorageClass::Artifact);
+        b.purpose = Purpose::Software { resource: "quota-package".into(), filename: "package.pkg".into() };
+        let id = Uuid::new_v4();
+        let actor = b.actor.clone();
+        store.begin(id, b.clone(), now, store.upload_budget()?).await?;
+        store.append(&actor, id, 0, now, bytes.as_slice(), store.upload_budget()?).await?;
+        // Leave less than three bytes of temporary quota; the extra spool would exceed it.
+        let mut pending = binding(b"reserved", StorageClass::Artifact);
+        pending.length = 128 * 1024 * 1024 - 2;
+        pending.sha256 = [8; 32];
+        store.begin(Uuid::new_v4(), pending, now, store.upload_budget()?).await?;
+        ensure!(store.finish(&actor, id, now, store.upload_budget()?).await?.complete);
+        let digest = b.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let query = format!("SELECT document->'value'->'inspections'->'pkg'->>'status' FROM mdm_content.manifests WHERE tenant_id='{}' AND sha256=decode('{digest}','hex') AND class='artifact'",case_tenant());
+        ensure!(pg(&query)?.trim().is_empty(), "quota failure must not pretend to have parsed");
+        // Completion releases upload reservation; explicit parsing can now use its own deletion pin.
+        second.parse_upload(&actor, id, now).await?;
+        ensure!(pg(&query)?.trim() == "rejected", "malformed metadata must be recorded");
+        let no_parse_budget = store.clone();
+        no_parse_budget.parse_upload(&actor, id, now).await?;
+        ensure!(second.status(&actor, id, now).await?.complete);
+        Ok(())
+    }).await
 }

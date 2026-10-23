@@ -377,7 +377,7 @@ async fn resume(input: &Input, journal: &Journal, mut saved: Saved) -> Result<Re
     runtime["content"] = match input.content_storage {
         ContentStorage::Volume => {
             let content = input.deployment.prepare_content_storage()?;
-            serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":4096,"max_expansion_ratio":100})
+            serde_json::json!({"storage":content,"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100})
         }
         ContentStorage::S3 => serde_json::Value::Null,
     };

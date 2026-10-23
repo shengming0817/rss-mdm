@@ -130,11 +130,15 @@ impl Store {
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
-        mut spool: Option<&mut tokio::fs::File>,
+        mut spool: Option<&mut Option<tokio::fs::File>>,
     ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32]), Error> {
         if pieces.is_empty() || pieces.len() > 8193 || (c.protected() && pieces.len() != 1) {
             return Err(Error::Invariant);
         }
+        let available = deadline
+            .instant()
+            .saturating_duration_since(self.timer.now());
+        let spool_cutoff = deadline.instant() - available / 4;
         let mut offset = 0;
         let mut hash = Sha256::new();
         let mut small = if a.length() <= protected::NATIVE_LIMIT {
@@ -183,10 +187,17 @@ impl Store {
             .map_err(|_| Error::Storage)??;
             hash = next_hash;
             self.check_deadline(deadline)?;
-            if let Some(file) = spool.as_deref_mut() {
-                tokio::io::AsyncWriteExt::write_all(file, &logical)
-                    .await
-                    .map_err(|_| storage())?;
+            if let Some(slot) = spool.as_deref_mut() {
+                if let Some(file) = slot.as_mut() {
+                    let written = tokio::time::timeout_at(
+                        spool_cutoff.into(),
+                        tokio::io::AsyncWriteExt::write_all(file, &logical),
+                    )
+                    .await;
+                    if !matches!(written, Ok(Ok(()))) {
+                        *slot = None;
+                    }
+                }
             }
             if let Some(small) = &mut small {
                 small.extend_from_slice(&logical);

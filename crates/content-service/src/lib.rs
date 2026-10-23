@@ -44,7 +44,7 @@ pub struct Config {
     pub max_uploads: usize,
     pub transfer_seconds: u64,
     pub retention_seconds: u64,
-    pub max_bundle_bytes: u64,
+
     pub max_bundle_entries: usize,
     pub max_expansion_ratio: u64,
 }
@@ -125,8 +125,6 @@ impl Store {
             || !(1..=64).contains(&config.max_uploads)
             || !(1..=86400).contains(&config.transfer_seconds)
             || !(config.transfer_seconds..=604800).contains(&config.retention_seconds)
-            || config.max_bundle_bytes == 0
-            || config.max_bundle_bytes > 1_099_511_627_776
             || !(1..=4096).contains(&config.max_bundle_entries)
             || !(1..=1000).contains(&config.max_expansion_ratio)
             || config.imports.len() > 16
