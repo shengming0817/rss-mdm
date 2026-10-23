@@ -296,7 +296,7 @@ Compose 拓扑与配置归属见[安装指南](installation.md#单机部署设�
 
 完整服务端 SIT 使用[安装指南的 SIT 流程](installation.md#服务端-sit-部署)与 `production.compose.yaml` + `sit.compose.yaml`；基础四服务启动不代表 CA、内容存储与设备通道已接通。CA/RustFS 已存在时保留其卷、身份、桶与凭据，不重新生成。测试设备准备和设备效果不纳入服务端部署完成判据。
 
-静态资源更新只重建 web；后端材料应用只重建对应 server；SNI、HTTP 路由或 TLS 配置变更先执行 gateway 的 `nginx -t -c /run/gateway/nginx.conf`，再 reload 或独立重建 gateway。三个服务不存在共享网络命名空间的成对重建要求。
+静态资源更新只重建 web；后端材料应用只重建对应 server；SNI、HTTP 路由或 TLS 配置变更先执行 gateway 的 `nginx -t -c /run/gateway/nginx.conf`，再 reload 或独立重建 gateway。通过 configure-host 提交的变更若更新了 runtime binding，还须重建对应 server 加载新 binding 并核对应用回执。三个服务不存在共享网络命名空间的成对重建要求。
 
 服务 TLS 变更后分别检查网关与原生设备入口的证书链、主机名及实际连接；设备证书仍由后端验证，不借助代理头。CA、SCEP/webhook 和根/issuer CRL 变化按各自原 owner 验证，单机上的 DNS/容器健康不替代外部设备网络检查。APNs/Profile/WNS 等材料使用领域版本与受控应用流程，不恢复启动秘密文件 loader。
 
