@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 
 from candidate_fixture import INSTANCE, ADMIN
@@ -415,10 +416,12 @@ class RunFixtures:
         environment = self.gateway_owner
         try:
             environment.prepare_inputs(certificates=False)
-            private(environment.root / 'probe/nginx.conf', config)
+            directory = environment.root / 'probe' / uuid.uuid4().hex
+            environment.extra = {**getattr(environment, 'extra', {}), 'MDM_GATEWAY_PROBE_DIRECTORY': str(directory)}
+            private(directory / 'nginx.conf', config)
             for name,value in (files or {}).items():
                 if Path(name).name!=name:raise ValueError('gateway fixture filename required')
-                private(environment.root / 'probe' / name,value)
+                private(directory / name,value)
             environment.verify_ownership()
             environment.compose('--profile', 'probe', 'up', '-d', 'gateway-probe')
             name = environment.compose('ps', '-q', 'gateway-probe')
