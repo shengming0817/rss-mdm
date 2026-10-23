@@ -498,6 +498,15 @@ async fn admit_storage_in(
             .map_err(|_| sqlx::Error::Protocol("host catalog decode".into()))?;
         let expected: Value = serde_json::from_str(expected).expect("checked owner contract");
         if actual != expected {
+            #[cfg(feature = "integration")]
+            if let (Some(actual), Some(expected)) = (actual.as_object(), expected.as_object()) {
+                let changed: std::collections::BTreeSet<_> = actual
+                    .keys()
+                    .chain(expected.keys())
+                    .filter(|key| actual.get(*key) != expected.get(*key))
+                    .collect();
+                eprintln!("catalog mismatch {owner}: {changed:?}");
+            }
             eprintln!(
                 "{}",
                 serde_json::json!({"event":"capability_admission_rejected","owner":owner})

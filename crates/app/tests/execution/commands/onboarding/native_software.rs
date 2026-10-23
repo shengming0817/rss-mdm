@@ -143,11 +143,13 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             .bind(case_tenant())
             .execute(&mut conn)
             .await?;
+        let mut association_tx = conn.begin().await?;
         let association = Uuid::new_v4();
         let empty = json!({"serial":[],"uuid":[],"manufacturer":[],"sources":[]});
         let hardware = json!({"mdm":empty,"agent":empty});
-        sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','operator verified fixture',$3,'fixture',1)").bind(case_tenant()).bind(association).bind(hardware).execute(&mut conn).await?;
-        sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) SELECT tenant_id,$2,device,channel,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=ANY($3::text[]) AND state='active'").bind(case_tenant()).bind(association).bind(vec![case_device(),device]).execute(&mut conn).await?;
+        sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1::uuid,$2,1,'confirmed','operator verified fixture',$3,'fixture',1)").bind(case_tenant()).bind(association).bind(hardware).execute(&mut *association_tx).await?;
+        sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) SELECT tenant_id,$2,device,channel,id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=ANY($3::text[]) AND state='active'").bind(case_tenant()).bind(association).bind(vec![case_device(),device]).execute(&mut *association_tx).await?;
+        association_tx.commit().await?;
         conn.close().await?;
         let scope = Uuid::new_v4();
         crate::test_support::agent_execution::seed_scope(
@@ -155,13 +157,15 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             scope,
             json!([{"kind":"device","id":case_device()}]),
         )
-        .await?;
+        .await
+        .context("prepare associated native scope")?;
         scope
     } else {
         software_execution::prepared_scope(&host.app.flow.planning, &[case_device()]).await?
     };
-    let stage =
-        software_execution::prepared_scope(&host.app.flow.planning, &[case_device()]).await?;
+    let stage = software_execution::prepared_scope(&host.app.flow.planning, &[case_device()])
+        .await
+        .context("prepare native rollout stage")?;
     let policy = Uuid::new_v4();
     let competing = Uuid::new_v4();
     for (policy, resource) in [(policy, resource), (competing, alias)] {

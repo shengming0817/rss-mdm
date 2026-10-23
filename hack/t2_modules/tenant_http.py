@@ -72,7 +72,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     require(all(g['scope']['kind']=='all_devices' for g in effective['grants'] if g['operation'] in {'inventory_read','device_wipe'}), 'device scope incomplete')
     # Revoking a provisioned grant must not be undone by operation replay.
     rule_id = first['result']['ruleId']
-    sql(f"UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id='{tenant}' AND id='{rule_id}'")
+    sql(f"SET rss.tenant_id='{tenant}'; UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id='{tenant}' AND id='{rule_id}'")
     require(call('POST',path,request,admin_key) == (200,first), 'replay after grant revocation changed')
     require(sql(f"SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id='{rule_id}'") == 't', 'replay regranted administrator')
     # Change target password through the independent second administrator; original fingerprint stays valid.
@@ -245,7 +245,7 @@ def administrator_rollback(call, path, tenant, password, sql):
         else:
             fill = f"(8388608-(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}'))/octet_length(template.document::text)"
             document = 'template.document'
-        sql(f"INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) SELECT template.tenant_id,template.instance,gen_random_uuid(),1,{document} FROM (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND document IS NOT NULL LIMIT 1) template CROSS JOIN LATERAL generate_series(1,({fill})::int)")
+        sql(f"SET rss.tenant_id='{tenant}'; INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) SELECT template.tenant_id,template.instance,gen_random_uuid(),1,{document} FROM (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND document IS NOT NULL LIMIT 1) template CROSS JOIN LATERAL generate_series(1,({fill})::int)")
         operation = str(uuid.uuid4())
         before = counts()
         try:
@@ -253,7 +253,7 @@ def administrator_rollback(call, path, tenant, password, sql):
             require(counts() == before, 'capacity rejection left partial account/rule')
             require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '0', 'capacity rejection saved receipt')
         finally:
-            sql(f"DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id NOT IN ({original})")
+            sql(f"SET rss.tenant_id='{tenant}'; DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id NOT IN ({original})")
 
 
 def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):

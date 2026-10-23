@@ -25,7 +25,11 @@ async fn management_audit_failure_logs_preserve_action_and_redaction() {
                         handler.fetch_add(1, Ordering::SeqCst);
                         Json(json!({"sensitive":"inventory-result"}))
                     }
-                }),
+                })
+                .owned(
+                    &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                    &[RouteOperation::Action],
+                ),
             )
             .layer(middleware::from_fn_with_state(
                 Envelope {
@@ -98,6 +102,13 @@ enum DeviceProtocol {
     Apple,
 }
 impl DeviceProtocol {
+    fn resource(self) -> &'static rss_mdm_http_contract::Resource {
+        match self {
+            Self::Agent => &contracts::PROTOCOL_AGENT_CHANNEL,
+            Self::Windows => &contracts::PROTOCOL_WINDOWS_CHANNEL,
+            Self::Apple => &contracts::PROTOCOL_APPLE_CHANNEL,
+        }
+    }
     fn path(self) -> &'static str {
         match self {
             Self::Agent => "/reports",
@@ -253,7 +264,8 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
         .wrap(
             Router::new().route(
                 protocol.path(),
-                get(move || async move { protocol.success() }),
+                get(move || async move { protocol.success() })
+                    .owned(protocol.resource(), &[RouteOperation::Action]),
             ),
             store.clone(),
         )
@@ -308,7 +320,8 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
                             .map_or_else(|| protocol.success(), |error| protocol.original(error))
                     }
                 },
-            ),
+            )
+            .owned(protocol.resource(), &[RouteOperation::Action]),
         );
         let response = protocol
             .wrap(router, store.clone())

@@ -232,6 +232,10 @@ impl Fixture {
             )?;
         audit.finalize(None);
         let mut tx = db.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
         self.app
             .apple()?
             .channel

@@ -4,6 +4,8 @@
 -- profile at installation and startup. Other ACLs stay exact.
 -- Canonical constraint output removes redundant AND grouping introduced by
 -- BETWEEN expansion, so a logical pg_dump/pg_restore preserves the contract.
+-- Pretty rule deparsing normalizes redundant AND groups expanded from row comparisons
+-- before pg_dump; equivalent restored views retain the same complete definition.
 -- Foreign-key targets are always schema qualified, independent of the caller search_path.
 WITH relations AS (
  SELECT c.*,n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -17,7 +19,7 @@ WITH relations AS (
  'indexes',(SELECT jsonb_agg(jsonb_build_array(pg_get_indexdef(i.indexrelid),i.indisvalid,i.indisready,i.indislive) ORDER BY pg_get_indexdef(i.indexrelid) COLLATE "C") FROM pg_index i WHERE i.indrelid=t.oid),
  'policies',(SELECT jsonb_agg(jsonb_build_array(p.polname,p.polcmd,p.polpermissive,pg_get_expr(p.polqual,p.polrelid),pg_get_expr(p.polwithcheck,p.polrelid),(SELECT array_agg(CASE WHEN r=0 THEN 'PUBLIC' ELSE pg_get_userbyid(r)::text END ORDER BY r) FROM unnest(p.polroles) r)) ORDER BY p.polname COLLATE "C") FROM pg_policy p WHERE p.polrelid=t.oid),
  'triggers',(SELECT jsonb_agg(pg_get_triggerdef(tg.oid) ORDER BY tg.tgname COLLATE "C") FROM pg_trigger tg WHERE tg.tgrelid=t.oid AND NOT tg.tgisinternal),
- 'rewrite',(SELECT jsonb_agg(pg_get_ruledef(r.oid) ORDER BY r.rulename COLLATE "C") FROM pg_rewrite r WHERE r.ev_class=t.oid)
+ 'rewrite',(SELECT jsonb_agg(pg_get_ruledef(r.oid,true) ORDER BY r.rulename COLLATE "C") FROM pg_rewrite r WHERE r.ev_class=t.oid)
  )::text,'UTF8')),'hex') AS digest FROM relations t
  UNION ALL
  SELECT n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')',
