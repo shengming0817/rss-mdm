@@ -2121,3 +2121,93 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
     host.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki"]
+async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -> anyhow::Result<()>
+{
+    let s = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    // A supported RSA-8192 leaf makes the Candidate exceed the small operation-receipt budget.
+    let csr_file = root().join("recovery-long.der");
+    let output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("openssl")
+            .args([
+                "req",
+                "-new",
+                "-newkey",
+                "rsa:8192",
+                "-nodes",
+                "-subj",
+                "/CN=rss-mdm-agent",
+                "-outform",
+                "DER",
+            ])
+            .arg("-keyout")
+            .arg(root().join("recovery-long.key"))
+            .arg("-out")
+            .arg(&csr_file)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await??;
+    anyhow::ensure!(output.status.success(), "large CSR generation failed");
+    let mut g = grant()?;
+    g.csr = STANDARD.encode(std::fs::read(csr_file)?);
+    let authorized = authorize_request(&s, &p, &g, &audit()).await?;
+    let candidate = s
+        .issue(&signing(&g, authorized.grant_id)?, &audit())
+        .await?;
+    assert!(serde_json::to_string(&candidate)?.len() > 2048);
+    let input = wire::RecoverIssuance {
+        wire_version: 1,
+        operation_id: Uuid::new_v4(),
+        certificate_chain: candidate.certificate_chain.clone(),
+    };
+    for _ in 0..2 {
+        let result = s
+            .recover_issuance(&p, candidate.issuance_id, &input, &audit())
+            .await?;
+        assert_eq!(
+            serde_json::to_value(result)?,
+            serde_json::to_value(&candidate)?
+        );
+    }
+    let mut owner = <sqlx::PgConnection as Connection>::connect_with(&options("postgres")?).await?;
+    let records = crate::audit_test_support::read(&mut owner).await?;
+    assert_eq!(
+        records
+            .iter()
+            .filter(|r| r.source() == "mdm.business"
+                && r.operation() == Some(input.operation_id.to_string().as_str()))
+            .count(),
+        1
+    );
+    let next_grant = grant()?;
+    let next_authorized = authorize_request(&s, &p, &next_grant, &audit()).await?;
+    let next = s
+        .issue(&signing(&next_grant, next_authorized.grant_id)?, &audit())
+        .await?;
+    let rebound = wire::RecoverIssuance {
+        certificate_chain: next.certificate_chain.clone(),
+        ..input.clone()
+    };
+    assert_eq!(
+        s.recover_issuance(&p, next.issuance_id, &rebound, &audit())
+            .await
+            .unwrap_err()
+            .code,
+        wire::ErrorCode::OperationConflict
+    );
+    let mut fresh = input.clone();
+    fresh.operation_id = Uuid::new_v4();
+    let result = s
+        .recover_issuance(&p, candidate.issuance_id, &fresh, &audit())
+        .await?;
+    assert_eq!(
+        serde_json::to_value(result)?,
+        serde_json::to_value(&candidate)?
+    );
+    Ok(())
+}
