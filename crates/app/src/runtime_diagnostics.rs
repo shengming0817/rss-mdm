@@ -797,10 +797,18 @@ mod channel_projection_tests {
         assert_eq!(values[1].state, ChannelState::Degraded);
         assert!(matches!(
             values[1].reasons.as_slice(),
-            [Reason::IngressUnavailable]
+            [Reason::DependencyUnavailable]
         ));
         assert_eq!(values[1].loaded_materials["trust"], 4);
         assert!(facts[1].state == assembly::ChannelState::Ready);
         assert!(facts[1].reason.is_none());
+        let mut without_reason = facts;
+        without_reason[0].reason = None;
+        let mut values: Vec<_> = without_reason.into_iter().map(channel_projection).collect();
+        project_dependents(&mut values);
+        assert!(matches!(
+            values[1].reasons.as_slice(),
+            [Reason::IngressUnavailable]
+        ));
     }
 }
