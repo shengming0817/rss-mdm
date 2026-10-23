@@ -82,7 +82,6 @@ impl ExecutionService {
         input: &crate::device_control::Input,
         audit: &RequestAudit,
     ) -> Result<Value> {
-        storage::admit(tx).await?;
         require_tenant(self.tenant, proof)?;
         let action = input.action.kind();
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
