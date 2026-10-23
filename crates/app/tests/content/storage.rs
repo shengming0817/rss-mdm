@@ -1,6 +1,7 @@
 //! Real PostgreSQL plus the shared TLS S3 provider; product admission and HTTP are exercised.
 use crate::test_support::software::Fixture;
 use crate::test_support::{process::*, runtime::*, *};
+use anyhow::Context;
 use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
 
 #[tokio::test]
@@ -233,6 +234,7 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
 }
 async fn stores(
     storage: Option<Value>,
+    transfer_seconds: u64,
 ) -> Result<(
     Resources,
     Arc<rss_mdm_content_service::Store>,
@@ -243,6 +245,7 @@ async fn stores(
     if let Some(storage) = storage {
         config["content"]["storage"] = storage;
     }
+    config["content"]["transfer_seconds"] = json!(transfer_seconds);
     config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
     config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
     let config: crate::config::Config = serde_json::from_value(config)?;
@@ -311,7 +314,8 @@ async fn s3_product_http_contract() -> Result<()> {
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
 async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let (resources, store, second) = stores(Some(storage)).await?;
+    // The fixed 128 MiB seam is not a throughput assertion in a debug provider build.
+    let (resources, store, second) = stores(Some(storage), 180).await?;
     resources.finish(async {
     let now = crate::windows::test_support::now();
     let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
@@ -332,8 +336,8 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     ensure!(second.status(actor, id, now).await?.offset == 65539);
     second
         .append(actor, id, 65539, now, &bytes[65539..], second.upload_budget()?, )
-        .await?;
-    second.finish(actor, id, now, second.upload_budget()?, ).await?;
+        .await.context("append large S3 frontier")?;
+    second.finish(actor, id, now, second.upload_budget()?, ).await.context("finish S3 frontier")?;
     let digest = b
         .sha256
         .iter()
@@ -342,13 +346,13 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     ensure!(pg(&format!("SELECT jsonb_array_length(document->'value'->'pieces') FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),digest))?.trim()=="2");
     let mut stream = store
         .verify(&artifact)
-        .await?
+        .await.context("verify S3 frontier")?
         .stream(128 * 1024 * 1024 - 2, artifact.length())
-        .await?;
+        .await.context("open cross-chunk S3 range")?;
     use futures::StreamExt;
     let mut tail = Vec::new();
     while let Some(part) = stream.next().await {
-        tail.extend_from_slice(&part?);
+        tail.extend_from_slice(&part.context("consume cross-chunk S3 range")?);
     }
     ensure!(tail == vec![0x67; 5]);
     Ok(())
@@ -357,7 +361,7 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=content.storage: real PG multi-instance epoch and failed-body frontier"]
 async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result<()> {
-    let (resources, store, second) = stores(None).await?;
+    let (resources, store, second) = stores(None, 60).await?;
     resources.finish(async {
     let bytes = b"epoch-frontier-bytes";
     let b = binding(bytes, StorageClass::Artifact);
@@ -442,7 +446,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
 #[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
 async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let (resources, store, second) = stores(Some(storage)).await?;
+    let (resources, store, second) = stores(Some(storage), 60).await?;
     resources.finish(async {
 
     let bytes = b"confirmed-prefix-and-retry";
@@ -700,7 +704,7 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
     use sqlx::Connection;
     use std::str::FromStr;
     let (_private, storage) = s3_storage()?;
-    let (resources, store, _) = stores(Some(storage)).await?;
+    let (resources, store, _) = stores(Some(storage), 60).await?;
     resources
         .finish(async {
             let now = crate::windows::test_support::now();
@@ -914,7 +918,7 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
 #[tokio::test]
 #[ignore = "MODULE=content.storage: auxiliary spool quota does not block completed integrity; explicit parse persists once"]
 async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persistent() -> Result<()> {
-    let (resources, store, second) = stores(None).await?;
+    let (resources, store, second) = stores(None, 60).await?;
     resources.finish(async {
         let now = crate::windows::test_support::now();
         let bytes = vec![0x67; 128 * 1024 * 1024 + 3];

@@ -187,16 +187,16 @@ impl Store {
             .map_err(|_| Error::Storage)??;
             hash = next_hash;
             self.check_deadline(deadline)?;
-            if let Some(slot) = spool.as_deref_mut() {
-                if let Some(file) = slot.as_mut() {
-                    let written = tokio::time::timeout_at(
-                        spool_cutoff.into(),
-                        tokio::io::AsyncWriteExt::write_all(file, &logical),
-                    )
-                    .await;
-                    if !matches!(written, Ok(Ok(()))) {
-                        *slot = None;
-                    }
+            if let Some(slot) = spool.as_deref_mut()
+                && let Some(file) = slot.as_mut()
+            {
+                let written = tokio::time::timeout_at(
+                    spool_cutoff.into(),
+                    tokio::io::AsyncWriteExt::write_all(file, &logical),
+                )
+                .await;
+                if !matches!(written, Ok(Ok(()))) {
+                    *slot = None;
                 }
             }
             if let Some(small) = &mut small {
