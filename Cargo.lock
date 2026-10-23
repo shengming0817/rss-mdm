@@ -3399,7 +3399,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-core"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec#a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -3421,7 +3421,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-http-axum"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec#a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3443,7 +3443,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-oidc"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec#a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
 dependencies = [
  "ipnet",
  "jsonwebtoken",
@@ -3464,7 +3464,7 @@ dependencies = [
 [[package]]
 name = "rss-identity-postgres"
 version = "0.1.0"
-source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec#a6c841f2635b2e705cfe3186212cf3cb2c0cd3ec"
+source = "git+https://dev.azure.com/shengming0923/rss/_git/rss-identity?rev=dd3f021e489b4519762df3e91672a3d7ad20ddce#dd3f021e489b4519762df3e91672a3d7ad20ddce"
 dependencies = [
  "futures",
  "rand_core 0.6.4",

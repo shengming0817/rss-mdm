@@ -411,3 +411,44 @@ async fn native_accounts(
     Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=identity.local: password failure policy through product routes"]
+async fn correct_passwords_keep_sessions_usable_and_expose_retry_after() -> Result<()> {
+    let mut fixture = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let router = fixture.router(fixture.authorization())?;
+        let mut browser = Browser::default();
+        for _ in 0..7 {
+            ensure!(browser.login_password(&router, "other", PASSWORD).await? == StatusCode::OK,
+                "correct Cookie password consumed the failure allowance");
+        }
+        let count = || pg(&format!("SELECT count FROM identity_authority.attempts WHERE tenant_id='{}' AND key='s:127.0.0.1'", case_tenant()));
+        let before = count()?;
+        for _ in 0..3 {
+            ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
+        }
+        ensure!(count()? == before, "session reuse performed password authentication");
+        for _ in 0..5 {
+            ensure!(Browser::default().login_password(&router, "other", "incorrect fixture password").await? == StatusCode::UNAUTHORIZED);
+        }
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/api/v1/identity/tenants/{}/login", case_tenant()))
+            .header("host", "mdm.example.test")
+            .header("origin", "https://mdm.example.test")
+            .header("x-identity-request", "1")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&json!({"login":crate::test_support::case::login("other"),"password":PASSWORD}))?))?;
+        let response = tokio::spawn(router.clone().oneshot(request)).await??;
+        ensure!(response.status() == StatusCode::TOO_MANY_REQUESTS);
+        let seconds:u32 = response.headers().get("retry-after").context("Identity Retry-After missing at product ingress")?.to_str()?.parse()?;
+        ensure!((1..=600).contains(&seconds));
+        let body = axum::body::to_bytes(response.into_body(), 4096).await?;
+        ensure!(serde_json::from_slice::<Value>(&body)? == json!({"code":"rate_limited"}));
+        ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK,
+            "password throttling revoked an existing session");
+        Ok(())
+    }).await
+}
