@@ -345,6 +345,43 @@ pub fn encrypt<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn apple_published_concat_kdf_vector() {
+        // Apple AuthenticationServices/creating-a-json-web-encryption-jwe-login-response.
+        let hex = |s: &str| {
+            (0..s.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let epk = PublicKey {
+            kty: "EC".into(),
+            crv: "P-256".into(),
+            x: "BkFHRYQoleq39LplGqlcmsEdnw64w0wbcbHAEjrM4pw".into(),
+            y: "jbOoWZbgDFTEfLa1O_7ZuJy3R8d2XAw0CHWUKmJLsbU".into(),
+        };
+        let device = PublicKey {
+            kty: "EC".into(),
+            crv: "P-256".into(),
+            x: "mcJyr2BqUQHlscaGoWTw_4QNxDUqI1lR11kCRAzLJkk".into(),
+            y: "P_mLtZKoMMC3G8PtRleKzm1c5D0afPZX_61s70Cx75I".into(),
+        };
+        let derived = kdf(
+            &hex("3491708C92422BB807EDF2B8183A42737C5DAA6C39BA9535321D51C836D7ADA1"),
+            &party(b"APPLE", &epk, None).unwrap(),
+            &party(
+                b"Apple",
+                &device,
+                Some("B7F1FC32-9121-4E2A-9E32-8417E03675DD"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            *derived,
+            hex("A146E4A23BDA2E53826C04D2F442BCFBD87BC2719D74B8A7DA00AF976267712E")
+        );
+    }
     fn signer() -> Signer {
         let g = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         let k = PKey::from_ec_key(EcKey::generate(&g).unwrap()).unwrap();

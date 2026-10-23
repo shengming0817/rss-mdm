@@ -162,6 +162,58 @@ pub struct Registration {
 mod tests {
     use super::*;
     #[test]
+    fn profile_uses_the_native_schema_and_preserves_local_login() {
+        use crate::{
+            applicability::{Channel, Context, Enrollment, Version},
+            native::Target,
+        };
+        let config = Configuration {
+            team_id: "ABCDEFGHIJ".into(),
+            extension_id: "com.example.rss.psso".into(),
+            application_id: "com.example.rss".into(),
+            application_version: "1.0".into(),
+            client_id: Uuid::new_v4(),
+        };
+        let profile = config
+            .profile(
+                "https://mdm.example",
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                &"a".repeat(43),
+            )
+            .unwrap();
+        let context = Context {
+            version: Some(Version::parse("26.4").unwrap()),
+            channel: Channel::Device,
+            enrollment: Enrollment::Device,
+            supervised: Some(true),
+            automated_enrollment: Some(false),
+            user_approved: Some(true),
+            apple_silicon: Some(true),
+        };
+        let compiled = profile
+            .compile(&Target {
+                context: &context,
+                access_rights: &[],
+            })
+            .unwrap();
+        let value = plist::Value::from_reader(std::io::Cursor::new(compiled.bytes)).unwrap();
+        let fields = &value.as_dictionary().unwrap()["PayloadContent"]
+            .as_array()
+            .unwrap()[0];
+        let psso = fields.as_dictionary().unwrap()["PlatformSSO"]
+            .as_dictionary()
+            .unwrap();
+        assert_eq!(
+            psso["AuthenticationMethod"].as_string(),
+            Some("UserSecureEnclaveKey")
+        );
+        assert_eq!(psso["UseSharedDeviceKeys"].as_boolean(), Some(true));
+        assert!(!psso.contains_key("EnableCreateUserAtLogin"));
+        assert!(!psso.contains_key("LoginPolicy"));
+    }
+    #[test]
     fn endpoints_are_exact_https_tenant_authorities() {
         let t = Uuid::new_v4();
         assert!(
