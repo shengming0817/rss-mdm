@@ -1332,9 +1332,18 @@ async fn msix_hosted_install_is_frozen_and_provisioning_is_not_agent_activation(
     post(&peer, &reply(&initial, &execution, false)).await?;
     let (initial, query) = begin(&peer, 1101).await?;
     post(&peer, &reply(&initial, &query, true)).await?;
-    let state = client
+    let mut state = client
         .call(Method::GET, &format!("/{operation}"), None)
         .await?;
+    for _ in 0..100 {
+        if state.1["agentInstallation"]["installation"] == "provisioned" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        state = client
+            .call(Method::GET, &format!("/{operation}"), None)
+            .await?;
+    }
     ensure!(
         state.0 == StatusCode::OK && state.1["agentInstallation"]["installation"] == "provisioned",
         "{state:?}"

@@ -529,7 +529,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "make t2 MODULE=execution.commands.configuration"]
 async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_has_no_effects()
 -> anyhow::Result<()> {
