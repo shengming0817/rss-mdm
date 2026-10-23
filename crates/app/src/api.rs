@@ -754,7 +754,7 @@ pub(crate) fn from_state(
         tenant: state.identity.tenant.to_string(),
     };
     let authentication = rss_mdm_management_http::authentication_routes(
-        Router::identity(authentication),
+        Router::from_identity_router(authentication),
         management_boundary.clone(),
     );
     let directory = crate::settings::Directory {
@@ -993,7 +993,7 @@ pub(crate) fn from_state(
             crate::native::ChannelKind::Agent,
             crate::native::ChannelRouter {
                 origins: pki.origins.clone(),
-                router: router.into_axum(),
+                router: router.into_checked_axum(contracts::AGENT_LISTENER),
                 admission: crate::native::admission::Admission::new(
                     monotonic.clone(),
                     state.requests.clone(),

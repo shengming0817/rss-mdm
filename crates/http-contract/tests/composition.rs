@@ -65,3 +65,49 @@ fn duplicate_unexpected_and_stale_exemptions_are_rejected() {
             .any(|v| matches!(v, Violation::StaleGap(..)))
     );
 }
+
+#[test]
+fn native_listener_cannot_drop_a_registered_subtree() {
+    use rss_mdm_http_contract::catalog::{
+        APPLE_LISTENER, DOWNLOAD_APPLE_CHANNEL, PROTOCOL_APPLE_CHANNEL,
+    };
+    let protocol = Router::<()>::new().route(
+        "/mdm",
+        rss_mdm_http_contract::routing::put(|| async {})
+            .owned(&PROTOCOL_APPLE_CHANNEL, &[Operation::Action]),
+    );
+    let download = Router::<()>::new().route(
+        "/assets/{id}",
+        get(|| async {}).owned(&DOWNLOAD_APPLE_CHANNEL, &[Operation::Action]),
+    );
+    assert!(
+        validate(protocol.endpoints(), APPLE_LISTENER, &[])
+            .contains(&Violation::Orphan("download_apple_channel".into()))
+    );
+    let mounted = protocol.merge(download);
+    assert!(validate(mounted.endpoints(), APPLE_LISTENER, &[]).is_empty());
+    let _ = mounted.into_checked_axum(APPLE_LISTENER);
+}
+
+#[test]
+fn changing_migration_status_cannot_replace_missing_query_description() {
+    use rss_mdm_http_contract::{QueryPolicy, collections};
+    let mut departments = rss_mdm_http_contract::catalog::AUTHORIZATION_DEPARTMENTS;
+    assert!(collections::valid(&departments, &[]));
+    departments.query = QueryPolicy::FixedWindow;
+    assert!(
+        !collections::valid(&departments, &[]),
+        "unbounded snapshot was relabeled as a bounded window"
+    );
+    departments.collection = None;
+    assert!(
+        !collections::valid(&departments, &[]),
+        "window has no budget/order/fields"
+    );
+    let mut resource = RESOURCE;
+    resource.id = "new-resource";
+    assert!(
+        !collections::valid(&resource, &[]),
+        "another resource borrowed the Resource field contract"
+    );
+}

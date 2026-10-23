@@ -24,29 +24,26 @@ impl ResourceCatalog {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
-        let binding = q
-            .binding(
-                proof.tenant_id(),
-                proof.instance_id(),
-                &proof.authorization()?.query_binding(proof)?,
-            )
-            .map_err(query_error)?;
-        let after: Option<Position> = q
-            .cursor()
-            .map(|token| self.directory_cursor.decode(token, &binding))
-            .transpose()
-            .map_err(query_error)?;
-        if let Some(position) = &after {
-            q.validate_position(position).map_err(query_error)?;
-        }
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            (self, proof, q, audit, &after, &binding),
+            (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, audit, after, binding) = *ctx;
-                    p.manage(Permission::ResourceRead)?;
+                    let (s, p, q, audit) = *ctx;
+                    let current = crate::action_admission::current(tx, p).await?;
+                    current.require(p, Permission::ResourceRead, None)?;
+                    let binding = q
+                        .binding(p.tenant_id(), p.instance_id(), &current.query_binding(p)?)
+                        .map_err(query_error)?;
+                    let after: Option<Position> = q
+                        .cursor()
+                        .map(|token| s.directory_cursor.decode(token, &binding))
+                        .transpose()
+                        .map_err(query_error)?;
+                    if let Some(position) = &after {
+                        q.validate_position(position).map_err(query_error)?;
+                    }
                     let mut items =
                         checked_input(s.resources.directory_in(tx, q, after.as_ref()).await?)?;
                     let more = items.len() > q.limit();
@@ -56,7 +53,7 @@ impl ResourceCatalog {
                             .last()
                             .map(|row| {
                                 s.directory_cursor
-                                    .encode(binding, &q.position(row))
+                                    .encode(&binding, &q.position(row))
                                     .map(|token| token.as_str().to_owned())
                             })
                             .transpose()

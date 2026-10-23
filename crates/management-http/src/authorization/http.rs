@@ -33,7 +33,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/authorization/user-groups/{id}/members",
-            get(members).owned(&contracts::USER_GROUPS, &[RouteOperation::Action]),
+            get(members).owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List]),
         )
         .route(
             "/authorization/departments",

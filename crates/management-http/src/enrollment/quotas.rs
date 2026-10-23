@@ -57,7 +57,7 @@ pub fn routes() -> Router<App> {
         .route(
             "/self-enrollments",
             get(options)
-                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::List])
+                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Get])
                 .post(create_self)
                 .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Create]),
         )

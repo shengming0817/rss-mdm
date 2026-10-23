@@ -47,8 +47,17 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
     pub fn into_axum(self) -> axum::Router<S> {
         self.inner
     }
+    /// Validate an independently declared listener inventory before erasing its descriptors.
+    pub fn into_checked_axum(self, expected: &[&crate::Resource]) -> axum::Router<S> {
+        let violations = crate::validate(&self.endpoints, expected, crate::catalog::GAPS);
+        assert!(
+            violations.is_empty(),
+            "invalid listener route assembly: {violations:?}"
+        );
+        self.inner
+    }
     /// External Identity owns its own contract and router. No product route is admitted here.
-    pub fn identity(router: axum::Router<S>) -> Self {
+    pub fn from_identity_router(router: axum::Router<S>) -> Self {
         Self {
             inner: router,
             endpoints: Vec::new(),

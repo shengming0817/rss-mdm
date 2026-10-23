@@ -2185,5 +2185,14 @@ consume(('crates/http-contract/src/*',),
                  if module.build == APP and 'identity' in module.fixtures)
         + ' api.diagnostics host.lifecycle')
 T1_INPUTS += ('crates/query/tests/*', 'crates/http-contract/tests/*',
-              'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs')
+              'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs', 'crates/management-http/examples/management_capabilities.rs')
 consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.agent.history')
+
+
+if __name__ == '__main__':
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description='Read canonical T2 registration identities')
+    parser.add_argument('--module-ids', action='store_true', required=True)
+    parser.parse_args()
+    print(json.dumps(sorted(MODULES)))

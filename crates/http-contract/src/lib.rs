@@ -1,5 +1,6 @@
 //! Product route ownership. Axum remains the only dispatcher and middleware implementation.
 pub mod catalog;
+pub mod collections;
 mod router;
 pub mod routing;
 pub use router::Router;
@@ -52,12 +53,14 @@ pub struct Resource {
     pub owner: &'static str,
     pub proof: &'static str,
     pub query: QueryPolicy,
+    pub collection: Option<&'static collections::Description>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum QueryPolicy {
     ResourceV1,
     Pending(u32),
     FixedWindow,
+    SourceCatalog,
     Protocol,
     NotCollection,
 }
@@ -72,10 +75,12 @@ pub struct Endpoint {
 pub enum Violation {
     Missing(String, Operation),
     Duplicate(String, String),
+    DuplicateResource(String),
     Orphan(String),
     Unknown(String),
     StaleGap(String, Operation),
     MissingQuery(String),
+    InvalidQueryDescription(String),
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct Gap {
@@ -88,6 +93,12 @@ pub struct Gap {
 /// its descriptor cannot erase its resource's required operation.
 pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) -> Vec<Violation> {
     let mut violations = Vec::new();
+    let mut resources = BTreeSet::new();
+    for resource in expected {
+        if !resources.insert(resource.id) {
+            violations.push(Violation::DuplicateResource(resource.id.into()));
+        }
+    }
     let mut paths = BTreeSet::new();
     let mut observed: BTreeMap<&str, BTreeSet<Operation>> = BTreeMap::new();
     for endpoint in endpoints {
@@ -106,6 +117,9 @@ pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) ->
             .extend(endpoint.operations);
     }
     for resource in expected {
+        if !collections::valid(resource, gaps) {
+            violations.push(Violation::InvalidQueryDescription(resource.id.into()));
+        }
         if resource.category.required().contains(&Operation::List)
             && resource.query == QueryPolicy::NotCollection
         {

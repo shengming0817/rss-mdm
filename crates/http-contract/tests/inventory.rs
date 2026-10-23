@@ -95,8 +95,7 @@ impl<'ast> Visit<'ast> for Inventory {
             if p.path
                 .segments
                 .last()
-                .is_some_and(|s| s.ident == "identity")
-                && p.path.segments.iter().any(|s| s.ident == "Router")
+                .is_some_and(|s| s.ident == "from_identity_router")
             {
                 assert_eq!(
                     self.file, "crates/app/src/api.rs",
@@ -198,15 +197,26 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
         violations.is_empty(),
         "resource inventory violations: {violations:?}"
     );
-    let registry = std::fs::read_to_string(root().join("hack/t2_registry.py")).unwrap();
+    let output = std::process::Command::new("python3")
+        .args(["hack/t2_registry.py", "--module-ids"])
+        .current_dir(root())
+        .output()
+        .expect("read canonical T2 modules");
+    assert!(output.status.success(), "T2 registry failed");
+    let modules: std::collections::BTreeSet<String> =
+        serde_json::from_slice(&output.stdout).unwrap();
     for resource in catalog::ALL {
         assert!(
-            !resource.proof.is_empty() && registry.contains(resource.proof),
+            modules.contains(resource.proof),
             "{} has no existing T2 owner {}",
             resource.id,
             resource.proof
         );
     }
+    assert!(
+        !modules.contains("planning"),
+        "a source substring must not count as a proof owner"
+    );
 }
 #[test]
 fn bare_registration_is_rejected() {

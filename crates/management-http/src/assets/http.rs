@@ -74,7 +74,7 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/device-queries/{id}/items",
-            get(query_items).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Action]),
+            get(query_items).owned(&contracts::ASSET_RESULTS, &[RouteOperation::List]),
         )
         .route(
             "/device-queries/{id}/facets/{facet}",

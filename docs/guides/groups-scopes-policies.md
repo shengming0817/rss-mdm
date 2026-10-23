@@ -22,6 +22,11 @@ Resource 缺省按 ID 升序；显式排序缺少唯一键时追加 ID 升序，
 末页返回 null；签名或查询／主体／授权上下文失效返回 409 `resource_cursor_invalidated`，应从首页重查；
 当前权限不满足仍返回 403。游标不是权限证明，也不要求客户端解析。
 每页读取当前状态，数据不变时不重不漏；跨页修改排序值或集合内容可能使结果移动，不提供快照一致性。
+管理能力声明位于 [资源目录](../../crates/http-contract/src/catalog.rs)和[现有集合描述](../../crates/http-contract/src/collections.rs)。
+运行 `python3 hack/build_run.py -- cargo run --locked -p rss-mdm-management-http --example management_capabilities`
+可读取类别、当前分页／排序／字段与迁移缺口。声明明确区分完整集合、变化事件流、异步结果页和当前选项；
+`Pending` 表示已有执行路径仍待迁移，缺少排序、无分页或无续页标记都不算标准查询已完成。
+
 旧 Resource 查询参数直接退出；前端消费迁移由 #2901 承接，完成前不能将新后端与旧前端作为已完成组合发布。
 
 Policy 默认不列出 archived；指定 `state=archived` 查询历史对象。目录每页读取当前一致视图，不冻结跨页业务状态。

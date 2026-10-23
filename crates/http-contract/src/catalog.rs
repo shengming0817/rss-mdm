@@ -6,6 +6,7 @@ pub static ADE_CONFIGURATION: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.ade",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static ADE_DEVICES: Resource = Resource {
     id: "ade_devices",
@@ -13,6 +14,7 @@ pub static ADE_DEVICES: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.ade",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::ADE_DEVICES),
 };
 pub static ADE_PROFILES: Resource = Resource {
     id: "ade_profiles",
@@ -20,6 +22,7 @@ pub static ADE_PROFILES: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.ade",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::ADE_PROFILES),
 };
 pub static AGENT_CONFIGURATIONS: Resource = Resource {
     id: "agent_configurations",
@@ -27,6 +30,7 @@ pub static AGENT_CONFIGURATIONS: Resource = Resource {
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::AGENT_CONFIGURATIONS),
 };
 pub static AGENT_CONFIGURATION_OPERATIONS: Resource = Resource {
     id: "agent_configuration_operations",
@@ -34,6 +38,7 @@ pub static AGENT_CONFIGURATION_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_CONNECTIONS: Resource = Resource {
     id: "agent_connections",
@@ -41,6 +46,7 @@ pub static AGENT_CONNECTIONS: Resource = Resource {
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_CONNECTION_OPERATIONS: Resource = Resource {
     id: "agent_connection_operations",
@@ -48,6 +54,7 @@ pub static AGENT_CONNECTION_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_ENROLLMENT_SETTINGS: Resource = Resource {
     id: "agent_enrollment_settings",
@@ -55,6 +62,7 @@ pub static AGENT_ENROLLMENT_SETTINGS: Resource = Resource {
     owner: "management-http",
     proof: "agent.configurations",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_ISSUANCE_RECOVERY: Resource = Resource {
     id: "agent_issuance_recovery",
@@ -62,6 +70,7 @@ pub static AGENT_ISSUANCE_RECOVERY: Resource = Resource {
     owner: "management-http",
     proof: "agent.registration",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_PACKAGES: Resource = Resource {
     id: "agent_packages",
@@ -69,6 +78,7 @@ pub static AGENT_PACKAGES: Resource = Resource {
     owner: "management-http",
     proof: "software.catalog",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::AGENT_PACKAGES),
 };
 pub static AGENT_REGISTRATION_RECOVERY: Resource = Resource {
     id: "agent_registration_recovery",
@@ -76,6 +86,7 @@ pub static AGENT_REGISTRATION_RECOVERY: Resource = Resource {
     owner: "management-http",
     proof: "agent.registration",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AGENT_REQUEST_COMMANDS: Resource = Resource {
     id: "agent_request_commands",
@@ -83,6 +94,7 @@ pub static AGENT_REQUEST_COMMANDS: Resource = Resource {
     owner: "management-http",
     proof: "agent.registration",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static API_KEYS: Resource = Resource {
     id: "api_keys",
@@ -90,6 +102,7 @@ pub static API_KEYS: Resource = Resource {
     owner: "management-http",
     proof: "authorization.programmatic",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::API_KEYS),
 };
 pub static API_NETWORK_POLICY: Resource = Resource {
     id: "api_network_policy",
@@ -97,6 +110,7 @@ pub static API_NETWORK_POLICY: Resource = Resource {
     owner: "management-http",
     proof: "authorization.programmatic",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static APPLE_ACCOUNT_CONFIGURATION: Resource = Resource {
     id: "apple_account_configuration",
@@ -104,6 +118,7 @@ pub static APPLE_ACCOUNT_CONFIGURATION: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.account_enrollment",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static APPLE_MATERIALS: Resource = Resource {
     id: "apple_materials",
@@ -111,6 +126,7 @@ pub static APPLE_MATERIALS: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.host",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static APPLE_MATERIAL_OPERATIONS: Resource = Resource {
     id: "apple_material_operations",
@@ -118,6 +134,7 @@ pub static APPLE_MATERIAL_OPERATIONS: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.host",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static APPLE_ORGANIZATIONS: Resource = Resource {
     id: "apple_organizations",
@@ -125,6 +142,7 @@ pub static APPLE_ORGANIZATIONS: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.account_enrollment",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::APPLE_ORGANIZATIONS),
 };
 pub static ASSET_FIELDS: Resource = Resource {
     id: "asset_fields",
@@ -132,6 +150,7 @@ pub static ASSET_FIELDS: Resource = Resource {
     owner: "management-http",
     proof: "assets.http",
     query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::ASSET_FIELDS),
 };
 pub static ASSET_LAYOUT: Resource = Resource {
     id: "asset_layout",
@@ -139,6 +158,7 @@ pub static ASSET_LAYOUT: Resource = Resource {
     owner: "management-http",
     proof: "assets.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static ASSET_QUERIES: Resource = Resource {
     id: "asset_queries",
@@ -146,6 +166,7 @@ pub static ASSET_QUERIES: Resource = Resource {
     owner: "management-http",
     proof: "assets.queries",
     query: QueryPolicy::Pending(2904),
+    collection: None,
 };
 pub static ASSET_RETENTION: Resource = Resource {
     id: "asset_retention",
@@ -153,6 +174,7 @@ pub static ASSET_RETENTION: Resource = Resource {
     owner: "management-http",
     proof: "assets.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AUDIT: Resource = Resource {
     id: "audit",
@@ -160,13 +182,15 @@ pub static AUDIT: Resource = Resource {
     owner: "management-http",
     proof: "timeline.http",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::AUDIT),
 };
 pub static AUTHORIZATION_DEPARTMENTS: Resource = Resource {
     id: "authorization_departments",
     category: Category::Facts,
     owner: "management-http",
     proof: "authorization.membership",
-    query: QueryPolicy::FixedWindow,
+    query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::AUTHORIZATION_DEPARTMENTS),
 };
 pub static AUTHORIZATION_RULES: Resource = Resource {
     id: "authorization_rules",
@@ -174,13 +198,15 @@ pub static AUTHORIZATION_RULES: Resource = Resource {
     owner: "management-http",
     proof: "authorization.rules",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::AUTHORIZATION_RULES),
 };
 pub static BLUEPRINTS: Resource = Resource {
     id: "blueprints",
     category: Category::Facts,
     owner: "management-http",
     proof: "planning.http",
-    query: QueryPolicy::FixedWindow,
+    query: QueryPolicy::SourceCatalog,
+    collection: Some(&super::collections::BLUEPRINTS),
 };
 pub static CERTIFICATES: Resource = Resource {
     id: "certificates",
@@ -188,6 +214,7 @@ pub static CERTIFICATES: Resource = Resource {
     owner: "management-http",
     proof: "certificate-archive.http",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::CERTIFICATES),
 };
 pub static CERTIFICATE_OPERATIONS: Resource = Resource {
     id: "certificate_operations",
@@ -195,6 +222,7 @@ pub static CERTIFICATE_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "certificate-archive.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static CERTIFICATE_SETTINGS: Resource = Resource {
     id: "certificate_settings",
@@ -202,6 +230,7 @@ pub static CERTIFICATE_SETTINGS: Resource = Resource {
     owner: "management-http",
     proof: "certificate-archive.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static CERTIFICATE_VAULT: Resource = Resource {
     id: "certificate_vault",
@@ -209,6 +238,7 @@ pub static CERTIFICATE_VAULT: Resource = Resource {
     owner: "management-http",
     proof: "certificate-archive.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static COMPLIANCE_RULES: Resource = Resource {
     id: "compliance_rules",
@@ -216,6 +246,7 @@ pub static COMPLIANCE_RULES: Resource = Resource {
     owner: "management-http",
     proof: "compliance.http",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::COMPLIANCE_RULES),
 };
 pub static CONTENT_MAINTENANCE: Resource = Resource {
     id: "content_maintenance",
@@ -223,6 +254,7 @@ pub static CONTENT_MAINTENANCE: Resource = Resource {
     owner: "management-http",
     proof: "content.gc",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static DEVICES: Resource = Resource {
     id: "devices",
@@ -230,6 +262,7 @@ pub static DEVICES: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.http",
     query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::DEVICES),
 };
 pub static DEVICE_ASSOCIATIONS: Resource = Resource {
     id: "device_associations",
@@ -237,6 +270,7 @@ pub static DEVICE_ASSOCIATIONS: Resource = Resource {
     owner: "management-http",
     proof: "device.views",
     query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::DEVICE_ASSOCIATIONS),
 };
 pub static DEVICE_RETIREMENTS: Resource = Resource {
     id: "device_retirements",
@@ -244,6 +278,7 @@ pub static DEVICE_RETIREMENTS: Resource = Resource {
     owner: "management-http",
     proof: "device.revocation",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static DEVICE_VIEWS: Resource = Resource {
     id: "device_views",
@@ -251,6 +286,7 @@ pub static DEVICE_VIEWS: Resource = Resource {
     owner: "management-http",
     proof: "device.views",
     query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::DEVICE_VIEWS),
 };
 pub static DIAGNOSTICS: Resource = Resource {
     id: "diagnostics",
@@ -258,6 +294,7 @@ pub static DIAGNOSTICS: Resource = Resource {
     owner: "management-http",
     proof: "diagnostics.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static DOWNLOAD_AGENT_CHANNEL: Resource = Resource {
     id: "download_agent_channel",
@@ -265,6 +302,7 @@ pub static DOWNLOAD_AGENT_CHANNEL: Resource = Resource {
     owner: "agent-channel",
     proof: "agent.registration",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static DOWNLOAD_APPLE_CHANNEL: Resource = Resource {
     id: "download_apple_channel",
@@ -272,6 +310,7 @@ pub static DOWNLOAD_APPLE_CHANNEL: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.host",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static DOWNLOAD_MANAGEMENT_HTTP: Resource = Resource {
     id: "download_management_http",
@@ -279,6 +318,7 @@ pub static DOWNLOAD_MANAGEMENT_HTTP: Resource = Resource {
     owner: "management-http",
     proof: "software.http",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static EFFECTIVE_AUTHORITY: Resource = Resource {
     id: "effective_authority",
@@ -286,6 +326,7 @@ pub static EFFECTIVE_AUTHORITY: Resource = Resource {
     owner: "management-http",
     proof: "authorization.rules",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static ENROLLMENT_ATTEMPTS: Resource = Resource {
     id: "enrollment_attempts",
@@ -293,6 +334,7 @@ pub static ENROLLMENT_ATTEMPTS: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static ENTRA_POLICY: Resource = Resource {
     id: "entra_policy",
@@ -300,6 +342,7 @@ pub static ENTRA_POLICY: Resource = Resource {
     owner: "management-http",
     proof: "windows.entra",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static EXECUTIONS: Resource = Resource {
     id: "executions",
@@ -307,6 +350,7 @@ pub static EXECUTIONS: Resource = Resource {
     owner: "management-http",
     proof: "execution.agent.history",
     query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::EXECUTIONS),
 };
 pub static FIRST_USE: Resource = Resource {
     id: "first_use",
@@ -314,6 +358,7 @@ pub static FIRST_USE: Resource = Resource {
     owner: "management-http",
     proof: "settings.first_use",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static GROUPS: Resource = Resource {
     id: "groups",
@@ -321,6 +366,7 @@ pub static GROUPS: Resource = Resource {
     owner: "management-http",
     proof: "planning.http",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::GROUPS),
 };
 pub static HEALTH: Resource = Resource {
     id: "health",
@@ -328,6 +374,7 @@ pub static HEALTH: Resource = Resource {
     owner: "app",
     proof: "api.diagnostics",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static IDENTITY_CONTEXT: Resource = Resource {
     id: "identity_context",
@@ -335,6 +382,7 @@ pub static IDENTITY_CONTEXT: Resource = Resource {
     owner: "management-http",
     proof: "api.identity_context",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static PKI_OPERATIONS: Resource = Resource {
     id: "pki_operations",
@@ -342,6 +390,7 @@ pub static PKI_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "agent.pki",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static POLICIES: Resource = Resource {
     id: "policies",
@@ -349,6 +398,7 @@ pub static POLICIES: Resource = Resource {
     owner: "management-http",
     proof: "planning.http",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::POLICIES),
 };
 pub static PROTOCOL_AGENT_CHANNEL: Resource = Resource {
     id: "protocol_agent_channel",
@@ -356,6 +406,7 @@ pub static PROTOCOL_AGENT_CHANNEL: Resource = Resource {
     owner: "agent-channel",
     proof: "agent.registration",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static PROTOCOL_APPLE_CHANNEL: Resource = Resource {
     id: "protocol_apple_channel",
@@ -363,6 +414,7 @@ pub static PROTOCOL_APPLE_CHANNEL: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.host",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static PROTOCOL_MANAGEMENT_HTTP: Resource = Resource {
     id: "protocol_management_http",
@@ -370,6 +422,7 @@ pub static PROTOCOL_MANAGEMENT_HTTP: Resource = Resource {
     owner: "management-http",
     proof: "software.http",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static PROTOCOL_WINDOWS_CHANNEL: Resource = Resource {
     id: "protocol_windows_channel",
@@ -377,13 +430,15 @@ pub static PROTOCOL_WINDOWS_CHANNEL: Resource = Resource {
     owner: "windows-channel",
     proof: "windows.enrollment",
     query: QueryPolicy::Protocol,
+    collection: None,
 };
 pub static PROVISIONINGS: Resource = Resource {
     id: "provisionings",
-    category: Category::Facts,
+    category: Category::Projection,
     owner: "app",
     proof: "installation.tenants",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::PROVISIONINGS),
 };
 pub static PUBLICATIONS: Resource = Resource {
     id: "publications",
@@ -391,13 +446,15 @@ pub static PUBLICATIONS: Resource = Resource {
     owner: "management-http",
     proof: "software.http",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::PUBLICATIONS),
 };
 pub static PUBLICATION_TARGETS: Resource = Resource {
     id: "publication_targets",
     category: Category::Facts,
     owner: "management-http",
     proof: "software.http",
-    query: QueryPolicy::FixedWindow,
+    query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::PUBLICATION_TARGETS),
 };
 pub static REGISTRATION_CHANNELS: Resource = Resource {
     id: "registration_channels",
@@ -405,6 +462,7 @@ pub static REGISTRATION_CHANNELS: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static REGISTRATION_DEFAULT_QUOTA: Resource = Resource {
     id: "registration_default_quota",
@@ -412,6 +470,7 @@ pub static REGISTRATION_DEFAULT_QUOTA: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.quotas",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static REGISTRATION_QUOTA_USAGE: Resource = Resource {
     id: "registration_quota_usage",
@@ -419,6 +478,7 @@ pub static REGISTRATION_QUOTA_USAGE: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.quotas",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static REGISTRATION_USER_QUOTA: Resource = Resource {
     id: "registration_user_quota",
@@ -426,6 +486,7 @@ pub static REGISTRATION_USER_QUOTA: Resource = Resource {
     owner: "management-http",
     proof: "enrollment.quotas",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static RESOURCE: Resource = Resource {
     id: "resource",
@@ -433,6 +494,7 @@ pub static RESOURCE: Resource = Resource {
     owner: "management-http",
     proof: "planning.http",
     query: QueryPolicy::ResourceV1,
+    collection: Some(&super::collections::RESOURCE),
 };
 pub static SAVED_QUERIES: Resource = Resource {
     id: "saved_queries",
@@ -440,6 +502,7 @@ pub static SAVED_QUERIES: Resource = Resource {
     owner: "management-http",
     proof: "assets.queries",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::SAVED_QUERIES),
 };
 pub static SCOPES: Resource = Resource {
     id: "scopes",
@@ -447,13 +510,15 @@ pub static SCOPES: Resource = Resource {
     owner: "management-http",
     proof: "planning.http",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::SCOPES),
 };
 pub static SELF_ENROLLMENTS: Resource = Resource {
     id: "self_enrollments",
-    category: Category::Facts,
+    category: Category::ReadModel,
     owner: "management-http",
     proof: "enrollment.quotas",
-    query: QueryPolicy::FixedWindow,
+    query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static SETTINGS_CATALOG: Resource = Resource {
     id: "settings_catalog",
@@ -461,6 +526,7 @@ pub static SETTINGS_CATALOG: Resource = Resource {
     owner: "management-http",
     proof: "settings.first_use",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static SMTP: Resource = Resource {
     id: "smtp",
@@ -468,6 +534,7 @@ pub static SMTP: Resource = Resource {
     owner: "management-http",
     proof: "installation.smtp",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static SOFTWARE_SOURCES: Resource = Resource {
     id: "software_sources",
@@ -475,6 +542,7 @@ pub static SOFTWARE_SOURCES: Resource = Resource {
     owner: "management-http",
     proof: "software.catalog",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::SOFTWARE_SOURCES),
 };
 pub static SOFTWARE_VERSIONS: Resource = Resource {
     id: "software_versions",
@@ -482,6 +550,7 @@ pub static SOFTWARE_VERSIONS: Resource = Resource {
     owner: "management-http",
     proof: "software.catalog",
     query: QueryPolicy::Pending(2902),
+    collection: Some(&super::collections::SOFTWARE_VERSIONS),
 };
 pub static STORAGE_CONNECTIONS: Resource = Resource {
     id: "storage_connections",
@@ -489,6 +558,7 @@ pub static STORAGE_CONNECTIONS: Resource = Resource {
     owner: "management-http",
     proof: "installation.storage_reconcile",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static TASK_TRUST: Resource = Resource {
     id: "task_trust",
@@ -496,6 +566,7 @@ pub static TASK_TRUST: Resource = Resource {
     owner: "management-http",
     proof: "execution.agent.task_trust",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static TASK_TRUST_OPERATIONS: Resource = Resource {
     id: "task_trust_operations",
@@ -503,6 +574,7 @@ pub static TASK_TRUST_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "execution.agent.task_trust",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static TELEMETRY_QUERIES: Resource = Resource {
     id: "telemetry_queries",
@@ -510,6 +582,7 @@ pub static TELEMETRY_QUERIES: Resource = Resource {
     owner: "management-http",
     proof: "telemetry.storage",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static TENANTS: Resource = Resource {
     id: "tenants",
@@ -517,6 +590,7 @@ pub static TENANTS: Resource = Resource {
     owner: "app",
     proof: "installation.tenants",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::TENANTS),
 };
 pub static USER_ATTRIBUTES: Resource = Resource {
     id: "user_attributes",
@@ -524,6 +598,7 @@ pub static USER_ATTRIBUTES: Resource = Resource {
     owner: "management-http",
     proof: "settings.user_profiles",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::USER_ATTRIBUTES),
 };
 pub static USER_ATTRIBUTE_OPERATIONS: Resource = Resource {
     id: "user_attribute_operations",
@@ -531,6 +606,7 @@ pub static USER_ATTRIBUTE_OPERATIONS: Resource = Resource {
     owner: "management-http",
     proof: "settings.user_profiles",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static USER_GROUPS: Resource = Resource {
     id: "user_groups",
@@ -538,6 +614,7 @@ pub static USER_GROUPS: Resource = Resource {
     owner: "management-http",
     proof: "authorization.rules",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::USER_GROUPS),
 };
 pub static USER_PROFILES: Resource = Resource {
     id: "user_profiles",
@@ -545,13 +622,15 @@ pub static USER_PROFILES: Resource = Resource {
     owner: "management-http",
     proof: "settings.user_profiles",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static WEBHOOK_DELIVERIES: Resource = Resource {
     id: "webhook_deliveries",
-    category: Category::Facts,
+    category: Category::Projection,
     owner: "management-http",
     proof: "webhooks.product",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::WEBHOOK_DELIVERIES),
 };
 pub static WEBHOOK_HEALTH: Resource = Resource {
     id: "webhook_health",
@@ -559,6 +638,7 @@ pub static WEBHOOK_HEALTH: Resource = Resource {
     owner: "management-http",
     proof: "webhooks.product",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static WEBHOOK_MATERIALS: Resource = Resource {
     id: "webhook_materials",
@@ -566,6 +646,7 @@ pub static WEBHOOK_MATERIALS: Resource = Resource {
     owner: "management-http",
     proof: "webhooks.product",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static WEBHOOK_SUBSCRIPTIONS: Resource = Resource {
     id: "webhook_subscriptions",
@@ -573,13 +654,15 @@ pub static WEBHOOK_SUBSCRIPTIONS: Resource = Resource {
     owner: "management-http",
     proof: "webhooks.product",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::WEBHOOK_SUBSCRIPTIONS),
 };
 pub static WEBHOOK_TYPES: Resource = Resource {
     id: "webhook_types",
     category: Category::Facts,
     owner: "management-http",
     proof: "webhooks.product",
-    query: QueryPolicy::FixedWindow,
+    query: QueryPolicy::SourceCatalog,
+    collection: Some(&super::collections::WEBHOOK_TYPES),
 };
 pub static WNS: Resource = Resource {
     id: "wns",
@@ -587,6 +670,7 @@ pub static WNS: Resource = Resource {
     owner: "windows-channel",
     proof: "windows.push_transport",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static WORKSPACE: Resource = Resource {
     id: "workspace",
@@ -594,8 +678,12 @@ pub static WORKSPACE: Resource = Resource {
     owner: "management-http",
     proof: "planning.http",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static ALL: &[&Resource] = &[
+    &ASSOCIATION_CHANGES,
+    &USER_GROUP_MEMBERS,
+    &ASSET_RESULTS,
     &DEVICE_ACCESS,
     &RECOVERY_CREDENTIALS,
     &DEVICE_TIMELINE,
@@ -692,6 +780,12 @@ pub static ALL: &[&Resource] = &[
 /// A satisfied entry is an error: migration never retains a stale exemption.
 pub static GAPS: &[crate::Gap] = &[
     crate::Gap {
+        resource: "device_associations",
+        operation: crate::Operation::List,
+        issue: 2904,
+        reason: "changes is an audit feed, not the current association directory",
+    },
+    crate::Gap {
         resource: "device_access",
         operation: crate::Operation::Get,
         issue: 2906,
@@ -778,6 +872,7 @@ pub static DEVICE_ACCESS: Resource = Resource {
     owner: "management-http",
     proof: "device-access.http",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::DEVICE_ACCESS),
 };
 
 pub static RECOVERY_CREDENTIALS: Resource = Resource {
@@ -786,6 +881,7 @@ pub static RECOVERY_CREDENTIALS: Resource = Resource {
     owner: "management-http",
     proof: "recovery-credentials.http",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::RECOVERY_CREDENTIALS),
 };
 
 pub static DEVICE_TIMELINE: Resource = Resource {
@@ -794,6 +890,7 @@ pub static DEVICE_TIMELINE: Resource = Resource {
     owner: "management-http",
     proof: "timeline.http",
     query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::DEVICE_TIMELINE),
 };
 
 pub static PLATFORM_SSO_CONFIGURATION: Resource = Resource {
@@ -802,6 +899,7 @@ pub static PLATFORM_SSO_CONFIGURATION: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.platform_sso",
     query: QueryPolicy::NotCollection,
+    collection: None,
 };
 
 pub static APPLE_ACCOUNT_BINDINGS: Resource = Resource {
@@ -810,4 +908,43 @@ pub static APPLE_ACCOUNT_BINDINGS: Resource = Resource {
     owner: "apple-channel",
     proof: "apple.account_enrollment",
     query: QueryPolicy::Pending(2906),
+    collection: None,
+};
+
+/// Native listeners have independent expectations, even when the browser exposes no such routes.
+pub const WINDOWS_LISTENER: &[&Resource] = &[&PROTOCOL_WINDOWS_CHANNEL];
+pub const APPLE_LISTENER: &[&Resource] = &[&PROTOCOL_APPLE_CHANNEL, &DOWNLOAD_APPLE_CHANNEL];
+pub const AGENT_LISTENER: &[&Resource] = &[
+    &PROTOCOL_AGENT_CHANNEL,
+    &DOWNLOAD_AGENT_CHANNEL,
+    &PROTOCOL_APPLE_CHANNEL,
+    &PROTOCOL_MANAGEMENT_HTTP,
+    &DOWNLOAD_MANAGEMENT_HTTP,
+];
+
+pub static ASSOCIATION_CHANGES: Resource = Resource {
+    id: "association_changes",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "device.associations",
+    query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::ASSOCIATION_CHANGES),
+};
+
+pub static USER_GROUP_MEMBERS: Resource = Resource {
+    id: "user_group_members",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "authorization.membership",
+    query: QueryPolicy::Pending(2906),
+    collection: Some(&super::collections::USER_GROUP_MEMBERS),
+};
+
+pub static ASSET_RESULTS: Resource = Resource {
+    id: "asset_results",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "assets.queries",
+    query: QueryPolicy::Pending(2904),
+    collection: Some(&super::collections::ASSET_RESULTS),
 };

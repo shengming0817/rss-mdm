@@ -50,7 +50,7 @@ pub fn routes(
         )
         .route(
             "/device-associations/changes",
-            get(changes).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List]),
+            get(changes).owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List]),
         )
         .route(
             "/device-associations/{id}",

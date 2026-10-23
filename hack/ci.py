@@ -337,6 +337,13 @@ def select_impact(head, base=None):
 
 
 def selected_gate(name, selection):
+    if name == 'route-contract':
+        if selection['cargo']['mode'] == 'all' or 'rss-mdm-http-contract' in selection['cargo']['packages']:
+            return False  # the ordinary T1 gate already runs these exact checks
+        prefixes = tuple('crates/' + owner + '/src/' for owner in
+                         ('management-http', 'apple-channel', 'windows-channel', 'agent-channel', 'app'))
+        return any(reason['input'].startswith(prefixes) or reason['input'] == 'hack/t2_registry.py'
+                   for reason in selection['reasons'])
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
     policy_inputs = {r['input'] for r in selection['reasons'] if isinstance(r, dict)}
@@ -406,6 +413,7 @@ def fast_gates():
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("agent-wire-artifact",[sys.executable,"hack/agent_wire_artifact.py"]),
+        ("route-contract",["cargo","test","--locked","-p","rss-mdm-http-contract","--test","inventory","--test","migration"]),
         ("native-schema",["cargo","run","--locked","-p","rss-mdm-native-schema","--","--check"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]
