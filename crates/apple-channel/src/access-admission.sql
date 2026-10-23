@@ -9,11 +9,11 @@ WITH tables AS (
  ('scep_attempts','state'),('scep_attempts','transaction_id'),('scep_attempts','csr_digest'),('scep_attempts','spki'),('scep_attempts','serial'),('scep_attempts','fingerprint'),('scep_attempts','certificate'),('scep_attempts','registration'),('scep_attempts','not_before'),('scep_attempts','not_after'),
  ('devices','state'),('devices','identity_health'),('devices','bootstrap'),('devices','bootstrap_revision'),
  ('channels','state'),('channels','material'),('channels','material_digest'),('channels','token_revision'),('channels','next_push'),('channels','push_id'),('channels','push_lease_until'),('channels','push_status'),('channels','push_outcome'),('channels','push_failures'),
- ('declarations','retired_at'),('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
+ ('declarations','retired_at'),('profiles','verification'),('profiles','verification_evidence'),('profiles','retired_at'),('attempts','native_outcome'),('attempts','accepted'),('attempts','state'),('attempts','response'),('attempts','response_digest'),('attempts','received_at'),('attempts','next_attempt')
 )
 SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
  AND (SELECT array_agg(relname::text ORDER BY relname)=ARRAY['account_bindings','account_configuration','account_flows','ade_devices','ade_enrollments','ade_operations','ade_profiles','ade_servers','ade_sync_devices','attempts','channels','declarations','devices','organizations','profiles','psso_challenges','psso_sources','psso_tokens','scep_attempts','status_reports','trust_deliveries'] FROM tables WHERE relkind='r')
- AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i'))
+ AND NOT EXISTS(SELECT 1 FROM tables WHERE relkind NOT IN ('r','i') AND NOT (relkind='v' AND relname='profile_qualifications' AND reloptions @> ARRAY['security_barrier=true'] AND has_table_privilege(current_user,oid,'SELECT') AND NOT has_table_privilege(current_user,oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')))
  AND NOT EXISTS(SELECT 1 FROM tables t WHERE relkind='r' AND (
   NOT relrowsecurity OR NOT relforcerowsecurity OR relpersistence<>'p' OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR NOT has_table_privilege(current_user,oid,'SELECT')
@@ -29,8 +29,8 @@ SELECT has_schema_privilege(current_user,'mdm_apple','USAGE')
   OR NOT has_column_privilege(current_user,t.oid,a.attnum,'SELECT')
   OR has_column_privilege(current_user,t.oid,a.attnum,'INSERT')<>(t.relname NOT IN('profiles','declarations','status_reports'))
   OR has_column_privilege(current_user,t.oid,a.attnum,'REFERENCES')))
- AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM tables) AND NOT tgisinternal)
- AND NOT EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class IN(SELECT oid FROM tables))
+ AND NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid IN(SELECT oid FROM tables) AND NOT tgisinternal AND NOT(tgname='directory_revision' AND tgfoid='mdm_devices.advance_query_revision()'::regprocedure AND tgtype=29 AND tgenabled='O' AND tgqual IS NULL AND tgrelid IN('mdm_apple.psso_sources'::regclass,'mdm_apple.devices'::regclass,'mdm_apple.profiles'::regclass,'mdm_apple.attempts'::regclass)))
+ AND NOT EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class IN(SELECT oid FROM tables) AND NOT(ev_class='mdm_apple.profile_qualifications'::regclass AND rulename='_RETURN'))
  AND NOT EXISTS(SELECT 1 FROM tables t, LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_apple' AND (a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable))
  AND NOT EXISTS(SELECT 1 FROM tables t JOIN pg_attribute c ON c.attrelid=t.oid,LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) AND a.is_grantable)

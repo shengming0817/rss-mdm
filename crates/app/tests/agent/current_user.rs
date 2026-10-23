@@ -235,7 +235,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let task=tokio::spawn(async move {
                 let timer=rss_mdm_audit_integration::budget::RuntimeTimer;
                 let deadline=rss_request_context::Clock::now(&timer)+Duration::from_secs(15);
-                let people=rss_mdm_device_service::personnel::Reader::new(&directory_identity,deadline,&timer);
+                let people=rss_mdm_device_service::personnel::Reader::new(&directory_identity,deadline,&timer,None);
                 service.views(&proof,&query,&people).await
             });
             let acquired=async {

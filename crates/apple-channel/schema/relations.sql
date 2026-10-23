@@ -14,7 +14,7 @@ ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_device_fkey FOREIGN KEY(t
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_registration_fkey FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id);
 ALTER TABLE mdm_apple.profiles ADD CONSTRAINT profiles_operation_fkey FOREIGN KEY(tenant_id,operation) REFERENCES mdm_commands.operations(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_apple.profiles TO mdm_command_runtime;
-GRANT UPDATE(manifest,dispatched_at,observed_at,retired_at) ON mdm_apple.profiles TO mdm_command_runtime;
+GRANT UPDATE(manifest,manifest_digest,manifest_cipher_digest,dispatched_at,observed_at,retired_at) ON mdm_apple.profiles TO mdm_command_runtime;
 GRANT SELECT ON mdm_apple.profiles TO mdm_access;
 GRANT UPDATE(retired_at) ON mdm_apple.profiles TO mdm_access;
 
@@ -109,3 +109,6 @@ COMMIT;
 GRANT SELECT(tenant_id,registration,generation,user_key,state) ON mdm_apple.channels TO mdm_flow_runtime;
 
 GRANT UPDATE(request) ON mdm_apple.attempts TO mdm_command_runtime;
+
+GRANT SELECT ON mdm_apple.profile_qualifications TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
+GRANT UPDATE(verification,verification_evidence) ON mdm_apple.profiles TO mdm_access,mdm_command_runtime;

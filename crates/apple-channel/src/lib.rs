@@ -424,7 +424,11 @@ async fn wait(
 mod health_tests;
 
 /// Fresh product schema owned by this capability.
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/profile-qualifications.sql")
+);
 /// Cross-owner references and exact runtime privileges; apply after all owner tables.
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 

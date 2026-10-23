@@ -8,11 +8,15 @@ use sqlx::{Arguments, Row, postgres::PgArguments};
 use std::{collections::BTreeSet, time::Duration};
 
 const PEOPLE: &str = concat!(
-    "WITH people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
+    "WITH platform_configuration AS (SELECT $16::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    ",people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
     include_str!("directory.sql")
 );
 const REFERENCES: &str = concat!(
-    "WITH people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+    "WITH platform_configuration AS (SELECT $16::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    ",people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
     include_str!("directory.sql")
 );
 struct Access {
@@ -94,7 +98,7 @@ impl Associations {
         let budget = AuditBudget::new(Duration::from_secs(15));
         let access = self.directory_access(proof, &budget).await?;
         let binding = cursor::digest(
-            &json!({"kind":"device-directory-v2","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":access.binding,
+            &json!({"kind":"device-directory-v2","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":access.binding,"platform":personnel.platform_configuration()?,
             "query":{"search":query.search,"platform":query.platform,"status":query.status,"source":query.source,"channel":query.channel,"assetState":query.asset_state,"descending":query.descending}}),
         )?;
         let old = query
@@ -151,6 +155,7 @@ impl Associations {
         arg!((query.limit + 1) as i64);
         arg!(proof.instance_id().to_owned());
         arg!(access.display);
+        arg!(personnel.platform_configuration()?);
         let (identity, rows) = personnel
             .query(
                 proof,

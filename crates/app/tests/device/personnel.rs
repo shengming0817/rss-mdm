@@ -35,7 +35,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let service=Arc::new(service);
         let sessions=Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
         let router = authority.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_views::routes(
-            sessions.clone(), authority.identity.authority.clone(),
+            sessions.clone(), authority.identity.authority.clone(), None,
         ).with_state(service.clone())))?;
         let mut browser = authority.browser("admin")?;
         let accounts = format!("/api/v1/identity/tenants/{}/accounts", case_a());

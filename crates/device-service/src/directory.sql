@@ -38,8 +38,8 @@ visible AS MATERIALIZED (
     SELECT (m.registration_user->>'principalId')::uuid AS principal
     WHERE m.ownership AND m.registration_user->>'tenantId'=$1::text AND m.registration_user->>'instanceId'=$14::text
     UNION ALL
-    SELECT s.principal_id FROM identity_session_references s
-    WHERE m.sensitive AND m.registration_valid AND NOT s.requires_platform_check
+    SELECT s.principal_id FROM platform_sessions s
+    WHERE m.sensitive AND m.registration_valid
      AND s.instance_id=(m.session_reference->>'instance')::uuid AND s.tenant_id=(m.session_reference->>'tenant')::uuid
      AND s.principal_id=(m.session_reference->>'principal')::uuid AND s.session_id=(m.session_reference->>'session')::uuid
      AND s.credential_kind=m.session_reference->>'credentialKind'
@@ -63,6 +63,7 @@ SELECT jsonb_build_object(
   ORDER BY CASE WHEN NOT $12 THEN object_key END COLLATE "C",CASE WHEN $12 THEN object_key END COLLATE "C" DESC) FROM page),'[]'::jsonb),
  'statistics',(SELECT jsonb_build_object('deviceViewCount',count(*),'endpointCount',coalesce(sum(cardinality(devices)),0)) FROM objects),
  'validUntil',least((SELECT min(valid_until) FROM members),
+  (SELECT min(platform_valid_until) FROM platform_sessions),
   (SELECT min((e->>'expiresAt')::bigint) FROM visible v CROSS JOIN LATERAL jsonb_array_elements(v.summary->'enrollments') e WHERE e->>'status'='pending')),
  'queryRevision',coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),
  'watermark',coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0),

@@ -130,7 +130,7 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
         .execution
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(peer.send("/mdm", response.clone()).await?.0 == StatusCode::SERVICE_UNAVAILABLE);
-    let state:(bool,bool)=sqlx::query_as("SELECT a.response IS NULL AND a.state='sent' AND NOT a.accepted,p.observed_at IS NULL AND p.retired_at IS NULL FROM mdm_apple.attempts a JOIN mdm_apple.profiles p ON(p.tenant_id,p.operation)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2")
+    let state:(bool,bool)=sqlx::query_as("SELECT a.response IS NULL AND a.state='sent' AND NOT a.accepted,p.observed_at IS NULL AND p.retired_at IS NULL AND p.verification='unknown' FROM mdm_apple.attempts a JOIN mdm_apple.profiles p ON(p.tenant_id,p.operation)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2")
         .bind(case_tenant()).bind(observe).fetch_one(&mut pg).await?;
     ensure!(
         state == (true, true),
@@ -150,11 +150,39 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
         detail["commandStatus"] == "applied" && detail["observation"]["result"] == "matched",
         "recovery: {detail}"
     );
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
+    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
+    ensure!(
+        qualified,
+        "settled native qualification must match its actual evidence"
+    );
     let stable = peer.send("/mdm", response.clone()).await?;
     ensure!(
         peer.send("/mdm", response).await? == stable,
         "replay changed response"
     );
+    // Rotation changes protection bytes, not native qualification or observation time.
+    let before:(Vec<u8>,i64)=sqlx::query_as("SELECT manifest,observed_at FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut pg).await?;
+    let old = zeroize::Zeroizing::new(std::fs::read(std::env::var(
+        "MDM_NATIVE_PROTECTION_KEY_FILE",
+    )?)?);
+    let rotated = rss_mdm_native_protection::Protector::with_fingerprint(
+        &[19; 32],
+        &[old.as_slice()],
+        old.as_slice(),
+    )?;
+    let mut tx = pg.begin().await?;
+    ensure!(rss_mdm_apple_channel::rewrap::run(&mut tx, case_tenant(), &rotated).await? > 0);
+    let after:(Vec<u8>,i64)=sqlx::query_as("SELECT manifest,observed_at FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut *tx).await?;
+    let qualified:bool=sqlx::query_scalar("SELECT verification='matched' AND evidence=current_evidence FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2").bind(case_tenant()).bind(operation).fetch_one(&mut *tx).await?;
+    ensure!(
+        before.0 != after.0 && before.1 == after.1 && qualified,
+        "rewrap changed native semantics"
+    );
+    tx.rollback().await?;
     pg.close().await?;
     drop(device);
     f.close().await

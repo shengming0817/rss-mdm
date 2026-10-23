@@ -18,6 +18,24 @@ CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.asset_states FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_pki.trust FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_pki.revocations FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+-- Platform session qualification changes invalidate search and hydration together.
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.psso_sources FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.device_access_bindings FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.devices FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.profiles FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.attempts FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_policy.policies FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scopes FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_runs FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_source_members FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.authorization_rules FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.user_groups FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.source_heads FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.groups FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.member_runs FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 GRANT USAGE ON SCHEMA mdm_devices,mdm TO mdm_identity_runtime;
 GRANT SELECT ON mdm_devices.associations,mdm_devices.members,mdm_devices.asset_states,mdm_devices.checkpoints,mdm.asset_clock TO mdm_identity_runtime;
 COMMIT;
+
+CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.api_keys FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();

@@ -91,32 +91,38 @@ pub async fn admission_on(
         Some("fresh") => {}
         _ => return Err(SourceError::Invariant),
     }
-    let (run, _, frozen, fresh) = resolution(c, tenant, scope)
+    let (run, _, _, fresh) = resolution(c, tenant, scope)
         .await?
         .ok_or(SourceError::Invariant)?;
     if !fresh {
         return Ok(ScopeAdmission::Pending);
     }
-    let result = explanation_on(c, tenant, run, &frozen, channel, device, Some(reader)).await?;
-    Ok(match result {
-        None => ScopeAdmission::Excluded,
-        Some(result) if result.reasons.is_empty() => {
-            published_admission(c, tenant, run, channel, device).await?
+    // Preserve the authentication path's bounded object/lifecycle locks. The
+    // qualification itself belongs to the same pure SQL kernel used by read models.
+    for row in rows_for(c, tenant, run, channel, device).await? {
+        if !row.unknown && row.input.verified {
+            current(reader, c, tenant, &row.input, channel).await?;
         }
-        Some(result)
-            if result.reasons.iter().any(|r| {
-                matches!(
-                    r,
-                    s::ExclusionReason::UnknownTarget
-                        | s::ExclusionReason::UnknownLimitation
-                        | s::ExclusionReason::UnknownExclusion
-                )
-            }) =>
-        {
-            ScopeAdmission::Pending
+    }
+    let value: serde_json::Value =
+        sqlx::query_scalar("SELECT mdm_planning.channel_admission($1,$2,$3)")
+            .bind(scope)
+            .bind(channel.as_str())
+            .bind(device)
+            .fetch_one(c)
+            .await?;
+    match value["state"].as_str() {
+        Some("eligible") => {
+            let entry = value["entry"]
+                .as_i64()
+                .filter(|entry| *entry > 0)
+                .ok_or(SourceError::Invariant)?;
+            Ok(ScopeAdmission::Eligible { entry })
         }
-        Some(_) => ScopeAdmission::Excluded,
-    })
+        Some("pending") => Ok(ScopeAdmission::Pending),
+        Some("excluded") => Ok(ScopeAdmission::Excluded),
+        _ => Err(SourceError::Invariant),
+    }
 }
 pub(crate) async fn explanation_on(
     c: &mut PgConnection,

@@ -3,6 +3,7 @@ WITH allowed(schema_name,table_name) AS (VALUES
  ('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','authorization_initializations'),('mdm_access','api_keys'),
  ('mdm_policy','policies'),('mdm_policy','versions'),
  ('mdm_planning','scopes'),('mdm_planning','scope_runs'),('mdm_planning','scope_source_members'),('mdm_planning','scope_channel_results'),
+ ('mdm_devices','associations'),('mdm_devices','members'),('mdm_devices','asset_states'),('mdm','asset_clock'),
  ('mdm_devices','input_snapshots'),('mdm_devices','input_objects'),('mdm_devices','checkpoints'),
  ('mdm_apple','devices'),('mdm_apple','profiles'),('mdm_apple','attempts'),('mdm_apple','psso_sources'),('mdm_apple','psso_tokens'),
  ('mdm','inventory'),('mdm','collection_definitions')
@@ -24,3 +25,8 @@ SELECT
  AND has_function_privilege(current_user,'mdm.lock_asset_watermark(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_planning.policy_lock(uuid)','EXECUTE')
  AND has_function_privilege(current_user,'mdm_planning.scope_admission(uuid,text)','EXECUTE')
+
+ AND has_table_privilege(current_user,'mdm_apple.profile_qualifications','SELECT')
+ AND NOT has_table_privilege(current_user,'mdm_apple.profile_qualifications','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+ AND has_function_privilege(current_user,'mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)','EXECUTE')
+ AND has_function_privilege(current_user,'mdm_commands.active_access_binding(uuid,bigint,bigint)','EXECUTE')

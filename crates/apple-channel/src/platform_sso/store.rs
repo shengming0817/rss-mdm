@@ -137,6 +137,15 @@ pub(super) async fn current_user(
     {
         return Err(Error::Unauthorized);
     }
+    if login {
+        let config = serde_json::to_value(app.runtime()?.qualification_configuration()?)
+            .map_err(|_| Error::Malformed)?;
+        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.platform_session_qualifications($1,$2,$3) WHERE source_version=$4)")
+            .bind(id).bind(config).bind(now(c).await?).bind(user.version).fetch_one(&mut *c).await.map_err(db)?;
+        if !valid {
+            return Err(Error::Unauthorized);
+        }
+    }
     Ok((user, device, binding))
 }
 pub(super) async fn cleanup(c: &mut PgConnection, tenant: &str, time: i64) -> Result<(), Error> {

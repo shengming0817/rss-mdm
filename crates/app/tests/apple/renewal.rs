@@ -141,6 +141,10 @@ impl Fixture {
             .unwrap();
         if expected_account.is_none() {
             old.manage("NotNow", Some(command), None).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(case_tenant())
+                .execute(&mut pg)
+                .await?;
             sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(command.to_string()).execute(&mut pg).await?;
             let (retry, request) = old.next("InstallProfile").await?;
             ensure!(

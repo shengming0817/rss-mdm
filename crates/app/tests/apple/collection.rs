@@ -182,6 +182,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     // A prior run observed macOS 14. The current peer reports 15 in its
     // prerequisite response; historical evidence must not block that refresh.
     let mut prior = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut prior).await?;
     let updated = sqlx::query("UPDATE mdm_apple.attempts SET context=jsonb_set(context,'{version}','\"14.0\"'::jsonb) WHERE tenant_id=$1::uuid AND id=$2 AND phase='collect'")
         .bind(case_tenant()).bind(run).execute(&mut prior).await?;
     ensure!(updated.rows_affected() == 1);

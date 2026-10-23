@@ -64,38 +64,27 @@ LEFT JOIN mdm_planning.source_heads head ON head.tenant_id=g.tenant_id AND head.
 $$;
 
 CREATE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
-    LANGUAGE plpgsql SECURITY DEFINER
-    SET search_path TO 'pg_catalog'
-    AS $$
-DECLARE s record; token record; head record; member record; tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid;
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; s record; token record;
 BEGIN
- SELECT x.deleted,x.revision,x.resolution,r.phase,r.definition_revision,r.asset_watermark,r.input INTO s
+ -- The caller still takes the watermark fence before this Scope/head lock boundary.
+ SELECT x.deleted,x.revision,r.phase,r.definition_revision,r.input INTO s
  FROM mdm_planning.scopes x LEFT JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)
  WHERE x.tenant_id=tenant AND x.id=p_scope FOR SHARE OF x;
- IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
- IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;
- IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' AND NOT mdm_planning.group_current((src->'reference'->>'id')::uuid)) THEN RETURN jsonb_build_object('state','pending'); END IF;
+ IF NOT FOUND OR s.deleted OR s.phase IS DISTINCT FROM 'published'
+  OR s.definition_revision IS DISTINCT FROM s.revision THEN
+  RETURN mdm_planning.scope_state(p_scope,p_device);
+ END IF;
  FOR token IN
-  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->'coordinates'->>v.field)::bigint AS revision
+  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id
   FROM jsonb_array_elements(s.input->'sources') src
-  CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)
+  CROSS JOIN (VALUES('definition'),('members'),('authority')) v(kind)
   WHERE src->'reference'->>'kind'='group' ORDER BY id
  LOOP
-  SELECT h.revision,h.required_input,h.observed_input INTO head FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id FOR SHARE;
-  IF NOT FOUND OR head.revision<>token.revision OR head.observed_input<head.required_input THEN RETURN jsonb_build_object('state','pending'); END IF;
-  IF token.id LIKE 'group-members.%' AND EXISTS(
-   SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>head.observed_input
-   AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))
-   AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=tenant AND f.group_id=substring(token.id FROM 15)::uuid AND f.field=ANY(c.fields)))
-  ) THEN RETURN jsonb_build_object('state','pending'); END IF;
+  PERFORM FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id FOR SHARE;
  END LOOP;
- IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND (h.device=p_device OR (p_device IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' OR src->'reference'->>'id'=h.device))) AND h.revision>s.asset_watermark)
- OR EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>s.asset_watermark AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))
-  AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src JOIN mdm_assets.group_fields f ON f.tenant_id=tenant AND f.group_id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END WHERE f.field=ANY(c.fields)))
- THEN RETURN jsonb_build_object('state','pending'); END IF;
- RETURN jsonb_build_object('state','fresh');
-END;
-$$;
+ RETURN mdm_planning.scope_state(p_scope,p_device);
+END $$;
 
 CREATE TABLE mdm_automation.automation_jobs (
     tenant_id uuid NOT NULL,

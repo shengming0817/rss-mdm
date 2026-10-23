@@ -21,7 +21,11 @@ use rss_mdm_audit_integration::AuditStore;
 use rss_request_context::TenantId;
 use std::sync::Arc;
 
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/object-qualification.sql")
+);
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// App-owned service, borrowing the existing Audit transaction owner.

@@ -2172,3 +2172,7 @@ consume(('crates/flow-service/src/planning/group_references.sql',), 'planning.ht
 consume(('crates/inventory-service/src/assets/summaries.rs',), 'device.views assets.http assets.sources apple.collection')
 consume(('crates/inventory-service/schema/directory.sql','crates/registration-service/schema/directory.sql','crates/device-service/schema/directory.sql'), 'device.views agent.current_user')
 consume(('crates/inventory-service/schema/collection-metadata.sql',), 'assets.queries assets.sources inventory.runtime')
+
+# Read-only qualifications share their owners with locked authentication consumers.
+consume(('crates/apple-channel/schema/platform-qualifications.sql','crates/apple-channel/schema/profile-qualifications.sql','crates/apple-channel/src/profiles.rs','crates/apple-channel/src/rewrap.rs'), 'apple.platform_sso apple.profile')
+consume(('crates/authorization-service/schema/authority.sql','crates/device-service/schema/object-qualification.sql','crates/flow-service/schema/qualification.sql','crates/execution-service/schema/device-access-qualification.sql'), 'apple.platform_sso device.views planning.group_scope planning.policy device-access.http authorization.programmatic')

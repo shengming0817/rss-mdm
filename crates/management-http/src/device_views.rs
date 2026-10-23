@@ -13,6 +13,7 @@ use uuid::Uuid;
 pub fn routes(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     identity: rss_identity_postgres::Authority,
+    platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
 ) -> Router<Arc<Associations>> {
     Router::new()
         .route("/device-views", get(list))
@@ -34,6 +35,7 @@ pub fn routes(
         .route("/devices/{device}/association-candidates", get(candidates))
         .layer(Extension(sessions))
         .layer(Extension(identity))
+        .layer(Extension(platform))
 }
 fn reference(kind: String, id: String) -> Result<ViewRef, Error> {
     match kind.as_str() {
@@ -50,6 +52,9 @@ async fn list(
         Extension<rss_identity_postgres::Authority>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     query: Result<Query<ViewQuery>, axum::extract::rejection::QueryRejection>,
@@ -63,6 +68,7 @@ async fn list(
                 &identity,
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
+                platform.as_ref(),
             ),
         )
         .await?,
@@ -74,6 +80,9 @@ async fn detail(
         Extension<rss_identity_postgres::Authority>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
@@ -92,6 +101,7 @@ async fn detail(
                 &identity,
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
+                platform.as_ref(),
             ),
         )
         .await?,
@@ -113,6 +123,9 @@ async fn items(
         Extension<rss_identity_postgres::Authority>,
         Extension<crate::runtime_diagnostics::RequestDeadline>,
     ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
@@ -131,6 +144,7 @@ async fn items(
                 &identity,
                 deadline.0,
                 &rss_mdm_audit_integration::budget::RuntimeTimer,
+                platform.as_ref(),
             ),
         )
         .await?,

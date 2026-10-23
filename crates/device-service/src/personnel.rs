@@ -5,6 +5,7 @@ use rss_identity_postgres::{Authority, AuthorityError, PersonnelRevision};
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
 use rss_request_context::{Clock, TenantId};
 use rss_transactional_messaging::policy::OperationDeadline;
+use serde::Serialize;
 use serde_json::Value;
 use sqlx::{
     Arguments, Row,
@@ -18,18 +19,49 @@ use uuid::Uuid;
 
 const RELATIONS: [&str; 2] = ["registrationUser", "currentUser"];
 
+/// Current host configuration for the MDM-owned Platform SSO qualification relation.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformConfiguration {
+    /// Current configuration and endpoint fingerprint.
+    pub configuration: String,
+    /// Expected application identifier.
+    pub application_id: String,
+    /// Expected installed application version.
+    pub application_version: String,
+    /// Expected native profile identifier.
+    pub profile_identifier: String,
+    /// Expected native profile UUID.
+    pub profile_uuid: Uuid,
+}
+const CURRENT_USERS: &str = concat!(
+    "WITH platform_configuration AS (SELECT $2::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    include_str!("current_users.sql")
+);
+
 pub struct Reader<'a> {
     authority: &'a Authority,
     deadline: Instant,
     clock: &'a dyn Clock,
+    platform: Option<&'a PlatformConfiguration>,
 }
 impl<'a> Reader<'a> {
-    pub fn new(authority: &'a Authority, deadline: Instant, clock: &'a dyn Clock) -> Self {
+    pub fn new(
+        authority: &'a Authority,
+        deadline: Instant,
+        clock: &'a dyn Clock,
+        platform: Option<&'a PlatformConfiguration>,
+    ) -> Self {
         Self {
             authority,
             deadline,
             clock,
+            platform,
         }
+    }
+    pub(crate) fn platform_configuration(&self) -> Result<Value> {
+        serde_json::to_value(self.platform).map_err(|_| Error::Storage)
     }
     fn budget(&self) -> Result<OperationDeadline> {
         let remaining = self
@@ -159,9 +191,10 @@ impl<'a> Reader<'a> {
         arguments
             .add(serde_json::json!(inputs))
             .map_err(|_| Error::Storage)?;
-        let (_, valid) = self
-            .query(proof, include_str!("current_users.sql"), arguments, 200)
-            .await?;
+        arguments
+            .add(self.platform_configuration()?)
+            .map_err(|_| Error::Storage)?;
+        let (_, valid) = self.query(proof, CURRENT_USERS, arguments, 200).await?;
         let valid = valid
             .into_iter()
             .map(|row| {
