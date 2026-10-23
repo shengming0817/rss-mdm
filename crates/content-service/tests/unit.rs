@@ -435,33 +435,38 @@ fn automatic_inspection_has_a_one_gib_boundary() {
 #[test]
 fn bundle_observations_do_not_validate_payload_bytes() {
     use std::io::{Cursor, Write};
-    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options = zip::write::SimpleFileOptions::default();
-    zip.start_file("manifest.json", options).unwrap();
-    let digest = rss_mdm_resource::Digest::of(b"original").bytes();
-    zip.write_all(&serde_json::to_vec(&serde_json::json!({"schema":1,"platform":"windows","architecture":"x86_64","entries":{"install.ps1":{"length":8,"sha256":digest},"payload.bin":{"length":8,"sha256":digest}}})).unwrap()).unwrap();
-    zip.start_file("install.ps1", options).unwrap();
-    zip.write_all(b"changed").unwrap();
-    zip.start_file("payload.bin", options).unwrap();
-    zip.write_all(b"changed").unwrap();
-    let bytes = zip.finish().unwrap().into_inner();
-    let mut file = tempfile::tempfile().unwrap();
-    file.write_all(&bytes).unwrap();
-    let deadline =
-        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
-    let facts = super::installer::inspect(
-        &mut file,
-        "bundle.zip",
-        &config(PathBuf::new()),
-        &RuntimeTimer,
-        deadline,
-    )
-    .unwrap();
-    assert_eq!(facts.format, rss_mdm_resource::SoftwareFormat::Bundle);
-    let mut limited = config(PathBuf::new());
-    limited.max_bundle_entries = 2;
-    assert!(
-        super::installer::inspect(&mut file, "bundle.zip", &limited, &RuntimeTimer, deadline)
-            .is_err()
-    );
+    for count in [4095, 4096, 4097] {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("manifest.json", options).unwrap();
+        let digest = rss_mdm_resource::Digest::of(b"original").bytes();
+        zip.write_all(&serde_json::to_vec(&serde_json::json!({"schema":1,"platform":"windows","architecture":"x86_64","entries":{"install.ps1":{"length":8,"sha256":digest},"payload.bin":{"length":8,"sha256":digest}}})).unwrap()).unwrap();
+        zip.start_file("install.ps1", options).unwrap();
+        zip.write_all(b"changed").unwrap();
+        zip.start_file("payload.bin", options).unwrap();
+        zip.write_all(b"changed").unwrap();
+        for index in 3..count {
+            zip.start_file(format!("unused-{index}"), options).unwrap();
+        }
+        let bytes = zip.finish().unwrap().into_inner();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&bytes).unwrap();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
+        let result = super::installer::inspect(
+            &mut file,
+            "bundle.zip",
+            &config(PathBuf::new()),
+            &RuntimeTimer,
+            deadline,
+        );
+        if count <= 4096 {
+            assert_eq!(
+                result.unwrap().format,
+                rss_mdm_resource::SoftwareFormat::Bundle
+            );
+        } else {
+            assert!(result.is_err());
+        }
+    }
 }
