@@ -6,12 +6,13 @@ use crate::{
     enrollment::credentials::Credentials, identity::Identity,
 };
 use axum::{
-    Json, Router,
+    Json,
     extract::{DefaultBodyLimit, State},
     middleware::{self},
     response::{IntoResponse, Response},
-    routing::get,
 };
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 #[cfg(test)]
 use serde_json::Value;
 use serde_json::json;
@@ -72,7 +73,7 @@ pub(crate) async fn application_fixture(
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> Result<
     (
-        Router,
+        axum::Router,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
         Arc<rss_mdm_flow_service::planning::Planning>,
@@ -752,8 +753,10 @@ pub(crate) fn from_state(
         requests: state.requests.clone(),
         tenant: state.identity.tenant.to_string(),
     };
-    let authentication =
-        rss_mdm_management_http::authentication_routes(authentication, management_boundary.clone());
+    let authentication = rss_mdm_management_http::authentication_routes(
+        Router::identity(authentication),
+        management_boundary.clone(),
+    );
     let directory = crate::settings::Directory {
         state: state.clone(),
         apple: apple_state.clone(),
@@ -990,7 +993,7 @@ pub(crate) fn from_state(
             crate::native::ChannelKind::Agent,
             crate::native::ChannelRouter {
                 origins: pki.origins.clone(),
-                router,
+                router: router.into_axum(),
                 admission: crate::native::admission::Admission::new(
                     monotonic.clone(),
                     state.requests.clone(),
@@ -1001,14 +1004,20 @@ pub(crate) fn from_state(
     }
     let apple = state.apple.clone();
     let host_routes = Router::new()
-        .route("/livez", get(|| async { Json(json!({"alive":true})) }))
+        .route(
+            "/livez",
+            get(|| async { Json(json!({"alive":true})) })
+                .owned(&contracts::HEALTH, &[RouteOperation::Action]),
+        )
         .route(
             "/readyz",
-            get(ready).with_state((
-                diagnostics,
-                monotonic.clone(),
-                state.runtime_observation.clone(),
-            )),
+            get(ready)
+                .owned(&contracts::HEALTH, &[RouteOperation::Action])
+                .with_state((
+                    diagnostics,
+                    monotonic.clone(),
+                    state.runtime_observation.clone(),
+                )),
         )
         .fallback(|| async { axum::http::StatusCode::NOT_FOUND })
         .layer(middleware::from_fn_with_state(
@@ -1040,6 +1049,17 @@ pub(crate) fn from_state(
             )),
         )
         .layer(DefaultBodyLimit::max(16384));
+    let expected = contracts::browser(
+        state.identity.tenant_administration.is_some(),
+        state.agent_enrollment.is_some(),
+        state.execution.recovery_credentials().is_some(),
+    );
+    let violations =
+        rss_mdm_http_contract::validate(browser.endpoints(), &expected, contracts::GAPS);
+    assert!(
+        violations.is_empty(),
+        "invalid product route assembly: {violations:?}"
+    );
     crate::native::Routers {
         baseline: crate::baseline::registration(state.clone()),
         telemetry: state.telemetry.clone(),
@@ -1049,7 +1069,7 @@ pub(crate) fn from_state(
         agent_pki: state.agent_pki.clone(),
         windows: state.windows.clone(),
         apple,
-        browser,
+        browser: browser.into_axum(),
         agent_enrollment: state.agent_enrollment.clone(),
         listeners,
     }

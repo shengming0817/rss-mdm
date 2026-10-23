@@ -1,11 +1,15 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_device_service::{Associations, Confirm, Revoke, ViewQuery, ViewRef};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -16,23 +20,53 @@ pub fn routes(
     platform: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
 ) -> Router<Arc<Associations>> {
     Router::new()
-        .route("/device-views", get(list))
-        .route("/device-retirements/{id}", get(retirement))
+        .route(
+            "/device-views",
+            get(list).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List]),
+        )
+        .route(
+            "/device-retirements/{id}",
+            get(retirement).owned(&contracts::DEVICE_RETIREMENTS, &[RouteOperation::Get]),
+        )
         .route(
             "/device-retirements/{id}/force-revoke",
-            post(force_retirement),
+            post(force_retirement).owned(&contracts::DEVICE_RETIREMENTS, &[RouteOperation::Action]),
         )
-        .route("/device-views/{kind}/{id}/asset-state", post(asset_state))
-        .route("/device-views/{kind}/{id}", get(detail))
+        .route(
+            "/device-views/{kind}/{id}/asset-state",
+            post(asset_state).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/device-views/{kind}/{id}",
+            get(detail).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Get]),
+        )
         .route(
             "/device-views/{kind}/{id}/inventory-lists/{field}",
-            get(items),
+            get(items).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Action]),
         )
-        .route("/device-associations", post(confirm))
-        .route("/device-associations/changes", get(changes))
-        .route("/device-associations/{id}", get(association))
-        .route("/device-associations/{id}/revoke", post(revoke))
-        .route("/devices/{device}/association-candidates", get(candidates))
+        .route(
+            "/device-associations",
+            post(confirm).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/device-associations/changes",
+            get(changes).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List]),
+        )
+        .route(
+            "/device-associations/{id}",
+            get(association).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/device-associations/{id}/revoke",
+            post(revoke).owned(
+                &contracts::DEVICE_ASSOCIATIONS,
+                &[RouteOperation::Lifecycle],
+            ),
+        )
+        .route(
+            "/devices/{device}/association-candidates",
+            get(candidates).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
         .layer(Extension(sessions))
         .layer(Extension(identity))
         .layer(Extension(platform))

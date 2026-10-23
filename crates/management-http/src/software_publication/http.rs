@@ -1,11 +1,12 @@
 use super::wire;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_software_service::{
     catalog::Operation,
     management::publication::{
@@ -16,9 +17,24 @@ use rss_mdm_software_service::{
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/software/publications", get(list).post(create))
-        .route("/software/publications/{id}", get(read).post(change))
-        .route("/software/publication-targets", get(targets))
+        .route(
+            "/software/publications",
+            get(list)
+                .owned(&contracts::PUBLICATIONS, &[RouteOperation::List])
+                .post(create)
+                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/software/publications/{id}",
+            get(read)
+                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Get])
+                .post(change)
+                .owned(&contracts::PUBLICATIONS, &[RouteOperation::Lifecycle]),
+        )
+        .route(
+            "/software/publication-targets",
+            get(targets).owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List]),
+        )
 }
 async fn read(
     State(app): State<Arc<HttpState>>,

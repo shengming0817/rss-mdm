@@ -237,7 +237,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     authority_resources.finish(async {
     let routes = Router::new().nest(
         "/api/v1",
-        rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(Arc::new(s)),
+        rss_mdm_management_http::device_views::routes(Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant)),authority.identity.authority.clone(),None).with_state(Arc::new(s)).into_axum(),
     );
     let router = authority.router(routes)?;
     let mut browser = authority.browser("admin")?;

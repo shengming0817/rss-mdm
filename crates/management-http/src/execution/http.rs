@@ -1,43 +1,69 @@
 use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, post},
 };
 use rss_mdm_execution_service::{
     Change,
     device_control::{Input, Reauthorization},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
 };
 use serde_json::Value;
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/task-signing/trust/devices/{device}/observation",
-            get(task_trust_observation),
+            get(task_trust_observation).owned(&contracts::TASK_TRUST, &[RouteOperation::Get]),
         )
-        .route("/task-signing/operations/{id}", get(task_trust_operation))
+        .route(
+            "/task-signing/operations/{id}",
+            get(task_trust_operation)
+                .owned(&contracts::TASK_TRUST_OPERATIONS, &[RouteOperation::Get]),
+        )
         .route(
             "/task-signing/trust",
-            get(task_trust).post(change_task_trust),
+            get(task_trust)
+                .owned(&contracts::TASK_TRUST, &[RouteOperation::Get])
+                .post(change_task_trust)
+                .owned(&contracts::TASK_TRUST, &[RouteOperation::Update]),
         )
         .route(
             "/devices/{device}/recovery-credentials/operations",
-            post(create_recovery),
+            post(create_recovery).owned(&contracts::DEVICES, &[RouteOperation::Action]),
         )
         .merge(
             Router::new()
-                .route("/operations", get(directory))
-                .route("/devices/{device}/ddm", get(ddm))
-                .route("/devices/{device}/operations/{id}", get(read))
+                .route(
+                    "/operations",
+                    get(directory).owned(&contracts::EXECUTIONS, &[RouteOperation::List]),
+                )
+                .route(
+                    "/devices/{device}/ddm",
+                    get(ddm).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+                )
+                .route(
+                    "/devices/{device}/operations/{id}",
+                    get(read).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+                )
                 .with_state(queries),
         )
-        .route("/devices/{device}/operations", post(create))
-        .route("/devices/{device}/operations/{id}/cancel", post(cancel))
+        .route(
+            "/devices/{device}/operations",
+            post(create).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{device}/operations/{id}/cancel",
+            post(cancel).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
         .route(
             "/devices/{device}/operations/{id}/reauthorize",
-            post(reauthorize),
+            post(reauthorize).owned(&contracts::DEVICES, &[RouteOperation::Action]),
         )
 }
 async fn directory(

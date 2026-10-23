@@ -131,7 +131,7 @@ pub(crate) fn router(
     Some(ChannelRouter {
         admission: admission::Admission::new(clock, app.requests.clone(), "apple-management-tls"),
         origins: vec![apple.config.management.origin.clone()],
-        router,
+        router: router.into_axum(),
     })
 }
 #[cfg(test)]

@@ -1,4 +1,5 @@
 //! Windows enrollment and management protocol boundary.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod database;
 pub mod enrollment_store;
 pub mod entra;
@@ -30,15 +31,15 @@ mod notifications;
 mod transcript;
 mod trust_installation;
 use axum::{
-    Extension, Router,
+    Extension,
     body::Bytes,
     extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
 };
 use enrollment::Password;
 use rss_mdm_certificate::windows as certificate;
+use rss_mdm_http_contract::{Router, routing::post};
 use rss_mdm_windows_mdm::{
     CodecLimits, Secret,
     soap::{self, Body, Operation},
@@ -189,19 +190,67 @@ pub fn routers(
     let enrollment = Router::new()
         .route(
             "/EnrollmentServer/Discovery.svc",
-            axum::routing::get(discovery_probe).post(discover),
+            rss_mdm_http_contract::routing::get(discovery_probe)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .post(discover)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
         )
-        .route("/EnrollmentServer/Policy.svc", post(policy))
-        .route("/EnrollmentServer/Enrollment.svc", post(issue))
-        .route("/EnrollmentConfiguration", post(linked::discover))
-        .route("/EnrollmentServer/LinkedPolicy.svc", post(linked::policy))
+        .route(
+            "/EnrollmentServer/Policy.svc",
+            post(policy).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/EnrollmentServer/Enrollment.svc",
+            post(issue).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/EnrollmentConfiguration",
+            post(linked::discover).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/EnrollmentServer/LinkedPolicy.svc",
+            post(linked::policy).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/EnrollmentServer/LinkedEnrollment.svc",
-            post(linked::issue),
+            post(linked::issue).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         );
     let management = Router::new()
-        .route("/ManagementServer/MDM.svc", post(management::manage))
-        .route("/ManagementServer/Declared.svc", post(management::manage));
+        .route(
+            "/ManagementServer/MDM.svc",
+            post(management::manage).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/ManagementServer/Declared.svc",
+            post(management::manage).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        );
     (
         boundary::wrap(
             enrollment

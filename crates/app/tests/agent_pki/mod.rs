@@ -2252,7 +2252,7 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
             let mut browser: Browser = authority.browser("admin")?;
             let router = authority.router(Router::new().nest(
                 "/api/v1",
-                rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
+                rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())).into_axum(),
             ))?;
             let path = format!(
                 "/api/v1/agent-issuances/{}/recovery-operations/{}",

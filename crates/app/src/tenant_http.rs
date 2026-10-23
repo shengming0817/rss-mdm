@@ -1,15 +1,19 @@
 //! Installation tenant HTTP adapter; CLI and HTTP share the registry mutation owner.
 use super::*;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{
     Permission,
     context::{AuthorizedPrincipal, RequestAuth},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
 };
 use rss_request_context::TenantId;
 use serde::Deserialize;
@@ -366,15 +370,38 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
         return Router::new();
     };
     Router::new()
-        .route("/tenants", get(list))
+        .route(
+            "/tenants",
+            get(list).owned(&contracts::TENANTS, &[RouteOperation::List]),
+        )
         .route(
             "/provisionings",
-            get(provisionings).post(provisioning::create),
+            get(provisionings)
+                .owned(&contracts::PROVISIONINGS, &[RouteOperation::List])
+                .post(provisioning::create)
+                .owned(&contracts::TENANTS, &[RouteOperation::Create]),
         )
-        .route("/provisionings/{operation}", get(receipt))
-        .route("/tenants/{tenant}", get(detail).put(update).delete(delete))
-        .route("/tenants/{tenant}/administrators", post(administrator))
-        .route("/operations/{operation}", get(receipt))
+        .route(
+            "/provisionings/{operation}",
+            get(receipt).owned(&contracts::PROVISIONINGS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/tenants/{tenant}",
+            get(detail)
+                .owned(&contracts::TENANTS, &[RouteOperation::Get])
+                .put(update)
+                .owned(&contracts::TENANTS, &[RouteOperation::Update])
+                .delete(delete)
+                .owned(&contracts::TENANTS, &[RouteOperation::Delete]),
+        )
+        .route(
+            "/tenants/{tenant}/administrators",
+            post(administrator).owned(&contracts::TENANTS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/operations/{operation}",
+            get(receipt).owned(&contracts::PROVISIONINGS, &[RouteOperation::Get]),
+        )
         .with_state(service)
 }
 async fn list(

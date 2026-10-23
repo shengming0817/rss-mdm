@@ -1,13 +1,17 @@
 //! Direct device-scoped credential access; authentication is the normal management middleware.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_recovery_credentials::{Credentials, Material};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -17,14 +21,20 @@ pub fn routes(service: Option<Arc<Credentials>>) -> Router {
         return Router::new();
     };
     Router::new()
-        .route("/devices/{device}/recovery-credentials", get(list))
+        .route(
+            "/devices/{device}/recovery-credentials",
+            get(list).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List]),
+        )
         .route(
             "/devices/{device}/recovery-credentials/{id}/versions/{version}/secret",
-            get(disclose),
+            get(disclose).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
         )
         .route(
             "/devices/{device}/recovery-credentials/{id}/versions/{version}/revoke",
-            post(revoke),
+            post(revoke).owned(
+                &contracts::RECOVERY_CREDENTIALS,
+                &[RouteOperation::Lifecycle],
+            ),
         )
         .with_state(service)
 }

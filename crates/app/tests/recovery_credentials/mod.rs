@@ -69,7 +69,8 @@ fn route(
                         keys,
                         admission,
                     ),
-                ))),
+                )))
+                .into_axum(),
             )
             .merge(authority.authorization()),
     )

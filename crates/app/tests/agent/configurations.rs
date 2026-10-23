@@ -433,7 +433,7 @@ impl Tls {
         };
         let router = Router::new().nest(
             "/api/v1/agent/enroll",
-            crate::agent::enroll::router(service.clone(), envelope),
+            crate::agent::enroll::router(service.clone(), envelope).into_axum(),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;

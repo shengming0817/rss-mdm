@@ -2,12 +2,13 @@
 use super::http::HttpState;
 use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::device::registration_user::{
     RegistrationUser, RegistrationUserChange,
 };
@@ -16,7 +17,10 @@ type App = Arc<HttpState>;
 pub fn routes() -> Router<App> {
     Router::new().route(
         "/devices/{device}/registration-user",
-        get(responsibility).put(assign),
+        get(responsibility)
+            .owned(&contracts::DEVICES, &[RouteOperation::Action])
+            .put(assign)
+            .owned(&contracts::DEVICES, &[RouteOperation::Action]),
     )
 }
 async fn responsibility(

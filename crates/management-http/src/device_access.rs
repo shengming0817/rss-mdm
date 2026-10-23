@@ -1,12 +1,13 @@
 //! Device-scoped administrator operations. Self-enrollment is authenticated on the Agent channel.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_agent_wire::runtime::{AccessAccount, TaskPlatform};
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::{agent::Service, device_access as access};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -24,14 +25,24 @@ pub fn routes(
         return Router::new();
     };
     Router::new()
-        .route("/devices/{device}/device-access", get(list))
+        .route(
+            "/devices/{device}/device-access",
+            get(list).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List]),
+        )
         .route(
             "/devices/{device}/device-access/bindings/{id}",
-            axum::routing::put(change),
+            rss_mdm_http_contract::routing::put(change).owned(
+                &contracts::DEVICE_ACCESS,
+                &[
+                    RouteOperation::Create,
+                    RouteOperation::Update,
+                    RouteOperation::Lifecycle,
+                ],
+            ),
         )
         .route(
             "/devices/{device}/device-access/operations/{id}",
-            get(operation),
+            get(operation).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
         )
         .with_state(Arc::new(Services {
             registration,

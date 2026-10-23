@@ -71,19 +71,19 @@ impl Authority {
     pub(crate) fn authorization(&self) -> Router {
         Router::new().nest(
             "/api/v1",
-            crate::authorization::http::routes().with_state(Arc::new(
-                crate::authorization::http::HttpState {
+            crate::authorization::http::routes()
+                .with_state(Arc::new(crate::authorization::http::HttpState {
                     audit_store: self.audit.clone(),
-                },
-            )),
+                }))
+                .into_axum(),
         )
     }
 
     pub(crate) fn enrollment(&self) -> Router {
         Router::new().nest(
             "/api/v1",
-            crate::enrollment::http::routes().with_state(Arc::new(
-                crate::enrollment::http::HttpState {
+            crate::enrollment::http::routes()
+                .with_state(Arc::new(crate::enrollment::http::HttpState {
                     channels: Arc::new(crate::test_support::authority::RegistrationChannels),
                     native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
                         sessions: Arc::new(
@@ -107,8 +107,8 @@ impl Authority {
                     )),
                     apple: false,
                     windows: true,
-                },
-            )),
+                }))
+                .into_axum(),
         )
     }
 

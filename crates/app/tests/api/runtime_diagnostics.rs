@@ -356,7 +356,8 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
             Router::new().nest(
                 "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
-                    .with_state(fixture.source.clone() as Arc<dyn Source>),
+                    .with_state(fixture.source.clone() as Arc<dyn Source>)
+                    .into_axum(),
             ),
         ),
     )?;
@@ -453,7 +454,8 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
             Router::new().nest(
                 "/api/v1",
                 rss_mdm_management_http::runtime_diagnostics::routes()
-                    .with_state(fixture.source.clone() as Arc<dyn Source>),
+                    .with_state(fixture.source.clone() as Arc<dyn Source>)
+                    .into_axum(),
             ),
         ),
     )?;

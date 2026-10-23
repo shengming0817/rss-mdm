@@ -1,5 +1,6 @@
 //! Telemetry uses the existing mutually authenticated Agent runtime boundary.
 use super::*;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use std::io::Read;
 fn failure(error: rss_mdm_telemetry_service::Error) -> AgentError {
     use rss_mdm_telemetry_service::Error as T;
@@ -21,23 +22,62 @@ fn service(app: &HttpState) -> Result<&Arc<rss_mdm_telemetry_service::Service>, 
 }
 pub(super) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/telemetry/configurations", get(directory))
+        .route(
+            "/telemetry/configurations",
+            get(directory).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/telemetry/configurations/{policy}/{version}/content",
-            get(material),
+            get(material).owned(
+                &contracts::DOWNLOAD_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/telemetry/batches/{id}/observations/{observation}",
-            get(current),
+            get(current).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/telemetry/configurations/{policy}/{version}",
-            get(configuration),
+            get(configuration).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
-        .route("/telemetry/gaps", post(gap_upload))
-        .route("/telemetry/gaps/{id}", get(gap_receipt))
-        .route("/telemetry/batches", post(upload))
-        .route("/telemetry/batches/{id}", get(receipt))
+        .route(
+            "/telemetry/gaps",
+            post(gap_upload).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/telemetry/gaps/{id}",
+            get(gap_receipt).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/telemetry/batches",
+            post(upload).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/telemetry/batches/{id}",
+            get(receipt).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
 }
 async fn upload(
     State(app): State<Arc<HttpState>>,

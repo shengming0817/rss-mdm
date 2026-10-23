@@ -7,6 +7,7 @@
 //! Persist snapshots and reference checks atomically in the consuming adapter; a
 //! returned decision does not prove a database commit or execution on a device.
 mod agent_collection;
+pub mod directory;
 mod native_collection;
 mod presentation;
 pub use agent_collection::*;

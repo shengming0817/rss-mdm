@@ -3,11 +3,15 @@ use crate::{
     authorization::context::{AuthorizedPrincipal, RequestAuth},
 };
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_webhook_service::storage::Mutation;
 use serde::Deserialize;
 use serde_json::Value;
@@ -51,24 +55,68 @@ pub trait Source: Send + Sync {
 }
 pub fn routes(source: Arc<dyn Source>) -> Router {
     Router::new()
-        .route("/webhooks/materials", get(materials).post(prepare_material))
-        .route("/webhooks/materials/transitions", post(transition_material))
+        .route(
+            "/webhooks/materials",
+            get(materials)
+                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Get])
+                .post(prepare_material)
+                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Update]),
+        )
+        .route(
+            "/webhooks/materials/transitions",
+            post(transition_material)
+                .owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Update]),
+        )
         .route(
             "/webhooks/materials/operations/{id}",
-            get(material_operation),
+            get(material_operation).owned(&contracts::WEBHOOK_MATERIALS, &[RouteOperation::Get]),
         )
-        .route("/webhooks/health", get(health))
-        .route("/webhooks/event-types", get(types))
-        .route("/webhooks/subscriptions", get(subscriptions))
+        .route(
+            "/webhooks/health",
+            get(health).owned(&contracts::WEBHOOK_HEALTH, &[RouteOperation::Get]),
+        )
+        .route(
+            "/webhooks/event-types",
+            get(types).owned(&contracts::WEBHOOK_TYPES, &[RouteOperation::List]),
+        )
+        .route(
+            "/webhooks/subscriptions",
+            get(subscriptions).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List]),
+        )
         .route(
             "/webhooks/subscriptions/{id}",
-            get(subscription).put(change),
+            get(subscription)
+                .owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::Get])
+                .put(change)
+                .owned(
+                    &contracts::WEBHOOK_SUBSCRIPTIONS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
         )
-        .route("/webhooks/subscriptions/{id}/test", post(test))
-        .route("/webhooks/deliveries", get(deliveries))
-        .route("/webhooks/deliveries/{id}", get(delivery))
-        .route("/webhooks/deliveries/{id}/replay", post(replay))
-        .route("/webhooks/deliveries/{id}/redrive", post(redrive))
+        .route(
+            "/webhooks/subscriptions/{id}/test",
+            post(test).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/webhooks/deliveries",
+            get(deliveries).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List]),
+        )
+        .route(
+            "/webhooks/deliveries/{id}",
+            get(delivery).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Get]),
+        )
+        .route(
+            "/webhooks/deliveries/{id}/replay",
+            post(replay).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/webhooks/deliveries/{id}/redrive",
+            post(redrive).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Action]),
+        )
         .with_state(source)
 }
 type Response = Result<Json<Value>, Error>;

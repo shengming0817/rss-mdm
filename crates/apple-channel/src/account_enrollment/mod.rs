@@ -1,6 +1,7 @@
 //! Account-driven Device Enrollment. Identity owns people; registration owns devices.
 //! ref: Apple implementing-the-simple-authentication-account-driven-enrollment-flow;
 //! apple/device-management mdm/checkin/gettoken.yaml@09f249a06e7e3289930bf6d05f38fb562f748ebf.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod authority;
 pub use authority::authority;
 mod bridge;
@@ -9,8 +10,9 @@ pub use management::directory;
 mod protocol;
 mod store;
 use crate::{Error, Failure, HttpState};
-use axum::{Router, http::HeaderMap};
+use axum::http::HeaderMap;
 use rss_mdm_authorization_service::context::AuthorizedPrincipal;
+use rss_mdm_http_contract::Router;
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -21,44 +23,71 @@ pub struct Authentication {
     pub origin: String,
 }
 pub fn routes() -> Router<Arc<HttpState>> {
-    use axum::routing::{get, post};
+    use rss_mdm_http_contract::routing::{get, post};
     Router::new()
         .route(
             "/.well-known/com.apple.remotemanagement",
-            get(protocol::discover),
+            get(protocol::discover).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/account-enrollment/enroll/{organization}",
-            post(protocol::enroll),
+            post(protocol::enroll).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/account-enrollment/authenticate/{flow}",
-            get(bridge::start),
+            get(bridge::start).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/account-enrollment/authenticate",
-            get(bridge::resume),
+            get(bridge::resume).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/account-enrollment/finish",
-            post(bridge::finish),
+            post(bridge::finish).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/account-enrollment/bridge.js",
-            get(bridge::script),
+            get(bridge::script).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
 }
 pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
-    use axum::routing::{get, put};
+    use rss_mdm_http_contract::routing::{get, put};
     Router::new()
-        .route("/api/v1/apple/organizations", get(management::list))
+        .route(
+            "/api/v1/apple/organizations",
+            get(management::list).owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List]),
+        )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment",
-            put(management::organization),
+            put(management::organization).owned(
+                &contracts::APPLE_ACCOUNT_CONFIGURATION,
+                &[RouteOperation::Update],
+            ),
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
-            put(management::account),
+            put(management::account).owned(
+                &contracts::APPLE_ACCOUNT_BINDINGS,
+                &[RouteOperation::Update],
+            ),
         )
 }
 pub(crate) async fn authenticate(

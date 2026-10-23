@@ -1,9 +1,11 @@
 //! Authorized product runtime projection; App supplies the actual component owners.
 //! ref: axum axum/src/middleware/from_fn.rs@axum-v0.8.9 (request extensions).
 use crate::{Error, authorization::context::RequestAuth};
-use axum::{Extension, Json, Router, extract::State, routing::get};
+use axum::{Extension, Json, extract::State};
 use futures::future::BoxFuture;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_request_context::TenantId;
 use serde::Serialize;
 use std::{sync::Arc, time::Instant};
@@ -251,7 +253,10 @@ pub enum AttemptStage {
 }
 
 pub fn routes() -> Router<Arc<dyn Source>> {
-    Router::new().route("/runtime/diagnostics", get(read))
+    Router::new().route(
+        "/runtime/diagnostics",
+        get(read).owned(&contracts::DIAGNOSTICS, &[RouteOperation::Get]),
+    )
 }
 async fn read(
     State(source): State<Arc<dyn Source>>,

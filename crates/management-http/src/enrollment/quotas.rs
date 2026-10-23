@@ -2,13 +2,14 @@
 use super::http::HttpState;
 use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::User;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::quotas::{Change, Configuration, Usage};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -22,20 +23,44 @@ fn user(auth: &RequestAuth, instance: Uuid, principal: Uuid) -> User {
 }
 pub fn routes() -> Router<App> {
     Router::new()
-        .route("/registration-quotas/me", get(me))
+        .route(
+            "/registration-quotas/me",
+            get(me).owned(&contracts::REGISTRATION_QUOTA_USAGE, &[RouteOperation::Get]),
+        )
         .route(
             "/registration-quotas/defaults",
-            get(defaults).put(defaults_write),
+            get(defaults)
+                .owned(
+                    &contracts::REGISTRATION_DEFAULT_QUOTA,
+                    &[RouteOperation::Get],
+                )
+                .put(defaults_write)
+                .owned(
+                    &contracts::REGISTRATION_DEFAULT_QUOTA,
+                    &[RouteOperation::Update],
+                ),
         )
         .route(
             "/registration-quotas/users/{instance}/{principal}",
-            get(overrides).put(overrides_write),
+            get(overrides)
+                .owned(&contracts::REGISTRATION_USER_QUOTA, &[RouteOperation::Get])
+                .put(overrides_write)
+                .owned(
+                    &contracts::REGISTRATION_USER_QUOTA,
+                    &[RouteOperation::Update],
+                ),
         )
         .route(
             "/registration-quotas/users/{instance}/{principal}/usage",
-            get(usage),
+            get(usage).owned(&contracts::REGISTRATION_USER_QUOTA, &[RouteOperation::Get]),
         )
-        .route("/self-enrollments", get(options).post(create_self))
+        .route(
+            "/self-enrollments",
+            get(options)
+                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::List])
+                .post(create_self)
+                .owned(&contracts::SELF_ENROLLMENTS, &[RouteOperation::Create]),
+        )
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

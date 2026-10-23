@@ -2,11 +2,13 @@
 //! ref: axum axum/src/form.rs; Microsoft Windows Azure AD integration with MDM.
 use super::*;
 use axum::{
-    Form, Json, Router,
+    Form, Json,
     extract::{Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use rss_mdm_http_contract::Router;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 const COOKIE: &str = "__Host-rss-entra-flow";
 const ENTRY: &str = "/enrollment/windows/entra/terms";
 
@@ -49,14 +51,26 @@ struct Stored {
 pub fn browser_routes(app: Arc<HttpState>, envelope: crate::boundary::Envelope) -> Router {
     crate::boundary::wrap(
         Router::new()
-            .route("/api/v1/windows/entra/terms", axum::routing::get(start))
+            .route(
+                "/api/v1/windows/entra/terms",
+                rss_mdm_http_contract::routing::get(start).owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .route(
                 "/api/v1/windows/entra/terms/context",
-                axum::routing::get(context),
+                rss_mdm_http_contract::routing::get(context).owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             )
             .route(
                 "/api/v1/windows/entra/terms/finish",
-                axum::routing::post(finish),
+                rss_mdm_http_contract::routing::post(finish).owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             )
             .with_state(app)
             .layer(axum::extract::DefaultBodyLimit::max(4096)),

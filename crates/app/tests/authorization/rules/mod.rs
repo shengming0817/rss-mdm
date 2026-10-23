@@ -340,11 +340,11 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             "/api/v1",
             crate::authorization::http::routes().with_state(Arc::new(HttpState {
                 audit_store: access.audit_store_fixture(&config.audit).await?,
-            })),
+            })).into_axum(),
         )
         .nest(
             "/api/v1",
-            crate::enrollment::http::routes().with_state(enrollment),
+            crate::enrollment::http::routes().with_state(enrollment).into_axum(),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication,

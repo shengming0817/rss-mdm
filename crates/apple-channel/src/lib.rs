@@ -1,4 +1,5 @@
 //! Apple MDM protocol, SCEP lifecycle and APNs transport.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 pub mod account_enrollment;
 pub mod ade;
 mod agent_collection;
@@ -233,23 +234,41 @@ impl Apple {
     }
 }
 /// Business control plane; App must install the common management authentication boundary.
-pub fn management_routes(app: Arc<HttpState>) -> axum::Router {
+pub fn management_routes(app: Arc<HttpState>) -> rss_mdm_http_contract::Router {
     account_enrollment::management_routes()
         .merge(ade::management_routes())
         .merge(runtime_materials::routes())
         .merge(platform_sso::management_routes())
         .with_state(app)
 }
-pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
-    use axum::routing::post;
+pub fn browser_routes(
+    app: Arc<HttpState>,
+    envelope: boundary::Envelope,
+) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::routing::post;
     boundary::wrap(
-        axum::Router::new()
+        rss_mdm_http_contract::Router::new()
             .route(
                 "/api/v1/enrollments/{id}/profile",
-                post(enrollment::download),
+                post(enrollment::download).owned(
+                    &contracts::DOWNLOAD_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             )
-            .route("/api/v1/apple/scep/challenge", post(enrollment::challenge))
-            .route("/api/v1/apple/scep/notify", post(enrollment::notify))
+            .route(
+                "/api/v1/apple/scep/challenge",
+                post(enrollment::challenge).owned(
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/api/v1/apple/scep/notify",
+                post(enrollment::notify).owned(
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .merge(account_enrollment::routes())
             .merge(platform_sso::browser_routes())
             .merge(ade::routes())
@@ -262,16 +281,31 @@ pub fn browser_routes(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum
         envelope,
     )
 }
-pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> axum::Router {
-    use axum::routing::put;
+pub fn router(app: Arc<HttpState>, envelope: boundary::Envelope) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::routing::put;
     boundary::wrap(
-        axum::Router::new()
-            .route("/checkin", put(checkin::checkin))
+        rss_mdm_http_contract::Router::new()
+            .route(
+                "/checkin",
+                put(checkin::checkin).owned(
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .route(
                 "/native/apple/ddm/assets/{operation}/{identifier}",
-                axum::routing::get(ddm::asset),
+                rss_mdm_http_contract::routing::get(ddm::asset).owned(
+                    &contracts::DOWNLOAD_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             )
-            .route("/mdm", put(checkin::manage))
+            .route(
+                "/mdm",
+                put(checkin::manage).owned(
+                    &contracts::PROTOCOL_APPLE_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 app.clone(),
                 runtime_materials::runtime::admit,

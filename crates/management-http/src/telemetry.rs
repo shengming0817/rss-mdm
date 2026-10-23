@@ -1,11 +1,15 @@
 //! Telemetry management stays inside the existing account/session HTTP boundary.
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_telemetry_service::{
     Service,
     query::{AggregateRequest, HealthRequest, HistoryRequest, ResourceRequest},
@@ -16,14 +20,32 @@ pub fn routes(service: Option<Arc<Service>>) -> Router {
     Router::new()
         .route(
             "/devices/{device}/telemetry-configurations",
-            get(configurations),
+            get(configurations).owned(&contracts::DEVICES, &[RouteOperation::Action]),
         )
-        .route("/telemetry/resources", post(resources))
-        .route("/telemetry/history", post(history))
-        .route("/telemetry/aggregate", post(aggregate))
-        .route("/telemetry/maintenance", post(maintenance))
-        .route("/telemetry/health", post(health))
-        .route("/telemetry/gaps/query", post(gaps))
+        .route(
+            "/telemetry/resources",
+            post(resources).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/telemetry/history",
+            post(history).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/telemetry/aggregate",
+            post(aggregate).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/telemetry/maintenance",
+            post(maintenance).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/telemetry/health",
+            post(health).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/telemetry/gaps/query",
+            post(gaps).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+        )
         .with_state(Arc::new(service))
 }
 async fn configurations(

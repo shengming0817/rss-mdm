@@ -1,11 +1,15 @@
 //! Authenticated HTTP adapter for the enterprise software owner.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 type HttpState = rss_mdm_software_service::management::catalog::Access<
     rss_mdm_content_service::software::SoftwareContent,
 >;
@@ -14,25 +18,75 @@ use serde_json::Value;
 use std::sync::Arc;
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/agent-packages", get(managed_packages).post(publish_agent))
-        .route("/agent-packages/uploads", post(begin_agent_upload))
-        .route("/agent-packages/uploads/{id}", get(inspect_agent_upload))
-        .route("/agent-packages/save", post(save_agent_upload))
-        .route("/agent-packages/operations/{id}", get(agent_operation))
-        .route("/agent-packages/{id}/withdraw", post(withdraw_agent))
-        .route("/software/imports", post(import))
-        .route("/software/sources", get(sources))
+        .route(
+            "/agent-packages",
+            get(managed_packages)
+                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::List])
+                .post(publish_agent)
+                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Create]),
+        )
+        .route(
+            "/agent-packages/uploads",
+            post(begin_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/agent-packages/uploads/{id}",
+            get(inspect_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/agent-packages/save",
+            post(save_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/agent-packages/operations/{id}",
+            get(agent_operation).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/agent-packages/{id}/withdraw",
+            post(withdraw_agent).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Lifecycle]),
+        )
+        .route(
+            "/software/imports",
+            post(import).owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/software/sources",
+            get(sources).owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::List]),
+        )
         .route(
             "/software/resources/{id}/versions/{version}/content",
-            get(download),
+            get(download).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/software/sources/{id}/revisions/{revision}",
-            get(read_source).post(write_source),
+            get(read_source)
+                .owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::Get])
+                .post(write_source)
+                .owned(
+                    &contracts::SOFTWARE_SOURCES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Lifecycle,
+                    ],
+                ),
         )
         .route(
             "/software/resources/{id}/versions/{version}",
-            get(read_version).post(write_version),
+            get(read_version)
+                .owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::Get])
+                .post(write_version)
+                .owned(
+                    &contracts::SOFTWARE_VERSIONS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Lifecycle,
+                    ],
+                ),
         )
 }
 
@@ -253,9 +307,27 @@ async fn withdraw_agent(
 /// Anonymous, secret-free catalogue shared by Agent HTTPS and browser download ingress.
 pub fn agent_packages_public(app: Arc<HttpState>) -> Router {
     Router::new()
-        .route("/packages", get(agent_package_list))
-        .route("/packages/{id}", get(agent_package_metadata))
-        .route("/packages/{id}/content", get(agent_package_content))
+        .route(
+            "/packages",
+            get(agent_package_list).owned(
+                &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/packages/{id}",
+            get(agent_package_metadata).owned(
+                &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/packages/{id}/content",
+            get(agent_package_content).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
+        )
         .with_state(app)
 }
 async fn agent_package_list(

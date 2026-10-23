@@ -36,7 +36,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let sessions=Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant));
         let router = authority.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_views::routes(
             sessions.clone(), authority.identity.authority.clone(), None,
-        ).with_state(service.clone())))?;
+        ).with_state(service.clone()).into_axum()))?;
         let mut browser = authority.browser("admin")?;
         let accounts = format!("/api/v1/identity/tenants/{}/accounts", case_a());
         let login = crate::test_support::case::login("directory-person");

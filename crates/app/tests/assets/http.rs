@@ -49,9 +49,11 @@ impl AssetHttp {
         let routes = Router::new()
             .nest(
                 "/api/v1",
-                rss_mdm_management_http::assets::routes().with_state(Arc::new(
-                    rss_mdm_management_http::assets::http::HttpState { assets },
-                )),
+                rss_mdm_management_http::assets::routes()
+                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                        assets,
+                    }))
+                    .into_axum(),
             )
             .merge(authority.authorization());
         let router = authority.router(routes)?;

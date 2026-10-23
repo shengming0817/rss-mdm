@@ -1,19 +1,29 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_execution_service::queries::Queries;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<Queries>> {
     Router::new()
-        .route("/policies/{id}/runs", get(runs))
-        .route("/policies/{id}/software/rollout", get(rollout))
-        .route("/policies/{id}/runs/{task}", get(run))
+        .route(
+            "/policies/{id}/runs",
+            get(runs).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/policies/{id}/software/rollout",
+            get(rollout).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/policies/{id}/runs/{task}",
+            get(run).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
 }
 async fn rollout(
     State(app): State<Arc<Queries>>,

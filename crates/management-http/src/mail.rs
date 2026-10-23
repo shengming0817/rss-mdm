@@ -1,12 +1,13 @@
 //! SMTP 仅发布材料和固定资格投递请求；普通 HTTP 不执行宿主或网络维护。
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_mail_service::{
     authority::Authority,
     store::{Directory, Receipt, Request},
@@ -15,8 +16,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 pub fn routes(authority: Arc<Authority>) -> Router {
     Router::new()
-        .route("/smtp", get(read).post(create))
-        .route("/smtp/operations/{id}", get(operation))
+        .route(
+            "/smtp",
+            get(read)
+                .owned(&contracts::SMTP, &[RouteOperation::Get])
+                .post(create)
+                .owned(&contracts::SMTP, &[RouteOperation::Update]),
+        )
+        .route(
+            "/smtp/operations/{id}",
+            get(operation).owned(&contracts::SMTP, &[RouteOperation::Get]),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
         .with_state(authority)
 }

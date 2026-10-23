@@ -1,14 +1,18 @@
 //! Enrollment endpoints accept bootstrap material; activation requires actual TLS possession.
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate::ClientCertificateEvidence;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_registration_service::agent::{Failure, Service};
 use std::sync::Arc;
 type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
@@ -19,27 +23,132 @@ fn body<T>(v: Body<T>) -> Result<T, Failure> {
 pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Router {
     crate::boundary::wrap_enroll(
         Router::new()
-            .route("/requests", post(request))
-            .route("/native-grants", post(native_grant))
-            .route("/bootstrap/scep/challenge", post(bootstrap_challenge))
-            .route("/bootstrap/scep/notify", post(bootstrap_notify))
-            .route("/configurations/exchange", post(exchange))
-            .route("/configurations/status", post(exchange_status))
-            .route("/reservations/cancel", post(cancel))
-            .route("/certificates", post(issue))
-            .route("/activate", post(activate))
-            .route("/status", post(status))
-            .route("/renewal-grants", post(renew))
-            .route("/renewal-grants/status", post(renewal_status))
-            .route("/connections", get(connections))
-            .route("/connections/failures", post(connection_failure))
+            .route(
+                "/requests",
+                post(request).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/native-grants",
+                post(native_grant).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/bootstrap/scep/challenge",
+                post(bootstrap_challenge).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/bootstrap/scep/notify",
+                post(bootstrap_notify).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/configurations/exchange",
+                post(exchange).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/configurations/status",
+                post(exchange_status).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/reservations/cancel",
+                post(cancel).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/certificates",
+                post(issue).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/activate",
+                post(activate).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/status",
+                post(status).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/renewal-grants",
+                post(renew).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/renewal-grants/status",
+                post(renewal_status).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/connections",
+                get(connections).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/connections/failures",
+                post(connection_failure).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .route(
                 "/connections/acknowledgements",
-                post(acknowledge_connections),
+                post(acknowledge_connections).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
             )
-            .route("/trust", get(trust))
-            .route("/trust/observations", post(observe_trust))
-            .route("/trust/acknowledgements", post(acknowledge))
+            .route(
+                "/trust",
+                get(trust).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/trust/observations",
+                post(observe_trust).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
+            .route(
+                "/trust/acknowledgements",
+                post(acknowledge).owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+            )
             .with_state(service),
         envelope,
     )

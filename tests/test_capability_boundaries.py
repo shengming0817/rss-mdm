@@ -28,6 +28,16 @@ class CapabilityBoundaries(unittest.TestCase):
         self.assertFalse(deps & {'sqlx', 'axum', 'reqwest', 'tokio', 'tokio-rustls'})
         self.assertFalse({name for name in deps if name.startswith('rss-mdm-')})
 
+    def test_query_and_route_contract_keep_their_owners(self):
+        query = dependencies('query')
+        self.assertFalse(query & {'axum', 'sqlx', 'tokio'})
+        self.assertFalse({name for name in query if name.startswith(('rss-mdm-', 'rss-identity-'))})
+        route = dependencies('http-contract')
+        self.assertFalse(route & {'sqlx', 'rss-runtime'})
+        self.assertFalse({name for name in route if name.startswith(('rss-mdm-', 'rss-identity-'))})
+        for package in SERVICES | {'resource', 'resource-postgres'}:
+            self.assertNotIn('rss-mdm-http-contract', dependencies(package), package)
+
     def test_services_cannot_import_host_or_ingress(self):
         forbidden = {'rss-mdm-app', 'axum'} | {f'rss-mdm-{p}' for p in INGRESS}
         for package in SERVICES:

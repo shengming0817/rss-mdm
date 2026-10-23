@@ -370,15 +370,16 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
                     inventory: runtime,
                 }),
                 envelope.clone(),
-            ),
+            )
+            .into_axum(),
         )
         .nest(
             "/api/v1/agent/enroll",
-            crate::agent::enroll::router(service.clone(), envelope),
+            crate::agent::enroll::router(service.clone(), envelope).into_axum(),
         );
     let browser = fixture.authorization().merge(fixture.enrollment()).nest(
         "/api/v1",
-        rss_mdm_management_http::agent_enrollment::routes(Some(service)),
+        rss_mdm_management_http::agent_enrollment::routes(Some(service)).into_axum(),
     );
     fixture.router_with_public(browser, public)
 }

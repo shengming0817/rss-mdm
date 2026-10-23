@@ -1,10 +1,11 @@
 use super::*;
 use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
-    extract::{Path, Query, State},
-    routing::get,
+    Extension, Json,
+    extract::{Path, RawQuery, State},
 };
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::Value;
 pub struct HttpState {
     pub catalog: Arc<ResourceCatalog>,
@@ -12,9 +13,28 @@ pub struct HttpState {
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/resources", get(directory))
-        .route("/collection-blueprints", get(blueprints))
-        .route("/resources/{id}", get(read).post(write))
+        .route(
+            "/resources",
+            get(directory).owned(&contracts::RESOURCE, &[RouteOperation::List]),
+        )
+        .route(
+            "/collection-blueprints",
+            get(blueprints).owned(&contracts::BLUEPRINTS, &[RouteOperation::List]),
+        )
+        .route(
+            "/resources/{id}",
+            get(read)
+                .owned(&contracts::RESOURCE, &[RouteOperation::Get])
+                .post(write)
+                .owned(
+                    &contracts::RESOURCE,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Lifecycle,
+                    ],
+                ),
+        )
 }
 
 async fn blueprints(
@@ -29,13 +49,11 @@ async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: Result<
-        Query<rss_mdm_flow_service::resource_catalog::directory::DirectoryQuery>,
-        axum::extract::rejection::QueryRejection,
-    >,
-) -> Result<Json<Value>, Error> {
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<serde_json::Map<String, Value>>>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error::Malformed)?;
+    let q = rss_mdm_resource::directory::Query::parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
 }
 async fn run(

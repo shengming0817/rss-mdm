@@ -1,16 +1,17 @@
 //! Resource-authorized streaming upload. Long I/O never holds a PG transaction.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::post,
 };
 use futures::TryStreamExt;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_content_service::Upload;
 pub(crate) use rss_mdm_content_service::service::Access as HttpState;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::post};
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,20 +19,41 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/resources/{id}/versions/{version}/script",
-            axum::routing::get(script),
+            rss_mdm_http_contract::routing::get(script).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/resources/{id}/content/operations/{operation}",
-            axum::routing::get(receipt),
+            rss_mdm_http_contract::routing::get(receipt)
+                .owned(&contracts::RESOURCE, &[RouteOperation::Action]),
         )
-        .route("/software/content/cleanup", post(cleanup))
-        .route("/resources/{id}/content", post(upload))
-        .route("/resources/{id}/content/mirror", post(mirror))
+        .route(
+            "/software/content/cleanup",
+            post(cleanup).owned(&contracts::CONTENT_MAINTENANCE, &[RouteOperation::Action]),
+        )
+        .route(
+            "/resources/{id}/content",
+            post(upload).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+        )
+        .route(
+            "/resources/{id}/content/mirror",
+            post(mirror).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+        )
         .route(
             "/resources/{id}/uploads/{upload}",
-            post(begin).get(status).patch(append),
+            post(begin)
+                .owned(&contracts::RESOURCE, &[RouteOperation::Action])
+                .get(status)
+                .owned(&contracts::RESOURCE, &[RouteOperation::Action])
+                .patch(append)
+                .owned(&contracts::RESOURCE, &[RouteOperation::Action]),
         )
-        .route("/resources/{id}/uploads/{upload}/complete", post(complete))
+        .route(
+            "/resources/{id}/uploads/{upload}/complete",
+            post(complete).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+        )
 }
 use rss_mdm_content_service::service::{Selection, current};
 async fn begin(

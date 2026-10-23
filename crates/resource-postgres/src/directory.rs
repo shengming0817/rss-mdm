@@ -1,69 +1,163 @@
-//! Current Resource headers; directory reads never load immutable version artifacts.
-use crate::{STORAGE, core::*, error::*, store::ResourceStore};
+//! Checked Resource headers; all predicates and ordering execute before the bounded SQL page.
+use crate::{STORAGE, error::*, store::ResourceStore};
 use futures::TryStreamExt;
+use rss_mdm_query::{Expression, Operator};
+use rss_mdm_resource::directory::{Field, Position, Query, Record, Scalar};
 use rss_transactional_messaging_postgres::PgTransaction;
-use serde_json::Value;
-use sqlx::Row;
-/// ID pagination and lifecycle filters for Resource metadata.
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectoryQuery {
-    /// Exclusive canonical resource ID.
-    pub after: Option<String>,
-    /// Requested page size, one through one thousand.
-    #[serde(default = "limit")]
-    pub limit: usize,
-    /// Reverse canonical ID order.
-    #[serde(default)]
-    pub descending: bool,
-    /// Exact published resource kind.
-    pub kind: Option<String>,
-    /// Whether an active version must currently exist.
-    pub active: Option<bool>,
-}
-fn limit() -> usize {
-    64
-}
+use sqlx::{Postgres, QueryBuilder, Row};
+
 impl ResourceStore {
-    /// Project validated aggregate headers in this store's tenant and runtime.
+    /// Query the complete tenant candidate set; returned lookahead is also integrity checked.
     pub async fn directory_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        q: &DirectoryQuery,
-    ) -> InTransaction<Vec<Value>> {
+        q: &Query,
+        after: Option<&Position>,
+    ) -> InTransaction<Vec<Record>> {
         input!(self.check(tx)?);
-        if !(1..=1000).contains(&q.limit) || q.after.as_ref().is_some_and(|v| Id::new(v).is_err()) {
+        if after.is_some_and(|p| q.validate_position(p).is_err()) {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let kind = match q.kind.as_deref() {
-            None => None,
-            Some("software") => Some(0_i32),
-            Some("script") => Some(1),
-            Some("configuration") => Some(2),
-            Some("native_collection") => Some(3),
-            Some("agent_collection") => Some(4),
-            Some("telemetry_profile") => Some(5),
-            _ => return Ok(Err(Rejection::InvalidInput)),
-        };
-        let tenant = tx.tenant_id();
-        let query = q.clone();
-        let result=tx.with_connection(move|c|Box::pin(async move {
-            let mut rows=sqlx::query("SELECT id,revision,document,digest FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR CASE WHEN $3 THEN id COLLATE \"C\"<$2 COLLATE \"C\" ELSE id COLLATE \"C\">$2 COLLATE \"C\" END) AND ($4::integer IS NULL OR (convert_from(document,'UTF8')::jsonb->>3)::integer=$4) AND ($5::boolean IS NULL OR EXISTS(SELECT 1 FROM jsonb_array_elements(convert_from(document,'UTF8')::jsonb->5) s WHERE s->>1='1')=$5) ORDER BY CASE WHEN NOT $3 THEN id END COLLATE \"C\" ASC,CASE WHEN $3 THEN id END COLLATE \"C\" DESC LIMIT $6")
-                .bind(tenant.to_string()).bind(query.after).bind(query.descending).bind(kind).bind(query.active).bind((query.limit+1) as i64).fetch(c);
-            let mut items=Vec::new();
-            while let Some(row)=rows.try_next().await? {
-                // Retain only the small selector. Header bytes and version states
-                // are released before fetching the next row, including lookahead.
-                let header=match STORAGE.checked(row.try_get("document")?,row.try_get("digest")?) {
-                    Ok(header)=>header,Err(error)=>return Ok(Err(error)),
-                };
-                let id:String=row.try_get("id")?;
-                match crate::codec::directory_header(&header,tenant,&id,row.try_get("revision")?) {
-                    Ok(item)=>items.push(item),Err(error)=>return Ok(Err(error)),
+        let mut sql = QueryBuilder::<Postgres>::new(
+            "WITH headers AS (SELECT id,revision,document,digest,convert_from(document,'UTF8')::jsonb AS header FROM mdm_resource.aggregates WHERE tenant_id=",
+        );
+        sql.push_bind(tx.tenant_id().to_string())
+            .push("::uuid) SELECT id,revision,document,digest FROM headers WHERE ");
+        if let Some(filter) = q.filter() {
+            expression(&mut sql, filter);
+        } else {
+            sql.push("TRUE");
+        }
+        if let Some(position) = after {
+            sql.push(" AND (");
+            for (i, sort) in q.sort().iter().enumerate() {
+                if i != 0 {
+                    sql.push(" OR ");
                 }
+                sql.push("(");
+                for (j, prefix) in q.sort().iter().take(i).enumerate() {
+                    sql.push(column(prefix.field)).push(" = ");
+                    value(&mut sql, &position.0[j]);
+                    sql.push(" AND ");
+                }
+                sql.push(column(sort.field))
+                    .push(if sort.descending { " < " } else { " > " });
+                value(&mut sql, &position.0[i]);
+                sql.push(")");
             }
-            Ok(Ok(items))
-        })).await?;
+            sql.push(")");
+        }
+        sql.push(" ORDER BY ");
+        for (i, sort) in q.sort().iter().enumerate() {
+            if i != 0 {
+                sql.push(",");
+            }
+            sql.push(column(sort.field))
+                .push(if sort.descending { " DESC" } else { " ASC" });
+        }
+        sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
+        let tenant = tx.tenant_id();
+        let result = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    let query = sql.build();
+                    let mut rows = query.fetch(c);
+                    let mut items = Vec::new();
+                    while let Some(row) = rows.try_next().await? {
+                        let header = match STORAGE
+                            .checked(row.try_get("document")?, row.try_get("digest")?)
+                        {
+                            Ok(header) => header,
+                            Err(error) => return Ok(Err(error)),
+                        };
+                        let id: String = row.try_get("id")?;
+                        match crate::codec::directory_header(
+                            &header,
+                            tenant,
+                            &id,
+                            row.try_get("revision")?,
+                        ) {
+                            Ok(item) => items.push(item),
+                            Err(error) => return Ok(Err(error)),
+                        }
+                    }
+                    Ok(Ok(items))
+                })
+            })
+            .await?;
         Ok(Ok(result?))
     }
+}
+fn column(field: Field) -> &'static str {
+    match field {
+        Field::Id => "id COLLATE \"C\"",
+        Field::Revision => "revision",
+        Field::Kind => {
+            "(CASE header->>3 WHEN '0' THEN 'software' WHEN '1' THEN 'script' WHEN '2' THEN 'configuration' WHEN '3' THEN 'native_collection' WHEN '4' THEN 'agent_collection' WHEN '5' THEN 'telemetry_profile' END) COLLATE \"C\""
+        }
+        Field::Active => {
+            "EXISTS(SELECT 1 FROM jsonb_array_elements(header->5) AS version WHERE version->>1='1')"
+        }
+        _ => unreachable!("validated query excludes projection-only selectors"),
+    }
+}
+fn value(sql: &mut QueryBuilder<Postgres>, v: &Scalar) {
+    match v {
+        Scalar::Text(v) => {
+            sql.push_bind(v.clone());
+        }
+        Scalar::Integer(v) => {
+            sql.push_bind(*v);
+        }
+        Scalar::Boolean(v) => {
+            sql.push_bind(*v);
+        }
+    }
+}
+fn expression(sql: &mut QueryBuilder<Postgres>, expr: &Expression<Field, Scalar>) {
+    sql.push("(");
+    match expr {
+        Expression::And(children) | Expression::Or(children) => {
+            let separator = if matches!(expr, Expression::And(_)) {
+                " AND "
+            } else {
+                " OR "
+            };
+            for (i, child) in children.iter().enumerate() {
+                if i != 0 {
+                    sql.push(separator);
+                }
+                expression(sql, child);
+            }
+        }
+        Expression::Compare {
+            field,
+            operator,
+            values,
+        } => {
+            sql.push(column(*field)).push(match operator {
+                Operator::Eq => " = ",
+                Operator::Ne => " <> ",
+                Operator::Lt => " < ",
+                Operator::Le => " <= ",
+                Operator::Gt => " > ",
+                Operator::Ge => " >= ",
+                Operator::In => " IN ",
+                Operator::Out => " NOT IN ",
+            });
+            if operator.set() {
+                sql.push("(");
+            }
+            for (i, v) in values.iter().enumerate() {
+                if i != 0 {
+                    sql.push(",");
+                }
+                value(sql, v);
+            }
+            if operator.set() {
+                sql.push(")");
+            }
+        }
+    }
+    sql.push(")");
 }

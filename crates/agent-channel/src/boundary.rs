@@ -1,7 +1,6 @@
 //! This ingress owns request admission, body limits, audit settlement and wire errors.
 use crate::{Error, Failure};
 use axum::{
-    Router,
     extract::{Request, State},
     http::{HeaderValue, header},
     middleware::{self, Next},
@@ -11,6 +10,7 @@ use rss_mdm_audit_integration::{
     RequestAudit,
     completion::{Replacement, ResponseFailure},
 };
+use rss_mdm_http_contract::Router;
 use std::{sync::Arc, time::Duration};
 #[derive(Clone)]
 pub struct Envelope {

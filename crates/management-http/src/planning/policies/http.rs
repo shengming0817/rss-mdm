@@ -1,8 +1,12 @@
 use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
     routing::{get, post},
 };
 use std::sync::Arc;
@@ -14,7 +18,11 @@ pub fn routes(
     Router::new()
         .merge(
             Router::new()
-                .route("/policies/previews", post(super::http_preview::preview))
+                .route(
+                    "/policies/previews",
+                    post(super::http_preview::preview)
+                        .owned(&contracts::POLICIES, &[RouteOperation::Action]),
+                )
                 .with_state(Arc::new(super::http_preview::StateServices {
                     queries: queries.clone(),
                     telemetry,
@@ -22,13 +30,36 @@ pub fn routes(
         )
         .merge(
             Router::new()
-                .route("/policies/{id}/assignments", get(assignments))
+                .route(
+                    "/policies/{id}/assignments",
+                    get(assignments).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+                )
                 .with_state(queries),
         )
-        .route("/policies/capabilities", get(capabilities))
-        .route("/policies", get(list))
-        .route("/policies/{id}", get(read).post(change).delete(delete))
-        .route("/policies/{id}/reruns", post(rerun))
+        .route(
+            "/policies/capabilities",
+            get(capabilities).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/policies",
+            get(list).owned(&contracts::POLICIES, &[RouteOperation::List]),
+        )
+        .route(
+            "/policies/{id}",
+            get(read)
+                .owned(&contracts::POLICIES, &[RouteOperation::Get])
+                .post(change)
+                .owned(
+                    &contracts::POLICIES,
+                    &[RouteOperation::Create, RouteOperation::Update],
+                )
+                .delete(delete)
+                .owned(&contracts::POLICIES, &[RouteOperation::Delete]),
+        )
+        .route(
+            "/policies/{id}/reruns",
+            post(rerun).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
 }
 async fn change(
     State(service): State<Arc<Policies>>,

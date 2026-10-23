@@ -379,6 +379,7 @@ impl From<rss_mdm_flow_service::Error> for Error {
         use rss_mdm_flow_service::Error as F;
         match e {
             F::MdmSoftwareDisabled => Self::MdmSoftwareDisabled,
+            F::ResourceCursorInvalidated => Self::ResourceCursorInvalidated,
             F::Malformed => Self::Malformed,
             F::Planning(e) => Self::Planning(e),
             F::Resource(e) => Self::Resource(e),

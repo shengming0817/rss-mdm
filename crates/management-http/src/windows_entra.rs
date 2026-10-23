@@ -1,13 +1,21 @@
 //! Session-authorized organization policy; native consent uses Entra bearer authority separately.
 use crate::{Error, authorization::context::RequestAuth};
-use axum::{Extension, Json, Router, extract::State, routing::get};
+use axum::{Extension, Json, extract::State};
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::windows_entra::{Management, Revision, Settings, Update};
 use std::sync::Arc;
 type App = Arc<Option<Arc<Management>>>;
 pub fn routes(service: Option<Arc<Management>>) -> Router {
     Router::new()
-        .route("/windows/entra-policy", get(read).put(update))
+        .route(
+            "/windows/entra-policy",
+            get(read)
+                .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Get])
+                .put(update)
+                .owned(&contracts::ENTRA_POLICY, &[RouteOperation::Update]),
+        )
         .with_state(Arc::new(service))
 }
 fn service(app: &App) -> Result<&Management, Error> {

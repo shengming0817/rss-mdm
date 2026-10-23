@@ -1,12 +1,13 @@
 //! Authenticated tenant setup intent. Configuration and observations retain their domain owners.
 use crate::{Error, authorization::context::RequestAuth, http_operation::RequestContinuation};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_registration_service::quotas::Channel;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -188,8 +189,17 @@ pub trait Source: Send + Sync {
 }
 pub fn routes(source: Arc<dyn Source>) -> Router {
     Router::new()
-        .route("/settings/first-use", get(read).put(update))
-        .route("/settings/first-use/operations/{id}", get(operation))
+        .route(
+            "/settings/first-use",
+            get(read)
+                .owned(&contracts::FIRST_USE, &[RouteOperation::Get])
+                .put(update)
+                .owned(&contracts::FIRST_USE, &[RouteOperation::Update]),
+        )
+        .route(
+            "/settings/first-use/operations/{id}",
+            get(operation).owned(&contracts::FIRST_USE, &[RouteOperation::Get]),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
         .with_state(source)
 }
