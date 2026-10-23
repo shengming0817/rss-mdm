@@ -292,13 +292,6 @@ state='signing'
                         .require(p,rss_mdm_authorization_service::Permission::Credentials,Some(&g.try_get::<String,_>("device").map_err(db)?)).map_err(|_|Error::Forbidden)?;
                 }
                 a.target(&g.try_get::<String, _>("device").map_err(db)?);
-                if let Some(old) = previous {
-                    return Ok(Change {
-                        value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,
-                        replay: true,
-                        digest: digest.clone(),
-                    });
-                }
                 let old = sqlx::query(
                     r#"
 SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 AND grant_id=$3 FOR
@@ -311,6 +304,16 @@ UPDATE
                 .fetch_one(&mut *c)
                 .await
                 .map_err(db)?;
+                if let Some(previous) = previous {
+                    if serde_json::from_str::<Uuid>(&previous).map_err(|_| Error::Corrupt)? != *id {
+                        return Err(Error::Corrupt);
+                    }
+                    return Ok(Change {
+                        value: candidate(&g, &old)?,
+                        replay: true,
+                        digest: digest.clone(),
+                    });
+                }
                 if old.try_get::<String, _>("signing_issuer").map_err(db)?
                     != hex(certificate.metadata.issuer)
                 {
@@ -372,7 +375,8 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
                 .map_err(db)?;
                 let value = candidate(&g, &row)?;
                 if let Some(op) = &receipt {
-                    crate::operations::save(c, op, &serde_json::to_string(&value).map_err(|_| Error::Corrupt)?, a).await?;
+                    // The immutable issuance owns the chain; the bounded receipt stores its identity only.
+                    crate::operations::save(c, op, &serde_json::to_string(id).map_err(|_| Error::Corrupt)?, a).await?;
                 }
                 Ok(Change {
                     value,
