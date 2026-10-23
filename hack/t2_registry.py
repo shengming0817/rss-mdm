@@ -2073,12 +2073,17 @@ consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 consume(('crates/app/src/native/gateway.rs',), 'gateway.admission apple.host')
 consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')
 
-# The transport fixture is consumed by these test/helper owners, including indirect fixtures.
+# Transport and complete-host dispatch fixtures are consumed by these test/helper owners.
 gateway_consumers = {
     'crates/app/tests/agent_pki/mod.rs', 'crates/app/tests/agent/configurations.rs',
     'crates/app/tests/apple/ade.rs', 'crates/app/tests/windows/support.rs',
     'crates/app/tests/apple/mod.rs', 'crates/app/tests/support/bootstrap.rs',
     'crates/app/tests/apple/production.rs',
+    'crates/app/tests/webhooks/mod.rs', 'crates/app/tests/timeline/mod.rs',
+    'crates/app/tests/identity/sso.rs', 'crates/app/tests/compliance/http.rs',
+    'crates/app/tests/compliance/mod.rs', 'crates/app/tests/planning/onboarding.rs',
+    'crates/app/tests/support/agent_execution.rs', 'crates/app/tests/support/software_execution.rs',
+    'crates/app/tests/support/software.rs', 'crates/app/tests/support/runtime.rs',
 }
 for name, module in tuple(MODULES.items()):
     if gateway_consumers.intersection((*module.test_inputs, *module.support_inputs)):
