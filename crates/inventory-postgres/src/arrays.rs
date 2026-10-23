@@ -229,7 +229,7 @@ pub async fn page(
     })
 }
 
-/// Full rule/worker reconstruction has its own aggregate admission before payload fetch.
+/// Reconstruct full values for rule/worker consumers; HTTP pages use metadata and `page`.
 pub(crate) async fn load(
     c: &mut PgConnection,
     tenant: TenantId,

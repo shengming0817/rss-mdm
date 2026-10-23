@@ -12,10 +12,10 @@ pub struct Assignment {
     pub field: FieldKey,
     /// CAS revision.
     pub revision: i64,
-    /// Current and last-known evidence; full reconstruction is byte/count admitted.
+    /// Current and last-known evidence, reconstructed for rule/worker consumers.
     pub fact: SourceFact,
 }
-/// Full bounded rule/worker read. HTTP list consumers use immutable metadata/item pages.
+/// Full rule/worker read for a bounded device set. HTTP consumers use metadata/item pages.
 pub async fn manual_in(
     c: &mut sqlx::PgConnection,
     tenant: TenantId,
