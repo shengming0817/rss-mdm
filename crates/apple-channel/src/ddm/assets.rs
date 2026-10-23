@@ -36,7 +36,7 @@ pub async fn asset_binding(
 }
 pub async fn asset(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
-    axum::Extension(peer): axum::Extension<rss_mdm_certificate::HandshakePeer>,
+    axum::Extension(peer): axum::Extension<rss_mdm_certificate::ClientCertificateEvidence>,
     axum::Extension(audit): axum::Extension<rss_mdm_audit_integration::RequestAudit>,
     headers: axum::http::HeaderMap,
     axum::extract::Path((operation, identifier)): axum::extract::Path<(Uuid, String)>,

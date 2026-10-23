@@ -19,7 +19,7 @@ use super::*;
 use crate::{
     api::Assembly,
     clock::Clock,
-    native::{self, tls},
+    native::{self},
     test_support::http::Browser,
 };
 use anyhow::{Result, ensure};
@@ -101,7 +101,6 @@ impl Fixture {
         config.software_distribution.mdm_enabled = mdm_software;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
-        apple.management.listen = manage.local_addr()?;
         apple.management.origin = format!("https://localhost:{}", manage.local_addr()?.port());
         let mut trust: rss_mdm_agent_wire::pki::Trust =
             serde_json::from_slice(&std::fs::read(&apple.trust_file)?)?;
@@ -202,10 +201,11 @@ impl Fixture {
             .audit_store(&crate::config::AuditConfig::Plain)
             .await?;
         let agent_pki = config.agent_pki.load(
+            &config.identity.instance_id,
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
-            config.agent_pki.bootstrap_materials(crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
+            config.agent_pki.bootstrap_materials(&config.identity.instance_id,crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
         let agent_enrollment = agent_pki
             .as_ref()
@@ -268,7 +268,7 @@ impl Fixture {
         if let Some(agent) = &agent_pki {
             execution.channels.set(crate::channel_status::ChannelName::Agent,
                 crate::channel_status::ChannelState::Ready, None)?;
-            execution.channels.listening(crate::channel_status::ChannelName::Agent)?;
+            execution.channels.mounted(crate::channel_status::ChannelName::Agent)?;
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
@@ -321,18 +321,15 @@ impl Fixture {
         } = crate::api::from_state(app.clone(), "mdm.example.test".into(), monotonic.clone());
         if let Some(i) = listeners
             .iter()
-            .position(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+            .position(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         {
             router = router.merge(listeners.remove(i).1.router);
         }
         ensure!(listeners.len() == 1, "Apple-only assembly loaded Windows");
         let (_, native) = listeners.pop().unwrap();
         let hook_origin = format!("https://mdm.example.test:{}", webhook.local_addr()?.port());
-        let endpoint = native::TlsEndpoint {
-            listen: webhook.local_addr()?,
+        let endpoint = crate::native::PublicEndpoint {
             origin: hook_origin.clone(),
-            certificate_file: root.join("server.crt"),
-            private_key_file: root.join("apple-tls.pk8"),
         };
         let hooks = crate::api::from_state(
             app.clone(),
@@ -374,14 +371,13 @@ impl Fixture {
                 }
             },
         ));
-        let hooks = native::TlsRouter {
+        let hooks = native::ChannelRouter {
             admission: native::admission::Admission::new(
                 monotonic,
                 app.requests.clone(),
                 "apple-webhook-fixture",
             ),
-            listen: endpoint.listen,
-            tls: tls::configuration(&endpoint, None)?,
+            origins: vec![endpoint.origin.clone()],
             router: hooks.layer(axum::middleware::from_fn(native::admission::admit)),
         };
         let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -408,7 +404,7 @@ impl Fixture {
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?,
                     case_tenant().into(),
-                    crate::native::NativeListenerKind::AppleManagement,
+                    crate::native::ChannelKind::AppleManagement,
                 ).await?
                 .critical(),
             );
@@ -420,7 +416,7 @@ impl Fixture {
                         .audit_store(&crate::config::AuditConfig::Plain)
                         .await?,
                     case_tenant().into(),
-                    crate::native::NativeListenerKind::AppleWebhookFixture,
+                    crate::native::ChannelKind::AppleWebhookFixture,
                 ).await?
                 .critical(),
             );
@@ -611,16 +607,12 @@ impl Fixture {
     }
     async fn https_browser(&self) -> Result<(reqwest::Client, String, rss_runtime::ShutdownStack)> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let endpoint = native::TlsEndpoint {
-            listen: listener.local_addr()?,
+        let endpoint = crate::native::PublicEndpoint {
             origin: "https://mdm.example.test".into(),
-            certificate_file: self.root.join("server.crt"),
-            private_key_file: self.root.join("apple-tls.pk8"),
         };
-        let origin = format!("https://localhost:{}", endpoint.listen.port());
-        let router = native::TlsRouter {
-            listen: endpoint.listen,
-            tls: tls::configuration(&endpoint, None)?,
+        let origin = format!("https://localhost:{}", listener.local_addr()?.port());
+        let router = native::ChannelRouter {
+            origins: vec![endpoint.origin.clone()],
             router: self.router.clone(),
             admission: native::admission::Admission::new(
                 fixture_clock(),
@@ -639,7 +631,7 @@ impl Fixture {
                 router,
                 self.app.audit_store.clone(),
                 case_tenant().into(),
-                native::NativeListenerKind::AppleWebhookFixture,
+                native::ChannelKind::AppleWebhookFixture,
             )
             .await?
             .critical(),

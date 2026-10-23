@@ -448,11 +448,8 @@ impl Control {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let origin = format!("https://localhost:{}", listener.local_addr()?.port());
         state.lock().await.origin = origin.clone();
-        let endpoint = native::TlsEndpoint {
-            listen: listener.local_addr()?,
+        let endpoint = crate::native::PublicEndpoint {
             origin: origin.clone(),
-            certificate_file: root.join("server.crt"),
-            private_key_file: root.join("apple-tls.pk8"),
         };
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -487,14 +484,13 @@ impl Control {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        let tls = native::TlsRouter {
+        let tls = native::ChannelRouter {
             admission: native::admission::Admission::new(
                 fixture_clock(),
                 Arc::new(tokio::sync::Semaphore::new(4)),
                 "ade-api-fixture",
             ),
-            listen: endpoint.listen,
-            tls: tls::configuration(&endpoint, None)?,
+            origins: vec![endpoint.origin.clone()],
             router,
         };
         let startup = owner.startup()?;
@@ -505,7 +501,7 @@ impl Control {
                 tls,
                 f.app.audit_store.clone(),
                 case_tenant().into(),
-                native::NativeListenerKind::AppleWebhookFixture,
+                native::ChannelKind::AppleWebhookFixture,
             )
             .await?
             .critical(),

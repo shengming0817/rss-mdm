@@ -4,7 +4,7 @@ pub mod apple;
 pub mod bootstrap;
 mod peer;
 pub mod windows;
-pub use peer::HandshakePeer;
+pub use peer::{ClientCertificateEvidence, GatewayConnection, GatewayOrigin};
 
 #[derive(Clone, Copy, Debug, thiserror::Error)]
 pub enum Error {

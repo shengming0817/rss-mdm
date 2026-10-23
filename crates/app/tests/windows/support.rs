@@ -117,7 +117,7 @@ pub(crate) struct Host {
     pub(crate) client: reqwest::Client,
     pub(super) secret: rss_identity_core::session::SessionSecret,
     pub(super) reference: Uuid,
-    listeners: Vec<(crate::native::NativeListenerKind, crate::native::TlsRouter)>,
+    listeners: Vec<(crate::native::ChannelKind, crate::native::ChannelRouter)>,
     enroll: Option<tokio::net::TcpListener>,
     manage: Option<tokio::net::TcpListener>,
     additional_manage: Option<tokio::net::TcpListener>,
@@ -251,12 +251,8 @@ impl Host {
         }
         value["native_protocols"]["windows"]["enrollment"]["origin"] =
             serde_json::json!(format!("https://localhost:{}", enroll.local_addr()?.port()));
-        value["native_protocols"]["windows"]["enrollment"]["listen"] =
-            serde_json::json!(enroll.local_addr()?.to_string());
         value["native_protocols"]["windows"]["management"]["origin"] =
             serde_json::json!(format!("https://localhost:{}", manage.local_addr()?.port()));
-        value["native_protocols"]["windows"]["management"]["listen"] =
-            serde_json::json!(manage.local_addr()?.to_string());
         let trust_path = root.join(format!("host-trust-{}.json", manage.local_addr()?.port()));
         let mut trust: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&std::fs::read(
             value["native_protocols"]["windows"]["trust_file"]
@@ -372,10 +368,11 @@ impl Host {
         ));
         let agent_audit = command_audit.clone();
         let agent_pki = config.agent_pki.load(
+            &config.identity.instance_id,
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
-            config.agent_pki.bootstrap_materials(crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
+            config.agent_pki.bootstrap_materials(&config.identity.instance_id,crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
         let agent_enrollment = agent_pki
             .as_ref()
@@ -464,7 +461,7 @@ impl Host {
         if let Some(agent) = &agent_pki {
             execution.channels.set(crate::channel_status::ChannelName::Agent,
                 crate::channel_status::ChannelState::Ready, None)?;
-            execution.channels.listening(crate::channel_status::ChannelName::Agent)?;
+            execution.channels.mounted(crate::channel_status::ChannelName::Agent)?;
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
@@ -514,7 +511,7 @@ impl Host {
         );
         if let Some(i) = listeners
             .iter()
-            .position(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+            .position(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         {
             browser = browser.merge(listeners.remove(i).1.router);
         }
@@ -559,7 +556,7 @@ impl Host {
             axum::routing::get(
                 |axum::Extension(info): axum::Extension<
                     rss_axum::AcceptedConnectionInfo<(
-                        Option<rss_mdm_certificate::HandshakePeer>,
+                        Option<rss_mdm_certificate::ClientCertificateEvidence>,
                         admission::RequestGate,
                     )>,
                 >| async move { info.socket_peer().ip().to_string() },
@@ -599,12 +596,12 @@ impl Host {
             (
                 self.enroll.take().unwrap(),
                 enrollment,
-                crate::native::NativeListenerKind::WindowsEnrollment,
+                crate::native::ChannelKind::WindowsEnrollment,
             ),
             (
                 self.manage.take().unwrap(),
                 management,
-                crate::native::NativeListenerKind::WindowsManagement,
+                crate::native::ChannelKind::WindowsManagement,
             ),
         ] {
             launch.stage_task_with_token(
@@ -635,8 +632,18 @@ impl Host {
     pub(crate) async fn restart(self) -> anyhow::Result<Self> {
         let windows = self.app.windows()?;
         let addresses = (
-            windows.config.enrollment.listen,
-            windows.config.management.listen,
+            std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                url::Url::parse(&windows.config.enrollment.origin)?
+                    .port_or_known_default()
+                    .unwrap(),
+            )),
+            std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                url::Url::parse(&windows.config.management.origin)?
+                    .port_or_known_default()
+                    .unwrap(),
+            )),
         );
         let credential =
             rss_identity_core::session::SessionSecret::parse(self.secret.expose().into())?;

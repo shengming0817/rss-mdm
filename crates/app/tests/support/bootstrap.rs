@@ -381,7 +381,7 @@ pub(crate) async fn grant_fault(
     let (_, router) = routers
         .listeners
         .into_iter()
-        .find(|(kind, _)| *kind == crate::native::NativeListenerKind::Agent)
+        .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
         .ok_or_else(|| anyhow::anyhow!("missing production Agent listener"))?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -395,7 +395,7 @@ pub(crate) async fn grant_fault(
             router,
             peer.app.audit_store.clone(),
             case_tenant().into(),
-            crate::native::NativeListenerKind::Agent,
+            crate::native::ChannelKind::Agent,
         )
         .await?,
     );

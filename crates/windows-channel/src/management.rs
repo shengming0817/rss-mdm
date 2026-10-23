@@ -11,7 +11,7 @@ use sqlx::Row;
 use zeroize::Zeroizing;
 pub(crate) async fn manage(
     State(app): State<Arc<HttpState>>,
-    Extension(peer): Extension<rss_mdm_certificate::HandshakePeer>,
+    Extension(peer): Extension<rss_mdm_certificate::ClientCertificateEvidence>,
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,

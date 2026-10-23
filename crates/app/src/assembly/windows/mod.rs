@@ -1,5 +1,5 @@
 //! Host file loading, listener configuration and Windows channel construction.
-use crate::native::{TlsEndpoint, TlsRouter, admission, tls};
+use crate::native::{ChannelRouter, PublicEndpoint, admission};
 use crate::{ConfigIssue, Error};
 use axum::middleware;
 use rss_mdm_certificate::windows as certificate;
@@ -10,8 +10,8 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 #[serde(deny_unknown_fields)]
 pub struct WindowsConfig {
     pub entra: Option<rss_mdm_windows_channel::entra::Config>,
-    pub enrollment: TlsEndpoint,
-    pub management: TlsEndpoint,
+    pub enrollment: PublicEndpoint,
+    pub management: PublicEndpoint,
     pub trust_file: PathBuf,
     pub protocol_protection: crate::config::NativeProtection,
     #[serde(default)]
@@ -19,7 +19,7 @@ pub struct WindowsConfig {
     pub provider_id: String,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
     pub push: Option<WindowsPushConfig>,
-    pub additional_management: Vec<TlsEndpoint>,
+    pub additional_management: Vec<PublicEndpoint>,
 }
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,19 +34,7 @@ impl WindowsConfig {
         self.poll
             .validate()
             .map_err(|_| Error::Configuration(ConfigIssue::WindowsPoll))?;
-        if self.enrollment.listen == self.management.listen
-            || self.enrollment.listen == browser
-            || self.management.listen == browser
-            || self.enrollment.origin == self.management.origin
-            || self.provider_id.is_empty()
-            || self.provider_id.len() > 64
-            || !self
-                .provider_id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-        {
-            return Err(Error::Configuration(ConfigIssue::WindowsListeners));
-        }
+        let _ = browser;
         if self.additional_management.len() > 16 {
             return Err(Error::Configuration(ConfigIssue::WindowsListeners));
         }
@@ -54,18 +42,11 @@ impl WindowsConfig {
             self.management.origin.as_str(),
             self.enrollment.origin.as_str(),
         ]);
-        let mut listeners = std::collections::BTreeSet::from([
-            browser,
-            self.enrollment.listen,
-            self.management.listen,
-        ]);
         for endpoint in &self.additional_management {
             let uri = crate::config::https_url(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::WindowsListeners))?;
             if uri.origin().ascii_serialization() != endpoint.origin
                 || !origins.insert(&endpoint.origin)
-                || !listeners.insert(endpoint.listen)
-                || endpoint.listen.port() == 0
             {
                 return Err(Error::Configuration(ConfigIssue::WindowsListeners));
             }
@@ -73,7 +54,7 @@ impl WindowsConfig {
         for endpoint in [&self.enrollment, &self.management] {
             let u = crate::config::https_url(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::WindowsListeners))?;
-            if u.origin().ascii_serialization() != endpoint.origin || endpoint.listen.port() == 0 {
+            if u.origin().ascii_serialization() != endpoint.origin {
                 return Err(Error::Configuration(ConfigIssue::WindowsListeners));
             }
         }
@@ -84,19 +65,8 @@ impl WindowsConfig {
 pub(crate) struct Windows {
     pub(crate) config: WindowsConfig,
     pub(crate) channel: Arc<rss_mdm_windows_channel::Windows>,
-    pub(crate) enrollment_tls: Arc<crate::native::tls::Configuration>,
-    pub(crate) management_tls: Arc<crate::native::tls::Configuration>,
-    additional_management_tls: Vec<Arc<crate::native::tls::Configuration>>,
 }
 impl Windows {
-    pub(crate) fn tls_valid_at(&self, now: i64) -> bool {
-        self.enrollment_tls.valid_at(now)
-            && self.management_tls.valid_at(now)
-            && self
-                .additional_management_tls
-                .iter()
-                .all(|tls| tls.valid_at(now))
-    }
     #[allow(
         clippy::disallowed_methods,
         reason = "App composition root injects the system monotonic clock into the WNS transport"
@@ -120,18 +90,12 @@ impl Windows {
         {
             return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
         }
-        if matches!(config.lifetime, certificate::Lifetime::Development { .. })
-            && (!config.enrollment.listen.ip().is_loopback()
-                || !config.management.listen.ip().is_loopback())
-        {
+        if matches!(config.lifetime, certificate::Lifetime::Development { .. }) {
             return Err(Error::Configuration(ConfigIssue::EnrollmentCa));
         }
         let ca = rss_mdm_device_trust::windows::WindowsDeviceTrust::from_trust(trust)
             .and_then(|ca| ca.with_lifetime(config.lifetime))
             .map_err(|_| Error::Configuration(ConfigIssue::EnrollmentCa))?;
-        let enrollment_tls =
-            tls::configuration(&config.enrollment, Some(ca.enrollment_verifier()))?;
-        let management_tls = tls::configuration(&config.management, Some(ca.verifier()))?;
         let mut channel = rss_mdm_windows_channel::Windows::new(
             config.enrollment.origin.clone(),
             config.management.origin.clone(),
@@ -150,19 +114,10 @@ impl Windows {
             .iter()
             .map(|e| e.origin.clone())
             .collect();
-        let additional_management_tls = config
-            .additional_management
-            .iter()
-            .map(|endpoint| tls::configuration(endpoint, Some(channel.ca.verifier())))
-            .collect::<Result<Vec<_>, _>>()?;
         channel.push = push;
-        let channel = Arc::new(channel);
         Ok(Self {
             config,
-            channel,
-            enrollment_tls,
-            management_tls,
-            additional_management_tls,
+            channel: Arc::new(channel),
         })
     }
 }
@@ -170,7 +125,7 @@ pub(crate) fn routers(
     windows: Option<&Windows>,
     app: Arc<rss_mdm_windows_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
-) -> Option<(TlsRouter, Vec<TlsRouter>)> {
+) -> Option<(ChannelRouter, Vec<ChannelRouter>)> {
     let windows = windows?;
     let boundary = |origin: &str| Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -187,43 +142,35 @@ pub(crate) fn routers(
     );
     let enrollment = enrollment.layer(middleware::from_fn(admission::admit));
     let management = management.layer(middleware::from_fn(admission::admit));
-    let mut management_routers = vec![TlsRouter {
+    let mut management_routers = vec![ChannelRouter {
         admission: admission::Admission::new(
             clock.clone(),
             app.requests.clone(),
             "mdm-management-tls",
         ),
-        listen: windows.config.management.listen,
-        tls: windows.management_tls.clone(),
+        origins: vec![windows.config.management.origin.clone()],
         router: management,
     }];
-    for (endpoint, tls) in windows
-        .config
-        .additional_management
-        .iter()
-        .zip(&windows.additional_management_tls)
-    {
+    for endpoint in &windows.config.additional_management {
         let (_, router) = rss_mdm_windows_channel::routers(
             app.clone(),
             boundary(&windows.config.enrollment.origin),
             boundary(&endpoint.origin),
         );
-        management_routers.push(TlsRouter {
+        management_routers.push(ChannelRouter {
             admission: admission::Admission::new(
                 clock.clone(),
                 app.requests.clone(),
                 "mdm-management-tls",
             ),
-            listen: endpoint.listen,
-            tls: tls.clone(),
+            origins: vec![endpoint.origin.clone()],
             router: router.layer(middleware::from_fn(admission::admit)),
         });
     }
     Some((
-        TlsRouter {
+        ChannelRouter {
             admission: admission::Admission::new(clock, app.requests.clone(), "mdm-enrollment-tls"),
-            listen: windows.config.enrollment.listen,
-            tls: windows.enrollment_tls.clone(),
+            origins: vec![windows.config.enrollment.origin.clone()],
             router: enrollment,
         },
         management_routers,

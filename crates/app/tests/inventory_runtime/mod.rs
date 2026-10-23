@@ -176,6 +176,38 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         ensure!(outcome.kind() == rss_observation::ErrorKind::CommitUnknown);
         ensure!(runtime.inspect(&first).await?.receipt.is_some());
     }
+    // Exact delivery ACK must survive a real row-lock timeout without killing the worker.
+    let mut blocker = PgConnection::connect_with(&options("postgres")?).await?;
+    let mut blocked = blocker.begin().await?;
+    sqlx::query(
+        "SELECT id FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(case_a())
+    .bind(first.id)
+    .fetch_one(&mut *blocked)
+    .await?;
+    runtime.fixture_deliver(durable).await?;
+    let pending:bool=sqlx::query_scalar("SELECT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_a()).bind(first.id).fetch_one(&mut *blocked).await?;
+    ensure!(pending, "a timed-out acknowledgement invented completion");
+    blocked.rollback().await?;
+    blocker.close().await?;
+    runtime.fixture_lose_next_delivery_ack();
+    runtime.fixture_deliver(durable).await?;
+    ensure!(
+        !crate::collection::store::Delivery::new(
+            access.inventory(),
+            access
+                .audit_store(&crate::config::AuditConfig::Plain)
+                .await?
+        )
+        .pending_reports(case_a())
+        .await?
+        .iter()
+        .any(|r| r.batch().id() == durable.batch().id()),
+        "committed ACK response loss restored pending work"
+    );
+    // Replaying this exact already committed receipt must succeed without another intake.
     runtime.fixture_deliver(durable).await?;
     let received = runtime.inspect(&first).await?;
     ensure!(

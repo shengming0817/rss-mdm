@@ -23,6 +23,7 @@ pub struct IdentityConfig {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MdmConfig {
+    service_id: Uuid,
     canonical_origin: String,
     tenant: Uuid,
     management_tenant: Uuid,
@@ -39,10 +40,17 @@ pub async fn read(config: &crate::config::Config) -> Result<Inputs> {
         config.identity.oidc.is_some(),
         &config.identity.tenant_id,
         &management.to_string(),
+        &config.identity.instance_id,
     )
 }
 
-fn project(origin: &str, oidc_enabled: bool, tenant: &str, management: &str) -> Result<Inputs> {
+fn project(
+    origin: &str,
+    oidc_enabled: bool,
+    tenant: &str,
+    management: &str,
+    service: &str,
+) -> Result<Inputs> {
     let url = url::Url::parse(origin).map_err(|_| Error::Input)?;
     let canonical_uuid = |value: &str| {
         Uuid::parse_str(value)
@@ -66,6 +74,7 @@ fn project(origin: &str, oidc_enabled: bool, tenant: &str, management: &str) -> 
             oidc_enabled,
         },
         mdm: MdmConfig {
+            service_id: canonical_uuid(service)?,
             canonical_origin: origin.into(),
             tenant,
             management_tenant,

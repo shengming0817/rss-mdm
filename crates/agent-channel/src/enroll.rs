@@ -8,7 +8,7 @@ use axum::{
 };
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_registration_service::agent::{Failure, Service};
 use std::sync::Arc;
 type Body<T> = Result<Json<T>, axum::extract::rejection::JsonRejection>;
@@ -31,6 +31,12 @@ pub fn router(service: Arc<Service>, envelope: crate::boundary::Envelope) -> Rou
             .route("/status", post(status))
             .route("/renewal-grants", post(renew))
             .route("/renewal-grants/status", post(renewal_status))
+            .route("/connections", get(connections))
+            .route("/connections/failures", post(connection_failure))
+            .route(
+                "/connections/acknowledgements",
+                post(acknowledge_connections),
+            )
             .route("/trust", get(trust))
             .route("/trust/observations", post(observe_trust))
             .route("/trust/acknowledgements", post(acknowledge))
@@ -66,7 +72,7 @@ async fn issue(
 async fn activate(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::ActivationRequest>,
 ) -> Result<Json<wire::ActivationReceipt>, HttpFailure> {
@@ -86,7 +92,7 @@ async fn status(
 async fn renew(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::GrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
@@ -129,7 +135,9 @@ pub(crate) fn failure_response(code: wire::ErrorCode, id: Option<uuid::Uuid>) ->
         C::EnrollmentPaused => StatusCode::CONFLICT,
         C::PermissionDenied | C::GrantRevoked | C::GrantExpired => StatusCode::FORBIDDEN,
         C::RegistrationLimit => StatusCode::TOO_MANY_REQUESTS,
-        C::OperationConflict => StatusCode::CONFLICT,
+        C::OperationConflict
+        | C::ConnectionDeploymentUnobserved
+        | C::ConnectionRetirementBlocked => StatusCode::CONFLICT,
         C::IssuanceUnknown | C::ActivationUnknown | C::ServiceUnavailable => {
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -144,9 +152,35 @@ pub(crate) fn failure_response(code: wire::ErrorCode, id: Option<uuid::Uuid>) ->
         .into_response()
 }
 
+async fn connections(
+    State(s): State<Arc<Service>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
+    headers: HeaderMap,
+) -> Result<Json<rss_mdm_agent_wire::connections::SignedConfiguration>, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.authenticate(&peer.0).await?;
+    Ok(Json(s.connection_configuration().await?))
+}
+async fn acknowledge_connections(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::connections::Acknowledgement>,
+) -> Result<StatusCode, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.acknowledge_connections(&peer.0, &body(input)?, &origin, &a)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 async fn trust(
     State(s): State<Arc<Service>>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
 ) -> Result<Json<rss_mdm_agent_wire::pki::Trust>, HttpFailure> {
     bootstrap(&headers)?;
@@ -155,7 +189,7 @@ async fn trust(
 async fn acknowledge(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<rss_mdm_agent_wire::pki::Acknowledgement>,
 ) -> Result<StatusCode, HttpFailure> {
@@ -196,7 +230,7 @@ async fn cancel(
 async fn native_grant(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::NativeGrantRequest>,
 ) -> Result<Json<wire::GrantReceipt>, HttpFailure> {
@@ -246,7 +280,7 @@ async fn bootstrap_notify(
 async fn observe_trust(
     State(s): State<Arc<Service>>,
     Extension(a): Extension<RequestAudit>,
-    peer: Option<Extension<HandshakePeer>>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<rss_mdm_agent_wire::pki::Observation>,
 ) -> Result<Json<rss_mdm_agent_wire::pki::Observation>, HttpFailure> {
@@ -256,4 +290,20 @@ async fn observe_trust(
     let input = body(input)?;
     s.observe_trust(&peer.0, &input, &a).await?;
     Ok(Json(input))
+}
+
+async fn connection_failure(
+    State(s): State<Arc<Service>>,
+    Extension(a): Extension<RequestAudit>,
+    Extension(origin): Extension<rss_mdm_certificate::GatewayOrigin>,
+    peer: Option<Extension<ClientCertificateEvidence>>,
+    headers: HeaderMap,
+    input: Body<rss_mdm_agent_wire::connections::FailureReport>,
+) -> Result<StatusCode, HttpFailure> {
+    bootstrap(&headers)?;
+    let peer =
+        peer.ok_or_else(|| Failure::from(rss_mdm_registration_service::Error::Unauthorized))?;
+    s.report_connection_failure(&peer.0, &body(input)?, &origin, &a)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

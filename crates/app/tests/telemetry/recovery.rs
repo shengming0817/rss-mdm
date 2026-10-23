@@ -245,3 +245,64 @@ pub(super) async fn retention_finishes(
     );
     Ok(())
 }
+
+/// Both actual collection producers share source ordering but own different datasets.
+pub(super) async fn cross_dataset_sequence(
+    f: &Fixture,
+    field: &rss_mdm_inventory::FieldDefinition,
+) -> Result<()> {
+    use rss_mdm_inventory::{CollectionDefinition, CollectionField, CollectionScope, Source};
+    use rss_observation::{Batch, Body, Change, Id};
+    use sqlx::{Connection, Row};
+    let mut authority = authority::Authority::from_config(f.base.clone()).await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let service=agent::service(&authority).await?;
+        let principal=service.authenticate(&agent::evidence(case_credential()).unwrap()).await?;
+        let tenant=principal.tenant();let registration=principal.registration();
+        let mut inspect=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let (epoch,sequence):(Uuid,i64)=sqlx::query_as("SELECT epoch,next_sequence FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.script'")
+            .bind(tenant.to_string()).bind(registration).fetch_one(&mut inspect).await?;
+        inspect.close().await?;
+        let fields=vec![CollectionField{definition:field.clone(),scope:CollectionScope::Device}];
+        let enterprise=CollectionDefinition::new("inventory",format!("collision-{}",Uuid::new_v4()),Source::AgentScript,fields.clone())?;
+        let periodic=CollectionDefinition::new(&format!("telemetry.{}",Uuid::new_v4()),"v1",Source::AgentScript,fields)?;
+        let scope=crate::device::scope_dataset(tenant,registration,"agent.script",epoch,periodic.dataset())?;
+        let now=f.planning.clock.unix_seconds()?;
+        let batch=Batch::new(Id::new(Uuid::new_v4().to_string())?,sequence as u64,rss_contract::Timepoint::try_from(now)?,periodic.coverage()?,
+            Body::Snapshot(vec![Change::upsert(Id::new(field.key.as_str())?,rss_mdm_inventory::CollectedValue::Value(rss_mdm_inventory::Scalar::Boolean(true)).encode(field)?)]))?;
+        let attempt=Uuid::new_v4();
+        let barrier=Arc::new(tokio::sync::Barrier::new(2));
+        let mut a=sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
+        let mut b=sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
+        let reserve=async {
+            let mut tx=a.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+            barrier.wait().await;
+            crate::collection::enterprise::start_in(&mut tx,tenant,registration,Uuid::new_v4(),attempt,enterprise,now).await?;
+            tx.commit().await?;anyhow::Ok(())
+        };
+        let receive=async {
+            let mut tx=b.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+            barrier.wait().await;
+            crate::collection::telemetry::accept_on(&mut tx,&scope,&periodic,&batch,now).await?;
+            tx.commit().await?;anyhow::Ok(())
+        };
+        let (reserved,received)=tokio::join!(reserve,receive);reserved?;received?;
+        let mut tx=b.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+        let rows=sqlx::query("SELECT sequence,scope::jsonb->>'dataset' AS dataset FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND (id=$2 OR id=$3)")
+            .bind(tenant.to_string()).bind(attempt).bind(Uuid::parse_str(batch.id().as_str())?).fetch_all(&mut *tx).await?;
+        ensure!(rows.len()==2 && rows.iter().all(|r|r.get::<i64,_>("sequence")==sequence));
+        ensure!(rows[0].get::<String,_>("dataset")!=rows[1].get::<String,_>("dataset"));
+        crate::collection::telemetry::accept_on(&mut tx,&scope,&periodic,&batch,now).await?;
+        tx.commit().await?;
+        let conflicting=Batch::new(Id::new(Uuid::new_v4().to_string())?,batch.sequence(),rss_contract::Timepoint::try_from(batch.observed_at_seconds())?,periodic.coverage()?,batch.body().clone())?;
+        let mut tx=b.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant.to_string()).execute(&mut *tx).await?;
+        ensure!(crate::collection::telemetry::accept_on(&mut tx,&scope,&periodic,&conflicting,now).await.is_err(),"same full stream accepted a duplicate sequence");
+        tx.rollback().await?;a.close().await?;b.close().await?;
+        Ok(())
+    }).await
+}

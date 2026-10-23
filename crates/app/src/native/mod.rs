@@ -1,20 +1,16 @@
 //! Native transports share ingress limits and TLS ownership, never protocol state.
 pub(crate) mod admission;
-mod proxy;
-pub(crate) mod tls;
+pub(crate) mod gateway;
 use axum::Router;
 use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::sync::Arc;
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TlsEndpoint {
-    pub listen: SocketAddr,
+pub struct PublicEndpoint {
     pub origin: String,
-    pub certificate_file: PathBuf,
-    pub private_key_file: PathBuf,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NativeListenerKind {
+pub(crate) enum ChannelKind {
     Agent,
     WindowsEnrollment,
     WindowsManagement,
@@ -22,27 +18,7 @@ pub(crate) enum NativeListenerKind {
     #[cfg(test)]
     AppleWebhookFixture,
 }
-impl NativeListenerKind {
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Agent => "agent-tls",
-            Self::WindowsEnrollment => "mdm-enrollment-tls",
-            Self::WindowsManagement => "mdm-management-tls",
-            Self::AppleManagement => "apple-management-tls",
-            #[cfg(test)]
-            Self::AppleWebhookFixture => "apple-webhook-fixture",
-        }
-    }
-    pub(crate) const fn audit_action(self) -> &'static str {
-        match self {
-            Self::Agent => "agent_request",
-            Self::WindowsEnrollment => "protected_request",
-            Self::WindowsManagement => "windows_management",
-            Self::AppleManagement => "apple_management",
-            #[cfg(test)]
-            Self::AppleWebhookFixture => "apple_scep",
-        }
-    }
+impl ChannelKind {
     pub(crate) const fn windows_retention(self) -> bool {
         match self {
             Self::WindowsManagement => true,
@@ -52,11 +28,10 @@ impl NativeListenerKind {
         }
     }
 }
-pub(crate) struct TlsRouter {
-    pub(crate) admission: Arc<admission::Admission>,
-    pub listen: SocketAddr,
-    pub tls: Arc<crate::native::tls::Configuration>,
+pub(crate) struct ChannelRouter {
+    pub origins: Vec<String>,
     pub router: Router,
+    pub(crate) admission: Arc<admission::Admission>,
 }
 pub(crate) struct Routers {
     pub(crate) baseline: rss_runtime::ManagedTaskRegistration,
@@ -68,6 +43,6 @@ pub(crate) struct Routers {
     pub windows: Option<Arc<crate::windows::Windows>>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub browser: Router,
-    pub listeners: Vec<(NativeListenerKind, TlsRouter)>,
-    pub bound: Vec<(NativeListenerKind, tokio::net::TcpListener)>,
+    pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+    pub listeners: Vec<(ChannelKind, ChannelRouter)>,
 }

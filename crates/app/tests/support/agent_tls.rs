@@ -1,5 +1,5 @@
 //! Real completed TLS proof shared by controlled Agent scenarios.
-use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_device_trust::agent::AgentTrust;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio_rustls::{
@@ -16,7 +16,7 @@ pub(crate) async fn peer(
     trust: &AgentTrust,
     chain: &[Vec<u8>],
     root: &Path,
-) -> anyhow::Result<HandshakePeer> {
+) -> anyhow::Result<ClientCertificateEvidence> {
     peer_with_key(trust, chain, root, "agent.pk8").await
 }
 pub(crate) async fn peer_with_key(
@@ -24,7 +24,7 @@ pub(crate) async fn peer_with_key(
     chain: &[Vec<u8>],
     root: &Path,
     key_file: &str,
-) -> anyhow::Result<HandshakePeer> {
+) -> anyhow::Result<ClientCertificateEvidence> {
     peer_with_verifier(trust.verifier(), chain, root, key_file).await
 }
 pub(crate) async fn peer_with_verifier(
@@ -32,7 +32,7 @@ pub(crate) async fn peer_with_verifier(
     chain: &[Vec<u8>],
     root: &Path,
     key_file: &str,
-) -> anyhow::Result<HandshakePeer> {
+) -> anyhow::Result<ClientCertificateEvidence> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let certificates = CertificateDer::pem_slice_iter(&std::fs::read(root.join("server.crt"))?)
         .collect::<Result<Vec<_>, _>>()?;
@@ -61,7 +61,9 @@ pub(crate) async fn peer_with_verifier(
     let accept = async {
         let (stream, _) = listener.accept().await?;
         let tls = TlsAcceptor::from(Arc::new(server)).accept(stream).await?;
-        Ok::<_, anyhow::Error>(HandshakePeer::from_completed_tls(tls.get_ref().1)?)
+        Ok::<_, anyhow::Error>(ClientCertificateEvidence::from_completed_tls(
+            tls.get_ref().1,
+        )?)
     };
     let connect = async {
         let stream = tokio::net::TcpStream::connect(address).await?;

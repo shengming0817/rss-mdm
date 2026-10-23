@@ -1,11 +1,12 @@
 //! Fixture peers use real signed certificates and a real TLS handshake.
 use super::{http::*, process::*, runtime::*, *};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rss_mdm_certificate::HandshakePeer;
+use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
 use std::sync::{Mutex, OnceLock};
-static PEERS: OnceLock<Mutex<BTreeMap<String, (HandshakePeer, &'static str)>>> = OnceLock::new();
-pub(crate) fn evidence(label: &str) -> Option<HandshakePeer> {
+static PEERS: OnceLock<Mutex<BTreeMap<String, (ClientCertificateEvidence, &'static str)>>> =
+    OnceLock::new();
+pub(crate) fn evidence(label: &str) -> Option<ClientCertificateEvidence> {
     PEERS
         .get_or_init(Default::default)
         .lock()
@@ -21,7 +22,7 @@ pub(crate) fn device(label: &str, fallback: &'static str) -> &'static str {
         .get(label)
         .map_or(fallback, |p| p.1)
 }
-pub(crate) fn remember(label: &str, peer: HandshakePeer, device: String) {
+pub(crate) fn remember(label: &str, peer: ClientCertificateEvidence, device: String) {
     PEERS
         .get_or_init(Default::default)
         .lock()
@@ -62,10 +63,12 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
     >(fixture.base["device_pki"].clone())?)?;
     let pki = config
         .load(
+            fixture.base["identity"]["instance_id"].as_str().unwrap(),
             fixture.audit.clone(),
             Arc::new(crate::clock::SystemClock),
             providers.clone(),
             config.bootstrap_materials(
+                fixture.base["identity"]["instance_id"].as_str().unwrap(),
                 &providers,
                 crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
             )?,
@@ -84,8 +87,7 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
         audit: fixture.audit.clone(),
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        origin: pki.origin.clone(),
-        configuration_signer: Some(Arc::new(fixture_signer()?)),
+        protection: crate::test_support::identity::config(case_tenant())?.native_protector()?,
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: None,
         binding: Arc::new(crate::agent::Bindings),
@@ -148,8 +150,7 @@ pub(crate) fn application_service(
         audit,
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
-        origin: pki.origin.clone(),
-        configuration_signer: Some(Arc::new(fixture_signer()?)),
+        protection: crate::test_support::identity::config(case_tenant())?.native_protector()?,
         installations: Arc::new(crate::agent_configurations::Installations),
         bootstrap: pki.bootstrap.clone(),
         binding: Arc::new(crate::agent::Bindings),
@@ -185,6 +186,7 @@ pub(crate) async fn seed_profile(
             .await?;
         let pki = config
             .load(
+                base["identity"]["instance_id"].as_str().unwrap(),
                 audit.clone(),
                 Arc::new(crate::clock::SystemClock),
                 crate::device_pki::providers(&serde_json::from_value::<
@@ -289,6 +291,7 @@ pub(crate) async fn enroll_profile(
     let db = database(&base).await?;
     let pki = config
         .load(
+            base["identity"]["instance_id"].as_str().unwrap(),
             db.audit_store(&crate::config::AuditConfig::Plain).await?,
             Arc::new(crate::clock::SystemClock),
             crate::device_pki::providers(&serde_json::from_value::<
@@ -430,27 +433,6 @@ COMMIT;
     let mut devices = vec![canonical.to_owned()];
     devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));
     Ok(devices)
-}
-
-pub(crate) fn fixture_signer() -> Result<rss_mdm_registration_service::agent::configurations::Signer>
-{
-    let input = fixture_signing_input()?;
-    let private = crate::config::read(
-        std::path::Path::new(
-            input["private_key_file"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("fixture private key"))?,
-        ),
-        4096,
-        true,
-    )?;
-    Ok(
-        rss_mdm_registration_service::agent::configurations::Signer::new(
-            &private,
-            input["key_id"].as_str().unwrap(),
-            &serde_json::from_value(input["trusted_keys"].clone())?,
-        )?,
-    )
 }
 
 pub(crate) fn fixture_signing_input() -> Result<Value> {

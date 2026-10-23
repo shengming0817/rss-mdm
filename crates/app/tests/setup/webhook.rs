@@ -6,8 +6,6 @@ use std::sync::Arc;
 async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readable() -> Result<()> {
     use materials::{Action, Prepare, Source, Transition};
     let root = crate::windows::test_support::root()?;
-    let windows: crate::windows::WindowsConfig =
-        serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
     let config = crate::test_support::identity::config(crate::test_support::case::tenant())?;
     let tenant = Uuid::parse_str(&config.identity.tenant_id)?;
     let protection = config.native_protector()?;
@@ -93,7 +91,7 @@ async fn receiver_possession_gates_activation_and_old_ciphertexts_remain_readabl
     );
     tx.rollback().await?;
     runtime.close().await?;
-    let mut tls = crate::native::tls::configuration(&windows.management, None)?.fixture_server();
+    let mut tls = crate::test_support::tls::server(&root, "windows-tls.pk8", None)?;
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let expected = first.clone();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));

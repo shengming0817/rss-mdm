@@ -418,6 +418,11 @@ async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) 
             rewritten += rss_mdm_content_service::connections::rewrap(&mut tx, tenant, &protector)
                 .await
                 .map_err(|_| Error::Corrupt)?;
+            rewritten += rss_mdm_registration_service::agent::connections::rewrap(
+                &mut tx, tenant, &protector,
+            )
+            .await
+            .map_err(|_| Error::Corrupt)?;
             rewritten +=
                 rss_mdm_execution_service::task_signing::trust::rewrap(&mut tx, tenant, &protector)
                     .await

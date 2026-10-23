@@ -34,6 +34,23 @@ impl IntoResponse for Error {
             Error::CertificateRequest => (StatusCode::BAD_REQUEST, "invalid_certificate_request"),
             Error::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_identity"),
             Error::Forbidden => (StatusCode::FORBIDDEN, "permission_denied"),
+            Error::AgentPackage(reason) => (
+                StatusCode::CONFLICT,
+                match reason {
+                    rss_mdm_software_service::agent_packages::Rejection::InstallerMismatch => {
+                        "agent_package_installer_mismatch"
+                    }
+                    rss_mdm_software_service::agent_packages::Rejection::LifecycleNotAdmitted => {
+                        "agent_package_lifecycle_not_admitted"
+                    }
+                    rss_mdm_software_service::agent_packages::Rejection::SourceNotAdmitted => {
+                        "agent_package_source_not_admitted"
+                    }
+                    rss_mdm_software_service::agent_packages::Rejection::BindingNotAdmitted => {
+                        "agent_package_binding_not_admitted"
+                    }
+                },
+            ),
             Error::NotFound => (StatusCode::NOT_FOUND, "inventory_not_found"),
             Error::Unsupported => (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
             Error::Unavailable(Failure::AuditIntegrity) => {

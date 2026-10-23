@@ -43,7 +43,7 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
 async fn authenticate(
     app: &TaskState,
     headers: &HeaderMap,
-    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
     authenticate_for(app, headers, peer, audit, true).await
@@ -51,7 +51,7 @@ async fn authenticate(
 async fn authenticate_for(
     app: &TaskState,
     headers: &HeaderMap,
-    peer: Option<&rss_mdm_certificate::HandshakePeer>,
+    peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,
     audit: &RequestAudit,
     task_required: bool,
 ) -> Result<crate::device::DevicePrincipal, crate::AgentError> {
@@ -85,7 +85,7 @@ fn task_error(error: impl Into<Error>) -> crate::AgentError {
 async fn claim(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::TaskClaimRequest>,
 ) -> Result<Json<Value>, crate::AgentError> {
@@ -105,7 +105,7 @@ async fn claim(
 async fn event(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     input: Body<wire::TaskEventRequest>,
@@ -132,7 +132,7 @@ struct Download {
 async fn download(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Query(query): Query<Download>,
@@ -224,7 +224,7 @@ async fn employee(
 async fn directory(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Query(input): Query<wire::SelfServiceDirectory>,
 ) -> Result<Json<Value>, crate::AgentError> {
@@ -242,7 +242,7 @@ async fn directory(
 async fn invoke(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::SelfServiceInvoke>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), crate::AgentError> {
@@ -262,7 +262,7 @@ async fn invoke(
 async fn invocation_status(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, crate::AgentError> {
@@ -281,7 +281,7 @@ async fn invocation_status(
 async fn native_enrollment(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     input: Body<rss_mdm_agent_wire::enroll::NativeEnrollmentRequest>,
@@ -303,7 +303,7 @@ async fn native_enrollment(
 async fn task_trust(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Trust>, crate::AgentError> {
     crate::bounded(async {
@@ -320,7 +320,7 @@ async fn task_trust(
 async fn acknowledge_task_trust(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<rss_mdm_agent_wire::task_trust::Acknowledgement>,
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Acknowledgement>, crate::AgentError> {
@@ -340,7 +340,7 @@ async fn acknowledge_task_trust(
 async fn observe_task_trust(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<rss_mdm_agent_wire::task_trust::Observation>,
 ) -> Result<Json<rss_mdm_agent_wire::task_trust::Observation>, crate::AgentError> {
@@ -360,7 +360,7 @@ async fn observe_task_trust(
 async fn current_user(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
     crate::bounded(async {
@@ -377,7 +377,7 @@ async fn current_user(
 async fn login_user(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::CurrentUserChange>,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
@@ -399,7 +399,7 @@ async fn login_user(
 async fn logout_user(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::CurrentUserChange>,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
@@ -419,7 +419,7 @@ async fn logout_user(
 async fn access_begin(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::AccessBegin>,
 ) -> Result<Response, crate::AgentError> {
@@ -437,7 +437,7 @@ async fn access_begin(
 async fn access_confirm(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::AccessConfirm>,
 ) -> Result<Json<Value>, crate::AgentError> {
@@ -453,7 +453,7 @@ async fn access_confirm(
 async fn access_recovery_use(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::AccessRecoveryUse>,
 ) -> Result<Json<Value>, crate::AgentError> {

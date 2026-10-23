@@ -33,6 +33,20 @@ async fn ade_original_material_survives_rotation_and_corrupt_rows_roll_back() ->
         tenant,organization,profile:Uuid::new_v4(),remote_profile:Uuid::new_v4(),serial:"rewrap-fixture",
         token:&token,configuration:serde_json::json!({"name":"Rewrap","mandatory":true,"removable":false,"skip":[]}),origin:"https://mdm.example.test",now,
     }).await?;
+    rss_mdm_registration_service::agent::connections::fixture_configuration_on(
+        &mut tx,
+        Uuid::parse_str(tenant)?,
+        &old,
+        "https://mdm.example.test",
+    )
+    .await?;
+    let original_configuration:serde_json::Value=sqlx::query_scalar("SELECT document FROM mdm_access.agent_connection_versions WHERE tenant_id=$1::uuid AND revision=1").bind(tenant).fetch_one(&mut *tx).await?;
+    let original_configuration_key: Vec<u8> = sqlx::query_scalar(
+        "SELECT private_key FROM mdm_access.agent_configuration_keys WHERE tenant_id=$1::uuid",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
     let (id,original_key,original_token):(Uuid,Vec<u8>,Vec<u8>)=sqlx::query_as("SELECT key_id,private_key,token FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     let aad = |version: &str, purpose: &str| -> Result<_> {
@@ -51,6 +65,15 @@ async fn ade_original_material_survives_rotation_and_corrupt_rows_roll_back() ->
         .await?;
     sqlx::query("UPDATE mdm_apple.ade_servers SET token=decode('00','hex') WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).execute(&mut *tx).await?;
     ensure!(
+        rss_mdm_registration_service::agent::connections::rewrap(
+            &mut tx,
+            rss_request_context::TenantId::parse(tenant)?,
+            &next
+        )
+        .await?
+            == 1
+    );
+    ensure!(
         rss_mdm_apple_channel::rewrap::run(&mut tx, tenant, &next)
             .await
             .is_err()
@@ -61,6 +84,39 @@ async fn ade_original_material_survives_rotation_and_corrupt_rows_roll_back() ->
         .bind(tenant)
         .execute(&mut *tx)
         .await?;
+    let rolled_back_key: Vec<u8> = sqlx::query_scalar(
+        "SELECT private_key FROM mdm_access.agent_configuration_keys WHERE tenant_id=$1::uuid",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    ensure!(
+        rolled_back_key == original_configuration_key,
+        "failed domain rewrap changed the configuration root"
+    );
+    ensure!(
+        rss_mdm_registration_service::agent::connections::rewrap(
+            &mut tx,
+            rss_request_context::TenantId::parse(tenant)?,
+            &next
+        )
+        .await?
+            == 1
+    );
+    ensure!(
+        rss_mdm_registration_service::agent::connections::rewrap(
+            &mut tx,
+            rss_request_context::TenantId::parse(tenant)?,
+            &next
+        )
+        .await?
+            == 0
+    );
+    let public_configuration:serde_json::Value=sqlx::query_scalar("SELECT document FROM mdm_access.agent_connection_versions WHERE tenant_id=$1::uuid AND revision=1").bind(tenant).fetch_one(&mut *tx).await?;
+    ensure!(
+        public_configuration == original_configuration,
+        "protection rotation replaced the signed connection revision"
+    );
     ensure!(rss_mdm_apple_channel::rewrap::run(&mut tx, tenant, &next).await? == 2);
     ensure!(rss_mdm_apple_channel::rewrap::run(&mut tx, tenant, &next).await? == 0);
     let (after_id,key,cipher,revision):(Uuid,Vec<u8>,Vec<u8>,i64)=sqlx::query_as("SELECT key_id,private_key,token,token_revision FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).fetch_one(&mut *tx).await?;

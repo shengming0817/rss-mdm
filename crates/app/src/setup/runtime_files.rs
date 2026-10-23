@@ -9,35 +9,10 @@ use std::{
     time::Duration,
 };
 
-/// Native listeners share only the backend namespace; the gateway has its own.
+/// Exactly one internal HTTP listener; public TLS coordinates belong to deployment.
 pub(super) fn validate_listeners(config: &crate::config::Config) -> Result<()> {
-    let mut addresses = vec![config.listen];
-    if let Some(windows) = &config.native_protocols.windows {
-        addresses.extend([windows.enrollment.listen, windows.management.listen]);
-        addresses.extend(
-            windows
-                .additional_management
-                .iter()
-                .map(|endpoint| endpoint.listen),
-        );
-    }
-    if let Some(apple) = &config.native_protocols.apple {
-        addresses.push(apple.management.listen);
-    }
-    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
-        addresses.push(endpoint.listen);
-    }
-    for (i, address) in addresses.iter().enumerate() {
-        if address.port() == 0
-            || addresses[..i].iter().any(|other| {
-                other.port() == address.port()
-                    && (other.ip() == address.ip()
-                        || other.ip().is_unspecified()
-                        || address.ip().is_unspecified())
-            })
-        {
-            return Err(Error::Input);
-        }
+    if config.listen.port() == 0 || config.listen.ip().is_unspecified() {
+        return Err(Error::Input);
     }
     Ok(())
 }
@@ -51,6 +26,10 @@ pub struct Config {
     pub gateway_directory: PathBuf,
     /// Optional internal HTTPS endpoint; certificate identity remains product_origin.
     pub probe_address: Option<String>,
+    /// Deployment-supplied physical addresses keyed by canonical public origin.
+    /// TLS still verifies the public hostname; these values never become Agent destinations.
+    #[serde(default)]
+    pub probe_addresses: BTreeMap<String, String>,
     pub certificate_file: PathBuf,
     pub private_key_file: PathBuf,
     pub trust_file: PathBuf,
@@ -251,7 +230,7 @@ pub(super) fn freeze(runtime: &mut Value, journal: &Journal) -> Result<()> {
 
 // ref: smallstep/certificates scep/api/api.go@v0.30.2; nginx ngx_http_proxy_module.
 // Only exact device SCEP paths are published. Upstream CA APIs stay on their private origin.
-fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<String> {
+fn scep_routes(config: &crate::config::Config, gateway: &Journal) -> Result<Vec<Value>> {
     let origin = url::Url::parse(&config.product_origin).map_err(|_| Error::Input)?;
     let mut routes = BTreeMap::new();
     for provider in &config.device_pki {
@@ -296,42 +275,7 @@ fn scep_locations(config: &crate::config::Config, gateway: &Journal) -> Result<S
         }
         gateway.replace(&name, &root)?;
     }
-    let mut output = String::new();
-    for (path, (ca, provisioner, root)) in routes {
-        let url = url::Url::parse(&ca).map_err(|_| Error::Input)?;
-        let host = url.host_str().ok_or(Error::Input)?;
-        if !host
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
-        {
-            return Err(Error::Input);
-        }
-        let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
-        for suffix in ["", "/pkiclient.exe"] {
-            output.push_str(&format!(
-                r#"
-        location = {path}{suffix} {{
-            if ($request_method !~ ^(GET|POST)$) {{ return 405; }}
-            if ($arg_operation !~ ^(GetCACert|GetCACaps|PKIOperation)$) {{ return 400; }}
-            limit_req zone=mdm_api burst=20 nodelay;
-            client_max_body_size 2m;
-            proxy_pass_request_headers off;
-            proxy_set_header Host {authority};
-            proxy_set_header Content-Type $content_type;
-            proxy_ssl_server_name on;
-            proxy_ssl_name {host};
-            proxy_ssl_verify on;
-            proxy_ssl_verify_depth 3;
-            proxy_ssl_trusted_certificate /run/gateway/{root};
-            proxy_connect_timeout 5s;
-            proxy_read_timeout 30s;
-            proxy_pass {ca}/scep/{provisioner};
-        }}
-"#
-            ));
-        }
-    }
-    Ok(output)
+    Ok(routes.into_iter().map(|(path,(origin,provisioner,root))|json!({"path":path,"origin":origin,"provisioner":provisioner,"root":root})).collect())
 }
 
 /// Export runtime inputs only. This function never starts, stops or inspects containers.
@@ -363,7 +307,6 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
         tls.apply(&mut effective);
     }
     let server = Journal::open(&config.directory.join("server"))?;
-    let ingress = Journal::open(&config.gateway_directory)?;
     let host_id = decoded.runtime_binding.host_id.simple().to_string();
     let gateway = Journal::open(&config.gateway_directory.join(&host_id))?;
     let mut projected = runtime.clone();
@@ -375,49 +318,13 @@ pub async fn prepare(directory: &Path, config: &Config, runtime: &Value) -> Resu
         crate::config::read(&effective.private_key_file, 32768, true).map_err(|_| Error::Input)?;
     gateway.replace("tls.crt", &certificate)?;
     gateway.replace("tls.key", &key)?;
-    let authority = &origin[url::Position::BeforeHost..url::Position::AfterPort];
-    let nginx = include_str!("../../../../deployment/http.conf")
-        .replace("127.0.0.1:8081", &decoded.listen.to_string())
-        .replace(
-            "server_name mdm.example.test;",
-            &format!("server_name {hostname};"),
-        )
-        .replace(
-            "proxy_set_header Host mdm.example.test;",
-            &format!("proxy_set_header Host {authority};"),
-        )
-        .replace(
-            "/private/mdm-tls.crt",
-            &format!("/run/gateway/{host_id}/tls.crt"),
-        )
-        .replace(
-            "/private/mdm-tls.key",
-            &format!("/run/gateway/{host_id}/tls.key"),
-        )
-        .replace(
-            "/run/config/ui.json",
-            &format!("/run/gateway/{host_id}/ui.json"),
-        )
-        .replace(
-            "/run/config/mdm.json",
-            &format!("/run/gateway/{host_id}/mdm.json"),
-        );
-    let nginx = nginx.replace("# MDM_SCEP_LOCATIONS", &scep_locations(decoded, &gateway)?);
-    let nginx = nginx
-        .replace("mdm_backend", &format!("mdm_backend_{host_id}"))
-        .replace(
-            "/run/gateway/scep-root-",
-            &format!("/run/gateway/{host_id}/scep-root-"),
-        );
-    Journal::open(&config.gateway_directory.join("http"))?
-        .replace(&format!("{host_id}.conf"), nginx.as_bytes())?;
-    let routes = ingress_routes(decoded)?;
-    Journal::open(&config.gateway_directory.join("routes"))?
-        .replace(&format!("{host_id}.conf"), routes.as_bytes())?;
-    ingress.replace(
-        "nginx.conf",
-        include_bytes!("../../../../deployment/nginx.conf"),
-    )?;
+    let routes = public_routes(decoded)?;
+    gateway.save("deployment.json", &json!({
+        "hostId":host_id,"backend":decoded.listen.to_string(),"consoleOrigin":decoded.product_origin,
+        "origins":routes,"scep":scep_routes(decoded,&gateway)?,
+        "certificate":format!("/run/gateway/{host_id}/tls.crt"),
+        "privateKey":format!("/run/gateway/{host_id}/tls.key"),
+    }))?;
     let public = super::public_configuration::read(decoded).await?;
     gateway.save("ui.json", &public.identity)?;
     gateway.save("mdm.json", &public.mdm)?;
@@ -437,31 +344,44 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     let effective: Config = owner.load("runtime-files.json")?.ok_or(Error::Corrupt)?;
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
-    let mut client = reqwest::Client::builder()
-        .no_proxy()
-        .https_only(true)
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(3))
-        .timeout(Duration::from_secs(8))
-        .add_root_certificate(reqwest::Certificate::from_pem(&root).map_err(|_| Error::Input)?);
-    let mut origin = url::Url::parse(&decoded.product_origin).map_err(|_| Error::Input)?;
-    if let Some(endpoint) = &effective.probe_address {
-        let addresses = tokio::net::lookup_host(endpoint)
-            .await
-            .map_err(|_| Error::Storage)?
-            .collect::<Vec<_>>();
-        let port = addresses.first().ok_or(Error::Input)?.port();
-        client = client.resolve_to_addrs(origin.host_str().ok_or(Error::Input)?, &addresses);
-        origin.set_port(Some(port)).map_err(|_| Error::Input)?;
+    let mut observed = None;
+    for public_origin in public_routes(&decoded)? {
+        let mut client = reqwest::Client::builder()
+            .no_proxy()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(3))
+            .timeout(Duration::from_secs(8))
+            .add_root_certificate(reqwest::Certificate::from_pem(&root).map_err(|_| Error::Input)?);
+        let mut origin = url::Url::parse(&public_origin).map_err(|_| Error::Input)?;
+        let endpoint = effective.probe_addresses.get(&public_origin).or_else(|| {
+            (public_origin == decoded.product_origin)
+                .then_some(effective.probe_address.as_ref())
+                .flatten()
+        });
+        if let Some(endpoint) = endpoint {
+            let addresses = tokio::net::lookup_host(endpoint)
+                .await
+                .map_err(|_| Error::Storage)?
+                .collect::<Vec<_>>();
+            let port = addresses.first().ok_or(Error::Input)?.port();
+            client = client.resolve_to_addrs(origin.host_str().ok_or(Error::Input)?, &addresses);
+            origin.set_port(Some(port)).map_err(|_| Error::Input)?;
+        }
+        let applied = observe(
+            &client.build().map_err(|_| Error::Input)?,
+            origin.as_str().trim_end_matches('/'),
+            &decoded.runtime_binding,
+            &decoded.identity.tenant_id,
+            &decoded.identity.instance_id,
+            &public_origin,
+        )
+        .await?;
+        if public_origin == decoded.product_origin {
+            observed = Some(applied);
+        }
     }
-    let applied = observe(
-        &client.build().map_err(|_| Error::Input)?,
-        origin.as_str().trim_end_matches('/'),
-        &decoded.runtime_binding,
-        &decoded.identity.tenant_id,
-        &decoded.identity.instance_id,
-    )
-    .await?;
+    let applied = observed.ok_or(Error::Corrupt)?;
     owner.save("applied.json", &applied)?;
     Ok(applied)
 }
@@ -480,9 +400,14 @@ async fn observe(
     binding: &Binding,
     tenant: &str,
     instance: &str,
+    public_origin: &str,
 ) -> Result<Applied> {
     let mut response = client
         .get(format!("{origin}/readyz"))
+        .header(
+            reqwest::header::HOST,
+            public_origin.strip_prefix("https://").ok_or(Error::Input)?,
+        )
         .send()
         .await
         .map_err(|_| Error::Storage)?;
@@ -508,53 +433,78 @@ async fn observe(
     Ok(observation)
 }
 
+/// Called only after apply has verified every advertised origin over actual HTTPS.
+pub(super) async fn record_observation(
+    c: &mut sqlx::PgConnection,
+    runtime: &Value,
+    applied: &Applied,
+) -> Result<()> {
+    use sqlx::Connection;
+    let decoded: crate::config::Config =
+        serde_json::from_value(runtime.clone()).map_err(|_| Error::Corrupt)?;
+    if !matches(
+        applied,
+        &decoded.runtime_binding,
+        &decoded.identity.tenant_id,
+        &decoded.identity.instance_id,
+    ) {
+        return Err(Error::Conflict);
+    }
+    let tenant = uuid::Uuid::parse_str(&applied.tenant_id).map_err(|_| Error::Corrupt)?;
+    let service = uuid::Uuid::parse_str(&applied.instance_id).map_err(|_| Error::Corrupt)?;
+    let mut tx = c.begin().await.map_err(|_| Error::Storage)?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| Error::Storage)?;
+    if let crate::agent_pki::Config::StepCa {
+        endpoint,
+        additional_origins,
+        ..
+    } = &decoded.agent_pki
+    {
+        for origin in std::iter::once(&endpoint.origin).chain(additional_origins.iter()) {
+            rss_mdm_registration_service::agent::connections::record_deployment_on(
+                &mut tx,
+                tenant,
+                origin,
+                service,
+                applied.host_id,
+                applied.revision,
+            )
+            .await
+            .map_err(|_| Error::Storage)?;
+        }
+    }
+    tx.commit().await.map_err(|_| Error::Storage)
+}
+
 #[cfg(test)]
 #[path = "../../tests/setup/runtime_files.rs"]
 mod tests;
 
-fn ingress_routes(config: &crate::config::Config) -> Result<String> {
-    let mut routes = BTreeMap::new();
-    fn add(routes: &mut BTreeMap<String, String>, origin: &str, target: String) -> Result<()> {
-        let origin = url::Url::parse(origin).map_err(|_| Error::Input)?;
-        let hostname = origin.domain().ok_or(Error::Input)?;
-        if origin.scheme() != "https"
-            || origin.port_or_known_default() != Some(443)
-            || !hostname
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
-            || routes.insert(hostname.to_owned(), target).is_some()
-        {
-            return Err(Error::Input);
-        }
-        Ok(())
-    }
-    add(&mut routes, &config.product_origin, "127.0.0.1:8445".into())?;
+fn public_routes(config: &crate::config::Config) -> Result<Vec<String>> {
+    let mut origins = std::collections::BTreeSet::from([config.product_origin.clone()]);
     if let Some(w) = &config.native_protocols.windows {
-        for endpoint in [&w.enrollment, &w.management]
-            .into_iter()
-            .chain(&w.additional_management)
-        {
-            if endpoint.listen.ip().is_unspecified() {
-                return Err(Error::Input);
-            }
-            add(&mut routes, &endpoint.origin, endpoint.listen.to_string())?;
-        }
+        origins.insert(w.enrollment.origin.clone());
+        origins.insert(w.management.origin.clone());
+        origins.extend(w.additional_management.iter().map(|e| e.origin.clone()));
     }
     if let Some(a) = &config.native_protocols.apple {
-        add(
-            &mut routes,
-            &a.management.origin,
-            a.management.listen.to_string(),
-        )?;
+        origins.insert(a.management.origin.clone());
     }
-    if let crate::agent_pki::Config::StepCa { endpoint, .. } = &config.agent_pki {
-        if endpoint.listen.ip().is_unspecified() {
-            return Err(Error::Input);
-        }
-        add(&mut routes, &endpoint.origin, endpoint.listen.to_string())?;
+    if let crate::agent_pki::Config::StepCa {
+        endpoint,
+        additional_origins,
+        ..
+    } = &config.agent_pki
+    {
+        origins.insert(endpoint.origin.clone());
+        origins.extend(additional_origins.iter().cloned());
     }
-    Ok(routes
-        .into_iter()
-        .map(|(host, target)| format!("{host} {target};\n"))
-        .collect())
+    for origin in &origins {
+        rss_mdm_agent_wire::connections::validate_origin(origin).map_err(|_| Error::Input)?;
+    }
+    Ok(origins.into_iter().collect())
 }

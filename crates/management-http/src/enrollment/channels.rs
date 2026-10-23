@@ -38,12 +38,24 @@ pub struct Status {
 /// App observes existing channel owners; admission never changes their runtime.
 pub trait Source: Send + Sync {
     fn status(&self, channel: Channel) -> Status;
+    fn endpoints(&self) -> PublicEndpoints;
+}
+/// Runtime public locators; they do not authorize browser sessions or change native device URLs.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicEndpoints {
+    pub console: String,
+    pub agent: Vec<String>,
+    pub windows_enrollment: Option<String>,
+    pub windows_management: Vec<String>,
+    pub apple_management: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Channels {
     tenant_id: String,
     instance_id: String,
+    public_endpoints: PublicEndpoints,
     channels: Vec<Entry>,
 }
 #[derive(Serialize)]
@@ -66,6 +78,7 @@ async fn read(
     Ok(Json(Channels {
         tenant_id: auth.proof.tenant_id().into(),
         instance_id: auth.proof.instance_id().into(),
+        public_endpoints: app.channels.endpoints(),
         channels: settings
             .into_iter()
             .map(|setting| Entry {

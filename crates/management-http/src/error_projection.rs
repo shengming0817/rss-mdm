@@ -241,6 +241,7 @@ impl From<rss_mdm_software_service::management::Error> for Error {
         match error {
             S::Malformed => Self::Malformed,
             S::Forbidden => Self::Forbidden,
+            S::AgentPackage(reason) => Self::AgentPackage(reason),
             S::Conflict => Self::Conflict,
             S::Unsupported => Self::Unsupported,
             S::ResourceMissing => Self::Resource(

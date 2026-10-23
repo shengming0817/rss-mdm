@@ -42,7 +42,7 @@ pub(super) fn routes() -> Router<Arc<HttpState>> {
 async fn upload(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::TelemetryReceipt>), AgentError> {
@@ -69,7 +69,7 @@ async fn upload(
 async fn gap_upload(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<(StatusCode, Json<wire::TelemetryGapReceipt>), AgentError> {
@@ -100,7 +100,7 @@ async fn gap_upload(
 async fn gap_receipt(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryGapReceipt>, AgentError> {
@@ -122,7 +122,7 @@ async fn gap_receipt(
 async fn receipt(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryReceipt>, AgentError> {
@@ -144,7 +144,7 @@ async fn receipt(
 async fn configuration(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::SignedTelemetryConfiguration>, AgentError> {
@@ -166,7 +166,7 @@ async fn configuration(
 async fn current(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path((id, observation)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::TelemetryCurrentStatus>, AgentError> {
@@ -234,7 +234,7 @@ fn decode(headers: &HeaderMap, bytes: &Bytes, limit: usize) -> Result<Vec<u8>, A
 async fn material(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<axum::response::Response, AgentError> {
@@ -259,7 +259,7 @@ async fn material(
 async fn directory(
     State(app): State<Arc<HttpState>>,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
 ) -> Result<Json<wire::TelemetryDirectory>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;

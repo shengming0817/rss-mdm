@@ -12,6 +12,9 @@ pub(crate) struct Channels {
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 impl Source for Channels {
+    fn endpoints(&self) -> rss_mdm_management_http::enrollment::channels::PublicEndpoints {
+        self.preparation.endpoints()
+    }
     fn status(&self, channel: Channel) -> Status {
         let (configured, purpose) = match channel {
             Channel::Agent => (self.agent.is_some(), Purpose::Agent),
@@ -55,7 +58,7 @@ impl Source for Channels {
             Channel::WindowsMdm => self
                 .windows
                 .as_ref()
-                .is_some_and(|w| w.tls_valid_at(now) && w.channel.ca.issuance_end(now).is_ok()),
+                .is_some_and(|w| w.channel.ca.issuance_end(now).is_ok()),
             Channel::MacosMdm => true,
         };
         if !issuance_ready {
@@ -68,14 +71,7 @@ impl Source for Channels {
                 .expect("configured Apple")
                 .channel
                 .health(now);
-            if health.certificates_expired()
-                || !self
-                    .apple
-                    .as_ref()
-                    .expect("configured Apple")
-                    .tls
-                    .valid_at(now)
-            {
+            if health.certificates_expired() {
                 return fault(Reason::CertificateUnavailable);
             }
             if !health.push_available {

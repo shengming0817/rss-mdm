@@ -8,11 +8,8 @@ use std::sync::{Arc, Mutex};
 async fn authenticated_readback_recovers_original_provider() -> Result<()> {
     use base64::Engine;
     let root = crate::windows::test_support::root()?;
-    let config: crate::windows::WindowsConfig =
-        serde_json::from_slice(&std::fs::read(root.join("windows.json"))?)?;
     let certificate =
-        openssl::x509::X509::stack_from_pem(&std::fs::read(&config.management.certificate_file)?)?
-            .remove(0);
+        openssl::x509::X509::stack_from_pem(&std::fs::read(root.join("server.crt"))?)?.remove(0);
     let subject = certificate
         .subject_name()
         .entries_by_nid(openssl::nid::Nid::COMMONNAME)
@@ -23,7 +20,7 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let origin = format!("https://localhost:{}", address.port());
-    let mut tls = crate::native::tls::configuration(&config.management, None)?.fixture_server();
+    let mut tls = crate::test_support::tls::server(&root, "windows-tls.pk8", None)?;
     tls.alpn_protocols = vec![b"h2".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
     let stored = Arc::new(Mutex::new(None::<serde_json::Value>));
@@ -124,8 +121,8 @@ async fn authenticated_readback_recovers_original_provider() -> Result<()> {
         address,
         tls_root_file: root.join("ca.crt"),
         administrator_subject: subject,
-        administrator_certificate_file: config.management.certificate_file,
-        administrator_key_file: config.management.private_key_file,
+        administrator_certificate_file: root.join("server.crt"),
+        administrator_key_file: root.join("windows-tls.pk8"),
     };
     let client = client::Client::new(&profile, clock()?)?;
     let public = json!({"kty":"RSA","kid":"test","n":"AQ","e":"AQAB"});

@@ -548,53 +548,6 @@ pub(crate) fn key(path: &std::path::Path) -> Result<zeroize::Zeroizing<[u8; 32]>
     }
     Ok(value)
 }
-/// Only the real accepted gateway peer can supply the single overwritten client IP.
-pub(crate) async fn ingress(
-    State(gateway): State<std::net::IpAddr>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    if matches!(request.uri().path(), "/livez" | "/readyz") {
-        return next.run(request).await;
-    }
-    let peer = request
-        .extensions()
-        .get::<rss_axum::AcceptedConnectionInfo<()>>()
-        .map(|p| p.socket_peer().ip());
-    if peer != Some(gateway) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let forwarded = request
-        .headers()
-        .get_all("x-forwarded-for")
-        .iter()
-        .collect::<Vec<_>>();
-    let source = if forwarded.len() == 1 {
-        forwarded[0]
-            .to_str()
-            .ok()
-            .and_then(|v| v.parse::<std::net::IpAddr>().ok())
-    } else {
-        None
-    };
-    let Some(source) = source else {
-        return StatusCode::FORBIDDEN.into_response();
-    };
-    for name in [
-        "forwarded",
-        "x-forwarded-for",
-        "x-real-ip",
-        "x-forwarded-host",
-        "x-forwarded-proto",
-    ] {
-        request.headers_mut().remove(name);
-    }
-    request
-        .extensions_mut()
-        .insert(rss_identity_http_axum::ClientAddress(source));
-    next.run(request).await
-}
-
 #[cfg(test)]
 #[path = "../tests/identity/unit.rs"]
 mod tests;

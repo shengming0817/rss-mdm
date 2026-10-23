@@ -39,7 +39,7 @@ fn provision(
 
 pub(crate) async fn issue(
     app: &HttpState,
-    peer: &rss_mdm_certificate::HandshakePeer,
+    peer: &rss_mdm_certificate::ClientCertificateEvidence,
     cms: &[u8],
     audit: &RequestAudit,
     purpose: rss_mdm_registration_service::Purpose,

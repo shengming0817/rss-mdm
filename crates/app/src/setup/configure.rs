@@ -26,8 +26,8 @@ pub enum Recipient {
 #[serde(deny_unknown_fields)]
 pub struct Windows {
     pub entra: Option<rss_mdm_windows_channel::entra::Config>,
-    pub enrollment: crate::native::TlsEndpoint,
-    pub management: crate::native::TlsEndpoint,
+    pub enrollment: crate::native::PublicEndpoint,
+    pub management: crate::native::PublicEndpoint,
     #[serde(default)]
     pub trust_file: PathBuf,
     /// Omitted only in deployment input: preserve an existing identity or generate on first enablement.
@@ -37,7 +37,7 @@ pub struct Windows {
     pub provider_id: String,
     pub poll: rss_mdm_windows_mdm::provisioning::Poll,
     pub push: Option<crate::windows::WindowsPushConfig>,
-    pub additional_management: Vec<crate::native::TlsEndpoint>,
+    pub additional_management: Vec<crate::native::PublicEndpoint>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

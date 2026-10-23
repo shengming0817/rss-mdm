@@ -46,10 +46,8 @@ impl Fixture {
         config.native_protocols.windows = None;
         let mut apple: config::Config =
             serde_json::from_slice(&std::fs::read(self.root.join("apple.json"))?)?;
-        let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        apple.management.listen = backend.local_addr()?;
-        let native_address = apple.management.listen;
-        drop(backend);
+        let native_address = config.listen;
+        config.trusted_gateway = "127.0.0.1".parse()?;
         apple.management.origin = peer.origin.clone();
         apple.trust_file = self.app.apple()?.config.trust_file.clone();
         apple.test_push_transport = Some((participant.origin(), self.root.join("ca.crt")));
@@ -71,9 +69,17 @@ impl Fixture {
         ingress
             .startup()?
             .stage_task_with_token(crate::test_support::gateway::proxy(
-                tokio::net::TcpListener::bind(self.app.apple()?.config.management.listen).await?,
+                tokio::net::TcpListener::bind((
+                    "127.0.0.1",
+                    url::Url::parse(&peer.origin)?
+                        .port_or_known_default()
+                        .unwrap(),
+                ))
+                .await?,
                 native_address,
-            ));
+                self.root.clone(),
+                peer.origin.clone(),
+            )?);
         let stop = tokio_util::sync::CancellationToken::new();
         let stopped = stop.clone();
         let server = tokio::spawn(crate::lifecycle::serve(
@@ -92,6 +98,8 @@ impl Fixture {
             client
                 .get(format!("http://{address}/readyz"))
                 .header("host", "mdm.example.test")
+                .header("x-rss-public-origin", "https://mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
                 .send()
                 .await
                 .map(|r| r.status())
@@ -166,6 +174,8 @@ impl Fixture {
             let response = client
                 .get(format!("http://{address}/api/v1/runtime/diagnostics"))
                 .header("host", "mdm.example.test")
+                .header("x-rss-public-origin", "https://mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
                 .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
@@ -202,6 +212,8 @@ impl Fixture {
             let snapshot: serde_json::Value = client
                 .get(format!("http://{address}/api/v1/runtime/diagnostics"))
                 .header("host", "mdm.example.test")
+                .header("x-rss-public-origin", "https://mdm.example.test")
+                .header("x-forwarded-for", "127.0.0.1")
                 .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
@@ -240,9 +252,14 @@ impl Fixture {
             "browser listener survived shutdown"
         );
         ensure!(
-            tokio::net::TcpStream::connect(self.app.apple()?.config.management.listen)
-                .await
-                .is_err(),
+            tokio::net::TcpStream::connect((
+                "127.0.0.1",
+                url::Url::parse(&peer.origin)?
+                    .port_or_known_default()
+                    .unwrap()
+            ))
+            .await
+            .is_err(),
             "native listener survived shutdown"
         );
         pg.close().await?;
@@ -381,7 +398,8 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
     config.agent_pki = crate::agent_pki::Config::Disabled {};
     let mut apple: config::Config =
         serde_json::from_slice(&std::fs::read(fixture.root.join("apple.json"))?)?;
-    apple.management.listen = native_address;
+    let _ = native_address;
+    config.trusted_gateway = "127.0.0.1".parse()?;
     if !matches!(fault, StartupFault::TrustConflict) {
         apple.management.origin = fixture.app.apple()?.config.management.origin.clone();
         apple.trust_file = fixture.app.apple()?.config.trust_file.clone();
@@ -425,6 +443,8 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
                 if let Ok(response) = client
                     .get(format!("http://{address}/readyz"))
                     .header("host", "mdm.example.test")
+                    .header("x-rss-public-origin", "https://mdm.example.test")
+                    .header("x-forwarded-for", "127.0.0.1")
                     .send()
                     .await
                     && response.status() == StatusCode::OK
@@ -443,6 +463,8 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
         let response = client
             .get(format!("http://{address}/api/v1/runtime/diagnostics"))
             .header("host", "mdm.example.test")
+            .header("x-rss-public-origin", "https://mdm.example.test")
+            .header("x-forwarded-for", "127.0.0.1")
             .header("x-forwarded-for", "127.0.0.1")
             .header(
                 "cookie",
@@ -466,7 +488,7 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
             .and_then(|rows| rows.iter().find(|row| row["name"] == "apple"))
             .ok_or_else(|| anyhow::anyhow!("missing Apple state"))?;
         ensure!(
-            apple["state"] == expected_state && apple["listening"] == false,
+            apple["state"] == expected_state && apple["mounted"] == false,
             "{apple}"
         );
         ensure!(apple["reasons"] == json!([expected_reason]), "{apple}");

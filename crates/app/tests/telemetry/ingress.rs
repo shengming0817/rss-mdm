@@ -92,6 +92,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(configuration.device_id==case_device_id() && configuration.expires_at>configuration.issued_at);
 
         ensure!(matches!(configuration.collector,wire::TelemetryCollector::Script {..}));
+        if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::cross_dataset_sequence(&f,&field).await?; }
         let now=f.planning.clock.unix_seconds()? * 1_000_000;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
         let mut body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});

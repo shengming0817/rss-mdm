@@ -52,6 +52,26 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
         });
     }
     identity::set_grants(case_tenant(), &f.subject, grants).await?;
+    // Installer consumers need a current signed configuration; deployment/publication is a separate journey.
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let access = database(&base).await?;
+    let mut tx = access.archive_pool().begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    rss_mdm_registration_service::agent::connections::fixture_configuration_on(
+        &mut tx,
+        Uuid::parse_str(case_tenant())?,
+        crate::test_support::identity::config(case_tenant())?
+            .native_protector()?
+            .as_ref(),
+        "https://mdm.example.test:9445",
+    )
+    .await?;
+    tx.commit().await?;
+    access.close().await;
+
     Ok(f)
 }
 async fn publish(
@@ -393,21 +413,19 @@ struct Tls {
 }
 impl Tls {
     async fn start(authority: &authority::Authority) -> Result<Self> {
+        Self::at_origin(
+            authority,
+            authority.base["agent_pki"]["endpoint"]["origin"]
+                .as_str()
+                .context("fixture Agent origin")?,
+        )
+        .await
+    }
+    async fn at_origin(authority: &authority::Authority, origin: &str) -> Result<Self> {
         let service = agent::service(authority).await?;
-        let base = authority.base.clone();
-        let pki = serde_json::from_value::<crate::agent_pki::Config>(base["agent_pki"].clone())?
-            .load(
-                authority.audit.clone(),
-                Arc::new(crate::clock::SystemClock),
-                crate::device_pki::providers(&serde_json::from_value::<
-                    Vec<crate::device_pki::Provider>,
-                >(base["device_pki"].clone())?)?,
-                None,
-            )?
-            .unwrap();
         let envelope = rss_mdm_agent_channel::boundary::Envelope {
             admission: Arc::new(tokio::sync::Semaphore::new(32)),
-            host: pki.origin.trim_start_matches("https://").into(),
+            host: origin.trim_start_matches("https://").into(),
             clock: monotonic(),
             audit_store: authority.audit.clone(),
             requests: Arc::new(tokio::sync::Semaphore::new(4)),
@@ -419,9 +437,8 @@ impl Tls {
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
-        let tls = crate::native::TlsRouter {
-            listen: address,
-            tls: pki.tls.clone(),
+        let tls = crate::native::ChannelRouter {
+            origins: vec![origin.into()],
             router,
             admission: crate::native::admission::Admission::new(
                 monotonic(),
@@ -439,7 +456,7 @@ impl Tls {
                 tls,
                 authority.audit.clone(),
                 case_tenant().into(),
-                crate::native::NativeListenerKind::Agent,
+                crate::native::ChannelKind::Agent,
             )
             .await?,
         );
@@ -638,7 +655,11 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
         ensure!(user.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("invalid-count"),"quantity":quantity,"targets":[{"platform":"macos","architecture":"aarch64"}]}))).await?.0==StatusCode::BAD_REQUEST);
     }
     let mut bad = exchange(&file, &package, 0)?;
-    bad.file.configuration.origin = "https://untrusted.example".into();
+    bad.file
+        .configuration
+        .connections
+        .configuration
+        .preferred_origin = "https://untrusted.example".into();
     ensure!(
         machine(&f, "/api/v1/agent/enroll/configurations/exchange", &bad)
             .await?
@@ -1368,14 +1389,14 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             "x86_64",
             "pkg",
             "1.2.3",
-            installer_fixtures::pkg("1.2.3"),
+            installer_fixtures::pkgbuild(),
         ),
         (
             "macos",
             "aarch64",
             "pkg",
-            "1.2.4",
-            installer_fixtures::pkg("1.2.4"),
+            "1.2.3",
+            installer_fixtures::productbuild(),
         ),
     ] {
         let (package, _) =
@@ -1393,6 +1414,64 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
         ensure!(download.status() == StatusCode::OK);
         ensure!(download.bytes().await?.as_ref() == bytes.as_slice());
     }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: native ARM64 EXE explicit enable, publish, replay and immutable download"]
+async fn arm64_exe_explicit_enable_preserves_publication_binding() -> Result<()> {
+    let f = fixture().await?;
+    let mut user = f.user.clone();
+    let bytes = installer_fixtures::exe_machine("8+enterprise", 0xaa64);
+    let id = save_bytes(
+        &f,
+        &mut user,
+        "windows",
+        "aarch64",
+        "exe",
+        Some("8+enterprise"),
+        &bytes,
+    )
+    .await?;
+    let enabled=user.call(&f.router,Method::POST,&format!("/api/v1/software/resources/{id}/versions/v1"),
+        Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
+    ensure!(enabled.0 == StatusCode::OK, "explicit enable {enabled:?}");
+    let input = json!({"operationId":Uuid::new_v4(),"packageId":id});
+    let result = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(input.clone()),
+        )
+        .await?;
+    ensure!(result.0 == StatusCode::OK, "ARM64 publication {result:?}");
+    ensure!(
+        user.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-packages",
+            Some(input.clone())
+        )
+        .await?
+            == result
+    );
+    let package: w::configuration::Package = serde_json::from_value(result.1)?;
+    ensure!(
+        package.target.architecture == r::TaskArchitecture::Aarch64
+            && package.format == w::configuration::InstallerFormat::WindowsExe
+    );
+    let download = f
+        .client
+        .get(format!(
+            "{}/api/v1/agent/enroll/packages/{}/content",
+            f.origin, package.release_id
+        ))
+        .header("host", "mdm.example.test:9445")
+        .send()
+        .await?;
+    ensure!(download.status() == StatusCode::OK);
+    ensure!(download.bytes().await?.as_ref() == bytes.as_slice());
     Ok(())
 }
 
@@ -1531,5 +1610,236 @@ async fn agent_publication_business_identity_is_unique() -> Result<()> {
         .trim()
             == "withdrawn"
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.configurations: connection draft, observation gate and original publication receipts"]
+async fn connection_publication_requires_deployment_and_preserves_operations() -> Result<()> {
+    use sqlx::Connection;
+    let f = fixture_with(&[
+        "registration_configuration_read",
+        "registration_configuration_write",
+    ])
+    .await?;
+    let mut user = f.user.clone();
+    let first = user
+        .call(&f.router, Method::GET, "/api/v1/agent-connections", None)
+        .await?;
+    ensure!(
+        first.0 == StatusCode::OK && first.1["published"]["configuration"]["revision"] == 1,
+        "initial signed fixture {first:?}"
+    );
+    let (old_material, _) =
+        configuration(&f, &mut user, json!({"kind":"unlimited"}), Some(3600)).await?;
+    let a = "https://mdm.example.test:9445";
+    let b = "https://mdm.example.test:10443";
+    let mut origins = vec![a, b];
+    origins.sort();
+    let save = json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"preferredOrigin":b,"origins":origins});
+    let saved = user
+        .call(
+            &f.router,
+            Method::PUT,
+            "/api/v1/agent-connections",
+            Some(save.clone()),
+        )
+        .await?;
+    ensure!(saved.0 == StatusCode::OK, "save desired {saved:?}");
+    ensure!(
+        user.call(
+            &f.router,
+            Method::PUT,
+            "/api/v1/agent-connections",
+            Some(save.clone())
+        )
+        .await?
+            == saved
+    );
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let runtime = agent::seed_profile(
+        &base,
+        f.execution.clone(),
+        "connection-peer",
+        crate::test_support::case::name("connection-peer"),
+        profile(false),
+    )
+    .await?;
+    let peer = agent::evidence("connection-peer").context("real connection peer")?;
+    let publish = json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
+    let refused = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-connections/publish",
+            Some(publish.clone()),
+        )
+        .await?;
+    ensure!(
+        refused.0 == StatusCode::CONFLICT
+            && refused.1["code"] == "connection_deployment_unobserved",
+        "deployment refusal {refused:?}"
+    );
+    // A successful deployment observation is a minimal fixture prerequisite here.
+    // Actual HTTPS observation and Nginx evidence have their own transport acceptance owner.
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    for origin in [a, b] {
+        rss_mdm_registration_service::agent::connections::record_deployment_on(
+            &mut tx,
+            Uuid::parse_str(case_tenant())?,
+            origin,
+            Uuid::parse_str(crate::test_support::identity::INSTANCE)?,
+            Uuid::new_v4(),
+            1,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    let published = user
+        .call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-connections/publish",
+            Some(publish.clone()),
+        )
+        .await?;
+    ensure!(
+        published.0 == StatusCode::OK,
+        "publish observed {published:?}"
+    );
+    ensure!(
+        user.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-connections/publish",
+            Some(publish.clone())
+        )
+        .await?
+            == published
+    );
+    let receipt = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!(
+                "/api/v1/agent-connection-operations/{}",
+                publish["operationId"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await?;
+    ensure!(
+        receipt.0 == StatusCode::OK
+            && receipt.1["action"] == "published"
+            && receipt.1["configuration"] == published.1,
+        "original publication {receipt:?}"
+    );
+    let missing = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-connection-operations/{}", Uuid::new_v4()),
+            None,
+        )
+        .await?;
+    ensure!(
+        missing == (StatusCode::OK, Value::Null),
+        "unknown operation must stay unknown"
+    );
+    let mut changed = publish.clone();
+    changed["expectedRevision"] = json!(3);
+    ensure!(
+        user.call(
+            &f.router,
+            Method::POST,
+            "/api/v1/agent-connections/publish",
+            Some(changed)
+        )
+        .await?
+        .0 == StatusCode::CONFLICT
+    );
+    let records = crate::audit_test_support::read(&mut c).await?;
+    ensure!(
+        records
+            .iter()
+            .filter(|r| r.source() == "mdm.business"
+                && r.operation() == publish["operationId"].as_str())
+            .count()
+            == 1,
+        "replay duplicated publication audit fact"
+    );
+    let signed: rss_mdm_agent_wire::connections::SignedConfiguration =
+        serde_json::from_value(published.1)?;
+    let keys = first.1["verificationKeys"].as_object().unwrap();
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let key = URL_SAFE_NO_PAD.decode(keys[&signed.configuration.key_id].as_str().unwrap())?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(
+            &signed.configuration.signing_bytes()?,
+            &URL_SAFE_NO_PAD.decode(&signed.signature)?,
+        )
+        .map_err(|_| anyhow::anyhow!("connection signature"))?;
+    let mut authority = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let tls_a=Tls::at_origin(&authority,a).await?;
+        let tls_b=Tls::at_origin(&authority,b).await?;
+        let mut identity=Vec::new();
+        for der in peer.chain(){identity.extend(openssl::x509::X509::from_der(der.as_ref())?.to_pem()?);}
+        identity.extend(openssl::pkey::PKey::private_key_from_der(&std::fs::read(root().join("agent.pk8"))?)?.private_key_to_pem_pkcs8()?);
+        let identity=reqwest::Identity::from_pem(&identity)?;
+        let ca=reqwest::Certificate::from_pem(&std::fs::read(root().join("ca.crt"))?)?;
+        let client=|address|reqwest::Client::builder().no_proxy().https_only(true).redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(5))
+            .identity(identity.clone()).add_root_certificate(ca.clone()).resolve("mdm.example.test",address).build();
+        let client_a=client(tls_a.address)?;let client_b=client(tls_b.address)?;
+        let url=|address:std::net::SocketAddr,path:&str|format!("https://mdm.example.test:{}{path}",address.port());
+        let mut ack=json!({"operationId":Uuid::new_v4(),"revision":2,"digest":signed.configuration.digest()?,"origin":b});
+        let rejected=client_a.post(url(tls_a.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",a.trim_start_matches("https://")).json(&ack).send().await?;
+        ensure!(rejected.status()==StatusCode::FORBIDDEN,"a device supplied origin replaced gateway evidence");
+        ack["origin"]=json!(a);
+        ensure!(client_a.post(url(tls_a.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",a.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);
+        let save=json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"preferredOrigin":b,"origins":[b]});
+        ensure!(user.call(&f.router,Method::PUT,"/api/v1/agent-connections",Some(save)).await?.0==StatusCode::OK);
+        let retire=json!({"operationId":Uuid::new_v4(),"expectedRevision":3});
+        let blocked=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire.clone())).await?;
+        ensure!(blocked==(StatusCode::CONFLICT,json!({"code":"connection_retirement_blocked"})),"retirement stranded an active peer: {blocked:?}");
+        let failed=json!({"operationId":Uuid::new_v4(),"revision":2,"reason":"persistence_failed"});
+        ensure!(client_a.post(url(tls_a.address,"/api/v1/agent/enroll/connections/failures")).header("host",a.trim_start_matches("https://")).json(&failed).send().await?.status()==StatusCode::NO_CONTENT);
+        let device=url::form_urlencoded::byte_serialize(runtime["deviceId"].as_str().unwrap().as_bytes()).collect::<String>();
+        let observed=user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
+        ensure!(observed.0==StatusCode::OK && observed.1["acknowledgement"]["revision"]==2 && observed.1["failure"]["report"]["reason"]=="persistence_failed","separate installed/failure facts {observed:?}");
+        ack["operationId"]=json!(Uuid::new_v4());ack["origin"]=json!(b);
+        for _ in 0..2 {ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);}
+        let state=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
+        ensure!(state.1["retirementBlockers"]["configurations"]==1,"old install material was omitted: {state:?}");
+        let blocked=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire.clone())).await?;
+        ensure!(blocked.0==StatusCode::CONFLICT && blocked.1["code"]=="connection_retirement_blocked","old live material stranded: {blocked:?}");
+        let revoked=user.call(&f.router,Method::POST,&format!("/api/v1/agent-configurations/{}/revoke",old_material.configuration.configuration_id),Some(json!({"operationId":Uuid::new_v4()}))).await?;
+        ensure!(revoked.0==StatusCode::NO_CONTENT);
+        let mut tx=c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        rss_mdm_registration_service::agent::connections::record_deployment_on(&mut tx,Uuid::parse_str(case_tenant())?,b,Uuid::parse_str(crate::test_support::identity::INSTANCE)?,Uuid::new_v4(),1).await?;
+        tx.commit().await?;
+        let retired=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire)).await?;
+        ensure!(retired.0==StatusCode::OK && retired.1["configuration"]["origins"]==json!([b]),"confirmed B retirement {retired:?}");
+        let current=client_b.get(url(tls_b.address,"/api/v1/agent/enroll/connections")).header("host",b.trim_start_matches("https://")).send().await?;
+        ensure!(current.status()==StatusCode::OK && current.json::<Value>().await?==retired.1);
+        ack["operationId"]=json!(Uuid::new_v4());ack["revision"]=json!(3);ack["digest"]=json!(serde_json::from_value::<rss_mdm_agent_wire::connections::SignedConfiguration>(retired.1)?.configuration.digest()?);
+        ensure!(client_b.post(url(tls_b.address,"/api/v1/agent/enroll/connections/acknowledgements")).header("host",b.trim_start_matches("https://")).json(&ack).send().await?.status()==StatusCode::NO_CONTENT);
+        let converged=user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?;
+        ensure!(converged.1["convergence"]["activeDevices"]==1 && converged.1["convergence"]["confirmedDevices"]==1,"actual convergence {converged:?}");
+        let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
+        ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
+        ensure!(tls_a.owner.shutdown().join().await?.is_clean());ensure!(tls_b.owner.shutdown().join().await?.is_clean());
+        Ok(())
+    }).await?;
+    c.close().await?;
     Ok(())
 }

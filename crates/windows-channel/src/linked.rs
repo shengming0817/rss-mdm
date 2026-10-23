@@ -115,7 +115,7 @@ pub(crate) async fn current_parent(app: &HttpState, parent: Uuid) -> Result<(), 
 }
 pub(crate) async fn issue(
     State(app): State<Arc<HttpState>>,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     bytes: Bytes,
@@ -136,7 +136,7 @@ pub(crate) async fn issue(
 }
 async fn issue_message(
     app: &HttpState,
-    peer: Option<Extension<rss_mdm_certificate::HandshakePeer>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     audit: &RequestAudit,
     message: &soap::Message,
     bytes: &[u8],

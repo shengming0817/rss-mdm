@@ -8,7 +8,6 @@ mod certificate;
 pub(crate) struct Apple {
     pub(crate) channel: Arc<rss_mdm_apple_channel::Apple>,
     pub(crate) config: config::Config,
-    pub(crate) tls: Arc<crate::native::tls::Configuration>,
 }
 impl Apple {
     pub(crate) fn load(
@@ -36,8 +35,6 @@ impl Apple {
         let push = load_push(&config, &materials)
             .map_err(|_| Error::Configuration(ConfigIssue::AppleApns))?;
         let webhooks = crate::ca_webhooks::load(&config.webhooks, &authority.trust)?;
-        let tls =
-            crate::native::tls::configuration(&config.management, Some(authority.verifier()))?;
         let options = rss_mdm_apple_channel::Config {
             management: rss_mdm_apple_channel::Origin {
                 origin: config.management.origin.clone(),
@@ -61,11 +58,7 @@ impl Apple {
             )
             .with_account_keys(materials.accounts),
         );
-        Ok(Self {
-            config,
-            channel,
-            tls,
-        })
+        Ok(Self { config, channel })
     }
 }
 fn load_push(
@@ -101,8 +94,8 @@ pub(crate) fn router(
     apple: Option<&Apple>,
     app: Arc<rss_mdm_apple_channel::HttpState>,
     clock: Arc<dyn rss_observation::Clock>,
-) -> Option<crate::native::TlsRouter> {
-    use crate::native::{TlsRouter, admission};
+) -> Option<crate::native::ChannelRouter> {
+    use crate::native::{ChannelRouter, admission};
     use axum::middleware;
     use rss_mdm_apple_channel::boundary::Envelope;
     let apple = apple?;
@@ -123,10 +116,9 @@ pub(crate) fn router(
         },
     )
     .layer(middleware::from_fn(admission::admit));
-    Some(TlsRouter {
+    Some(ChannelRouter {
         admission: admission::Admission::new(clock, app.requests.clone(), "apple-management-tls"),
-        listen: apple.config.management.listen,
-        tls: apple.tls.clone(),
+        origins: vec![apple.config.management.origin.clone()],
         router,
     })
 }

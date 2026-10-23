@@ -362,7 +362,7 @@ impl From<rss_mdm_software_service::management::Error> for OwnerDiagnostic {
         use rss_mdm_software_service::management::Error as E;
         match e {
             E::Malformed => Self::Malformed,
-            E::Forbidden => Self::Forbidden,
+            E::Forbidden | E::AgentPackage(_) => Self::Forbidden,
             E::Conflict => Self::Conflict,
             E::Unsupported => Self::Unsupported,
             E::CommitUnknown => Self::CommitUnknown,
