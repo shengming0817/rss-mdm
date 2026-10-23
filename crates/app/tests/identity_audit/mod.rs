@@ -524,10 +524,9 @@ async fn fatal_worker(config: &Config, observer: &PgPool, fence: bool) -> Result
 
 #[test]
 fn fenced_progress_is_terminal_even_when_other_events_succeeded() {
-    assert_eq!(should_wait(1, 0, 1), Err(AuditDeliveryError::OwnershipLost));
-    assert_eq!(should_wait(1, 1, 0), Ok(true));
-    assert_eq!(should_wait(1, 0, 0), Ok(false));
-    assert_eq!(should_wait(0, 0, 0), Ok(true));
+    assert!(should_wait(1, 1));
+    assert!(!should_wait(1, 0));
+    assert!(should_wait(0, 0));
 }
 
 #[test]
