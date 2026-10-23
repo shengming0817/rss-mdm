@@ -193,10 +193,10 @@ impl AccessTaskSpec {
         {
             return Err(WireError::InvalidValue);
         }
-        if let AccessAction::Apply { account, .. } = &self.action {
-            if account != &(AccessAccount::Windows { sid: sid.clone() }) {
-                return Err(WireError::InvalidValue);
-            }
+        if let AccessAction::Apply { account, .. } = &self.action
+            && account != &(AccessAccount::Windows { sid: sid.clone() })
+        {
+            return Err(WireError::InvalidValue);
         }
         serde_json::to_vec(&(
             "rss-mdm/device-access/recovery/v1",
