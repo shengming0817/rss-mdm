@@ -16,7 +16,7 @@ sha2.workspace = true
 serde_json.workspace = true
 serde.workspace = true
 tokio.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json"] }
 anyhow.workspace = true
 
 [lints]

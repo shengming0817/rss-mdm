@@ -241,10 +241,12 @@ pub async fn datasets_in(
     c: &mut PgConnection,
     tenant: TenantId,
     scope: &rss_mdm_inventory::CollectionScope,
+    fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<BTreeMap<Source, Vec<String>>> {
+    ensure!(fields.len() <= 1024, "directory field capacity");
     crate::reader::assert_tenant(c, tenant).await?;
-    let rows=sqlx::query("SELECT DISTINCT source,dataset FROM mdm.collection_definitions WHERE tenant_id=$1::uuid AND EXISTS(SELECT 1 FROM jsonb_array_elements(definition->'fields') f WHERE f->'scope'=$2::jsonb) ORDER BY source,dataset LIMIT 4097")
-        .bind(tenant.to_string()).bind(serde_json::to_string(scope)?).fetch_all(c).await?;
+    let rows=sqlx::query("SELECT DISTINCT source,dataset FROM mdm.collection_definitions WHERE tenant_id=$1::uuid AND EXISTS(SELECT 1 FROM jsonb_array_elements(definition->'fields') f WHERE f->'scope'=$2::jsonb AND f->'definition'->>'key'=ANY($3)) ORDER BY source,dataset LIMIT 4097")
+        .bind(tenant.to_string()).bind(serde_json::to_string(scope)?).bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>()).fetch_all(c).await?;
     ensure!(rows.len() <= 4096, "collection dataset capacity");
     let mut result: BTreeMap<Source, Vec<String>> = BTreeMap::new();
     for row in rows {

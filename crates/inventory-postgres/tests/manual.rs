@@ -63,7 +63,8 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             "manual-device",
             rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
-            &fact
+            &fact.state,
+            &fact.evidence
         )
         .await?,
         Some(1)
@@ -75,7 +76,8 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
             "manual-device",
             rss_mdm_inventory::builtin::OFFICE_FLOOR,
             0,
-            &fact
+            &fact.state,
+            &fact.evidence
         )
         .await?,
         None

@@ -73,24 +73,39 @@ pub async fn read_in(
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let projection = super::projection_scope(tenant);
     let rows=sqlx::query("SELECT DISTINCT ON(i.scope,i.field,i.field_scope) i.*,d.definition::text AS definition FROM mdm.inventory i JOIN mdm.collection_definitions d ON(d.tenant_id,d.coverage,d.source)=(i.tenant_id,i.coverage,i.source) WHERE i.tenant_id=$1::uuid AND i.journal=$2 AND i.generation=$3 AND i.scope=ANY($4) ORDER BY i.scope,i.field,i.field_scope,i.collection_sequence DESC")
-        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).fetch_all(connection).await?;
-    decode_rows(rows)
+        .bind(tenant.to_string()).bind(projection.source().source()).bind(projection.generation()).bind(keys).fetch_all(&mut *connection).await?;
+    decode_rows(connection, tenant, rows).await
 }
 
-pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<InventoryField>> {
+pub(crate) async fn decode_rows(
+    c: &mut sqlx::PgConnection,
+    tenant: rss_request_context::TenantId,
+    rows: Vec<sqlx::postgres::PgRow>,
+) -> Result<Vec<InventoryField>> {
+    let mut versions = std::collections::BTreeSet::new();
+    for row in &rows {
+        for key in ["value_version", "last_known_version"] {
+            if let Some(id) = row.try_get::<Option<String>, _>(key)? {
+                versions.insert(id);
+            }
+        }
+    }
+    let arrays = crate::arrays::load(c, tenant, &versions.into_iter().collect::<Vec<_>>()).await?;
     rows.into_iter()
         .map(|r| {
-            let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
-            let definition: rss_mdm_inventory::CollectionDefinition =
-                serde_json::from_str(r.try_get("definition")?)?;
-            let field_definition = definition.field(field)?;
-            ensure!(
-                definition.field_scope(field)?.canonical()?
-                    == r.try_get::<String, _>("field_scope")?,
-                "inventory field scope mismatch"
-            );
+            let Envelope {
+                field,
+                definition: field_definition,
+                scope,
+                evidence,
+            } = envelope(&r)?;
             let state = match r.try_get::<&str, _>("state")? {
-                "known" => State::Known(decode_value(field_definition, r.try_get("value")?)?),
+                "known" => State::Known(decode_stored(
+                    &field_definition,
+                    r.try_get("value")?,
+                    r.try_get("value_version")?,
+                    &arrays,
+                )?),
                 "null" => State::Null,
                 "deleted" => State::Deleted,
                 "unsupported" => State::Unsupported,
@@ -108,46 +123,28 @@ pub(crate) fn decode_rows(rows: Vec<sqlx::postgres::PgRow>) -> Result<Vec<Invent
                 },
                 _ => anyhow::bail!("invalid asset state"),
             };
-            let evidence = Evidence {
-                scope: definition.field_scope(field)?.clone(),
-                source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
-                dataset: Some(definition.dataset().to_owned()),
-                registration: Some(r.try_get("registration")?),
-                registration_generation: None,
-                epoch: Some(r.try_get("epoch")?),
-                snapshot_id: r.try_get("batch_id")?,
-                observed_at: r.try_get("observed_at")?,
-                received_at: r.try_get("received_at")?,
-                actor: None,
-            };
-            let scope: Scope = serde_json::from_str(r.try_get("scope")?)?;
-            definition.validate_scope(&scope)?;
-            ensure!(
-                serde_json::to_string(&definition.coverage()?)?
-                    == r.try_get::<String, _>("coverage")?,
-                "inventory coverage mismatch"
-            );
-            ensure!(
-                scope.registration().as_str()
-                    == evidence.registration.as_deref().unwrap_or_default()
-                    && scope.source().as_str() == evidence.source.as_str()
-                    && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
-                "inventory provenance mismatch"
-            );
-            let last_known = if let Some(value) = r.try_get::<Option<String>, _>("last_known")? {
+            let last_known = if r.try_get::<Option<String>, _>("last_known")?.is_some()
+                || r.try_get::<Option<String>, _>("last_known_version")?
+                    .is_some()
+            {
                 let mut prior = evidence.clone();
                 prior.snapshot_id = r.try_get("last_known_batch")?;
                 prior.observed_at = r.try_get("last_known_observed")?;
                 prior.received_at = r.try_get("last_known_received")?;
                 Some(rss_mdm_inventory::KnownValue {
-                    value: decode_value(field_definition, value)?,
+                    value: decode_stored(
+                        &field_definition,
+                        r.try_get("last_known")?,
+                        r.try_get("last_known_version")?,
+                        &arrays,
+                    )?,
                     evidence: prior,
                 })
             } else {
                 None
             };
             Ok(InventoryField {
-                scope: r.try_get("scope")?,
+                scope,
                 field,
                 fact: SourceFact {
                     state,
@@ -173,8 +170,74 @@ pub(crate) async fn assert_tenant(
     Ok(())
 }
 
-fn decode_value(field: &rss_mdm_inventory::FieldDefinition, value: String) -> Result<Scalar> {
-    let scalar = serde_json::from_str(&value)?;
+fn decode_stored(
+    field: &rss_mdm_inventory::FieldDefinition,
+    value: Option<String>,
+    version: Option<String>,
+    arrays: &std::collections::BTreeMap<String, (FieldKey, Scalar)>,
+) -> Result<Scalar> {
+    let scalar = match (value, version) {
+        (Some(value), None) => {
+            let scalar = serde_json::from_str(&value)?;
+            ensure!(!matches!(scalar, Scalar::Array(_)), "inline array retired");
+            scalar
+        }
+        (None, Some(version)) => {
+            let (key, value) = arrays
+                .get(&version)
+                .ok_or_else(|| anyhow::anyhow!("missing value version"))?;
+            ensure!(*key == field.key, "array field binding");
+            value.clone()
+        }
+        _ => anyhow::bail!("invalid value representation"),
+    };
     field.validate_scalar(&scalar)?;
     Ok(scalar)
+}
+
+pub(crate) struct Envelope {
+    pub field: FieldKey,
+    pub definition: rss_mdm_inventory::FieldDefinition,
+    pub scope: String,
+    pub evidence: Evidence,
+}
+pub(crate) fn envelope(r: &sqlx::postgres::PgRow) -> Result<Envelope> {
+    let field = FieldKey::parse(r.try_get::<&str, _>("field")?)?;
+    let definition: rss_mdm_inventory::CollectionDefinition =
+        serde_json::from_str(r.try_get("definition")?)?;
+    let field_definition = definition.field(field)?;
+    ensure!(
+        definition.field_scope(field)?.canonical()? == r.try_get::<String, _>("field_scope")?,
+        "inventory field scope mismatch"
+    );
+    let evidence = Evidence {
+        scope: definition.field_scope(field)?.clone(),
+        source: rss_mdm_inventory::Source::parse(r.try_get("source")?)?,
+        dataset: Some(definition.dataset().to_owned()),
+        registration: Some(r.try_get("registration")?),
+        registration_generation: None,
+        epoch: Some(r.try_get("epoch")?),
+        snapshot_id: r.try_get("batch_id")?,
+        observed_at: r.try_get("observed_at")?,
+        received_at: r.try_get("received_at")?,
+        actor: None,
+    };
+    let scope: Scope = serde_json::from_str(r.try_get("scope")?)?;
+    definition.validate_scope(&scope)?;
+    ensure!(
+        serde_json::to_string(&definition.coverage()?)? == r.try_get::<String, _>("coverage")?,
+        "inventory coverage mismatch"
+    );
+    ensure!(
+        scope.registration().as_str() == evidence.registration.as_deref().unwrap_or_default()
+            && scope.source().as_str() == evidence.source.as_str()
+            && scope.epoch().as_str() == evidence.epoch.as_deref().unwrap_or_default(),
+        "inventory provenance mismatch"
+    );
+    Ok(Envelope {
+        field,
+        definition: field_definition.clone(),
+        scope: r.try_get("scope")?,
+        evidence,
+    })
 }

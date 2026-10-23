@@ -46,7 +46,7 @@ GRANT EXECUTE ON FUNCTION
 
 CREATE INDEX inventory_source ON mdm.inventory(tenant_id,registration,source,epoch);
 CREATE TABLE mdm.manual_assignments (
- tenant_id uuid NOT NULL, device text NOT NULL, field text NOT NULL CHECK(length(field)<=128 AND field ~ '^custom\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$'),
+ tenant_id uuid NOT NULL, device text NOT NULL, field text NOT NULL CHECK(length(field)<=128 AND field ~ '^(device|custom|channel)\.[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$'),
  revision bigint NOT NULL CHECK(revision>0), fact jsonb NOT NULL CHECK(octet_length(fact::text)<=16777216),
  PRIMARY KEY(tenant_id,device,field)
 );

@@ -25,6 +25,8 @@ mod scopes;
 pub use fields::{FieldChange, FieldImpact};
 mod model;
 pub mod planning;
+mod summaries;
+pub use summaries::DeviceSummary;
 mod quality;
 mod query;
 mod query_read;
@@ -155,19 +157,7 @@ impl AssetService {
                     return Err(Error::Forbidden.into());
                 }
                 let watermark = self.list_watermark(tx).await?;
-                let restricted = ReadScope {
-                    collection_scope: scope.collection_scope.clone(),
-                    subject: scope.subject.clone(),
-                    sensitive: scope.sensitive,
-                    devices: Some([device.clone()].into()),
-                };
-                let mut page = planning::SnapshotReader {
-                    tenant: self.tenant,
-                }
-                .asset_page_in(tx, watermark, None, 1, &restricted)
-                .await?;
-                let mut view = page.devices.pop().ok_or(Error::NotFound)?;
-                self.summarize_lists(&mut view, &page.catalog, scope, watermark)?;
+                let view = self.detail_metadata(tx, device, scope, watermark).await?;
                 Response::Detail { device: view }
             }
             Command::Search { request, scope } => {

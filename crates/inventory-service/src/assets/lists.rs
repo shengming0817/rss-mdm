@@ -145,6 +145,89 @@ impl AssetService {
         }
         Ok(())
     }
+    pub(super) async fn detail_metadata(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        scope: &ReadScope,
+        watermark: i64,
+    ) -> Result<DeviceView> {
+        let reader = planning::SnapshotReader {
+            tenant: self.tenant,
+        };
+        let ids = vec![device.to_owned()];
+        let tenant = self.tenant.to_string();
+        let selected = ids.clone();
+        let present = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    crate::device::read::page_at(c, tenant, watermark, None, false, selected, 1)
+                        .await
+                })
+            })
+            .await?;
+        if present.is_empty() {
+            return Err(Error::NotFound.into());
+        }
+        let read_scope = scope.clone();
+        let tenant = self.tenant;
+        let (catalog, mut summary) = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(async move {
+                        let catalog = stored(
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await,
+                        )?;
+                        let mut values = reader
+                            .scoped_summary_devices_on(
+                                c,
+                                watermark,
+                                &ids,
+                                &catalog,
+                                read_scope.sensitive,
+                                &read_scope.collection_scope,
+                            )
+                            .await?;
+                        Ok::<_, crate::transaction::Fault>((
+                            catalog,
+                            values.pop().ok_or(Error::NotFound)?,
+                        ))
+                    }
+                    .await)
+                })
+            })
+            .await??;
+        for (field, resolved) in summary.arrays {
+            let definition = stored(catalog.definition(field))?;
+            summary.scalars.lists.insert(
+                field,
+                ListSummary {
+                    state: metadata_state(&resolved.state),
+                    sources: resolved
+                        .sources
+                        .iter()
+                        .map(|s| {
+                            Ok(ListSource {
+                                state: metadata_state(&s.state),
+                                evidence: s.evidence.clone(),
+                                cursor: self.list_cursor(
+                                    device,
+                                    field,
+                                    scope,
+                                    watermark,
+                                    0,
+                                    Some((s.evidence.source, s.evidence.dataset.clone())),
+                                )?,
+                            })
+                        })
+                        .collect::<Result<_>>()?,
+                    item_key: definition.item_key.clone(),
+                    cursor: self.list_cursor(device, field, scope, watermark, 0, None)?,
+                },
+            );
+        }
+        Ok(summary.scalars)
+    }
     pub(super) async fn list_items(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -188,65 +271,99 @@ impl AssetService {
         } else {
             (self.list_watermark(tx).await?, 0, None)
         };
-        let restricted = ReadScope {
-            collection_scope: scope.collection_scope.clone(),
-            subject: scope.subject.clone(),
-            sensitive: scope.sensitive,
-            devices: Some([device.to_owned()].into()),
-        };
-        let page = planning::SnapshotReader {
-            tenant: self.tenant,
-        }
-        .asset_page_in(tx, watermark, None, 1, &restricted)
-        .await?;
-        let view = page.devices.first().ok_or(Error::NotFound)?;
-        let definition = checked_input(page.catalog.definition(field))?;
-        if definition.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive && !scope.sensitive {
-            return Err(Error::Forbidden.into());
-        }
-        let resolved = view.fields.get(&field).ok_or(Error::NotFound)?;
-        let selected = match &source {
-            None => &resolved.state,
-            Some((source, dataset)) => {
-                &resolved
-                    .sources
-                    .iter()
-                    .find(|s| s.evidence.source == *source && s.evidence.dataset == *dataset)
-                    .ok_or(Error::Conflict)?
-                    .state
-            }
-        };
-        let State::Known(Scalar::Array(values)) = selected else {
-            return Err(Error::Conflict.into());
-        };
-        if offset > values.len() {
-            return Err(Error::Conflict.into());
-        }
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        for value in values.iter().skip(offset).take(limit) {
-            let size = stored(serde_json::to_vec(value))?.len();
-            if bytes + size > 16 * 1024 * 1024 {
-                if items.is_empty() {
-                    return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
-                }
-                break;
-            }
-            bytes += size;
-            items.push(value.clone());
-        }
-        let next = offset + items.len();
+        let tenant = self.tenant;
+        let device_id = device.to_owned();
+        let read_scope = scope.clone();
+        let selected_source = source.clone();
+        let (total, items, next) = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(async move {
+                        let catalog = stored(
+                            rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await,
+                        )?;
+                        let definition = checked_input(catalog.definition(field))?;
+                        if !fields::visible(definition, read_scope.sensitive) {
+                            return Err(Error::Forbidden.into());
+                        }
+                        if !matches!(definition.value_type, ValueType::Array { .. }) {
+                            return Err(Error::Malformed.into());
+                        }
+                        let catalog =
+                            stored(rss_mdm_inventory::Catalog::new(vec![definition.clone()]))?;
+                        let mut summary = planning::SnapshotReader { tenant }
+                            .scoped_summary_devices_on(
+                                c,
+                                watermark,
+                                &[device_id],
+                                &catalog,
+                                read_scope.sensitive,
+                                &read_scope.collection_scope,
+                            )
+                            .await?;
+                        let view = summary.pop().ok_or(Error::NotFound)?;
+                        let resolved = view.arrays.get(&field).ok_or(Error::NotFound)?;
+                        let state = match selected_source {
+                            None => &resolved.state,
+                            Some((source, dataset)) => {
+                                &resolved
+                                    .sources
+                                    .iter()
+                                    .find(|s| {
+                                        s.evidence.source == source && s.evidence.dataset == dataset
+                                    })
+                                    .ok_or(Error::Conflict)?
+                                    .state
+                            }
+                        };
+                        let rss_mdm_inventory::ArrayState::Known(value) = state else {
+                            return Err(Error::Conflict.into());
+                        };
+                        if offset > value.count {
+                            return Err(Error::Conflict.into());
+                        }
+                        let page = stored(
+                            rss_mdm_inventory_postgres::arrays::page(
+                                c,
+                                tenant,
+                                &value.version,
+                                offset,
+                                limit,
+                                16 * 1024 * 1024,
+                            )
+                            .await,
+                        )?;
+                        Ok::<_, crate::transaction::Fault>((value.count, page.items, page.next))
+                    }
+                    .await)
+                })
+            })
+            .await??;
         Ok(Response::ListItems {
             device: device.into(),
             field,
             watermark,
-            total: values.len(),
+            total,
             items,
-            next_cursor: if next < values.len() {
-                Some(self.list_cursor(device, field, scope, watermark, next, source)?)
-            } else {
-                None
-            },
+            next_cursor: next
+                .map(|offset| self.list_cursor(device, field, scope, watermark, offset, source))
+                .transpose()?,
         })
+    }
+}
+
+fn metadata_state(state: &rss_mdm_inventory::ArrayState) -> ListState {
+    use rss_mdm_inventory::ArrayState as S;
+    match state {
+        S::Known(value) => ListState::Known {
+            count: value.count,
+            digest: value.digest.clone(),
+        },
+        S::Unknown { reason } => ListState::Unknown { reason: *reason },
+        S::Missing => ListState::Missing,
+        S::Null => ListState::Null,
+        S::Deleted => ListState::Deleted,
+        S::Unsupported => ListState::Unsupported,
+        S::Conflict => ListState::Conflict,
     }
 }
