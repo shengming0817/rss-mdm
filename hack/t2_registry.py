@@ -1620,6 +1620,7 @@ for suffix, materials in _pki_materials.items():
 MODULES['agent.pki'] = replace(module, policies=tuple(policies))
 module = MODULES['agent.configurations']
 _counts = {
+    'connection_publication_requires_deployment_and_preserves_operations': (1, ()),
     'fixed_packages_and_configurations_activate_beyond_self_quota': (4, ()),
     'finite_reservations_and_frozen_authority_survive_revoke': (6, ('other',)),
     'unknown_exchange_and_issuance_do_not_reset_quantity': (2, ()),

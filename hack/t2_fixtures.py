@@ -422,7 +422,11 @@ class RunFixtures:
             environment.verify_ownership()
             environment.compose('--profile', 'probe', 'up', '-d', 'gateway-probe')
             name = environment.compose('ps', '-q', 'gateway-probe')
-            port = int(environment.compose('port', 'gateway-probe', '8080').rsplit(':', 1)[1])
+            try:
+                port = int(environment.compose('port', 'gateway-probe', '8080').rsplit(':', 1)[1])
+            except subprocess.CalledProcessError as error:
+                diagnostic = environment.compose('logs', '--no-color', '--tail', '80', 'gateway-probe')
+                raise RuntimeError('gateway startup failed before port discovery:\n' + diagnostic) from error
             yield name, port
         finally:
             environment.reset()
