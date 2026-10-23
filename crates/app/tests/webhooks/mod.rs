@@ -1,6 +1,7 @@
 //! Product HTTP -> durable fanout -> real HTTPS, with response loss and restart-safe identities.
 use crate::test_support::{http::*, process::*, runtime::*, *};
 use rss_mdm_webhook_service::{events, model::*};
+use sqlx::Connection;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -91,7 +92,6 @@ async fn authorization_before_partition<T>(
     operation: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
     use anyhow::Context;
-    use sqlx::Connection;
     let mut hold = c.begin().await?;
     rss_mdm_authorization_service::lock_on(&mut hold, case_tenant(), INSTANCE).await?;
     let release = async {
@@ -158,7 +158,6 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     base["webhooks"]["networks"] = json!([{"tenant":case_tenant(),"reference":"receiver","hostname":"source.invalid","port":port,"addresses":[format!("{address}:{port}")],"cidrs":[format!("{address}/32")],"ca_files":[root.join("ca.pem")]}]);
     let config: Config = serde_json::from_value(base.clone())?;
     {
-        use sqlx::Connection;
         let options = std::env::var("MDM_OWNER_URL")?
             .parse::<sqlx::postgres::PgConnectOptions>()?
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
