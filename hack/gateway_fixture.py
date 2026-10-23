@@ -1,39 +1,44 @@
-"""Render isolated transport participants from the shipped gateway templates.
-
-The HTTP-only carrier proves route budgets; render() retains SNI and PROXY transport.
-"""
+"""Adapt only transport coordinates of the production gateway renderer for isolated tests."""
+import importlib.util
+import json
 from pathlib import Path
-from urllib.parse import urlsplit
+import re
+import tempfile
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           public_port=8443, http_port=8445, certificates='/certs', web=True, plain=False):
-    directory = Path(directory)
-    main = (directory / 'nginx.conf').read_text()
-    http = (directory / 'http.conf').read_text()
-    endpoint = urlsplit(origin)
-    if endpoint.scheme != 'https' or not endpoint.hostname:
-        raise ValueError('fixture canonical HTTPS origin required')
-    http = http.replace('server 127.0.0.1:8081;', 'server ' + backend + ';')
-    http = http.replace('server_name mdm.example.test;', 'server_name ' + endpoint.hostname + ';')
-    http = http.replace('proxy_set_header Host mdm.example.test;', 'proxy_set_header Host ' + endpoint.netloc + ';')
-    http = http.replace('/private/mdm-tls.crt', certificates + '/server.crt').replace('/private/mdm-tls.key', certificates + '/server.key')
-    http = http.replace('/run/config/ui.json', certificates + '/ui.json').replace('/run/config/mdm.json', certificates + '/mdm.json')
+           public_port=8443, http_port=None, certificates='/certs', web=True, plain=False):
+    source = Path(directory) / 'render_gateway.py'
+    spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
+    renderer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(renderer)
+    host_id = '33333333333343338333333333333333'
+    origins = [origin, *(targets or {})]
+    if len(origins) != len(set(origins)):
+        raise ValueError('duplicate fixture origin')
+    with tempfile.TemporaryDirectory(prefix='rss-gateway-') as root:
+        root = Path(root)
+        host = root / host_id
+        host.mkdir()
+        (host / 'deployment.json').write_text(json.dumps(dict(hostId=host_id,
+            backend='127.0.0.1:8081', consoleOrigin=origin, origins=origins, scep=[],
+            certificate=f'/run/gateway/{host_id}/tls.crt', privateKey=f'/run/gateway/{host_id}/tls.key')))
+        renderer.render(root)
+        config = (root / 'nginx.conf').read_text()
+    config = config.replace('http://127.0.0.1:8081', 'http://' + backend)
+    config = config.replace(f'/run/gateway/{host_id}/tls.crt', certificates + '/server.crt')
+    config = config.replace(f'/run/gateway/{host_id}/tls.key', certificates + '/server.key')
+    config = config.replace(f'/run/gateway/{host_id}/', certificates + '/')
+    config = config.replace('listen 8443 ssl;', f'listen {public_port} ssl;')
+    config = config.replace('listen 8443 ssl default_server;', f'listen {public_port} ssl default_server;')
     if not web:
-        start = http.index('        location / {')
-        end = http.index('\n        }', start) + len('\n        }')
-        http = http[:start] + '        location / { return 404; }' + http[end:]
+        start = config.index('        location / {\n            limit_except')
+        end = config.index('\n        }', start) + len('\n        }')
+        config = config[:start] + '        location / { return 404; }' + config[end:]
     if plain:
-        start = main.index('stream {')
-        main = main[:start] + main[main.index('\nhttp {', start) + 1:]
-        http = http.replace('listen 127.0.0.1:8445 ssl proxy_protocol;', f'listen {public_port};')
-        http = '\n'.join(line for line in http.splitlines() if not any(part in line for part in (
-            'ssl_certificate ', 'ssl_certificate_key ', 'set_real_ip_from ', 'real_ip_header ', 'if ($ssl_server_name')))
-    else:
-        routes = {endpoint.hostname: f'127.0.0.1:{http_port}', **(targets or {})}
-        if len(routes) != 1 + len(targets or {}):
-            raise ValueError('duplicate fixture SNI target')
-        main = main.replace('include /run/gateway/routes/*.conf;', '\n'.join(f'{host} {address};' for host, address in routes.items()))
-        main = main.replace('listen 8443;', f'listen {public_port};')
-        http = http.replace('listen 127.0.0.1:8445 ssl proxy_protocol;', f'listen 127.0.0.1:{http_port} ssl proxy_protocol;')
-    return main.replace('include /run/gateway/http/*.conf;', http)
+        # Admission fixture has no certificates; production routing and budgets stay identical.
+        config = re.sub(r'    server \{ listen [0-9]+ ssl default_server; ssl_reject_handshake on; \}\n?', '', config)
+        config = re.sub(r'(?m)^\s*ssl_[^\n]+\n', '', config)
+        config = config.replace(f'listen {public_port} ssl;', f'listen {public_port};')
+        config = '\n'.join(line for line in config.splitlines() if 'if ($ssl_server_name' not in line)
+    return config

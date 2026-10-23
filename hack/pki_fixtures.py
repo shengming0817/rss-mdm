@@ -11,6 +11,7 @@ import secrets
 import ssl
 import urllib.request
 from fixture_tools import binary
+from candidate_fixture import INSTANCE
 from pki_ca import Provider
 from t2_environment import PKI_CA, private
 from t2_processes import subprocess, cleanup
@@ -52,7 +53,7 @@ def certificate_der(path):
                           capture_output=True,timeout=30).stdout
 
 
-def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
+def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin, instance_id=INSTANCE):
     config=json.loads((root/'step/config/ca.json').read_text())
     root_certificate=Path(config['root'][0]); issuer=Path(config['crt'])
     context=ssl.create_default_context(cafile=str(root_certificate))
@@ -61,7 +62,7 @@ def trust(root, purpose, origin, tenant, provisioner, kid, ca_origin):
         crl=response.read(16*1024*1024+1)
     if len(crl)>16*1024*1024: raise RuntimeError('oversized fixture CRL')
     der=certificate_der(issuer)
-    value=dict(version=1,origin=origin,tenant=tenant,purpose=purpose,revision=1,issuers=[dict(
+    value=dict(version=1,service_id=instance_id,origin=origin,tenant=tenant,purpose=purpose,revision=1,issuers=[dict(
         digest=hashlib.sha256(der).hexdigest(),mode='active',certificate=base64.b64encode(der).decode(),
         root=base64.b64encode(certificate_der(root_certificate)).decode(),crl=base64.b64encode(crl).decode(),
         root_crl=base64.b64encode((root/'root.crl.der').read_bytes()).decode(),provisioner=provisioner,kid=kid)])
@@ -102,8 +103,7 @@ def offline_materials(root, purpose):
 def offline(root, case_root, env, purpose):
     """Bind shared immutable issuer material to the case's tenant and protocol."""
     if purpose == 'agent':
-        config = dict(mode='step_ca', endpoint=dict(listen='127.0.0.1:0', origin='https://mdm.example.test:9445',
-            certificate_file=str(root/'server.crt'), private_key_file=str(root/'agent-tls.pk8')), lifetime=dict(mode='standard'))
+        config = dict(mode='step_ca', endpoint=dict(origin='https://mdm.example.test:9445'), lifetime=dict(mode='standard'))
         origin = config['endpoint']['origin']
     else:
         config = json.loads((case_root/(purpose+'.json')).read_text())
@@ -115,7 +115,8 @@ def offline(root, case_root, env, purpose):
     digest = hashlib.sha256(issuer).hexdigest()
     encode = lambda data: base64.b64encode(data).decode()
     provisioner = 'rss' if purpose == 'apple' else 'rss-'+purpose
-    trust_value = dict(version=1, origin=origin, tenant=tenant, purpose=purpose, revision=1, issuers=[dict(
+    from candidate_fixture import INSTANCE
+    trust_value = dict(version=1, service_id=INSTANCE, origin=origin, tenant=tenant, purpose=purpose, revision=1, issuers=[dict(
         digest=digest, mode='active', certificate=encode(issuer), root=encode(certificate_der(root/'root.pem')),
         crl=encode((root/'issuer.crl.der').read_bytes()), root_crl=encode((root/'root.crl.der').read_bytes()),
         provisioner=provisioner, kid='' if purpose == 'apple' else purpose+'-t2-key')])
@@ -136,7 +137,7 @@ def offline(root, case_root, env, purpose):
 
 
 @contextmanager
-def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=(), owner_root=None):
+def running(root, env, *, case, windows=False, agent=False, agent_origin=None, agent_template=None, windows_template=None, compose_file=None, providers=None, generation=None, configuration_devices=0, materials=(), owner_root=None, instance_id=INSTANCE):
     import shutil
     case_root=Path(root).resolve()
     purpose='agent' if agent else 'windows'
@@ -201,15 +202,13 @@ def running(root, env, *, case, windows=False, agent=False, agent_origin=None, a
         if agent:
             value=json.loads((root/'agent-pki.json').read_text())
             value.pop('issuer_certificate_file',None)
-            value['endpoint']['certificate_file']=str(case_root/'server.crt')
-            value['endpoint']['private_key_file']=str(root/'agent-tls.pk8')
             if agent_origin:value['endpoint']['origin']=agent_origin
-            value['trust_file']=str(trust(root,'agent',value['endpoint']['origin'],tenant,'rss-agent','agent-t2-key',origin))
+            value['trust_file']=str(trust(root,'agent',value['endpoint']['origin'],tenant,'rss-agent','agent-t2-key',origin,instance_id))
             private(case_root/('agent-pki'+('-'+generation if generation else '')+'.json'),value)
         if windows:
             value=json.loads((case_root/'windows.json').read_text())
             value.pop('ca_certificate_file',None);value.pop('ca_private_key_file',None)
-            value['trust_file']=str(trust(root,'windows',value['management']['origin'],tenant,'rss-windows','windows-t2-key',origin))
+            value['trust_file']=str(trust(root,'windows',value['management']['origin'],tenant,'rss-windows','windows-t2-key',origin,instance_id))
             private(case_root/('windows'+('-'+generation if generation else '')+'.json'),value)
         providers_file=case_root/'device-pki.json'
         authority_entries=json.loads(providers_file.read_text()) if providers_file.exists() else []

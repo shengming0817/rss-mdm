@@ -45,10 +45,7 @@
   "native_protocols": {
     "windows": {
       "enrollment": {
-        "listen": "0.0.0.0:8443",
-        "origin": "https://enroll.example.test:8443",
-        "certificate_file": "/run/mdm/enrollment-tls.pem",
-        "private_key_file": "/run/mdm/enrollment-tls.pk8"
+        "origin": "https://mdm.example.test"
       },
       "protocol_protection": {
         "active_file": "/run/mdm/protocol.key",
@@ -57,10 +54,7 @@
       },
       "provider_id": "RSS-MDM",
       "management": {
-        "listen": "0.0.0.0:8444",
-        "origin": "https://manage.example.test:8444",
-        "certificate_file": "/run/mdm/planning-tls.pem",
-        "private_key_file": "/run/mdm/planning-tls.pk8"
+        "origin": "https://mdm.example.test"
       },
       "poll": {
         "interval_for_first_set_of_retries": 15,

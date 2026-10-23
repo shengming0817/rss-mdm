@@ -43,8 +43,7 @@ def generate(root, tls_certificate, tls_key):
         if path.is_file() and (path.suffix in ('.key', '.pk8') or path.name.endswith('-secret')):
             os.chmod(path, 0o600)
     config = dict(
-        management=dict(listen='127.0.0.1:8445', origin='https://localhost:8445',
-                        certificate_file=str(tls_certificate), private_key_file=str(root/'apple-tls.pk8')),
+        management=dict(origin='https://localhost:8445'),
         trust_file=str(root/'apple-trust.json'),
         materials=dict(apns=1,profile=1,accounts={'organization':1}),
         identity_seed=dict(challengeId='rss-challenge',notifyId='rss-notify'),

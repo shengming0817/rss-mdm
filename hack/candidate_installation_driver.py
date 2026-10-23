@@ -115,6 +115,7 @@ def qualify(owner,origin,other_origin,port,second_backend):
     second_owner=Installation(owner.root,owner.root/'tenant.compose.yaml',owner.project+'-second',owner.root/'second.env')
     try:
         second_owner.compose('up','-d')
+        owner.compose('run','--rm','--no-deps','--user','10001:10001','--entrypoint','python3','init','/usr/local/lib/rss-mdm/render_gateway.py','--root','/var/lib/rss-mdm/runtime/gateway')
         owner.compose('exec','-T','gateway','nginx','-t','-c','/run/gateway/nginx.conf')
         owner.compose('exec','-T','gateway','nginx','-s','reload','-c','/run/gateway/nginx.conf')
         peer=Browser(other_origin,ca,port)

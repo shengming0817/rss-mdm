@@ -77,7 +77,7 @@ def build(out, header, web_image=None, target_platform=None):
 
 RUNTIME_TOOLS = ("ingress_network.py", "gateway_fixture.py", "release.py", "candidate_runtime.py", "candidate_fixture.py",  "candidate_installation.py", "candidate_installation_driver.py")
 ROLE_NAMES = ("software-publication", "flow", "identity", "commands", "audit", "webhook")
-DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/nginx.conf", "deployment/http.conf", *(
+DEPLOYMENT_FILES = ('deployment/production.compose.yaml', 'deployment/sit.compose.yaml', 'deployment/initialize.py', 'deployment/tenant.compose.yaml', 'deployment/compose.yaml', 'deployment/providers.lock.json', 'fixtures/pki-tools.lock.json', 'deployment/agent-leaf.tpl', 'deployment/windows-leaf.tpl', "mdm-config.example.json", "deployment/render_gateway.py", *(
     f"deployment/{name}-roles.sql" for name in ROLE_NAMES))
 
 

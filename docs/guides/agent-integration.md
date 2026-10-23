@@ -2,11 +2,11 @@
 
 服务端接入使用 [agent-wire](../../crates/agent-wire/README.md) 的闭合协议，版本、schema 和能力形态由协议包唯一持有。Agent 实现位于独立仓库；本指南不证明终端采集或执行已验收。
 
-协议 crate 按私有 Git 的完整 rev 独立消费，最低 Rust 为 `1.96.0`，生产依赖闭包仅包含公共基础库。最终完整 rev 和四族 schema 指纹以当前候选交付记录为准；独立 Agent 在固定候选可实际获取后消费该版本，实现自己的密钥、可信时钟、签名校验和 OS 执行边界。协议包提供 `TaskPayload::signing_bytes` 与 `Trust::installation_digest`，不提供客户端验证器、执行决策或服务端业务模型。采集 DTO 在服务端 ingress 显式转成 Inventory 值；执行条件及软件证据判定仍由产品 owner 持有。
+协议 crate 按私有 Git 的完整 rev 独立消费，最低 Rust 为 `1.96.0`，生产依赖闭包仅包含公共基础库。最终完整 rev 和五族 schema 指纹以当前候选交付记录为准；独立 Agent 在固定候选可实际获取后消费该版本，实现自己的密钥、可信时钟、签名校验和 OS 执行边界。协议包提供 `TaskPayload::signing_bytes` 与 `Trust::installation_digest`，不提供客户端验证器、执行决策或服务端业务模型。采集 DTO 在服务端 ingress 显式转成 Inventory 值；执行条件及软件证据判定仍由产品 owner 持有。
 
 ## API 版本与注册授权
 
-注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和各任务签名域共同重建为新 V1。仅维护当前 V1 结构及其业务、安全与恢复语义，不提供历史格式兼容。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime`、`task_trust`、`pki` schema 清单与指纹。PKI 保持独立的 `version: 1`；共享 Purpose 支持原生通道，Agent 必须显式拒绝非 Agent purpose，并继续核对 origin、租户、设备、注册、证书/CRL、时钟与防回滚。仅通过静态解码不授予安装或执行权限。
+注册生命周期为 `/api/v1/agent/enroll`，运行请求为 `/api/v1/agent/runtime`，二者独立演进。本次运行 JSON 的 `wireVersion: 1`、capability `*.v1` 和各任务签名域共同重建为新 V1。仅维护当前 V1 结构及其业务、安全与恢复语义，不提供历史格式兼容。[agent-wire](../../crates/agent-wire/README.md) 分别发布 `enroll`、`runtime`、`task_trust`、`pki`、`connections` schema 清单与指纹。PKI 保持独立的 `version: 1`；共享 Purpose 支持原生通道，Agent 必须显式拒绝非 Agent purpose，并继续核对稳定 serviceId、租户、设备、注册、证书/CRL、时钟与防回滚。仅通过静态解码不授予安装或执行权限。
 
 所有已认证租户用户可注册自己的设备，Agent 默认每用户 20 台，Windows 与 macOS 共用 Agent 额度；有效授权预留也计入占用。租户默认值与可空的个人覆盖见 [自助注册与个人额度](device-enrollment.md#自助注册与个人额度)，0 禁止新增并保留既有注册。授权默认 24 小时，最多 7 天；数据库只保存租户隔离的秘密摘要。
 
@@ -14,7 +14,7 @@
 
 1. 普通用户在 Agent 内登录企业会话。Agent 先通过 `POST /api/v1/agent/enroll/requests` 提交稳定 operationId、独立随机 secret、platform 与本机私钥签名的 base64 DER CSR；桌面会话调用 `POST /api/v1/agent-requests/{id}/authorize` 授权这一个请求。Agent 和网页消费由各自仓库交付；服务端不提供网页注册、确认页或深链接。所有新请求都必须绑定 CSR，客户端不能选择期限、数量或不限量。
 2. 管理员调用 `POST /api/v1/agent-configurations` 创建一个完整签名 JSON 文件，必须明确 `quantity:{"kind":"finite","count":N}`（N > 0）或 `quantity:{"kind":"unlimited"}`，指定原生 targets；可选 lifetimeSeconds 最多 365 天，默认后台 24 小时。管理客户端生成并保留 32 字节随机 secret；响应文件包含 configuration 元数据、secret 与 signature。相同创建 operation 和完整输入可重新取得原文件，数据库与审计不保存 secret。网页在请求提交后清除本地 secret；响应丢失时用原 operationId 调用 `GET /api/v1/agent-configuration-operations/{operationId}`，仅原创建主体和实例可读到无秘密元数据。返回 null 表示仍未知（原创建可能迟到提交），不得自动重新创建或恢复 secret；找到旧配置后先确认撤销成功，再创建新配置。`GET /api/v1/agent-configurations/{id}` 只返回元数据、状态、reserved、consumed 和 remaining；有限数量的 remaining 为 count−reserved−consumed，无限数量为 null，期限和撤销状态仍独立生效；`POST .../{id}/revoke` 禁止新交换。独立权限为 `agent_enrollment_read` / `agent_enrollment_write`。
-3. 原生 MDM 安装使用专用短期引导证书，在 Agent TLS 监听器调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。原生 Windows / Apple 监听器不再挂载此入口，MDM 日常证书不能交换授权。
+3. 原生 MDM 安装使用专用短期引导证书，经 Nginx Agent 公开入口调用 `POST /api/v1/agent/enroll/native-grants`。提交 installationOperation、operationId、secret、独立日常密钥的 CSR 和 runtime；服务端从引导证书记录恢复来源注册、安装和 release，复查当前授权后返回 grant。Windows / Apple 原生协议路由不挂载此入口，MDM 日常证书不能交换授权。
 
 管理员配置使用配置自身的租户额度，默认责任人为 null；创建者仅作为审计身份，不占用其普通用户 20 台额度，也不构成终端 ownership。每台设备独立生成私钥、CSR、operation 和 grant secret，调用 `POST /api/v1/agent/enroll/configurations/exchange`，提交完整 file、runtime 和 installation（releaseId）。同一 operation 的精确重试只返回原授权；同一配置下换 operation 重用 CSR 公钥被拒绝。`POST .../configurations/status` 使用原 configurationId、operationId 和独立设备 secret 查回授权，不重新分配。
 
@@ -32,7 +32,7 @@
 
 当前有效 mTLS 设备手动调用 `/api/v1/agent/enroll/renewal-grants`；证书已过期或私钥丢失时，管理员通过 `/api/v1/agent-registrations/{id}/recovery` 创建短期恢复授权。两者复用同一候选签发和持有者激活路径，激活以原凭据为 CAS 前驱，仅替换凭据，保留 DeviceId、registration、generation、epoch、能力、采集定义和执行日志。旧凭据立即成为 retired，不能继续运行或续期。
 
-续期授权已提交但响应丢失时，客户端以原 `wireVersion:1`、`operationId` 和 `secret` 调用 `POST /api/v1/agent/enroll/renewal-grants/status`，无需旧客户端证书即可取回原授权回执，再沿原 `/status`、签发与激活操作继续。该入口仅查询当前租户已有的续期授权，不创建授权、不延长期限、不重新签发；未知 operation 与错误 secret 均返回 `invalid_identity`。过期与撤销状态仍保留，不能据查询回执恢复在线业务权限。所有请求使用固定 HTTPS origin，不发送 Bearer。
+续期授权已提交但响应丢失时，客户端以原 `wireVersion:1`、`operationId` 和 `secret` 调用 `POST /api/v1/agent/enroll/renewal-grants/status`，无需旧客户端证书即可取回原授权回执，再沿原 `/status`、签发与激活操作继续。该入口仅查询当前租户已有的续期授权，不创建授权、不延长期限、不重新签发；未知 operation 与错误 secret 均返回 `invalid_identity`。过期与撤销状态仍保留，不能据查询回执恢复在线业务权限。请求只使用已安装签名连接配置中的 HTTPS origins，不发送 Bearer。
 
 未知签发由管理员找回 CA 中原始证书链，并通过 `/api/v1/agent-issuances/{id}/recover` 提交。服务端验证原 CSR、公钥、SAN 身份、签发窗口、直接签发者和 provisioner；禁止用重新签发的不同结果替代已保存候选。无法找回结果时不猜测成功，也不自动重签。
 
@@ -74,23 +74,23 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 固定安装包发布与匿名下载
 
-服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。管理员选择文件并确认识别出的版本/目标；无法唯一识别的值允许补填，明确的格式或目标冲突不能覆盖。解析沿用 Content 限额；MSI 还在打开容器前限制 FAT 为 16 MiB、目录为 4096 槽、MiniFAT 为 1 MiB、mini-stream 为 16 MiB，并拒绝重复元数据扇区和循环链。未签名、ad-hoc 或未公证均可上传、保存和发布，不要求证明材料、manifest、豁免或二次确认。
+服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。管理员选择文件并确认识别出的版本/目标；无法唯一识别的值允许补填，明确的格式或目标冲突不能覆盖。PKG 只通过单一受限 XAR 元数据入口读取 PackageInfo/Distribution，接受相同解码 name 的重复项和 Apple zlib；不解压 Payload 或执行脚本。TOC、条目、路径、声明数据范围与累计元数据均受预算限制。解析沿用 Content 限额；MSI 还在打开容器前限制 FAT 为 16 MiB、目录为 4096 槽、MiniFAT 为 1 MiB、mini-stream 为 16 MiB，并拒绝重复元数据扇区和循环链。未签名、ad-hoc 或未公证均可上传、保存和发布，不要求证明材料、manifest、豁免或二次确认。
 
 管理客户端自动生成并保留稳定 operationId：
 
 1. `POST /api/v1/agent-packages/uploads` 提交 filename、length、sha256，取得系统生成的 package/resource/upload 坐标和上传 href。摘要只保证文件完整性，不证明作者可信。
 2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/agent-packages/uploads/{packageId}` 读取真实格式、可识别版本和架构。
 3. `POST /api/v1/agent-packages/save` 提交 operationId、packageId、可选 version、target 与可选完整 behavior（既有 SoftwareBehavior 合同，主安装材料键固定为 package）。behavior 与材料一次保存为不可变版本，由 Resource 校验格式、目标、引用、参数和检测规则；省略或 null 表示没有执行定义。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
-4. `POST /api/v1/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
+4. `POST /api/v1/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，显式启用后的正常 ARM64 EXE 与 PKG 沿用同一链路；领域拒绝与权限拒绝分别返回闭合原因。首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
 5. `GET /api/v1/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
 
-Agent HTTPS 监听器公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，继续复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
+Nginx Agent 路由公开 `GET /api/v1/agent/enroll/packages`、`GET .../packages/{id}` 与 `GET .../packages/{id}/content`，继续复用 Content 的长度、摘要、Range 和 ETag。包目录只描述已发布安装材料，不承载注册 origin、公钥或构建期候选声明。注册 installation 只引用不可变 releaseId；文件摘要由软件 owner 持有，不另交付候选 manifest。
 
-注册配置仍由注册 owner 签名并验证 origin、租户、目标、期限、secret、数量及 CSR；当前发布状态在同一租户事务中复查。任务签名与运行身份不因包未签名而改变。配置、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
+注册配置仍由注册 owner 签名并验证稳定服务身份、签名连接配置、租户、目标、期限、secret、数量及 CSR；当前发布状态在同一租户事务中复查。任务签名与运行身份不因包未签名而改变。配置、共享 secret、设备 secret 和 CSR 不进入 URL、文件名或命令行。
 
 本项直接替换当前自有 V1，不接受旧 manifestArtifact、candidateSha256、包内 origin/signingKeys 或旧 nsis_exe 发行合同。前端与独立 Agent 必须同步消费本次完整 revision；服务端通过不代表旧客户端已接入或真机通过。发布成功不表示目标操作系统一定允许安装，真实拒绝和执行结果由原通道如实返回，系统不关闭或绕过 OS 策略。
 
-随附网关在网页同源地址仅代理上述安装包路径的 GET / HEAD，复用软件目录 owner 的内部管理只读路由，保留 Range / ETag，不转发浏览器会话，不要求网页和 Agent TLS 使用同一 CA；网页可直接使用 `/downloads/agent`。注册、签发、激活和运行接口仍通过独立 Agent TLS 监听器，网页网关不代理这些接口。
+随附 Nginx 在同域或分离的公开 HTTPS origin 上代理注册、签发、激活与运行路径，统一进入隔离的内部 HTTP adapter。匿名安装包下载复用软件目录 owner，保留 Range / ETag。管理会话只发送到控制台同源管理 API；设备入口清除 Cookie，Agent 路由也清除 Authorization，证书身份由网关的真实 TLS 证明与后端领域核验共同确定。
 
 本次移除旧 agent-grants 创建、管理状态、preview / approve 路由和普通请求 lifetimeSeconds / 可选 CSR，不提供别名或兼容解码；保留的是既有设备身份、不可变回执和 Unknown 恢复事实。
 
@@ -143,9 +143,21 @@ Agent→MDM 复用 `request_mdm_enrollment` 的签名任务和 Start permit。�
 诊断从既有 Policy assignment 与 operation API 读取：先核对 taskAdmission 的包选择和当前授权，再查看 agentInstallation 中的 delivery、installation、bootstrap（state / delivery / cleanup / deadline）和 agentRegistration。EXE 沿用 Software 定义的系统 Uninstall registry / DisplayVersion 检测信息，通过现有 Win32 清单遍历核对；文件检测或其它无法映射为可靠原生证据的发布保持 unknown。目录变化使旧缺失证据失效。未知安装或其它格式已存在时继续核实原状态，不换包重装。撤回发布会阻止新下载和交换。#2636 的服务端验证与交接不依赖实际 Agent 包制作、代码签名配置或真机验收；这些由后续任务承担。
 
 
+## 稳定身份与签名连接配置
+
+服务身份固定为安装 `instance_id` 与 tenant，网络地址可变。注册文件包含当前 `connections::SignedConfiguration`；设备安装材料通过受保护的交付绑定该身份、配置验证公钥与 HTTPS CA。配置签名根归注册 owner 持有，复用原 Ed25519 与 Native 密文保护设施，独立于任务密钥轮换。
+
+管理员通过同源 `GET/PUT /api/v1/agent-connections` 读取和保存 draft，通过 `POST /api/v1/agent-connections/publish` 发布指定 revision；保存不表示部署或生效。写入使用原 operationId、CAS revision 和近期会话，未知结果先查询 `GET /api/v1/agent-connection-operations/{id}`，null 只表示仍未知。`GET /api/v1/registration-channels` 展示实际配置的各公开入口。Nginx 部署与逐 origin 的 HTTPS 观察由原宿主维护流程持有，发布要求观察对应当前 draft revision 且在最近五分钟内，网页不执行部署操作。
+
+设备通过已认证的 `GET /api/v1/agent/enroll/connections` 获取签名配置，使用已安装公钥验签，拒绝跨服务/租户、回滚、同 revision 异内容或非规范 origin，原子保存并读回后才使用。`POST .../connections/acknowledgements` 绑定 registration、generation、revision、摘要与真实网关 origin；`POST .../connections/failures` 只记录闭合失败原因，不改变已安装 revision 或授权。管理端通过设备 observation 和带 target revision 的 `/agent-connections/devices` 分页分别读取实际 ACK、失败与未确认设备。
+
+发布采用 `A → A+B → B`，重叠阶段优先 B，设备经 B 确认后才允许移除 A。`connection_deployment_unobserved` 和 `connection_retirement_blocked` 为明确发布阻断。所有已知地址失联时，通过受保护的 `GET /api/v1/agent-connections/configuration` 下载和离线导入恢复。导入不能扩大 CA、凭据或业务权限；通信状态、密钥命名空间、执行 authority 与内容缓存都绑定稳定身份。正常入口和程序更新保留原注册、世代、执行日志及未决操作。Windows/Apple 原生 URL 由各自协议配置持有。
+
+管理员签发恢复的未知响应先查询 `GET /api/v1/agent-issuances/{id}/recovery-operations/{operation}`。查询复核当前设备凭据权限及原主体/实例，找到原回执才显示成功；null 不证明回滚，只能由用户显式原样重试。浏览器不签名、不持有 CA 或配置私钥。
+
 ## 任务签名信任与安装确认
 
-任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回租户和规范 origin 绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、registration、generation、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
+任务签名信任独立于设备 PKI 的证书信任版本，复用已认证 Agent mTLS 通道。`GET /api/v1/agent/runtime/task-trust` 返回稳定服务身份和租户绑定的完整 Ed25519 公钥集合；Agent 先验证版本单调性、既有 key ID 的公钥不变、唯一 active key，再持久保存并读回。只有完成这些步骤后，才向同一路径 POST 安装 ACK。ACK 固定原 operation、registration、generation、revision 和完整集合摘要；响应未知时重放同一 ACK，不能将收到响应正文等同于本地持久化成功。正式 DTO 与 schema 见 [任务信任](../../crates/agent-wire/src/task_trust.rs) 和 [manifest](../../crates/agent-wire/schema/task_trust/manifest.json)。
 
 租户管理通过 `GET/POST /api/v1/task-signing/trust` 读取、准备或激活密钥，写入使用 `Idempotency-Key`、`expectedRevision` 和近期真实管理员会话。准备新密钥只发布 prepared 公钥；所有当前 Agent 注册世代确认包含该键的准备版本后才能激活。任务发放再次核对当前 active key 和目标设备 ACK，覆盖分发期间新注册的设备。原键转为 verify_only，保留历史验证材料。新激活键由受控重启消费，旧进程不能继续用已退出 active 状态的键签发任务。准备阶段仍有效的旧签名权威可以重启加载。
 

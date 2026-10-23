@@ -408,13 +408,10 @@ add('sources.brew_git', build=Build('rss-mdm-brew-source', 'test', 't2_git'), se
 add('sources.brew_recovery', build=Build('rss-mdm-brew-source'),
     selectors=('git::recovery_tests::',), profile='none', fixtures=('git',),
     sources=('crates/brew-source/src/git.rs',))
-add('native.tls', selectors=('native::tls::tests::',), profile='product', fixtures=('windows','identity'),
-    sources=('crates/app/src/native/*',),
-    tests=('crates/app/tests/native/tls.rs',))
 app_family('windows',
            fixtures=('windows',), namespace='windows::t2')
 add('windows.push_transport', selectors=('windows::t2::push_transport::',), profile='none', fixtures=('windows',),
-    sources=('crates/windows-channel/src/push.rs', 'crates/app/src/native/tls.rs'),
+    sources=('crates/windows-channel/src/push.rs',),
     tests=('crates/app/tests/windows/push_transport.rs',))
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], support_inputs=(*MODULES['windows.declared'].support_inputs, 'crates/app/tests/windows/support.rs', 'crates/app/tests/device/support.rs', 'crates/app/tests/enrollment/support.rs', 'crates/app/tests/execution/support.rs', 'crates/app/tests/execution/support/native.rs', 'crates/app/tests/execution/support/configuration.rs'), db_mode='fresh', scope='objects')
 add('windows.entra', selectors=('windows::t2::entra::',), profile='product',fixtures=('windows','identity','local_worker'),
@@ -480,7 +477,7 @@ add('catalog.contract', build=None, python='catalog',
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
 # Gateway owns a complete product host and therefore its tenant projection claim.
 add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity','local_worker'),
-    sources=('deployment/nginx.conf','deployment/http.conf'), support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
+    sources=('deployment/render_gateway.py','crates/app/src/native/gateway.rs','crates/certificate/src/peer.rs'), support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
 MODULES['gateway.admission'] = replace(MODULES['gateway.admission'], scope='tenant')
 
 
@@ -830,7 +827,7 @@ consume(('crates/software-service/src/publication/references.rs',), 'planning.re
 consume(('crates/software-service/src/publication/*.sql', 'crates/software-service/src/publication/*catalog.json'),
         'publication.winget publication.brew publication.mapping publication.withdrawal publication.recovery catalog.contract')
 
-consume(('crates/certificate/src/*',), 'agent.pki windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms native.tls')
+consume(('crates/certificate/src/*',), 'agent.pki windows.issuance windows.management apple.scep apple.identity apple.renewal apple.cms gateway.admission')
 consume(('crates/apple-mdm/src/*',), 'apple.scep apple.collection apple.profile apple.policy apple.onboarding apple.renewal apple.identity')
 
 
@@ -843,7 +840,7 @@ consume(('crates/audit-integration/src/completion.rs',
 consume(('crates/agent-channel/src/boundary.rs', 'crates/agent-channel/src/bindings.rs', 'crates/agent-channel/src/operations.rs'), 'agent.registration agent.reports execution.agent.delivery execution.agent.poll')
 consume(('crates/agent-channel/src/content.rs',), 'execution.agent.content execution.software.content')
 consume(('crates/windows-channel/src/collection.rs', 'crates/windows-channel/src/boundary.rs'), 'windows.management windows.retention windows.limits inventory.runtime')
-consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits native.tls')
+consume(('crates/app/src/assembly/windows/*',), 'windows.enrollment windows.issuance windows.management windows.retention windows.limits gateway.admission')
 consume(('crates/inventory-service/src/collection*', 'crates/inventory-service/src/apple_collection.rs', 'crates/inventory-service/src/collection/*'), 'agent.reports windows.management windows.retention apple.collection apple.renewal inventory.runtime')
 consume(('crates/inventory-service/src/groups/*',), 'planning.http planning.group_scope assets.group_input compliance.group_input')
 consume(('crates/content-service/src/lib.rs', 'crates/content-service/src/budget.rs', 'crates/content-service/src/bindings.rs', 'crates/content-service/src/service*', 'crates/content-service/src/transaction.rs', 'crates/content-service/src/admission.sql'), 'content.storage content.http content.mirror content.gc execution.agent.content execution.software.content software.http')
@@ -971,7 +968,7 @@ for name, module in tuple(MODULES.items()):
         support += ('tests/support/software/pg.rs',)
     if name == 'publication.recovery':
         support += ('tests/support/software/ack.rs',)
-    if name in ('apple.cms','apple.apns','native.tls'):
+    if name in ('apple.cms','apple.apns'):
         support = tuple(path for path in support if not path.startswith('crates/app/tests/support/'))
     MODULES[name] = replace(module, support_inputs=support)
 for owner in ('policy','resource','software_release'):
@@ -1050,7 +1047,7 @@ APP_HELPER_CONSUMERS = {
         'device.associations', 'device.views', 'diagnostics.http', 'device.binding',
         'device.revocation', 'device.recovery', 'device.admission', 'agent.reports',
         'inventory.runtime', 'assets.group_input', 'assets.sources', 'compliance.evaluation',
-        'execution.agent.delivery', 'authorization.admission', 'enrollment.recovery', 'native.tls',
+        'execution.agent.delivery', 'authorization.admission', 'enrollment.recovery',
         'planning.http', 'software.http', 'execution.software.offer', 'execution.software.content',
         'execution.software.recovery', 'execution.commands.admission', 'execution.commands.dispatch', 'execution.commands.recovery',
         'execution.commands.windows', 'execution.commands.configuration', 'execution.commands.onboarding', 'windows.commands',
@@ -2073,7 +2070,7 @@ MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
 
-consume(('crates/app/src/native/proxy.rs',), 'native.tls gateway.admission apple.host')
+consume(('crates/app/src/native/gateway.rs',), 'gateway.admission apple.host')
 consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')
 
 # The transport fixture is consumed by these test/helper owners, including indirect fixtures.
@@ -2115,3 +2112,18 @@ consume(('crates/registration-service/src/lifecycle.rs',), 'device-access.http')
 MODULES['device-access.http']=replace(MODULES['device-access.http'],support_inputs=tuple(dict.fromkeys((*MODULES['device-access.http'].support_inputs,'crates/app/tests/support/task_signature.rs'))))
 
 consume(('crates/execution-service/src/actions/production.rs','crates/execution-service/src/actions/dispatch-v1.json'), 'planning.onboarding execution.agent.delivery device-access.http')
+
+# Full Scope/sequence is shared by enterprise collection and periodic telemetry intake.
+consume(('crates/inventory-service/src/collection/telemetry.rs',), 'telemetry.ingress.postgres')
+
+consume(('crates/registration-service/src/agent/connections.rs','crates/agent-wire/src/connections.rs','crates/agent-wire/schema/connections/*'), 'agent.configurations agent.pki')
+for name,module in tuple(MODULES.items()):
+    if 'crates/app/tests/support/gateway.rs' in module.support_inputs or any(path in module.test_inputs for path in ('crates/app/tests/setup/mail.rs','crates/app/tests/setup/ca_admin.rs','crates/app/tests/setup/webhook.rs','crates/app/tests/windows/push_transport.rs','crates/app/tests/windows/wns.rs','crates/app/tests/agent_pki/maintenance.rs','crates/app/tests/apple/support/apns.rs')):
+        MODULES[name]=replace(module,support_inputs=tuple(dict.fromkeys((*module.support_inputs,'crates/app/tests/support/tls.rs'))))
+
+consume(('crates/app/src/native/*',), 'gateway.admission agent.pki windows.management apple.identity')
+
+T1_INPUTS += ('crates/certificate/tests/peer.rs', 'crates/agent-wire/tests/fixtures/pki-v1-vectors.json')
+consume(('crates/content-service/src/installer/xar_metadata.rs',), 'agent.configurations')
+
+consume(('crates/inventory-service/src/database.rs',), 'inventory.runtime')

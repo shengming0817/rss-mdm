@@ -82,4 +82,6 @@ binary = '/usr/local/bin/rss-mdm-installer'
 receipt = subprocess.check_output([binary, 'install', '--config', str(path)])
 if ca_request:
     subprocess.run([binary, 'initialize-ca', '--config', str(ca_request)], check=True, stdout=subprocess.DEVNULL)
+from render_gateway import render
+render(Path(config['deployment']['gateway_directory']))
 print(receipt.decode().strip())

@@ -29,7 +29,7 @@ flow、command、software、租户注册、管理员初始化和 Identity audit 
 readiness 仍表达公开探针的既定条件，两者不能互相推断。入口暂停与依赖读取失败分开；
 任务 running、已转发任务、服务就绪均不表示业务完成或设备实际效果。执行恢复只有受控任务仍运行、恢复扫描和派发首轮均确认成功且未停止时才就绪；确认空扫描/空领取也有效。
 依赖扫描或派发轮次故障撤销就绪，后续成功轮次可恢复；停止信号或任一分支退出立即撤销就绪，在途事务仍按原预算结算。
-可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际 `listening`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表 listener 或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
+可选通道及其子能力在 `channels` 中显示 `disabled / waiting / ready / degraded`，同时给出实际路由 `mounted`、阻断原因及已加载材料版本；不再作为核心组件影响 `/readyz`。材料已保存或已选择不代表当前进程已加载，更不代表网关入口或依赖操作可用。PKI 版本取自当前运行中的 verifier，签名与推送版本对应本进程实际加载的材料。
 `trust_conflict` 表示配置与既有信任发生冲突，属于阻断状态；保留数据库、密钥和信任历史，核对 hostname、租户、用途与材料，不通过清空持久信任绕过冲突。
 
 Automation 的 `bridge` 记录输入转发结果，`runner.scan` 记录独立运行连接池的实际扫描结果；
@@ -354,4 +354,6 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 `/livez` 表示进程存活，`/readyz` 只判定核心管理服务。授权的 `/api/v1/runtime/diagnostics` 在 `channels` 中报告 Apple、Windows、Agent、WNS、Agent bootstrap 和 signing 的 disabled/waiting/ready/degraded、监听状态、闭合原因和已加载材料版本。通道故障不会自动摘除管理面；数据库、共享保护根、身份绑定及核心完整性失败仍按硬依赖处理。
 
-缺组织 APNs/Profile 时，先在 Apple 材料页申请/导入并选择版本，然后 prepare-hosts、重建 server、再次核对实际观察。过期或撤销材料拒绝相关操作；缺 TLS/设备信任不开放不安全 listener。WNS 不可用时 Windows 轮询可继续，bootstrap 或签名不可用时仅拒绝依赖这些能力的操作。真实设备结果与宿主 ready 分别验收。
+缺组织 APNs/Profile 时，先在 Apple 材料页申请/导入并选择版本，然后 prepare-hosts、重建 server、再次核对实际观察。过期或撤销材料拒绝相关操作；缺 TLS/设备信任网关拒绝相关入口。WNS 不可用时 Windows 轮询可继续，bootstrap 或签名不可用时仅拒绝依赖这些能力的操作。真实设备结果与宿主 ready 分别验收。
+
+入口退役同时检查仍可使用的注册配置和未完成的原生 Agent 安装。新任务在接受时冻结当前发布的首选地址；策略和软件身份不绑定地址。已下发任务保留原下载 URL，完成、撤销或失效前保留其入口。撤销注册配置不会取消已接受的注册授权，已有授权须完成、显式取消或到期。连接状态的 `retirementBlockers` 分别报告注册材料和原生安装的阻断数量。Windows/Apple 原生注册与 SCEP 地址仍须按各原生配置的生命周期维护。

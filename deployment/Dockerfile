@@ -37,6 +37,6 @@ FROM ${POSTGRES_IMAGE} AS installer
 USER 0:0
 RUN apt-get update && apt-get install -y --no-install-recommends libxml2 python3 openssl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/rss-mdm /usr/local/bin/rss-mdm-installer
-COPY source/deployment/initialize.py /usr/local/lib/rss-mdm/initialize.py
+COPY source/deployment/initialize.py source/deployment/render_gateway.py /usr/local/lib/rss-mdm/
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/rss-mdm-installer"]
