@@ -13,7 +13,7 @@ impl Inputs {
         &self,
         tx: &mut PgTransaction<'_>,
     ) -> Result<()> {
-        if self.agent_origin.is_empty() || self.bootstrap.is_none() {
+        if self.bootstrap.is_none() {
             return Err(Error::Unsupported.into());
         }
         let revision = self
@@ -27,6 +27,9 @@ impl Inputs {
             })
         })
         .await??;
+        tx.with_connection(move |c| Box::pin(async move {
+            Ok(rss_mdm_registration_service::agent::connections::installation_configuration_on(c, &tenant.to_string()).await.map(|_| ()).map_err(Error::from))
+        })).await??;
         Ok(())
     }
     pub(crate) async fn freeze_agent_in(
@@ -105,7 +108,6 @@ impl Inputs {
                     version: metadata.version.clone(),
                     artifact,
                     source: spec.source.clone(),
-                    content_origin: self.agent_origin.clone(),
                 },
             );
         }

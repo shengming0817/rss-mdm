@@ -1,0 +1,17 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "SignedConfiguration",
+      "file": "signed-configuration-v1.schema.json"
+    },
+    {
+      "type": "Acknowledgement",
+      "file": "acknowledgement-v1.schema.json"
+    },
+    {
+      "type": "FailureReport",
+      "file": "failure-report-v1.schema.json"
+    }
+  ]
+}

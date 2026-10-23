@@ -35,6 +35,7 @@ pub enum ExecutionAuthority {
         source_objects: Vec<crate::source_authority::DeviceObject>,
         required: Vec<Permission>,
         package: Box<crate::agent_install::Package>,
+        download_origin: String,
         tenant: String,
         policy: uuid::Uuid,
         version: uuid::Uuid,

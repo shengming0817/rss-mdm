@@ -38,6 +38,13 @@ impl ExecutionService {
             .map_err(|_| Error::Unsupported)?;
         let op = storage::load(tx, &self.protection, installation).await?;
         let package = op.authority.agent_package().ok_or(Error::Forbidden)?;
+        let ExecutionAuthority::AgentInstall {
+            download_origin, ..
+        } = &op.authority
+        else {
+            return Err(Error::Forbidden.into());
+        };
+        let download_origin = download_origin.clone();
         let id = Uuid::new_v4();
         let delivery = Uuid::new_v4();
         let mut random = [0u8; 32];
@@ -65,8 +72,8 @@ impl ExecutionService {
             let credential:Uuid=sqlx::query_scalar("SELECT id FROM mdm_access.credentials WHERE tenant_id=$1::uuid AND registration=$2 AND channel='mdm' AND state='active'")
                 .bind(tenant.to_string()).bind(registration).fetch_one(&mut *c).await?;
             let proof=serde_json::json!({"installation":installation,"registration":registration,"credential":credential,"generation":generation,"source":source,"runtime":null,"bootstrap":id});
-            sqlx::query("INSERT INTO mdm_access.agent_bootstraps(tenant_id,id,installation,delivery,source,release,issuer,provisioner,challenge,deadline,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'prepared')")
-                .bind(tenant.to_string()).bind(id).bind(installation).bind(delivery).bind(proof).bind(release).bind(issuer).bind(provisioner).bind(challenge).bind(deadline).execute(c).await?;
+            sqlx::query("INSERT INTO mdm_access.agent_bootstraps(tenant_id,id,installation,delivery,source,release,issuer,provisioner,challenge,deadline,download_origin,state) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared')")
+                .bind(tenant.to_string()).bind(id).bind(installation).bind(delivery).bind(proof).bind(release).bind(issuer).bind(provisioner).bind(challenge).bind(deadline).bind(download_origin).execute(c).await?;
             Ok(())
         })).await?;
         let input = Create {

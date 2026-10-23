@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 /// Fingerprint of the generated, fixed public schema artifact.
 pub const SCHEMA_FINGERPRINT: &str =
-    "6e97457abf404e76701d56ee479091fbcbd9da6fbdd3dbac05624b2ea90779ae";
+    "e1becb715d0813bc8c9ee49ce43ce51f3221bcb1af126938713f87ef840a1c8f";
 /// Canonical manifest for fixed consumer artifacts.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/task_trust/manifest.json");
 /// Task-signing trust protocol version.
@@ -37,14 +37,16 @@ pub struct PublicKey {
     /// Approved use of this key.
     pub state: KeyState,
 }
-/// Complete server-authorized task-signing trust for one tenant and runtime origin.
+/// Complete server-authorized task-signing trust for one tenant and stable service identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Trust {
     /// Exact protocol version.
     pub version: u8,
-    /// Canonical HTTPS runtime origin, with no path, query or fragment.
-    pub origin: String,
+    /// Immutable product installation instance; independent of network locations.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub service_id: Uuid,
     /// Tenant owning the authenticated Agent channel.
     #[serde(with = "crate::runtime::strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
@@ -56,10 +58,11 @@ pub struct Trust {
 }
 impl Trust {
     /// Validate public shape and canonical identity before persisting or using the key set.
-    /// The caller must also bind tenant/origin to the authenticated channel and reject rollback.
+    /// The caller must also bind tenant/service identity to the authenticated channel and reject rollback.
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != API_VERSION
             || self.tenant.is_nil()
+            || self.service_id.is_nil()
             || !(1..=i64::MAX as u64).contains(&self.revision)
             || !(1..=MAX_KEYS).contains(&self.keys.len())
             || self
@@ -68,15 +71,6 @@ impl Trust {
                 .filter(|key| key.state == KeyState::Active)
                 .count()
                 != 1
-        {
-            return Err(WireError::InvalidValue);
-        }
-        let url = url::Url::parse(&self.origin).map_err(|_| WireError::InvalidValue)?;
-        if url.scheme() != "https"
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-            || url.origin().ascii_serialization() != self.origin
         {
             return Err(WireError::InvalidValue);
         }
@@ -122,7 +116,7 @@ impl Trust {
         self.validate()?;
         installed.validate()?;
         if self.tenant != installed.tenant
-            || self.origin != installed.origin
+            || self.service_id != installed.service_id
             || self.revision < installed.revision
             || (self.revision == installed.revision && self != installed)
         {

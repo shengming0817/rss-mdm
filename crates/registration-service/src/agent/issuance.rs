@@ -387,6 +387,69 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
         })
         .await
     }
+    /// Recover the original administrator operation after an uncertain response.
+    /// A missing receipt is not evidence of rollback and never authorizes a new operation.
+    pub async fn issuance_recovery_operation(
+        &self,
+        p: &AuthorizedPrincipal,
+        id: Uuid,
+        operation: Uuid,
+    ) -> Result<Option<wire::Candidate>, Failure> {
+        p.check_live()?;
+        if p.tenant_id() != self.tenant.to_string() || id.is_nil() || operation.is_nil() {
+            return Err(Error::Malformed.into());
+        }
+        let tenant = self.tenant.to_string();
+        let mut tx = self.store.begin(&tenant).await?;
+        rss_mdm_authorization_service::lock_on(&mut tx, &tenant, p.instance_id()).await?;
+        let row = sqlx::query(
+            "SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2",
+        )
+        .bind(&tenant)
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::Conflict)?;
+        let grant = grant_row(&mut tx, &tenant, row.try_get("grant_id").map_err(db)?).await?;
+        let device: String = grant.try_get("device").map_err(db)?;
+        p.credentials(&device)?;
+        rss_mdm_authorization_service::snapshot_on(&mut tx, &tenant, p.instance_id())
+            .await?
+            .require(
+                p,
+                rss_mdm_authorization_service::Permission::Credentials,
+                Some(&device),
+            )
+            .map_err(|_| Error::Forbidden)?;
+        let receipt = sqlx::query("SELECT result,digest,instance FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3")
+            .bind(&tenant).bind(p.principal_id()).bind(operation).fetch_optional(&mut *tx).await.map_err(db)?;
+        let value = if let Some(receipt) = receipt {
+            let result: String = receipt.try_get("result").map_err(db)?;
+            if receipt.try_get::<String, _>("instance").map_err(db)? != p.instance_id()
+                || serde_json::from_str::<Uuid>(&result).ok() != Some(id)
+            {
+                return Err(Error::Conflict.into());
+            }
+            let value = candidate(&grant, &row)?;
+            let chain = value
+                .certificate_chain
+                .iter()
+                .map(|v| STANDARD.decode(v).map_err(|_| Error::Corrupt))
+                .collect::<Result<Vec<_>, _>>()?;
+            if digest(&("agent_issuance_recovery", id, chain))?
+                != receipt.try_get::<String, _>("digest").map_err(db)?
+            {
+                return Err(Error::Corrupt.into());
+            }
+            Some(value)
+        } else {
+            None
+        };
+        p.check_live()?;
+        tx.rollback().await.map_err(db)?;
+        Ok(value)
+    }
     pub async fn recover_issuance(
         &self,
         p: &AuthorizedPrincipal,

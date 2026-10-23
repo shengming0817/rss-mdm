@@ -447,7 +447,7 @@ impl Service {
     /// Expired peers use administrator recovery.
     pub async fn renew(
         &self,
-        peer: &rss_mdm_certificate::HandshakePeer,
+        peer: &rss_mdm_certificate::ClientCertificateEvidence,
         input: &wire::GrantRequest,
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Device installation report, authenticated against its current registration and generation.",
+  "properties": {
+    "digest": {
+      "description": "Digest of the exact signed configuration body.",
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Original operation retained through retries.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "origin": {
+      "description": "Actual selected address; not a device statement of an arbitrary new destination.",
+      "maxLength": 2048,
+      "minLength": 1,
+      "type": "string"
+    },
+    "revision": {
+      "description": "Installed complete configuration revision.",
+      "format": "uint64",
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operationId",
+    "revision",
+    "digest",
+    "origin"
+  ],
+  "title": "Acknowledgement",
+  "type": "object",
+  "$id": "https://rss.example/agent/connections/v1/Acknowledgement"
+}

@@ -10,6 +10,7 @@ publish.workspace = true
 schemars.workspace = true
 rss-mdm-webhook-service.workspace = true
 rss-mdm-device-trust.workspace = true
+rss-mdm-native-protection.workspace = true
 rss-mdm-pki-service.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-certificate.workspace = true

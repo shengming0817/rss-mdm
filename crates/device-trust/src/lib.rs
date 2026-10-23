@@ -377,7 +377,9 @@ impl DeviceTrust {
     }
     pub fn update(&self, trust: Trust, now: i64) -> Result<(), Error> {
         let mut old = self.inner.write().map_err(invalid)?;
-        if trust.origin != old.trust.origin
+        if trust.service_id != old.trust.service_id
+            || (trust.origin != old.trust.origin
+                && !matches!(trust.purpose, Purpose::Agent | Purpose::AgentBootstrap))
             || trust.tenant != old.trust.tenant
             || trust.purpose != old.trust.purpose
             || trust.revision < old.trust.revision

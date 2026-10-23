@@ -1,6 +1,6 @@
 //! Dedicated native bootstrap authority. Package delivery is not enrollment proof.
 use super::*;
-use rss_mdm_certificate::{HandshakePeer, bootstrap as certificate};
+use rss_mdm_certificate::{ClientCertificateEvidence, bootstrap as certificate};
 use rss_mdm_device_trust::DeviceTrust;
 use rss_mdm_pki_service::scep;
 use x509_cert::{
@@ -180,7 +180,7 @@ impl Service {
     }
     pub async fn native_grant(
         &self,
-        peer: &HandshakePeer,
+        peer: &ClientCertificateEvidence,
         input: &wire::NativeGrantRequest,
         audit: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {

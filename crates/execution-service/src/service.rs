@@ -307,11 +307,17 @@ impl ExecutionService {
             .permissions()?
             .contains(&Permission::SoftwareDeploy)
         {
-            if let Some(package) = authority.agent_package() {
+            if let ExecutionAuthority::AgentInstall {
+                stage: crate::authority::AgentInstallStage::Install,
+                package,
+                download_origin,
+                ..
+            } = &authority
+            {
                 if input.target != NativeTarget::Device
                     || checked_input(serde_json::to_vec(&input.task))?
                         != checked_input(serde_json::to_vec(
-                            &package.native_task(input.operation_id)?,
+                            &package.native_task(input.operation_id, download_origin)?,
                         ))?
                 {
                     return Err(Error::Unsupported.into());

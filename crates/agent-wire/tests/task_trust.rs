@@ -4,7 +4,7 @@ use uuid::Uuid;
 fn trust() -> Trust {
     Trust {
         version: 1,
-        origin: "https://agent.example.test".into(),
+        service_id: Uuid::from_u128(3),
         tenant: Uuid::from_u128(1),
         revision: 1,
         keys: vec![PublicKey {
@@ -37,7 +37,7 @@ fn trust_is_bound_to_material_authority_and_revision() {
     foreign.tenant = Uuid::from_u128(2);
     assert!(foreign.validate_successor(&old).is_err());
     foreign = next.clone();
-    foreign.origin = "https://other.example.test".into();
+    foreign.service_id = Uuid::from_u128(4);
     assert!(foreign.validate_successor(&old).is_err());
     let ack = Acknowledgement {
         operation: Uuid::from_u128(2),
@@ -51,18 +51,10 @@ fn trust_is_bound_to_material_authority_and_revision() {
     assert!(!ack.matches(&next).unwrap());
 }
 #[test]
-fn ambiguous_keys_and_noncanonical_origins_are_rejected() {
-    for origin in [
-        "http://agent.example.test",
-        "https://agent.example.test/",
-        "https://user@agent.example.test",
-        "https://agent.example.test/path",
-        "https://agent.example.test?x=1",
-    ] {
-        let mut value = trust();
-        value.origin = origin.into();
-        assert!(value.validate().is_err());
-    }
+fn ambiguous_keys_and_invalid_service_identity_are_rejected() {
+    let mut value = trust();
+    value.service_id = Uuid::nil();
+    assert!(value.validate().is_err());
     let mut value = trust();
     value.keys.push(value.keys[0].clone());
     assert!(value.validate().is_err());

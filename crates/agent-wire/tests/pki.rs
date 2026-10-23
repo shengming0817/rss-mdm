@@ -1,4 +1,4 @@
-//! PKI V1 static boundaries and bytes captured from the unmodified baseline.
+//! Current PKI V1 static boundaries and stable service installation bytes.
 use rss_mdm_agent_wire::{pki, runtime};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -242,7 +242,7 @@ fn direct_rust_construction_uses_the_same_static_checks() {
 }
 
 #[test]
-fn exact_json_and_installation_binding_preserve_baseline_bytes() {
+fn exact_json_and_installation_binding_use_stable_service_identity() {
     let vectors = vectors();
     let trust: pki::Trust = serde_json::from_str(vectors["trustJson"].as_str().unwrap()).unwrap();
     let ack: pki::Acknowledgement =
@@ -262,8 +262,11 @@ fn exact_json_and_installation_binding_preserve_baseline_bytes() {
         }
         assert_eq!(refreshed.installation_digest(), trust.installation_digest());
     }
+    let mut relocated = trust.clone();
+    relocated.origin = "https://other.example".into();
+    assert_eq!(relocated.installation_digest(), trust.installation_digest());
     for field in [
-        "origin",
+        "service_id",
         "tenant",
         "purpose",
         "revision",
@@ -277,7 +280,7 @@ fn exact_json_and_installation_binding_preserve_baseline_bytes() {
     ] {
         let mut changed = trust.clone();
         match field {
-            "origin" => changed.origin = "https://other.example".into(),
+            "service_id" => changed.service_id = ack.operation,
             "tenant" => changed.tenant = ack.operation,
             "purpose" => changed.purpose = pki::Purpose::Windows,
             "revision" => changed.revision += 1,

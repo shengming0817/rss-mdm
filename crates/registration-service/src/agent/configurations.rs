@@ -8,7 +8,7 @@ use rss_mdm_authorization_service::Permission;
 use std::collections::BTreeMap;
 /// Configuration-specific signer; no dependency on the execution/task owner.
 pub struct Signer {
-    key_id: String,
+    pub(super) key_id: String,
     key: Ed25519KeyPair,
     trusted_keys: BTreeMap<String, String>,
 }
@@ -65,6 +65,21 @@ impl Signer {
             signature,
         })
     }
+    pub(super) fn sign_connections(
+        &self,
+        configuration: rss_mdm_agent_wire::connections::Configuration,
+    ) -> Result<rss_mdm_agent_wire::connections::SignedConfiguration, Error> {
+        if configuration.key_id != self.key_id {
+            return Err(Error::Configuration);
+        }
+        let bytes = configuration
+            .signing_bytes()
+            .map_err(|_| Error::Malformed)?;
+        Ok(rss_mdm_agent_wire::connections::SignedConfiguration {
+            configuration,
+            signature: URL_SAFE_NO_PAD.encode(self.key.sign(&bytes).as_ref()),
+        })
+    }
     pub(super) fn verify(&self, file: &wire_config::ConfigurationFile) -> Result<(), Error> {
         let key = self
             .trusted_keys
@@ -87,13 +102,6 @@ impl Signer {
 }
 /// Publication owner checks the exact current release in this same tenant transaction.
 pub trait InstallationAdmission: Send + Sync {
-    /// Prevent a stale process from issuing configurations with a key that left active use.
-    fn verify_signer<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: &'a str,
-        key_id: &'a str,
-    ) -> Pending<'a, ()>;
     fn verify<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -247,11 +255,13 @@ impl Service {
             for target in &input.targets {defaults=Some(settings::admit_on(c,&tenant,target.platform).await?);}
             let seconds=input.lifetime_seconds.unwrap_or(defaults.ok_or(Error::Malformed)?.configuration_default_seconds);
             if !(1..=settings::CONFIGURATION_MAX_SECONDS).contains(&seconds){return Err(Error::Malformed);}
-            service.installations.verify_signer(c,&tenant,&service.configuration_signer.as_ref().ok_or(Error::Runtime)?.key_id).await?;
+            super::connections::lock(c, &tenant).await?;
+            let signer = super::connections::signer_on(c, &tenant, &service.protection).await?;
+            let connections = super::connections::current_on(c, &tenant).await?;
             let id=Uuid::new_v4();let expires_at=now(c).await?+i64::from(seconds);
-            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,origin:service.origin.clone(),targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:service.configuration_signer.as_ref().ok_or(Error::Runtime)?.key_id.clone()};
+            let config=wire_config::Configuration{wire_version:1,configuration_id:id,tenant_id:Uuid::parse_str(&tenant).map_err(|_|Error::Configuration)?,connections,targets:input.targets.clone(),expires_at,quantity:input.quantity.clone(),key_id:signer.key_id.clone()};
             config.signing_bytes(&input.secret).map_err(|_|Error::Configuration)?;
-            let signature=service.configuration_signer.as_ref().ok_or(Error::Runtime)?.sign(config.clone(),input.secret.clone())?.signature;
+            let signature=signer.sign(config.clone(),input.secret.clone())?.signature;
             let quantity=match input.quantity{wire_config::Quantity::Finite{count}=>Some(i64::from(count.get())),wire_config::Quantity::Unlimited=>None};
             sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,request_digest,signature,document,quantity,state,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'available',to_timestamp($11))")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(p.principal_id()).bind(p.instance_id()).bind(configuration_secret(&tenant,id,&input.secret)).bind(&*d).bind(&signature).bind(serde_json::to_value(&config).map_err(|_|Error::Malformed)?).bind(quantity).bind(expires_at as f64).execute(&mut *c).await.map_err(db)?;
@@ -339,10 +349,15 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
         version(input.file.configuration.wire_version, input.operation_id)?;
-        self.configuration_signer
-            .as_ref()
-            .ok_or(Error::Runtime)?
-            .verify(&input.file)?;
+        let mut verification = self.store.begin(&self.tenant.to_string()).await?;
+        let signer = super::connections::signer_on(
+            &mut verification,
+            &self.tenant.to_string(),
+            &self.protection,
+        )
+        .await?;
+        signer.verify(&input.file)?;
+        verification.rollback().await.map_err(db)?;
         if input.secret.expose() == input.file.secret.expose() {
             return Err(Error::Malformed.into());
         }
@@ -352,7 +367,7 @@ impl Service {
         a.operation(input.operation_id, "agent_configuration_exchange");
         self.write(a,(self,input,spki,d),|ctx,c|Box::pin(async move {
             let (service,input,spki,d)=ctx;let tenant=service.tenant.to_string();let cfg=&input.file.configuration;
-            if cfg.tenant_id.to_string()!=tenant || cfg.origin!=service.origin{return Err(Error::Forbidden);}
+            if cfg.tenant_id.to_string()!=tenant || cfg.connections.configuration.service_id!=service.service_id()?{return Err(Error::Forbidden);}
             let config=row(c,&tenant,cfg.configuration_id).await?;check_configuration_secret(&tenant,&config,&input.file.secret)?;
             if serde_json::to_value(cfg).map_err(|_|Error::Malformed)?!=config.try_get::<serde_json::Value,_>("document").map_err(db)?{return Err(Error::Unauthorized);}
             if let Some(id)=sqlx::query_scalar::<_,Uuid>("SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND source='configuration' AND operation_id=$2")
@@ -429,11 +444,23 @@ mod tests {
             URL_SAFE_NO_PAD.encode(key.public_key().as_ref()),
         )]);
         let signer = Signer::new(private.as_ref(), "current", &keys).unwrap();
+        let tenant_id = Uuid::new_v4();
+        let connections = signer
+            .sign_connections(rss_mdm_agent_wire::connections::Configuration {
+                wire_version: 1,
+                service_id: Uuid::new_v4(),
+                tenant_id,
+                revision: 1,
+                preferred_origin: "https://mdm.example.test:9445".into(),
+                origins: vec!["https://mdm.example.test:9445".into()],
+                key_id: "current".into(),
+            })
+            .unwrap();
         let config = wire_config::Configuration {
             wire_version: 1,
             configuration_id: Uuid::new_v4(),
-            tenant_id: Uuid::new_v4(),
-            origin: "https://mdm.example.test:9445".into(),
+            tenant_id,
+            connections,
             targets: vec![wire_config::Target {
                 platform: runtime::TaskPlatform::Macos,
                 architecture: runtime::TaskArchitecture::Aarch64,
@@ -446,7 +473,7 @@ mod tests {
         let file = signer.sign(config, secret).unwrap();
         signer.verify(&file).unwrap();
         for field in [
-            "origin",
+            "connections",
             "expiresAt",
             "quantity",
             "tenantId",
@@ -459,7 +486,12 @@ mod tests {
                 value[field] = serde_json::json!(URL_SAFE_NO_PAD.encode([14; 32]));
             } else {
                 value["configuration"][field] = match field {
-                    "origin" => serde_json::json!("https://other.example.test"),
+                    "connections" => {
+                        let mut connections = file.configuration.connections.clone();
+                        connections.configuration.preferred_origin =
+                            "https://other.example.test".into();
+                        serde_json::to_value(connections).unwrap()
+                    }
                     "expiresAt" => serde_json::json!(101),
                     "quantity" => serde_json::json!({"kind":"finite","count":1}),
                     "tenantId" => serde_json::json!(Uuid::new_v4()),

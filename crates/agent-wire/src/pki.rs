@@ -9,7 +9,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/pki/manifest.json");
 /// SHA-256 of the ordered schema file bytes named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "9b2028ab74968866f0973ce8d2084deee5a98afcb20be2791e5167ee40400594";
+    "4cdfbaa90da88f79d70ed5dcedce67839e686374f975372e0ec2de0287d1f7d8";
 
 const MAX_REVISION: u64 = i64::MAX as u64;
 const MAX_ISSUERS: usize = 16;
@@ -70,7 +70,11 @@ pub struct Trust {
     #[serde(deserialize_with = "version")]
     #[schemars(schema_with = "version_schema")]
     pub version: u8,
-    /// Exact configured service origin, without a path or trailing slash.
+    /// Immutable product installation instance; never inferred from a URL.
+    #[serde(with = "crate::runtime::strict_uuid")]
+    #[schemars(schema_with = "crate::runtime::uuid_schema")]
+    pub service_id: Uuid,
+    /// Configured native-protocol locator; Agent identity is bound by service_id.
     pub origin: String,
     /// Tenant owning these device identities.
     #[serde(with = "crate::runtime::strict_uuid")]
@@ -115,6 +119,7 @@ impl Trust {
     pub fn validate(&self) -> Result<(), WireError> {
         if self.version != API_VERSION
             || self.tenant.is_nil()
+            || self.service_id.is_nil()
             || !valid_revision(self.revision)
             || !valid_issuers(&self.issuers)
         {
@@ -143,7 +148,7 @@ impl Trust {
         let bytes = serde_json::to_vec(&(
             "device-trust-install/v1",
             self.version,
-            &self.origin,
+            self.service_id,
             self.tenant,
             self.purpose,
             self.revision,

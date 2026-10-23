@@ -49,8 +49,8 @@ pub struct Configuration {
     #[serde(with = "strict_uuid")]
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub tenant_id: Uuid,
-    /// Trusted HTTPS Agent origin, checked against the installed candidate.
-    pub origin: String,
+    /// Signed initial locations, checked against the installed service and configuration keys.
+    pub connections: crate::connections::SignedConfiguration,
     /// Allowed native targets.
     pub targets: Vec<Target>,
     /// Final frozen Unix expiry, unrelated to device certificate lifetime.
@@ -75,20 +75,12 @@ impl Configuration {
     /// Validate producer values and freeze a closed canonical signature domain.
     pub fn signing_bytes(&self, secret: &Secret) -> Result<Vec<u8>, WireError> {
         validate_scope(&self.targets)?;
-        let origin = url::Url::parse(&self.origin).map_err(|_| WireError::InvalidValue)?;
+        self.connections.validate()?;
         if self.wire_version != 1
             || self.configuration_id.is_nil()
             || self.tenant_id.is_nil()
             || self.expires_at <= 0
-            || origin.scheme() != "https"
-            || origin.origin().ascii_serialization() != self.origin
-            || !origin.username().is_empty()
-            || origin.password().is_some()
-            || self.origin.len() > 2048
-            || self
-                .origin
-                .chars()
-                .any(|c| c.is_whitespace() || c.is_control())
+            || self.connections.configuration.tenant_id != self.tenant_id
             || self.key_id.is_empty()
             || self.key_id.len() > 128
             || !self

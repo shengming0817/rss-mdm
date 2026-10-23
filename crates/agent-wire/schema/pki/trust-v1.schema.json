@@ -124,7 +124,7 @@
       "type": "array"
     },
     "origin": {
-      "description": "Exact configured service origin, without a path or trailing slash.",
+      "description": "Configured native-protocol locator; Agent identity is bound by service_id.",
       "type": "string"
     },
     "purpose": {
@@ -136,6 +136,15 @@
       "maximum": 9223372036854775807,
       "minimum": 1,
       "type": "integer"
+    },
+    "service_id": {
+      "description": "Immutable product installation instance; never inferred from a URL.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
     },
     "tenant": {
       "description": "Tenant owning these device identities.",
@@ -153,6 +162,7 @@
   },
   "required": [
     "version",
+    "service_id",
     "origin",
     "tenant",
     "purpose",

@@ -3,6 +3,7 @@
 mod activation;
 pub mod bootstrap;
 pub mod configurations;
+pub mod connections;
 pub mod current_user;
 mod grants;
 pub(crate) mod issuance;
@@ -105,8 +106,7 @@ pub struct Service {
     clock: Arc<dyn Clock>,
     binding: Arc<dyn RuntimeBinding>,
     native: Arc<dyn NativeAdmission>,
-    origin: String,
-    configuration_signer: Option<Arc<configurations::Signer>>,
+    protection: Arc<rss_mdm_native_protection::Protector>,
     installations: Arc<dyn configurations::InstallationAdmission>,
     bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
@@ -118,8 +118,7 @@ pub struct Assembly {
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
     pub native: Arc<dyn NativeAdmission>,
-    pub origin: String,
-    pub configuration_signer: Option<Arc<configurations::Signer>>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub installations: Arc<dyn configurations::InstallationAdmission>,
     pub bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
@@ -138,11 +137,18 @@ impl Service {
             clock: a.clock,
             binding: a.binding,
             native: a.native,
-            origin: a.origin,
-            configuration_signer: a.configuration_signer,
+            protection: a.protection,
             installations: a.installations,
             bootstrap: a.bootstrap,
         })
+    }
+    pub fn service_id(&self) -> Result<Uuid, Error> {
+        self.issuer
+            .trust()
+            .trust
+            .public()
+            .map(|t| t.service_id)
+            .map_err(|_| Error::Configuration)
     }
     pub fn trust(&self) -> &Arc<AgentTrust> {
         self.issuer.trust()

@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "FailureReason": {
+      "description": "Closed device observations; none of these reports changes trust or the installed revision.",
+      "oneOf": [
+        {
+          "const": "signature_rejected",
+          "description": "Configuration signature is invalid or its key is not installed.",
+          "type": "string"
+        },
+        {
+          "const": "identity_mismatch",
+          "description": "Configuration belongs to a different service or tenant.",
+          "type": "string"
+        },
+        {
+          "const": "revision_rejected",
+          "description": "Revision rolled back or reused for different content.",
+          "type": "string"
+        },
+        {
+          "const": "persistence_failed",
+          "description": "Local atomic persistence could not complete.",
+          "type": "string"
+        },
+        {
+          "const": "network_unavailable",
+          "description": "No authorized destination was reachable through a network connection.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Best-effort report over a still trusted connection after a failed installation attempt.",
+  "properties": {
+    "operationId": {
+      "description": "Original report operation retained across uncertain responses.",
+      "format": "uuid",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/$defs/FailureReason",
+      "description": "Closed failure classification without credentials or diagnostic payloads."
+    },
+    "revision": {
+      "description": "Server-published target, never a claim of successful installation.",
+      "format": "uint64",
+      "maximum": 9223372036854775807,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operationId",
+    "revision",
+    "reason"
+  ],
+  "title": "FailureReport",
+  "type": "object",
+  "$id": "https://rss.example/agent/connections/v1/FailureReport"
+}

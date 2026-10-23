@@ -68,23 +68,28 @@ pub struct Package {
     pub version: String,
     pub artifact: resource::SoftwareArtifact,
     pub source: resource::SoftwareSource,
-    pub content_origin: String,
 }
 impl Package {
     /// Product admission owns native inputs and the fixed Agent bootstrap arguments.
-    pub fn native_task(&self, operation: Uuid) -> std::result::Result<crate::Task, Error> {
+    pub fn native_task(
+        &self,
+        operation: Uuid,
+        origin: &str,
+    ) -> std::result::Result<crate::Task, Error> {
         use crate::Task;
         Ok(match &self.identity {
             Identity::WindowsMsi { .. } => Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::Msi {
-                    job: self.windows_job(operation).map_err(|_| Error::Malformed)?,
+                    job: self
+                        .windows_job(operation, origin)
+                        .map_err(|_| Error::Malformed)?,
                 },
             },
             Identity::WindowsMsix { family, .. } => Task::Windows {
                 request: rss_mdm_windows_mdm::native::Execution::SyncMl {
                     request: rss_mdm_windows_mdm::software::MsixInstall::new(
                         family.clone(),
-                        self.url(operation),
+                        self.url(operation, origin),
                     )
                     .and_then(|v| v.request())
                     .map_err(|_| Error::Malformed)?,
@@ -98,7 +103,7 @@ impl Package {
                 let mut body = apple_install(
                     bundle,
                     &self.version,
-                    &self.url(operation),
+                    &self.url(operation, origin),
                     self.artifact.sha256,
                     operation,
                 )
@@ -118,6 +123,7 @@ impl Package {
     pub fn windows_job(
         &self,
         operation: Uuid,
+        origin: &str,
     ) -> std::result::Result<
         rss_mdm_windows_mdm::software::InstallJob,
         rss_mdm_windows_mdm::CodecError,
@@ -132,7 +138,7 @@ impl Package {
         Ok(InstallJob {
             product: product.to_string(),
             version: self.version.clone(),
-            content_urls: vec![self.url(operation)],
+            content_urls: vec![self.url(operation, origin)],
             sha256: self.artifact.sha256,
             operation: operation.to_string(),
             scope: Scope::Device,
@@ -145,10 +151,10 @@ impl Package {
             },
         })
     }
-    pub fn url(&self, operation: Uuid) -> String {
+    pub fn url(&self, operation: Uuid, origin: &str) -> String {
         format!(
             "{}/api/v1/agent/enroll/installations/{operation}/package",
-            self.content_origin.trim_end_matches('/')
+            origin.trim_end_matches('/')
         )
     }
 }
