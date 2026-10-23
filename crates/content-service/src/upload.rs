@@ -454,7 +454,9 @@ impl Store {
    let mut spool = temporary.as_mut().and_then(|f| f.reopen().ok()).map(tokio::fs::File::from_std);
    let (_,digest)=self.check_pieces_to(&saved.pieces,&a,c,deadline,Some(&mut spool)).await?;
    if let Some(file) = &mut spool {
-       if tokio::io::AsyncWriteExt::flush(file).await.is_err() { spool = None; }
+       let remaining = deadline.instant().saturating_duration_since(self.timer.now());
+       let cutoff = deadline.instant() - remaining / 4;
+       if !matches!(tokio::time::timeout_at(cutoff.into(), tokio::io::AsyncWriteExt::flush(file)).await, Ok(Ok(()))) { spool = None; }
    }
    if spool.is_none() { temporary = None; }
    drop(spool);
@@ -482,7 +484,7 @@ impl Store {
     .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(&self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    if state!="ready"{return Err(Error::Conflict)}saved.upload.complete=true;
-   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4,epoch=NULL,held_until=0 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
+   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
    self.check_deadline(deadline)?;commit_started.store(true, std::sync::atomic::Ordering::Release);journal::commit(tx).await?;Ok(saved.upload)
   }).await;
         match result {

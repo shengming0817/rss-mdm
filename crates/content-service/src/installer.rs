@@ -92,7 +92,7 @@ pub(super) async fn observe(
     let deadline = Deadline::at(deadline.instant() - available / 4);
     let cancel = tokio_util::sync::CancellationToken::new();
     let _cancel = cancel.clone().drop_guard();
-    tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         let clock = ParserClock {
             timer,
             cancel,
@@ -108,9 +108,11 @@ pub(super) async fn observe(
         drop(reservation);
         drop(capacity);
         result
-    })
-    .await
-    .unwrap_or(rss_mdm_software_service::management::content::InstallerInspection::Rejected)
+    });
+    match tokio::time::timeout_at(deadline.instant().into(), task).await {
+        Ok(Ok(result)) => result,
+        _ => rss_mdm_software_service::management::content::InstallerInspection::Rejected,
+    }
 }
 fn invalid() -> Error {
     Error::Malformed
