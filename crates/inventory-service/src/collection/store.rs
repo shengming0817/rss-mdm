@@ -336,6 +336,39 @@ pub async fn read_on(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Resu
 pub struct Delivery {
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     database: std::sync::Arc<crate::Store>,
+    #[cfg(feature = "integration")]
+    lose_next_ack: std::sync::atomic::AtomicBool,
+}
+/// Only acknowledged transient failures and uncertain commits may defer this exact delivery.
+#[derive(Debug, thiserror::Error)]
+pub enum DeliveryError {
+    #[error("delivery acknowledgement temporarily unavailable")]
+    Temporary,
+    #[error("delivery acknowledgement commit unconfirmed")]
+    CommitUnknown,
+    #[error("delivery acknowledgement rejected")]
+    Permanent(#[source] Error),
+}
+fn acknowledgement_error(error: sqlx::Error, committing: bool) -> DeliveryError {
+    match error {
+        sqlx::Error::Io(_) => {
+            if committing {
+                DeliveryError::CommitUnknown
+            } else {
+                DeliveryError::Temporary
+            }
+        }
+        sqlx::Error::PoolTimedOut => DeliveryError::Temporary,
+        sqlx::Error::Database(ref e)
+            if matches!(
+                e.code().as_deref(),
+                Some("55P03" | "57014" | "40001" | "40P01")
+            ) =>
+        {
+            DeliveryError::Temporary
+        }
+        other => DeliveryError::Permanent(db(other)),
+    }
 }
 impl Delivery {
     pub fn new(
@@ -345,7 +378,14 @@ impl Delivery {
         Self {
             database,
             audit_store,
+            #[cfg(feature = "integration")]
+            lose_next_ack: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+    #[cfg(feature = "integration")]
+    pub fn inject_ack_loss(&self) {
+        self.lose_next_ack
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     /// Bounded count of real pending delivery rows; 1001 is the overflow sentinel.
     pub async fn pending_count(&self, tenant: &str) -> Result<u64, Error> {
@@ -417,19 +457,66 @@ impl Delivery {
         tx.rollback().await.map_err(db)?;
         Ok(millis.map(|ms| std::time::Duration::from_millis(ms.max(1) as u64)))
     }
-    pub async fn delivered(&self, report: &DurableReport) -> Result<(), Error> {
+    pub async fn delivered(&self, report: &DurableReport) -> Result<(), DeliveryError> {
+        let digest = fingerprint(&report.batch, &report.scope).map_err(DeliveryError::Permanent)?;
+        let scope = report
+            .scope
+            .encode()
+            .map_err(|_| DeliveryError::Permanent(corrupt()))?;
         let mut tx = self
             .database
-            .begin(&report.scope.tenant().to_string())
-            .await?;
+            .begin_delivery(&report.scope.tenant().to_string())
+            .await
+            .map_err(|e| acknowledgement_error(e, false))?;
+        let row = sqlx::query("SELECT scope,sequence,digest,delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE")
+            .bind(report.scope.tenant().to_string()).bind(report.batch.id().as_str())
+            .fetch_optional(&mut *tx).await.map_err(|e| acknowledgement_error(e,false))?
+            .ok_or_else(|| DeliveryError::Permanent(corrupt()))?;
+        let matching = row
+            .try_get::<String, _>("scope")
+            .map_err(|e| acknowledgement_error(e, false))?
+            == scope
+            && row
+                .try_get::<i64, _>("sequence")
+                .map_err(|e| acknowledgement_error(e, false))?
+                == report.batch.sequence() as i64
+            && row
+                .try_get::<Option<String>, _>("digest")
+                .map_err(|e| acknowledgement_error(e, false))?
+                .as_deref()
+                == Some(&digest);
+        if !matching {
+            return Err(DeliveryError::Permanent(corrupt()));
+        }
+        // A previous commit may have succeeded despite losing its response. Exact receipt identity
+        // and an already cleared flag are sufficient; no new collection or observation is created.
+        if !row
+            .try_get::<bool, _>("delivery_pending")
+            .map_err(|e| acknowledgement_error(e, false))?
+        {
+            return tx
+                .rollback()
+                .await
+                .map_err(|e| acknowledgement_error(e, false));
+        }
         sqlx::query("UPDATE mdm_access.collection_runs SET delivery_pending=false WHERE tenant_id=$1::uuid AND id=$2::uuid AND digest=$3 AND delivery_pending")
             .bind(report.scope.tenant().to_string())
             .bind(report.batch.id().as_str())
-            .bind(fingerprint(&report.batch, &report.scope)?)
+            .bind(digest)
             .execute(&mut *tx)
             .await
-            .map_err(db)?;
-        tx.commit().await.map_err(db)
+            .map_err(|e| acknowledgement_error(e,false))?;
+        tx.commit()
+            .await
+            .map_err(|e| acknowledgement_error(e, true))?;
+        #[cfg(feature = "integration")]
+        if self
+            .lose_next_ack
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(DeliveryError::CommitUnknown);
+        }
+        Ok(())
     }
 }
 
