@@ -39,7 +39,7 @@ Brew 使用完整消费的受限静态解析，不执行 Ruby。只接受固定 
 - `POST /uploads/{uploadId}/complete` 完整 hash/长度检查、原子落盘及引用/审计/Outbox 提交。
 - `GET /content/operations/{operationId}` 用 ResourceRead 核实原操作回执。
 
-文件落盘不表示数据库提交或启用。CommitUnknown 保留 operationId 查询/重放，不换键。下载支持单段 Range、ETag、If-Range 和 416；每个新请求重新授权，客户端仍核对完整 hash/长度。上传与 MSIX 嵌套 member 临时文件共享跨进程磁盘预算；超过预算拒绝，不无限解包。
+文件落盘不表示数据库提交或启用。CommitUnknown 保留 operationId 查询/重放，不换键。下载支持单段 Range、ETag、If-Range 和 416；每个新请求重新授权，客户端仍核对完整 hash/长度。上传与辅助解析临时文件共享跨进程磁盘预算；辅助解析预算不足时跳过解析，完整性通过仍可保存、启用和分发。
 
 RSS Bundle 的 manifest 位于 `behavior.manifest`，entries 声明普通成员长度/hash。Windows 固定 install.ps1，macOS 固定 install.sh；卸载同样明确 entry。上传完成时校验原文件完整性，小包可从 ZIP `manifest.json` 辅助识别声明目标；不逐成员解压或计算成员摘要，也不承诺服务端验证了所有安装内容。目录定位与默认元数据读取受资源预算限制；超限或缺少必需文件只使辅助解析失败。终端在使用前负责安全解包、内容验证和执行结果核实。
 

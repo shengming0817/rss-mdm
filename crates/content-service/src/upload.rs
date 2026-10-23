@@ -261,6 +261,7 @@ impl Store {
                         0,
                         piece.content.length,
                         deadline,
+                        capacity.clone(),
                     )
                     .await?;
                 buffer = self.plaintext(&bytes, &artifact, saved.upload.binding.class(), start)?;
@@ -281,6 +282,7 @@ impl Store {
                         0,
                         tail.content.length,
                         deadline,
+                        capacity.clone(),
                     )
                     .await?,
             );
@@ -402,10 +404,8 @@ impl Store {
             let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
             let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone());
             let temporary = tempfile::NamedTempFile::new().map_err(|_| storage())?;
-            let mut spool = Some(tokio::fs::File::from_std(temporary.reopen().map_err(|_| storage())?));
-            let (_, digest) = self.check_pieces_to(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(&mut spool)).await?;
-            tokio::io::AsyncWriteExt::flush(spool.as_mut().ok_or(Error::Storage)?).await.map_err(|_| storage())?;
-            drop(spool);
+            let (_, digest, temporary) = self.check_pieces(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(temporary), lease.clone()).await?;
+            let temporary = temporary.ok_or(Error::Storage)?;
             if digest != artifact.digest().bytes() { return Err(Error::Invariant); }
             let result = crate::installer::observe(temporary, kind, self.config.clone(), self.timer.clone(), budget.operation, lease.clone(), Some(reservation)).await;
             let mut tx = self.tx().await?;
@@ -458,22 +458,14 @@ impl Store {
         let (mut saved, epoch) = self.claim(actor, id, None, now, epoch, budget).await?;
    if saved.upload.offset!=saved.upload.binding.length{return Err(Error::Conflict)}
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
-   let mut temporary = if automatic {
+   let temporary = if automatic {
        match self.reserve_parse(key, epoch, a.length()).await {
            Ok(()) => tempfile::NamedTempFile::new().ok(),
            Err(Error::Conflict) => None,
            Err(error) => return Err(error),
        }
    } else { None };
-   let mut spool = temporary.as_mut().and_then(|f| f.reopen().ok()).map(tokio::fs::File::from_std);
-   let (_,digest)=self.check_pieces_to(&saved.pieces,&a,c,deadline,Some(&mut spool)).await?;
-   if let Some(file) = &mut spool {
-       let remaining = deadline.instant().saturating_duration_since(self.timer.now());
-       let cutoff = deadline.instant() - remaining / 4;
-       if !matches!(tokio::time::timeout_at(cutoff.into(), tokio::io::AsyncWriteExt::flush(file)).await, Ok(Ok(()))) { spool = None; }
-   }
-   if spool.is_none() { temporary = None; }
-   drop(spool);
+   let (_,digest,temporary)=self.check_pieces(&saved.pieces,&a,c,deadline,temporary,lease.clone()).await?;
    if digest!=a.digest().bytes(){return Err(Error::Malformed)}
    self.check_deadline(deadline)?;
    let mut inspections = std::collections::BTreeMap::new();

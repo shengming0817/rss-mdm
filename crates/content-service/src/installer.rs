@@ -447,7 +447,8 @@ fn bundle(
     }
     let mut entry = zip.by_name("manifest.json").map_err(|_| invalid())?;
     let length = entry.size();
-    if length > METADATA
+    if !super::bundle::regular_entry(&entry)
+        || length > METADATA
         || length
             > entry
                 .compressed_size()
@@ -472,7 +473,9 @@ fn bundle(
         "install.sh"
     };
     drop(entry);
-    if !manifest.entries.contains_key(script) || zip.index_for_name(script).is_none() {
+    if !manifest.entries.contains_key(script)
+        || !super::bundle::regular_entry(&zip.by_name(script).map_err(|_| invalid())?)
+    {
         return Err(invalid());
     }
     Ok(InstallerFacts {

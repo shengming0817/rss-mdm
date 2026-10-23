@@ -244,6 +244,9 @@ fn read_xml(
 ) -> Result<Facts, Error> {
     check_time(timer, deadline)?;
     let mut entry = archive.by_name(path).map_err(|_| invalid())?;
+    if !super::bundle::regular_entry(&entry) {
+        return Err(invalid());
+    }
     if !entry.is_file() || entry.size() > 1_048_576 {
         return Err(invalid());
     }

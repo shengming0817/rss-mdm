@@ -4,6 +4,14 @@ use super::*;
 use rss_mdm_resource::{Declaration, Version};
 use rss_mdm_software_service::catalog::{self, ContentPort, VerifiedContent};
 use std::collections::BTreeSet;
+// Check only fixed metadata/entry points; payload members are not inspected.
+pub(super) fn regular_entry<R: Read + Seek>(entry: &zip::read::ZipFile<'_, R>) -> bool {
+    entry.is_file()
+        && !entry.encrypted()
+        && entry
+            .unix_mode()
+            .is_none_or(|mode| matches!(mode & 0o170000, 0 | 0o100000))
+}
 struct PinnedSoftware {
     digest: [u8; 32],
     _files: Vec<crate::reader::Pinned>,

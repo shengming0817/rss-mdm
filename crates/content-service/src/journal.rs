@@ -237,8 +237,7 @@ impl Store {
         let (owner, epoch, capacity) = lease;
         self.check_deadline(deadline)?;
         let id = Uuid::new_v4();
-        let (bytes, content) = tokio::task::spawn_blocking(move || {
-            let _capacity = capacity;
+        let ((bytes, content), _work) = crate::reader::blocking(capacity.clone(), move || {
             let content = Content {
                 length: bytes.len() as u64,
                 sha256: Sha256::digest(&bytes).into(),
@@ -281,7 +280,11 @@ impl Store {
         sqlx::query("INSERT INTO mdm_content.objects(tenant_id,id,owner,content,intent,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'pending')")
    .bind(self.tenant.to_string()).bind(id).bind(owner).bind(encode(&content)?).bind(encode(&intent)?).bind(expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await?;
-        let coordinate = match self.backend.write(&intent, content, bytes, deadline).await {
+        let coordinate = match self
+            .backend
+            .write(&intent, content, bytes, deadline, capacity.clone())
+            .await
+        {
             Ok(coordinate) => coordinate,
             Err(backend::WriteFailure::Unresolved(error)) => return Err(error),
             Err(backend::WriteFailure::NotWritten(error)) => {
@@ -308,7 +311,7 @@ impl Store {
         .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?;
         commit(tx).await?;
         self.backend
-            .read(&coordinate, content, 0, content.length, deadline)
+            .read(&coordinate, content, 0, content.length, deadline, capacity)
             .await?;
         let mut tx = self.tx().await?;
         sqlx::query("UPDATE mdm_content.objects SET state='ready' WHERE tenant_id=$1::uuid AND id=$2 AND state='pending'").bind(self.tenant.to_string()).bind(id).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;

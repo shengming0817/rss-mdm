@@ -147,7 +147,7 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
     let intent = store.backend.intent(uuid::Uuid::new_v4(), content).unwrap();
     let coordinate = store
         .backend
-        .write(&intent, content, b"abc".to_vec(), d)
+        .write(&intent, content, b"abc".to_vec(), d, ())
         .await
         .unwrap();
     assert_eq!(
@@ -227,7 +227,7 @@ async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
         assert!(matches!(
             store
                 .backend
-                .write(&intent, content, b"abc".to_vec(), deadline)
+                .write(&intent, content, b"abc".to_vec(), deadline, ())
                 .await,
             Err(backend::WriteFailure::Unresolved(Error::Conflict))
         ));
@@ -269,7 +269,7 @@ async fn volume_range_validates_consumed_bytes_during_replacement_and_in_place_w
         let intent = store.backend.intent(id, content).unwrap();
         let coordinate = store
             .backend
-            .write(&intent, content, b"abc".to_vec(), deadline)
+            .write(&intent, content, b"abc".to_vec(), deadline, ())
             .await
             .unwrap();
         let timer = Arc::new(MutationClock {
@@ -283,7 +283,7 @@ async fn volume_range_validates_consumed_bytes_during_replacement_and_in_place_w
             timer,
         };
         // Clock cutoff is checked after opening the exact file, before consuming it.
-        let result = backend.read(&coordinate, content, 1, 3, deadline).await;
+        let result = backend.read(&coordinate, content, 1, 3, deadline, ()).await;
         if replace {
             assert_eq!(result.unwrap(), b"bc");
         } else {
@@ -435,14 +435,30 @@ fn automatic_inspection_has_a_one_gib_boundary() {
 #[test]
 fn bundle_observations_do_not_validate_payload_bytes() {
     use std::io::{Cursor, Write};
-    for count in [4095, 4096, 4097] {
+    for (count, link) in [
+        (4095, None),
+        (4096, None),
+        (4097, None),
+        (3, Some("manifest.json")),
+        (3, Some("install.ps1")),
+    ] {
         let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
-        zip.start_file("manifest.json", options).unwrap();
         let digest = rss_mdm_resource::Digest::of(b"original").bytes();
-        zip.write_all(&serde_json::to_vec(&serde_json::json!({"schema":1,"platform":"windows","architecture":"x86_64","entries":{"install.ps1":{"length":8,"sha256":digest},"payload.bin":{"length":8,"sha256":digest}}})).unwrap()).unwrap();
-        zip.start_file("install.ps1", options).unwrap();
-        zip.write_all(b"changed").unwrap();
+        let manifest = serde_json::to_string(&serde_json::json!({"schema":1,"platform":"windows","architecture":"x86_64","entries":{"install.ps1":{"length":8,"sha256":digest},"payload.bin":{"length":8,"sha256":digest}}})).unwrap();
+        if link == Some("manifest.json") {
+            zip.add_symlink("manifest.json", manifest, options).unwrap();
+        } else {
+            zip.start_file("manifest.json", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+        }
+        if link == Some("install.ps1") {
+            zip.add_symlink("install.ps1", "payload.bin", options)
+                .unwrap();
+        } else {
+            zip.start_file("install.ps1", options).unwrap();
+            zip.write_all(b"changed").unwrap();
+        }
         zip.start_file("payload.bin", options).unwrap();
         zip.write_all(b"changed").unwrap();
         for index in 3..count {
@@ -460,7 +476,7 @@ fn bundle_observations_do_not_validate_payload_bytes() {
             &RuntimeTimer,
             deadline,
         );
-        if count <= 4096 {
+        if count <= 4096 && link.is_none() {
             assert_eq!(
                 result.unwrap().format,
                 rss_mdm_resource::SoftwareFormat::Bundle
