@@ -1,4 +1,5 @@
-//! Native performance publication and endpoint capability negotiation use the real product seam.
+//! Native performance publication and endpoint capability negotiation use anyhow::Context;
+use the real product seam.
 use super::*;
 
 pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
