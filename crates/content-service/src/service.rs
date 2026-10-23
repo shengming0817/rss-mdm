@@ -361,11 +361,7 @@ pub async fn record(
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
     let verified = budget
-        .work(store(app)?.verify_class(
-            &upload.binding.artifact()?,
-            upload.binding.class(),
-            budget.operation,
-        ))
+        .work(store(app)?.pin_ready(&upload.binding.artifact()?, upload.binding.class()))
         .await?;
     let fresh = session.refresh(app, budget).await?;
     let proof = &fresh;

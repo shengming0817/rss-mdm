@@ -9,14 +9,19 @@ pub struct Pinned {
     store: Store,
     pin: Uuid,
     pub(super) manifest: Manifest,
+    artifact: Artifact,
 }
 impl Pinned {
-    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest) -> Self {
+    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest, artifact: Artifact) -> Self {
         Self {
             store,
             pin,
             manifest,
+            artifact,
         }
+    }
+    pub fn matches(&self, artifact: &Artifact) -> bool {
+        self.artifact.length() == artifact.length() && self.artifact.digest() == artifact.digest()
     }
 }
 impl Drop for Pinned {
@@ -82,6 +87,7 @@ impl Store {
             store: self.clone(),
             pin,
             manifest,
+            artifact: a.clone(),
         })
     }
     pub async fn pin_materials(

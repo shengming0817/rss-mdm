@@ -388,9 +388,9 @@ impl Store {
                 .map_err(|_| Error::Conflict)?,
         ));
         budget.work(async {
-            self.claim_parse(actor, id, now, epoch, budget).await?;
-            let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, artifact.length()).await?;
-            let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest);
+            self.claim_parse(actor, id, now, epoch, budget, artifact.length()).await?;
+            let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
+            let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone());
             let temporary = tempfile::NamedTempFile::new().map_err(|_| storage())?;
             let mut spool = Some(tokio::fs::File::from_std(temporary.reopen().map_err(|_| storage())?));
             let (_, digest) = self.check_pieces_to(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(&mut spool)).await?;

@@ -196,11 +196,13 @@ impl Store {
         now: i64,
         epoch: Uuid,
         budget: UploadBudget,
+        length: u64,
     ) -> Result<(), Error> {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
-        let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND held_until<=$5")
-            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
+        self.quota(&mut tx, length).await?;
+        let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,reserved=$6,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND held_until<=$5")
+            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).bind(length as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
         if changed != 1 {
             return Err(Error::Conflict);
         }
