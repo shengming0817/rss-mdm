@@ -176,8 +176,8 @@ pub(crate) async fn write(
     )
     .map_err(|_| Error::Audit)?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-    let control = budget.control();
-    let attempt=audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Integrity)?,&control,(p,id,action,digest,mutation,audit,audit_store,fact),|context,tx|Box::pin(async move{
+    let attempt=audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Integrity)?,
+            &budget.source_control(),(p,id,action,digest,mutation,audit,audit_store,fact),|context,tx|Box::pin(async move{
         let (receipt,replayed)=tx.with_connection_context(context,|context,c|Box::pin(async move{
             let (p,id,action,digest,mutation,_,_,_)=context;
             p.check_live()?;
@@ -201,7 +201,7 @@ pub(crate) async fn write(
     attempt.fold(
         |r| {
             audit.mark_committed();
-            Ok(r.into_value())
+            Ok(r)
         },
         |e| Err(tx_error(e)),
         |e| {
@@ -216,11 +216,11 @@ pub(crate) async fn write(
         |e| Err(tx_error(e)),
     )
 }
-fn tx_error(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn tx_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(_) => Error::Audit,
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(_) => Error::Audit,
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 async fn generation(c: &mut PgConnection, tenant: &str, expected: i64) -> Result<(), Error> {

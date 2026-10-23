@@ -74,7 +74,7 @@ pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<
         access.registration(),
         case_tenant().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     crate::inventory_runtime::test_support::report(

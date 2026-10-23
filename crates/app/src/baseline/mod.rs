@@ -258,7 +258,7 @@ async fn execute_owned(
                 ),
                 authorization: state.access.authorization_store(),
                 runtime: state.flow.runtime.clone(),
-                audit_store: state.audit_store.clone(),
+                audit_store: state.flow.audit_store.clone(),
                 tenant: state.identity.tenant,
                 content: state.content_writer.clone(),
                 clock: std::sync::Arc::new(crate::clock::ContentClock(state.clock.clone())),
@@ -327,7 +327,7 @@ async fn execute_owned(
             let policies = rss_mdm_flow_service::planning::policies::Policies::new(
                 &state.flow.cursor_key,
                 state.flow.runtime.clone(),
-                state.audit_store.clone(),
+                state.flow.audit_store.clone(),
                 state.identity.tenant,
                 state.flow.planning.policy_store.clone(),
                 state.inputs.clone(),
@@ -385,7 +385,7 @@ pub(crate) async fn reserve(
         .write(
             rss_request_context::TenantId::parse(&tenant.to_string())
                 .map_err(|_| Error::Malformed)?,
-            &budget.control(),
+            &budget.source_control(),
             (store, authority, fact),
             |(store, authority, fact), tx| {
                 Box::pin(async move {
@@ -395,7 +395,7 @@ pub(crate) async fn reserve(
                             Box::pin(async move {
                                 reserve_on(c, &authority)
                                     .await
-                                    .map_err(|_| sqlx::Error::Protocol("baseline intent".into()))
+                                    .map_err(|_| rss_mdm_audit_integration::Error::Receipt)
                             })
                         })
                         .await?;

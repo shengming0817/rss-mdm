@@ -674,7 +674,10 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         writes == vec![CORTANA.to_owned()] && read.1["commandStatus"] == "applied",
         "original native result: writes={writes:?}, operation={read:?}"
     );
-    crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model")?;
+    tokio::task::spawn_blocking(move || {
+        crate::test_support::inventory::seed_source(alone, "mdm", "mdm.windows", "model")
+    })
+    .await??;
     planning_http::await_ingress().await?;
     let page = client
         .browser
@@ -731,11 +734,14 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     );
     tx.rollback().await?;
     crate::test_support::runtime::stop_worker(automation).await?;
-    crate::device::t2::associations::seed(
-        crate::test_support::case::name("native-health-duplicate"),
-        "agent",
-        "2714-NATIVE",
-    )?;
+    tokio::task::spawn_blocking(|| {
+        crate::device::t2::associations::seed(
+            crate::test_support::case::name("native-health-duplicate"),
+            "agent",
+            "2714-NATIVE",
+        )
+    })
+    .await??;
     let mut tx = pg.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())

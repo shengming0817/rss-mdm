@@ -147,7 +147,7 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
     f.admin.operation = Some(operation);
     f.authority
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
     ensure!(
         f.call(
             Method::POST,
@@ -637,7 +637,7 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
     let config: Config = serde_json::from_value(f.authority.base.clone())?;
     let peer = Arc::new(Archive::new(
         peer_access.archive_pool(),
-        peer_access.audit_store(&config.audit).await?,
+        peer_access.audit_store_fixture(&config.audit).await?,
         f.clock.clone(),
     ));
     let peer_router = Fixture::routes(&f.authority, peer)?;

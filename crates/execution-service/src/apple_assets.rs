@@ -108,11 +108,9 @@ impl ExecutionService {
         reader: Box<dyn channels::AppleAssetRead>,
         audit: &RequestAudit,
     ) -> std::result::Result<(AssetBinding, rss_mdm_content_service::Verified), Error> {
-        crate::transaction::run(
-            &self.audit_store,
+        crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            audit,
             (self, p, operation, audit, Some(reader)),
             |ctx, tx| {
                 Box::pin(async move {
@@ -184,10 +182,7 @@ impl ExecutionService {
                             rss_mdm_content_service::StorageClass::NativeConfiguration,
                         )
                         .await?;
-                    service
-                        .audit_store
-                        .append_request_in(tx, audit, 200, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok((selected, verified))
                 })
             },

@@ -1,9 +1,9 @@
 use crate::audit_test_support::audit_records;
 use crate::test_support::agent_execution::*;
 use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
-fn business_event(operation: Uuid) -> Result<String> {
+async fn business_event(operation: Uuid) -> Result<String> {
     let operation = operation.to_string();
-    let records = audit_records()?;
+    let records = audit_records().await?;
     let matching: Vec<_> = records
         .iter()
         .filter(|record| {
@@ -46,9 +46,9 @@ async fn policy(
     );
     let result = post(author, router, &path, body.clone()).await?;
     ensure!(result["id"] == id.to_string() && result["revision"] == 1);
-    let event = business_event(operation)?;
+    let event = business_event(operation).await?;
     ensure!(result == post(author, router, &path, body).await?);
-    ensure!(business_event(operation)? == event);
+    ensure!(business_event(operation).await? == event);
     ensure!(
         run_count(id)? == before,
         "publication must not fan out runs"

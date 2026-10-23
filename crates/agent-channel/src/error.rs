@@ -116,6 +116,10 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 rss_mdm_inventory_service::Failure::AuditAdmission => Failure::AuditAdmission,
                 rss_mdm_inventory_service::Failure::AuditIsolation => Failure::AuditIsolation,
                 rss_mdm_inventory_service::Failure::AuditContract => Failure::AuditContract,
+                rss_mdm_inventory_service::Failure::AuditBackpressure => Failure::AuditBackpressure,
+                rss_mdm_inventory_service::Failure::AuditReserveExhausted => {
+                    Failure::AuditReserveExhausted
+                }
                 other => Failure::Inventory(other),
             }),
         }
@@ -143,6 +147,8 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
             A::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
             A::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
             A::AuditContract => Self::Unavailable(Failure::AuditContract),
+            A::AuditBackpressure => Self::Unavailable(Failure::AuditBackpressure),
+            A::AuditReserveExhausted => Self::Unavailable(Failure::AuditReserveExhausted),
         }
     }
 }
@@ -163,6 +169,8 @@ impl From<rss_mdm_execution_service::Error> for Error {
                 rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
                 rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
                 rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+                rss_mdm_execution_service::Failure::AuditBackpressure => Failure::AuditBackpressure,
+                rss_mdm_execution_service::Failure::AuditReserveExhausted => Failure::AuditReserveExhausted,
                 other => Failure::Execution(other),
             }),
         }
@@ -184,6 +192,8 @@ impl From<Error> for rss_mdm_execution_service::channels::Rejection {
             Error::Unavailable(Failure::AuditAdmission) => R::AuditAdmission,
             Error::Unavailable(Failure::AuditIsolation) => R::AuditIsolation,
             Error::Unavailable(Failure::AuditContract) => R::AuditContract,
+            Error::Unavailable(Failure::AuditBackpressure) => R::AuditBackpressure,
+            Error::Unavailable(Failure::AuditReserveExhausted) => R::AuditReserveExhausted,
             Error::Unavailable(Failure::Protocol) => R::Protocol,
             _ => R::Storage,
         }
@@ -227,6 +237,8 @@ impl From<rss_mdm_execution_service::channels::Rejection> for Error {
             R::Audit => Self::Unavailable(Failure::Audit),
             R::AuditIntegrity => Self::Unavailable(Failure::AuditIntegrity),
             R::AuditContract => Self::Unavailable(Failure::AuditContract),
+            R::AuditBackpressure => Self::Unavailable(Failure::AuditBackpressure),
+            R::AuditReserveExhausted => Self::Unavailable(Failure::AuditReserveExhausted),
             R::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
             R::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
         }

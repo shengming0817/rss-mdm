@@ -61,8 +61,8 @@ pub(crate) async fn save(
 
 pub(crate) fn settle<R>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<R>,
-        rss_audit_postgres::TransactionError<Error>,
+        R,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
 ) -> Result<R, Error> {
@@ -74,7 +74,7 @@ pub(crate) fn settle<R>(
             if audit.snapshot().write_outcome == rss_mdm_audit_integration::WriteOutcome::Unknown {
                 audit.mark_committed();
             }
-            Ok(value.into_value())
+            Ok(value)
         },
         |error| Err(transaction_error(error)),
         |error| {
@@ -122,12 +122,10 @@ impl<'a> Actor<'a> {
 
 use rss_mdm_audit_integration::RequestAudit;
 
-fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn transaction_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(error) => error,
-        rss_audit_postgres::TransactionError::Audit(error) => {
-            rss_mdm_audit_integration::Error::from(error).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(error) => error,
+        rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }

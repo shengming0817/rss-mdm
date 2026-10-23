@@ -182,7 +182,7 @@ pub(crate) async fn seed_profile(
     let access = database(base).await?;
     let result = async {
         let audit = access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
         let pki = config
             .load(
@@ -292,7 +292,8 @@ pub(crate) async fn enroll_profile(
     let pki = config
         .load(
             base["identity"]["instance_id"].as_str().unwrap(),
-            db.audit_store(&crate::config::AuditConfig::Plain).await?,
+            db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+                .await?,
             Arc::new(crate::clock::SystemClock),
             crate::device_pki::providers(&serde_json::from_value::<
                 Vec<crate::device_pki::Provider>,
@@ -541,7 +542,7 @@ pub(crate) async fn agent_runtime(
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .await?)

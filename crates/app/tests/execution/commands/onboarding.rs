@@ -363,7 +363,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         &client.router,
         &bootstrap_peer,
         &input,
-        Some(rss_audit_postgres::PgFault::BeforeCommitPending),
+        Some(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending),
     )
     .await?;
     ensure!(
@@ -375,7 +375,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         &client.router,
         &bootstrap_peer,
         &input,
-        Some(rss_audit_postgres::PgFault::CommitUnknownAfterAck),
+        Some(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck),
     )
     .await?;
     ensure!(
@@ -520,6 +520,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "expected an unfinished native channel collection"
     );
     host.replace(&peer).await?;
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let records = crate::audit_test_support::decode_hex(&pg(&format!(
         "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}'",
         case_tenant()
@@ -1329,27 +1334,46 @@ async fn msix_hosted_install_is_frozen_and_provisioning_is_not_agent_activation(
         "{xml}"
     );
     ensure!(package_status(&client.router, operation).await? == StatusCode::OK);
-    post(&peer, &reply(&initial, &execution, false)).await?;
-    let (initial, query) = begin(&peer, 1101).await?;
-    post(&peer, &reply(&initial, &query, true)).await?;
-    let mut state = client
-        .call(Method::GET, &format!("/{operation}"), None)
-        .await?;
-    for _ in 0..100 {
-        if state.1["agentInstallation"]["installation"] == "provisioned" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        state = client
-            .call(Method::GET, &format!("/{operation}"), None)
-            .await?;
-    }
+    // The execute acknowledgement can already carry the next correlated query.
+    // Drive those real responses until installation evidence is visible; one new
+    // session is not proof that this operation's inventory query was delivered.
+    let mut response = post(&peer, &reply(&initial, &execution, false)).await?;
     ensure!(
-        state.0 == StatusCode::OK && state.1["agentInstallation"]["installation"] == "provisioned",
-        "{state:?}"
+        hosted(&response.commands).is_none(),
+        "provisioning dispatched a second installer"
     );
+    let mut initial = initial;
+    let mut session = 1101;
+    let state = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if response
+                .commands
+                .iter()
+                .any(|c| !matches!(c, s::Command::Status(_)))
+            {
+                response = post(&peer, &reply(&initial, &response, true)).await?;
+            } else {
+                (initial, response) = begin(&peer, session).await?;
+                session += 1;
+            }
+            ensure!(
+                hosted(&response.commands).is_none(),
+                "provisioning dispatched a second installer"
+            );
+            let state = client
+                .call(Method::GET, &format!("/{operation}"), None)
+                .await?;
+            ensure!(state.0 == StatusCode::OK, "{state:?}");
+            if state.1["agentInstallation"]["installation"] == "provisioned" {
+                return Ok::<_, anyhow::Error>(state);
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .context("correlated MSIX provisioning evidence")??;
     ensure!(state.1["agentInstallation"]["agentRegistration"].is_null());
-    let (initial, next) = begin(&peer, 1102).await?;
+    let (initial, next) = begin(&peer, session).await?;
     ensure!(
         hosted(&next.commands).is_none(),
         "provisioning must not run a second installer"

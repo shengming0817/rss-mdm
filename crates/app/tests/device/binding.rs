@@ -18,14 +18,14 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
         access.registration(),
         case_a().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let service_b = DeviceService::new(
         access.registration(),
         case_b().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
@@ -169,7 +169,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     let release = async {
         let observed = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)) AND business.query LIKE '%pg_advisory_xact_lock%' AND audit.query LIKE '%rss_audit.reserve%')").fetch_one(&mut *hold).await?;
+                let waiting: bool = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*)=2 FROM blocked").fetch_one(&mut *hold).await?;
                 if waiting { return Ok::<_, sqlx::Error>(()); }
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -232,14 +232,14 @@ async fn credential_race(
     let release = async {
         tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let (business,audit):(i64,i64)=sqlx::query_as("SELECT count(*) FILTER(WHERE query LIKE 'SELECT id::text AS id FROM mdm_access.registrations%'),count(*) FILTER(WHERE query LIKE '%rss_audit.reserve%') FROM pg_stat_activity WHERE usename='mdm_access' AND wait_event_type='Lock'")
+                let waiting:bool=sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*)=2 FROM blocked")
                     .fetch_one(&mut *hold).await?;
-                if business == 1 && audit == 1 { return Ok::<_, sqlx::Error>(()); }
+                if waiting { return Ok::<_, sqlx::Error>(()); }
                 // Clear the transaction-local statistics snapshot before the next poll.
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.context("Audit head must serialize contenders before their business locks")??;
+        }).await.context("credential contenders must overlap at the held business locks")??;
         hold.commit().await?;
         Ok::<_, anyhow::Error>(())
     };

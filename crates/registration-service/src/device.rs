@@ -294,8 +294,10 @@ impl DeviceService {
         };
         let store = &self.audit_store;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-        let control = budget.control();
-        if let Err(error) = store.settle_request(audit, status, outcome, &control).await {
+        if let Err(error) = store
+            .settle_request(audit, status, outcome, &budget.source_control())
+            .await
+        {
             audit.finalize(Some(FailureReason::Persistent));
             return Err(error.into());
         }

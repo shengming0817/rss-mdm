@@ -63,7 +63,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         access.registration(),
         case_a().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     ));
     let admin = admin(case_a(), "admin-a").await?;
@@ -94,7 +94,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let pending = crate::collection::store::Delivery::new(
         access.inventory(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .pending_reports(case_a())
@@ -115,7 +115,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let reports = crate::collection::store::Delivery::new(
         access.inventory(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .pending_reports(case_a())
@@ -157,7 +157,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
                 crate::collection::store::Delivery::new(
                     access.inventory(),
                     access
-                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?
                 )
                 .pending_reports(case_a())
@@ -199,7 +199,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         !crate::collection::store::Delivery::new(
             access.inventory(),
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?
         )
         .pending_reports(case_a())
@@ -446,7 +446,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
 async fn empty_discovery_has_no_audit_head() -> Result<()> {
     let database = Arc::new(Database::connect(options("mdm_access")?).await?);
     let audit = database
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     let tenant = Uuid::new_v4().to_string();
     let delivery = crate::collection::store::Delivery::new(database.inventory(), audit);

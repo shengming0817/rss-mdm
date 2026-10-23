@@ -10,21 +10,21 @@ use rss_transactional_messaging_postgres::{PgRuntime, PgTransaction};
 use std::{future::Future, pin::Pin, sync::Arc};
 pub type AuditFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), rss_mdm_audit_integration::Error>> + Send + 'a>>;
-/// Host audit participates in the exact borrowed transaction; never an asynchronous notification.
+/// Durable audit source production participates in the exact borrowed business transaction.
 pub trait AuditPort: Send + Sync {
-    fn lock_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a>;
+    fn bind_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a>;
+    fn prepare_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        request: &'a RequestAudit,
+        business: &'a [rss_transactional_messaging::message::PartitionIdentity],
+    ) -> AuditFuture<'a>;
+
     fn append_in<'a>(
         &'a self,
         tx: &'a mut PgTransaction<'_>,
         fact: &'a Fact,
         replayed: bool,
-    ) -> AuditFuture<'a>;
-    fn append_request_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        request: &'a RequestAudit,
-        status: u16,
-        result: &'a str,
     ) -> AuditFuture<'a>;
 }
 /// Resolves only a host-approved exact credential binding, without exposing credential files.
@@ -79,8 +79,17 @@ pub mod catalog;
 pub mod imports;
 
 impl AuditPort for rss_mdm_audit_integration::AuditStore {
-    fn lock_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a> {
-        Box::pin(async move { self.lock_in(tx).await })
+    fn prepare_in<'a>(
+        &'a self,
+        tx: &'a mut PgTransaction<'_>,
+        request: &'a RequestAudit,
+        business: &'a [rss_transactional_messaging::message::PartitionIdentity],
+    ) -> AuditFuture<'a> {
+        Box::pin(async move { self.prepare_in(tx, request, business).await })
+    }
+
+    fn bind_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a> {
+        Box::pin(async move { self.bind_in(tx).await })
     }
     fn append_in<'a>(
         &'a self,
@@ -89,15 +98,6 @@ impl AuditPort for rss_mdm_audit_integration::AuditStore {
         replayed: bool,
     ) -> AuditFuture<'a> {
         Box::pin(async move { self.append_in(tx, fact, replayed).await })
-    }
-    fn append_request_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        request: &'a RequestAudit,
-        status: u16,
-        result: &'a str,
-    ) -> AuditFuture<'a> {
-        Box::pin(async move { self.append_request_in(tx, request, status, result).await })
     }
 }
 

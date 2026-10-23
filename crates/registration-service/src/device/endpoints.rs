@@ -33,6 +33,32 @@ pub async fn current_in(
     })
     .transpose()
 }
+/// Bounded set projection with the same active primary and credential predicates.
+pub async fn current_page_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    devices: &[String],
+) -> Result<Vec<PrimaryRegistration>, Error> {
+    if devices.len() > 1000 {
+        return Err(Error::Malformed);
+    }
+    let rows=sqlx::query("SELECT r.device,r.channel,r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.device=ANY($2) AND r.purpose='primary' AND r.state='active' AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active') ORDER BY r.device,r.channel")
+        .bind(tenant).bind(devices).fetch_all(c).await.map_err(db)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(PrimaryRegistration {
+                device: row.try_get("device").map_err(db)?,
+                channel: match row.try_get::<&str, _>("channel").map_err(db)? {
+                    "mdm" => Channel::Mdm,
+                    "agent" => Channel::Agent,
+                    _ => return Err(Error::Corrupt),
+                },
+                registration_id: row.try_get("id").map_err(db)?,
+                generation: row.try_get("generation").map_err(db)?,
+            })
+        })
+        .collect()
+}
 /// Borrow the same lifecycle lock as bind/revoke; callers order multiple endpoints lexically.
 pub async fn lock_in(
     c: &mut sqlx::PgConnection,

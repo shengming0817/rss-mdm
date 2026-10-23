@@ -19,19 +19,17 @@ fn error(e: crate::Error) -> Error {
         _ => Error::Storage,
     }
 }
-fn transaction(e: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn transaction(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match e {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            rss_mdm_audit_integration::Error::from(e).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => e.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 fn settle<T>(
     value: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<T>,
-        rss_audit_postgres::TransactionError<Error>,
+        T,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
     write: bool,
@@ -41,7 +39,7 @@ fn settle<T>(
             if write {
                 audit.mark_committed();
             }
-            Ok(v.into_value())
+            Ok(v)
         },
         |e| Err(transaction(e)),
         |e| {
@@ -146,7 +144,7 @@ impl Authority {
         audit.operation(id, "smtp_qualification");
         audit.require_request_settlement();
         let budget = AuditBudget::new(Duration::from_secs(8));
-        let result=self.audit.write(self.tenant,&budget.control(),(self,p,audit,id,input),|ctx,tx|Box::pin(async move {
+        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,id,input),|ctx,tx|Box::pin(async move {
             let (service,p,audit,id,input)=ctx;
             let mut context=(*service,*p,*id,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,id,input),c|Box::pin(async move {

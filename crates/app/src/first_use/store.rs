@@ -133,7 +133,7 @@ pub(super) async fn update(
     observed: Option<&Progress>,
 ) -> Result<Receipt, Error> {
     let budget = AuditBudget::new(Duration::from_secs(8));
-    let attempt=store.write(tenant(p)?,&budget.control(),(store,p,audit,id,input,fingerprint,observed),|ctx,tx|Box::pin(async move {
+    let attempt=store.write(tenant(p)?,&budget.source_control(),(store,p,audit,id,input,fingerprint,observed),|ctx,tx|Box::pin(async move {
         let (store,p,audit,id,input,fingerprint,observed)=*ctx;
         let mut sql=(p,id,input,fingerprint,observed);
         let (receipt,replayed)=tx.with_connection_context(&mut sql,|(p,id,input,fingerprint,observed),c|Box::pin(async move {
@@ -167,19 +167,17 @@ pub(super) async fn update(
     })).await;
     settle(attempt, audit, true)
 }
-fn transaction(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn transaction(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(error) => error,
-        rss_audit_postgres::TransactionError::Audit(error) => {
-            rss_mdm_audit_integration::Error::from(error).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(error) => error,
+        rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<T>,
-        rss_audit_postgres::TransactionError<Error>,
+        T,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
     write: bool,
@@ -189,7 +187,7 @@ fn settle<T>(
             if write {
                 audit.mark_committed();
             }
-            Ok(value.into_value())
+            Ok(value)
         },
         |e| Err(transaction(e)),
         |e| {

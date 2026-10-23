@@ -73,7 +73,7 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
         );
     }
     assert_eq!(served.artifacts.len(), 1);
-    assert_publication_audit(&p, &input.record, "applied");
+    assert_publication_audit(&p, &input.record, "applied").await;
     assert!(
         service
             .reconciliation_page("", 32, cutoff())
@@ -224,8 +224,9 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
     };
     let original_receipt = persisted_receipt();
     assert!(!original_receipt.is_empty());
-    let publish_audits = || {
+    let publish_audits = || async {
         audit_records()
+            .await
             .iter()
             .filter(|r| {
                 r.event().facts().action().as_str() == "software_publish"
@@ -233,7 +234,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             })
             .count()
     };
-    assert_eq!(publish_audits(), 1);
+    assert_eq!(publish_audits().await, 1);
     let after = counts();
     assert_eq!(
         service
@@ -251,7 +252,7 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
         next
     );
     assert_eq!(persisted_receipt(), original_receipt);
-    assert_eq!(publish_audits(), 1);
+    assert_eq!(publish_audits().await, 1);
     assert_eq!(counts(), after);
     struct Revoked;
     impl PublishAccess for Revoked {

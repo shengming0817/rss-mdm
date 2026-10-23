@@ -25,7 +25,7 @@ impl Associations {
             .audit
             .write(
                 self.tenant,
-                &budget.control(),
+                &budget.source_control(),
                 (self, proof, request, &mut audits),
                 |(service, proof, request, audits), tx| {
                     Box::pin(async move {
@@ -36,6 +36,12 @@ impl Associations {
                         let prepared = tx
                             .with_connection_context(proof, |proof, c| {
                                 Box::pin(async move {
+                                    rss_mdm_inventory_postgres::lock_watermark_in(
+                                        c,
+                                        TenantId::parse(proof.tenant_id())
+                                            .map_err(|_| Error::Malformed)?,
+                                    )
+                                    .await?;
                                     let snapshot = read::authorization(c, proof).await?;
                                     let world = identity::world(
                                         c,
@@ -72,7 +78,7 @@ impl Associations {
                                             change,
                                             audit,
                                             digest,
-                                            Some((&prepared.0, &prepared.1)),
+                                            (&prepared.0, &prepared.1),
                                         ))
                                     },
                                 )
@@ -96,7 +102,7 @@ impl Associations {
                 for audit in &audits {
                     audit.mark_committed();
                 }
-                Ok(v.into_value())
+                Ok(v)
             },
             |e| Err(model::transaction_error(e)),
             |e| {

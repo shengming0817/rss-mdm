@@ -92,7 +92,7 @@ pub(crate) async fn request(
     audit.operation(key, "enrollment_create");
     let receipt = crate::enrollment::store::create_enrollment(
         store
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?
             .as_ref(),
         admin.enrollment(device)?,

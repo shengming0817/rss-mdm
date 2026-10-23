@@ -231,7 +231,7 @@ impl Fixture {
         let setup_guard = super::software::content_setup_guard().await?;
         let access = database(&base).await?;
         let audit = access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
         let (router, execution, _, planning, application_resources) = crate::api::application_fixture(
             serde_json::from_value(base.clone())?,

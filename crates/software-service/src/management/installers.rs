@@ -153,6 +153,7 @@ pub async fn save<C: ManagementContentPort>(
             |ctx, tx| {
                 Box::pin(async move {
                     let (app, p, audit, input, hash, value) = ctx;
+                    app.audit.prepare_in(tx, audit, &[]).await?;
                     let snapshot = transaction::current(tx, p).await?;
                     snapshot.require(p, Permission::SoftwareWrite, None)?;
                     snapshot.require(p, Permission::ResourceWrite, None)?;

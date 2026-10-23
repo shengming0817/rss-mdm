@@ -19,6 +19,24 @@ pub async fn retire(
     state: &str,
     participant: &dyn Retirement,
 ) -> Result<(), Error> {
+    // Close the complete parent/child set under its endpoint fence before invoking participants.
+    let device: String = sqlx::query_scalar(
+        "SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(tenant)
+    .bind(registration)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(crate::database::db)?;
+    lock_device_in(tx, tenant, &device).await?;
+    sqlx::query(
+        "SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(registration)
+    .execute(&mut *tx)
+    .await
+    .map_err(crate::database::db)?;
     // The caller owns the device/channel lock; parent before children is the common order.
     let children = sqlx::query_scalar::<_, uuid::Uuid>("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND parent_id=$2 AND state='active' ORDER BY id FOR UPDATE")
         .bind(tenant).bind(registration).fetch_all(&mut *tx).await.map_err(crate::database::db)?;
@@ -39,6 +57,13 @@ pub async fn lock_device_in(
     tenant: &str,
     device: &str,
 ) -> Result<(), Error> {
+    // Registration/credential history publishes through asset_clock in this same transaction.
+    // Acquire that existing publication fence before the endpoint lifecycle fence.
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(tenant)
+        .execute(&mut *c)
+        .await
+        .map_err(crate::database::db)?;
     let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2790))")
         .bind(key)

@@ -33,6 +33,8 @@ pub fn failure(e: crate::transaction::Fault) -> InventoryError {
                 U::AuditAdmission => InventoryFailure::AuditAdmission,
                 U::AuditIsolation => InventoryFailure::AuditIsolation,
                 U::AuditContract => InventoryFailure::AuditContract,
+                U::AuditBackpressure => InventoryFailure::AuditBackpressure,
+                U::AuditReserveExhausted => InventoryFailure::AuditReserveExhausted,
                 U::RequestDeadline => InventoryFailure::RequestDeadline,
                 _ => InventoryFailure::FlowStorage,
             }),

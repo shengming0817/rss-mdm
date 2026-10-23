@@ -117,7 +117,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         let login = json!({"login":case::login("admin"),"password":PASSWORD});
         ensure!(call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?.0 == StatusCode::FORBIDDEN);
 
-        ensure!(audit_count(|r| r.action()=="authentication" && r.status()==403 && r.result()=="denied")? > 0);
+        ensure!(audit_count(|r| r.action()=="authentication" && r.status()==403 && r.result()=="denied").await? > 0);
         let id = Uuid::new_v4();
         let metadata = json!({"name":"automation","enabled":true,"expiresAt":null,"grants":[{"operation":"inventory_read","scope":{"kind":"all_devices"}}]});
         let operation = Uuid::new_v4();
@@ -216,7 +216,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         let scoped = json!({"name":"scoped","enabled":true,"expiresAt":null,"grants":[{"operation":"inventory_read","scope":{"kind":"device","id":case::name("device-1")}}]});
         let id = Uuid::new_v4();
         let create = json!({"id":id,"operationId":Uuid::new_v4(),"metadata":scoped});
-        audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+        audit_store.inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
         let (status, unknown) = admin.call(&router, Method::POST, "/api/v1/api-keys", Some(create.clone())).await?;
         ensure!(status == StatusCode::SERVICE_UNAVAILABLE && unknown.get("secret").is_none());
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.api_keys WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim() == "1");
@@ -238,7 +238,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         let failed_id = Uuid::new_v4();
         pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
         let failed = admin.call(&router, Method::POST, "/api/v1/api-keys", Some(json!({"id":failed_id,"operationId":Uuid::new_v4(),"metadata":scoped}))).await;
-        pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access")?;
+        pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
         let (status, result) = failed?;
         ensure!(!status.is_success() && result.get("secret").is_none());
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.api_keys WHERE tenant_id='{}' AND id='{failed_id}'",case_tenant()))?.trim() == "0");
@@ -307,7 +307,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         ensure!(call(&router, Method::POST, &resource_path, &[("x-api-key",secret)], Some(body)).await? == written);
         ensure!(call(&router, Method::GET, &resource_path, &[("x-api-key",secret)], None).await?.0 == StatusCode::OK);
         let actor = format!("api-key:{id}");
-        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.decoded.event().facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success")? > 0);
+        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.decoded.event().facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success").await? > 0);
         let enrollment_op = Uuid::new_v4().to_string();
         let enrollment = call(&router, Method::POST, "/api/v1/enrollments", &[("x-api-key",secret),("idempotency-key",&enrollment_op)], Some(json!({"deviceId":case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
         ensure!(enrollment.0 == StatusCode::OK, "managed enrollment: {}", enrollment.0);
@@ -380,7 +380,7 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         let rotated=rotated?;
         ensure!(response.status()==StatusCode::UNAUTHORIZED,"rotated upload: {}",response.status());
         ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim()=="0");
-        ensure!(audit_count(|r|r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")?==0);
+        ensure!(audit_count(|r|r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success").await?==0);
         let replacement=Uuid::new_v4();
         let response=router.clone().oneshot(Request::builder().method(Method::POST).uri(upload_path(replacement)).header("host","mdm.example.test").header("x-api-key",rotated).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?).await?;
         ensure!(response.status()==StatusCode::CREATED,"new key upload: {}",response.status());

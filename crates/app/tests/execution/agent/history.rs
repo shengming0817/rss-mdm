@@ -151,7 +151,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 == StatusCode::BAD_REQUEST
         );
 
-        let records=audit_records()?;
+        let records=audit_records().await?;
         let version=pg(&format!("SELECT policy_version FROM mdm_commands.action_runs WHERE id='{task}'"))?;
         let found=records.iter().find(|r|r.payload["plan"]==version.trim() && r.target()==task && r.action()=="command_accept").expect("task/policy-version audit coordinates");
         let registration=found.payload["registration"].as_str().expect("task registration");uuid::Uuid::parse_str(registration)?;

@@ -28,19 +28,17 @@ pub enum Change {
         key_id: String,
     },
 }
-fn failure(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn failure(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            rss_mdm_audit_integration::Error::from(e).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => e.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<T>,
-        rss_audit_postgres::TransactionError<Error>,
+        T,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
     write: bool,
@@ -50,7 +48,7 @@ fn settle<T>(
             if write {
                 audit.mark_committed();
             }
-            Ok(v.into_value())
+            Ok(v)
         },
         |e| Err(failure(e)),
         |e| {
@@ -103,7 +101,7 @@ impl ExecutionService {
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
-            .audit_store
+            .task_signing_audit
             .read(
                 self.tenant,
                 &budget.control(),
@@ -147,7 +145,7 @@ impl ExecutionService {
         audit.operation(operation, "task_signing_change");
         audit.require_request_settlement();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit_store.write(self.tenant,&budget.control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
+        let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*change);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,change),c|Box::pin(async move {
                 let now:i64=sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint").fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
@@ -166,7 +164,7 @@ impl ExecutionService {
             })).await?;
             let digest=value.installation_digest().map_err(|_|Error::Malformed)?;
             let fact=Fact::business(audit,&format!("task-signing:{operation}"),digest.as_bytes(),200,"success",None).map_err(|_|Error::Malformed)?;
-            service.audit_store.append(tx,&fact,replayed).await?;
+            service.task_signing_audit.append(tx,&fact,replayed).await?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
         })).await;
@@ -182,10 +180,10 @@ impl ExecutionService {
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
-            .audit_store
+            .task_signing_audit
             .write(
                 self.tenant,
-                &budget.control(),
+                &budget.source_control(),
                 (self, p),
                 |(service, p), tx| {
                     Box::pin(async move {
@@ -221,7 +219,7 @@ impl ExecutionService {
         audit.operation(input.operation, "task_signing_ack");
         audit.require_request_settlement();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit_store.write(self.tenant,&budget.control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
+        let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
             let mut context=(*p,*input);
             let replayed=tx.with_connection_context(&mut context,|(p,input),c|Box::pin(async move {
                 crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::AgentBuiltin).await?;
@@ -230,7 +228,7 @@ impl ExecutionService {
             })).await?;
             let bytes=serde_json::to_vec(input).map_err(|_|Error::Malformed)?;
             let fact=Fact::business(audit,&format!("task-signing-ack:{}",input.operation),&bytes,200,"success",None).map_err(|_|Error::Malformed)?;
-            service.audit_store.append(tx,&fact,replayed).await?;
+            service.task_signing_audit.append(tx,&fact,replayed).await?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}audit.mark_commit_started();Ok(())
         })).await;
         settle(result, audit, true)
@@ -255,10 +253,10 @@ impl ExecutionService {
         audit.require_request_settlement();
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
-            .audit_store
+            .task_signing_audit
             .write(
                 self.tenant,
-                &budget.control(),
+                &budget.source_control(),
                 (self, p, audit, input),
                 |(service, p, audit, input), tx| {
                     Box::pin(async move {
@@ -291,7 +289,10 @@ impl ExecutionService {
                             None,
                         )
                         .map_err(|_| Error::Malformed)?;
-                        service.audit_store.append(tx, &fact, replayed).await?;
+                        service
+                            .task_signing_audit
+                            .append(tx, &fact, replayed)
+                            .await?;
                         audit.mark_commit_started();
                         Ok(())
                     })
@@ -313,7 +314,7 @@ impl ExecutionService {
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
-            .audit_store
+            .task_signing_audit
             .read(
                 self.tenant,
                 &budget.control(),

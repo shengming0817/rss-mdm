@@ -76,7 +76,7 @@ pub(super) async fn mutate(
         .audit_store
         .write(
             app.tenant,
-            &budget.control(),
+            &budget.source_control(),
             (app, principal, audit, &action, &fingerprint, operation),
             |(app, principal, audit, action, fingerprint, operation), tx| {
                 Box::pin(async move {

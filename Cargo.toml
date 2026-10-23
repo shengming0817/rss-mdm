@@ -129,6 +129,7 @@ rss-projection = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev
 rss-projection-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1b5d6b01f531fbfbcb9942c128801e3444b7b58", default-features = false }
 
 rss-contract = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1b5d6b01f531fbfbcb9942c128801e3444b7b58", default-features = false }
+rss-diag-context = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1b5d6b01f531fbfbcb9942c128801e3444b7b58", default-features = false }
 
 rss-mdm-group-postgres = { path = "crates/group-postgres" }
 rss-transactional-messaging = { git = "https://dev.azure.com/shengming0923/rss/_git/rss", rev = "e1b5d6b01f531fbfbcb9942c128801e3444b7b58", default-features = false, features = ["producer"] }

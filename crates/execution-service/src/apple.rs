@@ -148,15 +148,23 @@ impl ExecutionService {
         exchange: Box<dyn super::channels::AppleExchange>,
         audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
+        let partitions = [
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", p.device())
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "device", p.device())
+                .map_err(Error::from)?,
+        ];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            (self, &apple, p, Some(exchange), audit),
+            (self, &apple, p, Some(exchange), audit, &partitions),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, apple, p, exchange, audit) = ctx;
+                    let (service, apple, p, exchange, audit, partitions) = ctx;
                     let service = *service;
                     let p = *p;
                     let tenant = service.tenant.to_string();
@@ -168,7 +176,11 @@ impl ExecutionService {
                     })
                     .await??;
                     crate::transaction::lock(tx).await?;
-                    storage::lock(tx, p.device()).await?;
+                    actions::native_recovery::lock_device(tx, p.device()).await?;
+                    service
+                        .audit_store
+                        .prepare_in(tx, audit, *partitions)
+                        .await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
@@ -210,10 +222,7 @@ impl ExecutionService {
                         .await?;
                     let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
                     super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
-                    service
-                        .audit_store
-                        .append_request_in(tx, audit, 200, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok(response)
                 })
             },
@@ -529,15 +538,23 @@ impl ExecutionService {
         exchange: Box<dyn channels::AppleDdmExchange>,
         audit: &RequestAudit,
     ) -> std::result::Result<channels::AppleDdmReply, Error> {
+        let partitions = [
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", p.device())
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "device", p.device())
+                .map_err(Error::from)?,
+        ];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            (self, p, Some(exchange), audit),
+            (self, p, Some(exchange), audit, &partitions),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, p, exchange, audit) = ctx;
+                    let (service, p, exchange, audit, partitions) = ctx;
                     let service = *service;
                     let p = *p;
                     let tenant = service.tenant.to_string();
@@ -549,7 +566,11 @@ impl ExecutionService {
                     })
                     .await??;
                     crate::transaction::lock(tx).await?;
-                    storage::lock(tx, p.device()).await?;
+                    actions::native_recovery::lock_device(tx, p.device()).await?;
+                    service
+                        .audit_store
+                        .prepare_in(tx, audit, *partitions)
+                        .await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let principal = p.clone();
                     let (exchange, ids) = tx
@@ -585,10 +606,7 @@ impl ExecutionService {
                             complete_ddm(service, tx, &op).await?;
                         }
                     }
-                    service
-                        .audit_store
-                        .append_request_in(tx, audit, reply.status, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok(reply)
                 })
             },

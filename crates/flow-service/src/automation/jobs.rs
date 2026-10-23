@@ -31,7 +31,7 @@ pub async fn forward_jobs(
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
     (audit_store, job_target(tenant,id).clone(), ()),
     |(service, target, context), tx| Box::pin(async move {
-        service.lock_in(tx).await.map_err(PgError::from)?;
+        service.bind_in(tx).await.map_err(PgError::from)?;
         rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_,tx|Box::pin(async move {
                 let tenant=tx.tenant_id().to_string();
                 tx.with_connection(move |c|Box::pin(async move {

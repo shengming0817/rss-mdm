@@ -354,8 +354,13 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
             .await?,
         "Alert completed an unanswered capability query"
     );
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let records: Vec<Vec<u8>> =
-        sqlx::query_scalar("SELECT canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+        sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
             .fetch_all(&mut pg)
             .await?;
@@ -521,7 +526,7 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
     ensure!(post(other).await?.status() == StatusCode::FORBIDDEN);
     host.app
         .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(post(notification.clone()).await?.status() == StatusCode::SERVICE_UNAVAILABLE);
     let intact: bool = sqlx::query_scalar("SELECT r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') AND NOT EXISTS(SELECT 1 FROM mdm_windows.unenrollment_receipts u WHERE u.tenant_id=r.tenant_id AND u.registration=r.id) FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
     ensure!(intact, "retirement or receipt escaped rollback");

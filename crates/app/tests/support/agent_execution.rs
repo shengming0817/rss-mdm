@@ -160,7 +160,7 @@ impl Fixture {
                     let content_setup = super::software::content_setup_guard().await?;
                     let access = database(&base).await?;
                     let audit = access
-                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?;
                     let (router, execution, plan_runtime, planning, application_resources) =
                         crate::api::application_fixture(

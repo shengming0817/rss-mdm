@@ -63,25 +63,34 @@ impl Associations {
         }
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
         self.audit
-            .write(self.tenant, &budget.control(), (self, p, id), |ctx, tx| {
-                Box::pin(async move {
-                    tx.with_connection_context(ctx, |(s, p, id), c| {
-                        Box::pin(async move {
-                            let auth = read::authorization(c, p).await?;
-                            let result = lifecycle::read_in(c, s.tenant, *id).await?;
-                            for channel in &result.channels {
-                                auth.require(p, Permission::InventoryRead, Some(&channel.device))?;
-                            }
-                            p.check_live()?;
-                            Ok(result)
+            .write(
+                self.tenant,
+                &budget.source_control(),
+                (self, p, id),
+                |ctx, tx| {
+                    Box::pin(async move {
+                        tx.with_connection_context(ctx, |(s, p, id), c| {
+                            Box::pin(async move {
+                                let auth = read::authorization(c, p).await?;
+                                let result = lifecycle::read_in(c, s.tenant, *id).await?;
+                                for channel in &result.channels {
+                                    auth.require(
+                                        p,
+                                        Permission::InventoryRead,
+                                        Some(&channel.device),
+                                    )?;
+                                }
+                                p.check_live()?;
+                                Ok(result)
+                            })
                         })
+                        .await
                     })
-                    .await
-                })
-            })
+                },
+            )
             .await
             .fold(
-                |v| Ok(v.into_value()),
+                Ok,
                 |e| Err(crate::model::transaction_error(e)),
                 |e| Err(crate::model::transaction_error(e)),
                 |_| Err(Error::RollbackFailed),
@@ -133,9 +142,10 @@ impl Associations {
         let digest =
             Sha256::digest(serde_json::to_vec(&change).map_err(|_| Error::Malformed)?).to_vec();
         let budget = AuditBudget::new(std::time::Duration::from_secs(8));
-        let attempt=self.audit.write(self.tenant,&budget.control(),(self,p,&change,audit,&digest),|(s,p,change,audit,digest),tx|Box::pin(async move{
+        let attempt=self.audit.write(self.tenant,&budget.source_control(),(self,p,&change,audit,&digest),|(s,p,change,audit,digest),tx|Box::pin(async move{
     let s=*s;let p=*p;let change=*change;let audit=*audit;let digest=*digest;
     let (result,replay)=tx.with_connection_context(&mut (p,change,digest),|(p,change,digest),c|Box::pin(async move{
+      rss_mdm_inventory_postgres::lock_watermark_in(c,s.tenant).await?;
       let auth=read::authorization(c,p).await?;
       let devices=match change {
         Change::Asset{target,..}=>asset_devices(c,p.tenant_id(),target).await?,
@@ -188,7 +198,7 @@ impl Associations {
         attempt.fold(
             |v| {
                 audit.mark_committed();
-                Ok(v.into_value())
+                Ok(v)
             },
             |e| Err(crate::model::transaction_error(e)),
             |e| {

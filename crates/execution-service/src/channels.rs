@@ -34,6 +34,10 @@ pub enum Rejection {
     AuditIntegrity,
     #[error("protocol audit contract failure")]
     AuditContract,
+    #[error("audit source backlog is full")]
+    AuditBackpressure,
+    #[error("audit failure-fact reserve is exhausted")]
+    AuditReserveExhausted,
     #[error("protocol audit unavailable")]
     Audit,
 }
@@ -200,6 +204,15 @@ pub trait ApplePush: Send + Sync {
         tenant: String,
         configuration: [u8; 32],
     ) -> Pending<'a, Vec<PushCandidate>>;
+    fn reject_push<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        user_key: String,
+        revision: i64,
+        scope: String,
+    ) -> Pending<'a, ()>;
     fn defer_push<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -384,10 +397,15 @@ pub struct Wake {
 }
 pub struct PushCandidate {
     pub registration: Uuid,
+    pub device: String,
     pub revision: i64,
     pub user_key: String,
-    pub token: Vec<u8>,
-    pub magic: String,
+    pub disposition: PushDisposition,
+}
+pub enum PushDisposition {
+    Ready { token: Vec<u8>, magic: String },
+    Inactive,
+    Invalid { scope: String },
 }
 pub struct PendingCollection {
     pub id: Uuid,

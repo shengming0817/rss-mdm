@@ -11,15 +11,31 @@ impl ExecutionService {
         bytes: &[u8],
         audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
+        let partitions = [
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", principal.device())
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
+                .map_err(Error::from)?,
+            rss_mdm_audit_integration::source_partition(self.tenant, "device", principal.device())
+                .map_err(Error::from)?,
+        ];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant,
             audit,
-            (self, &windows, principal, message, bytes, audit),
+            (
+                self,
+                &windows,
+                principal,
+                message,
+                bytes,
+                audit,
+                &partitions,
+            ),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, w, p, m, b, a) = *ctx;
+                    let (s, w, p, m, b, a, partitions) = *ctx;
                     let tenant = s.tenant.to_string();
                     let instance = s.instance.clone();
                     tx.with_connection(move |c| {
@@ -39,7 +55,8 @@ impl ExecutionService {
                         })
                     })
                     .await?;
-                    storage::lock(tx, p.device()).await?;
+                    actions::native_recovery::lock_device(tx, p.device()).await?;
+                    s.audit_store.prepare_in(tx, a, partitions).await?;
                     let retirement_request = w.retirement_request(p.purpose());
                     let w = w.clone();
                     let protection = s.protection.clone();
@@ -79,9 +96,7 @@ impl ExecutionService {
                         a.snapshot().management_result,
                         Some(rss_mdm_audit_integration::ManagementResult::Replayed)
                     ) {
-                        s.audit_store
-                            .append_request_in(tx, a, 200, "success")
-                            .await?;
+                        a.require_request_settlement();
                     }
                     let super::channels::Reply { bytes, facts } = reply;
                     for fact in &facts {

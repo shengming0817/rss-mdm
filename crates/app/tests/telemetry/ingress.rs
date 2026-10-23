@@ -100,6 +100,10 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             body["observations"][0]["values"]["custom.vendor_extra"]=json!({"quality":"valid","value":{"kind":"string","value":"raw-vendor-evidence"},"intervalStart":null});
         }
         let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};
+        // A failed transport may precede admission. The Agent queries the original ID
+        // before resubmitting its persisted body; absence must not revoke its identity.
+        let receipt_path=format!("/api/v1/agent/runtime/telemetry/batches/{id}");
+        ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(case_credential()),None).await?.0==StatusCode::NOT_FOUND);
         if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::receive_commit_unknown(&mut f,&body).await?; }
         let path="/api/v1/agent/runtime/telemetry/batches";
         for (key,value) in [("tenantId",json!(case::peer())),("source",json!("manual")),("registrationId",json!(Uuid::new_v4()))] {
@@ -125,6 +129,9 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         observation_conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(observation_conflict)).await?.0==StatusCode::CONFLICT);
         let receipt_path=format!("{path}/{id}");
+        if let Some((credential,_,_))=&secondary {
+            ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(credential),None).await?.0==StatusCode::NOT_FOUND,"another registration must not discover a batch receipt");
+        }
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {
                 let (status,receipt)=agent_call(&f.router,Method::GET,&receipt_path,Some(case_credential()),None).await?;
@@ -748,6 +755,18 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
             );
             proof.bind_audit(&audit)?;
             let store = f.content.as_ref().unwrap();
+            let budget =
+                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let content_audit = Arc::new(
+                identity
+                    .audit
+                    .on_runtime(
+                        f.plan_runtime.clone(),
+                        identity.identity.tenant,
+                        &budget.control(),
+                    )
+                    .await?,
+            );
             let app = content::Access {
                 sessions: crate::authorization::session::SessionAuthority::new(
                     identity.identity.authority.clone(),
@@ -755,7 +774,7 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
                 ),
                 authorization: identity.access.authorization_store(),
                 runtime: f.plan_runtime.clone(),
-                audit_store: identity.audit.clone(),
+                audit_store: content_audit,
                 tenant: identity.identity.tenant,
                 content: f.content.clone(),
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(

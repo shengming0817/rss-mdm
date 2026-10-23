@@ -383,6 +383,7 @@ impl PublicationDirectory {
             (self, source, id, request, audit, proof),
             |ctx, tx| Box::pin(async move {
                 let (s, source, id, request, audit, proof) = *ctx;
+                s.audit_store.prepare_in(tx, audit, &[]).await?;
                 crate::management::transaction::lock(tx).await?;
                 crate::management::transaction::current(tx, proof).await?.require(proof, permission, None)?;
                 if request.operation_id.is_nil() { return Err(Error::Malformed.into()); }
@@ -444,7 +445,7 @@ pub async fn list(
     audit.set_action("management_read");
     let (items, next) = crate::management::transaction::inspect(
         &directory.runtime, directory.tenant, (directory, q), |(directory, q), tx| Box::pin(async move {
-            directory.audit_store.lock_in(tx).await.map_err(Error::from)?;
+            directory.audit_store.bind_in(tx).await.map_err(Error::from)?;
             crate::catalog::storage::lock(tx).await.map_err(|_| Error::Conflict)?;
             let tenant = tx.tenant_id().to_string();
             let after = q.after.clone();

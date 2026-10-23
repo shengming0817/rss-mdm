@@ -25,6 +25,7 @@ pub struct Config {
 }
 pub(crate) struct Service {
     pool: PgPool,
+    source_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: AuditStore,
     config: Config,
     installation: Installation,
@@ -68,6 +69,23 @@ impl Service {
             lineage: config.flow.storage.lineage,
             audit_mode: config.audit.mode(),
         };
+        let source_runtime = match crate::identity::open_runtime(
+            &options.registry_database,
+            &installation.target,
+            &installation.lineage,
+            &[(
+                management,
+                rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+            )],
+        )
+        .await
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                pool.close().await;
+                return Err(error);
+            }
+        };
         let service = async {
             let mut connection = pool.acquire().await.map_err(|_| invalid("registry acquire"))?;
             migration::verify_current_manifest(&mut connection).await.map_err(|_| invalid("manifest"))?;
@@ -75,7 +93,7 @@ impl Service {
             let safe: bool = sqlx::query_scalar("SELECT current_user=session_user AND current_user='mdm_tenant_registry' AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) AND has_function_privilege(current_user,'public.create_new_tenant(uuid,bigint,text,text)','EXECUTE') AND (SELECT count(*)=2 AND bool_and(NOT has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname,p.proname) IN (('mdm','seed_tenant_catalog'),('mdm_access','seed_tenant_settings'))) FROM pg_roles WHERE rolname=current_user")
                 .fetch_one(&mut *connection).await.map_err(|_| invalid("role query"))?;
             if !safe { return Err(invalid("registry role")); }
-            let bounded: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND n.nspname||'.'||c.relname NOT IN ('public.mdm_tenants','public.mdm_tenant_operations','mdm_audit.receipts') AND (has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))")
+            let bounded: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND n.nspname||'.'||c.relname NOT IN ('public.mdm_tenants','public.mdm_tenant_operations','mdm_audit.receipts','mdm_audit.backlog') AND (has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))")
                 .fetch_one(&mut *connection).await.map_err(|_| invalid("capabilities query"))?;
             let body = include_str!("../schema/tenant-administration.sql").split("$create$").nth(1).expect("create function body");
             let exact: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosecdef AND p.proowner='mdm_owner'::regrole AND p.prosrc=$1 AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR pg_get_userbyid(a.grantee) NOT IN ('mdm_owner','mdm_tenant_registry'))),false) FROM pg_proc p WHERE p.oid='public.create_new_tenant(uuid,bigint,text,text)'::regprocedure")
@@ -83,15 +101,16 @@ impl Service {
             if !bounded || !exact { return Err(invalid("registry capabilities")); }
             drop(connection);
             let budget = AuditBudget::new(Duration::from_secs(5));
-            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, &budget.control()).await.map_err(|_| invalid("audit"))?;
-            let this = Self { pool: pool.clone(), audit, config: options.clone(), installation, management, kdf, policy,
+            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), management, config.audit_projection.limits()?, &budget.control()).await.map_err(|_| invalid("audit"))?;
+            let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), installation, management, kdf, policy,
                 fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key) };
             let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
-            let (runtime, _) = this.provisioner(target, config.flow.storage.epoch).await?;
+            let (runtime, _, _) = this.provisioner(target, config.flow.storage.epoch).await?;
             runtime.close().await;
             Ok(Arc::new(this))
         }.await;
         if service.is_err() {
+            source_runtime.close().await;
             pool.close().await;
         }
         service.map(Some)
@@ -241,9 +260,9 @@ impl Service {
         )
         .map_err(|_| Error::Malformed)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let outcome = self.audit.write(self.management, &budget.control(), (self, proof, audit, input, fact), move |(service, proof, audit, input, fact), tx| Box::pin(async move {
+        let outcome = self.audit.write(self.management, &budget.source_control(), (self, proof, audit, input, fact), move |(service, proof, audit, input, fact), tx| Box::pin(async move {
             let mut context = (&**service, *proof, &*input);
-            let result = tx.with_connection_context(&mut context, |(service, proof, input), c| Box::pin(async move {
+            let result = tx.with_connection_context(&mut context, |(service, proof, input), c| Box::pin(async move { async {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_| Reason::Storage)?;
                 service.authorize(c, proof, permission).await?;
                 let actor = serde_json::json!({"kind":"session","tenantId":proof.tenant_id(),"instanceId":proof.instance_id(),"principalId":proof.principal_id()});
@@ -251,18 +270,18 @@ impl Service {
                 let result = apply_on(c, input).await?;
                 scope(c, proof.tenant_id()).await?;
                 Ok::<_, Reason>(result)
-            })).await?;
+            }.await.map_err(project) })).await?;
             let receipt = match result {
                 Outcome::Replay(receipt) => { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); receipt }
-                Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await.map_err(|_| Reason::Storage)?; receipt }
+                Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await?; receipt }
             };
             audit.mark_commit_started();
-            Ok::<_, Reason>(receipt)
+            Ok::<_, Error>(receipt)
         })).await;
         outcome.fold(
             |value| {
                 audit.mark_committed();
-                Ok(value.into_value())
+                Ok(value)
             },
             |error| Err(tx_error(error)),
             |error| {
@@ -278,16 +297,11 @@ impl Service {
         )
     }
 }
-impl From<rss_mdm_audit_integration::Error> for Reason {
-    fn from(_: rss_mdm_audit_integration::Error) -> Self {
-        Self::Storage
-    }
-}
-fn tx_error(error: rss_audit_postgres::TransactionError<Reason>) -> Error {
+fn tx_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(reason) => project(reason),
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
-        _ => project(Reason::Storage),
+        rss_mdm_audit_integration::TransactionError::Operation(error) => error,
+        rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 fn project(reason: Reason) -> Error {
@@ -310,6 +324,7 @@ impl rss_runtime::ManagedResource for Resource {
         Duration::from_secs(5)
     }
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.source_runtime.close().await;
         self.0.pool.close().await;
         Ok(())
     }
@@ -494,6 +509,20 @@ impl axum::response::IntoResponse for HttpFailure {
             Error::CommitUnknown => Http::CommitUnknown,
             Error::RollbackFailed => Http::RollbackFailed,
             Error::Authorization(error) => error.into(),
+            Error::Unavailable(reason) => {
+                use rss_mdm_management_http::Failure as F;
+                Http::Unavailable(match reason {
+                    Failure::RequestDeadline => F::RequestDeadline,
+                    Failure::Audit => F::Audit,
+                    Failure::AuditIntegrity => F::AuditIntegrity,
+                    Failure::AuditIsolation => F::AuditIsolation,
+                    Failure::AuditAdmission => F::AuditAdmission,
+                    Failure::AuditContract => F::AuditContract,
+                    Failure::AuditBackpressure => F::AuditBackpressure,
+                    Failure::AuditReserveExhausted => F::AuditReserveExhausted,
+                    _ => F::Database,
+                })
+            }
             _ => Http::Unavailable(rss_mdm_management_http::Failure::Database),
         };
         error.into_response()

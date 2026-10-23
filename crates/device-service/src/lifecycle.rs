@@ -389,7 +389,7 @@ impl crate::Associations {
         let budget = AuditBudget::new(std::time::Duration::from_secs(8));
         let audit = RequestAudit::new(self.tenant.to_string(), "device_retirement_revoked");
         audit.identify_service("device-lifecycle");
-        let attempt=self.audit.write(self.tenant,&budget.control(),(self,participant,&audit),|(service,participant,audit),tx|Box::pin(async move {
+        let attempt=self.audit.write(self.tenant,&budget.source_control(),(self,participant,&audit),|(service,participant,audit),tx|Box::pin(async move {
             let service=*service;let participant=*participant;let audit=*audit;
             let (count,facts)=tx.with_connection_context(&mut (service,participant),|ctx,c|Box::pin(async move {
                 let (service,participant)=*ctx;
@@ -420,7 +420,7 @@ impl crate::Associations {
         let result = attempt.fold(
             |v| {
                 audit.mark_committed();
-                Ok(v.into_value())
+                Ok(v)
             },
             |e| Err(crate::model::transaction_error(e)),
             |e| {

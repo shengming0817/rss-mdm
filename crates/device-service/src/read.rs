@@ -33,22 +33,38 @@ pub(crate) fn authorize(
     Ok(())
 }
 pub(crate) async fn load(c: &mut PgConnection, tenant: &str, id: Uuid) -> Result<Association> {
-    let value: Option<String> = sqlx::query_scalar(r#"SELECT jsonb_build_object(
+    load_page(c, tenant, &[id])
+        .await?
+        .pop()
+        .ok_or(Error::NotFound)
+}
+pub(crate) async fn load_page(
+    c: &mut PgConnection,
+    tenant: &str,
+    ids: &[Uuid],
+) -> Result<Vec<Association>> {
+    if ids.len() > 100 {
+        return Err(Error::Malformed);
+    }
+    let rows:Vec<String>=sqlx::query_scalar(r#"SELECT jsonb_build_object(
         'id',a.id,'version',a.version,'state',a.state,'evidence',a.evidence,
         'hardware',a.hardware,'confirmedBy',a.confirmed_by,'confirmedAt',a.confirmed_at,
         'revokedBy',a.revoked_by,'revokedAt',a.revoked_at,'reason',a.reason,
         'members',(SELECT jsonb_agg(jsonb_build_object('device',m.device,'channel',m.channel,'registrationId',m.registration_id,'generation',m.generation) ORDER BY m.channel) FROM mdm_devices.members m WHERE (m.tenant_id,m.association_id)=(a.tenant_id,a.id)))::text
-        FROM mdm_devices.associations a WHERE a.tenant_id=$1::uuid AND a.id=$2"#)
-        .bind(tenant).bind(id).fetch_optional(c).await?;
-    let value: Association =
-        serde_json::from_str(&value.ok_or(Error::NotFound)?).map_err(|_| Error::Storage)?;
-    if value.members.len() != 2
-        || value.members[0].device == value.members[1].device
-        || value.members[0].channel == value.members[1].channel
-    {
-        return Err(Error::Storage);
-    }
-    Ok(value)
+        FROM mdm_devices.associations a WHERE a.tenant_id=$1::uuid AND a.id=ANY($2)"#)
+        .bind(tenant).bind(ids).fetch_all(c).await?;
+    rows.into_iter()
+        .map(|value| {
+            let value: Association = serde_json::from_str(&value).map_err(|_| Error::Storage)?;
+            if value.members.len() != 2
+                || value.members[0].device == value.members[1].device
+                || value.members[0].channel == value.members[1].channel
+            {
+                return Err(Error::Storage);
+            }
+            Ok(value)
+        })
+        .collect()
 }
 pub(crate) async fn lock_members(
     c: &mut PgConnection,
@@ -75,10 +91,15 @@ impl Associations {
         let budget = AuditBudget::new(Duration::from_secs(5));
         // The shared asset fence takes a row lock and may initialize its clock.
         self.audit
-            .write(self.tenant, &budget.control(), proof, |proof, tx| {
+            .write(self.tenant, &budget.source_control(), proof, |proof, tx| {
                 Box::pin(async move {
                     tx.with_connection_context(proof, |proof, c| {
                         Box::pin(async move {
+                            rss_mdm_inventory_postgres::lock_watermark_in(
+                                c,
+                                TenantId::parse(proof.tenant_id()).map_err(|_| Error::Malformed)?,
+                            )
+                            .await?;
                             let snapshot = authorization(c, proof).await?;
                             let world = identity::world(
                                 c,
@@ -107,7 +128,7 @@ impl Associations {
             })
             .await
             .fold(
-                |v| Ok(v.into_value()),
+                Ok,
                 |e| Err(model::transaction_error(e)),
                 |e| Err(model::transaction_error(e)),
                 |_| Err(Error::RollbackFailed),
@@ -159,6 +180,6 @@ impl Associations {
                 proof.check_live()?;
                 Ok(CandidatePage {items,next_cursor})
             })).await
-        })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
     }
 }

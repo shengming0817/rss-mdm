@@ -23,6 +23,10 @@
       "user": "mdm_identity_audit",
       "password_file": "/run/mdm/identity-audit-password",
       "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "audit_recovery_keys": {
+      "active_file": "/run/mdm/identity-audit-recovery.key",
+      "historical_files": []
     }
   },
   "access_database": {
@@ -181,5 +185,21 @@
     "active_file": "/run/mdm/native-data.key",
     "historical_files": [],
     "fingerprint_file": "/run/mdm/native-fingerprint.key"
+  },
+  "audit_projection": {
+    "database": {
+      "host": "postgres.example.test",
+      "port": 5432,
+      "name": "mdm",
+      "user": "mdm_audit_worker",
+      "password_file": "/run/mdm/database-mdm_audit_worker.password",
+      "ca_file": "/run/mdm/database-ca.pem"
+    },
+    "recovery_keys": {
+      "active_file": "/run/mdm/audit-recovery.key",
+      "historical_files": []
+    },
+    "max_events": 100000,
+    "max_bytes": 1073741824
   }
 }

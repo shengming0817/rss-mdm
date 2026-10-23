@@ -13,7 +13,6 @@ pub struct Queries {
     pub(crate) agent_store: Arc<dyn channels::Agent>,
     pub(crate) apple_results: Arc<dyn channels::AppleResults>,
     pub(crate) policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) tenant: TenantId,
     pub(crate) inputs: Arc<Inputs>,
@@ -27,7 +26,6 @@ pub struct Dependencies {
     pub agent_store: Arc<dyn channels::Agent>,
     pub apple_results: Arc<dyn channels::AppleResults>,
     pub policy_reader: rss_mdm_policy_postgres::PolicyReader,
-    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<PgRuntime>,
     pub tenant: TenantId,
     pub inputs: Arc<Inputs>,
@@ -49,7 +47,6 @@ impl Queries {
             agent_store: dependencies.agent_store,
             apple_results: dependencies.apple_results,
             policy_reader: dependencies.policy_reader,
-            audit_store: dependencies.audit_store,
             runtime: dependencies.runtime,
             tenant: dependencies.tenant,
             inputs: dependencies.inputs,
@@ -83,11 +80,9 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<records::CommandDetail, QueryError> {
-        crate::transaction::run(
-            &self.audit_store,
+        crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            audit,
             (self, proof, device, id, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -130,10 +125,7 @@ impl Queries {
                     } else {
                         None
                     };
-                    service
-                        .audit_store
-                        .append_request_in(tx, audit, 200, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok(records::CommandDetail {
                         operation_id: op.id,
                         command_id: op.id,

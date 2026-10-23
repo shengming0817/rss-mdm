@@ -120,7 +120,7 @@ async fn migrate_units(
     // Replay never changes an installation addressed by different coordinates.
     if installed
         .iter()
-        .any(|(name, _, _)| name == "identity-authority-v14")
+        .any(|(name, _, _)| name == "identity-authority-v16")
     {
         verify_installation(conn, installation, instance).await?;
     }
@@ -166,7 +166,7 @@ async fn apply_unit(
             .execute(&mut *tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
-    } else if name == "identity-authority-v14" {
+    } else if name == "identity-authority-v16" {
         install_identity_in(&mut tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
@@ -403,6 +403,16 @@ async fn install_identity_in(
     rss_identity_postgres::audit::grant_worker(tx, crate::identity_audit::ROLE)
         .await
         .map_err(|_| sqlx::Error::Protocol("identity audit grant rejected".into()))?;
+    rss_transactional_messaging_postgres::grant_local_projection(
+        tx,
+        crate::audit_projection::ROLE,
+        &rss_transactional_messaging::message::MessagingDomain::parse("mdm.audit")
+            .expect("fixed domain"),
+        &rss_transactional_messaging::inbox::ConsumerGroup::parse("mdm.audit.v1")
+            .expect("fixed group"),
+    )
+    .await
+    .map_err(|_| sqlx::Error::Protocol("MDM audit scope rejected".into()))?;
     sqlx::query(
         "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
     )
@@ -460,6 +470,7 @@ async fn verify_profiles(
     }
     // mdm_access deliberately has no role memberships. Its source-admission profile is
     // checked by database::admission using an actual access-role connection at startup.
+    crate::audit_projection::verify_profile(conn, audit_mode).await?;
     crate::identity_audit::verify_profile(conn, audit_mode)
         .await
         .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;

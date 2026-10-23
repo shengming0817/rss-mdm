@@ -10,13 +10,13 @@ use crate::{ExecutionService, Result, storage};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
 use uuid::Uuid;
-pub async fn admit_policy(
+pub(crate) async fn prepare_policy(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     id: Uuid,
-) -> Result<bool> {
+) -> Result<Option<PreparedAdmission>> {
     let Some(policy) = policies::storage::read_in(&service.policy_reader, tx, id).await? else {
-        return Ok(false);
+        return Ok(None);
     };
     if !policy.state.is_enabled()
         || !matches!(
@@ -24,7 +24,7 @@ pub async fn admit_policy(
             rss_mdm_policy::Action::NativeCollection { .. }
         )
     {
-        return Ok(false);
+        return Ok(None);
     }
     let plan = db::load_policy_version(&service.policy_reader, tx, policy.version).await?;
     let db::ScheduledPolicy::Native(native) = &plan else {
@@ -34,9 +34,43 @@ pub async fn admit_policy(
     let tenant = tx.tenant_id().to_string();
     let now = storage::now(tx).await?;
     let rows=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(&tenant).bind(id).execute(&mut *c).await?;
         sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND r.state='active' AND s.enabled AND s.source=$3 AND r.device>coalesce((SELECT target_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2),'') COLLATE \"C\" ORDER BY r.device COLLATE \"C\" LIMIT 1")
             .bind(tenant).bind(id).bind(source).fetch_all(c).await
+    })).await?;
+    for row in &rows {
+        super::native_recovery::lock_device(tx, &row.try_get::<String, _>("device")?).await?;
+    }
+    Ok(Some(PreparedAdmission {
+        id,
+        plan,
+        rows,
+        now,
+        run_id: Uuid::new_v4(),
+    }))
+}
+pub(crate) struct PreparedAdmission {
+    id: Uuid,
+    plan: db::ScheduledPolicy,
+    rows: Vec<sqlx::postgres::PgRow>,
+    now: i64,
+    pub(crate) run_id: Uuid,
+}
+pub(crate) async fn admit_policy(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    prepared: PreparedAdmission,
+) -> Result<bool> {
+    let PreparedAdmission {
+        id,
+        plan,
+        rows,
+        now,
+        run_id,
+    } = prepared;
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(id).execute(c).await?;
+        Ok(())
     })).await?;
     let mut last = None;
     let count = rows.len();
@@ -46,7 +80,6 @@ pub async fn admit_policy(
             registration: row.try_get("id")?,
             generation: row.try_get("generation")?,
         };
-        super::native_recovery::lock_device(tx, &target.device).await?;
         super::production::accept_for_device(
             service,
             tx,
@@ -54,6 +87,7 @@ pub async fn admit_policy(
             &target,
             super::production::AdmissionTrigger::Scheduled,
             now,
+            run_id,
         )
         .await?;
         last = Some(target.device);

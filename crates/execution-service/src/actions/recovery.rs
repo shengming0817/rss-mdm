@@ -19,13 +19,57 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.id=$2::uuid AND (p.state='enabled') AND ((p.definition->'action'->>'kind'=ANY($3::text[]) AND (p.definition->'action'->'schedule'->'trigger'->>'kind' NOT IN ('check_in','registration') OR EXISTS(SELECT 1 FROM mdm_policy.triggers t WHERE t.tenant_id=p.tenant_id AND t.version=p.current_version AND t.deadline>floor(extract(epoch FROM clock_timestamp()))))) OR p.definition->'action'->>'kind'='software')) OR EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution'='running' OR (r.state->>'execution'='unknown' AND r.state->>'cancellation'='none' AND (NOT (p.state='enabled') OR p.current_version<>v.id))))").bind(tenant).bind(id.to_string()).bind(kinds).fetch_one(c).await
     })).await?)
 }
-pub async fn recover(
+pub(crate) struct PreparedRecovery {
+    id: Uuid,
+    runs: Vec<(Uuid, Option<Uuid>, String)>,
+    pub(crate) partitions: Vec<rss_transactional_messaging::message::PartitionIdentity>,
+}
+pub(crate) async fn prepare(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<PreparedRecovery> {
+    crate::sources::storage::lock(tx, id).await?;
+    let tenant = tx.tenant_id().to_string();
+    let runs=tx.with_connection(move|c|Box::pin(async move {
+        sqlx::query_as::<_,(Uuid,Option<Uuid>,String)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),r.device FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
+    })).await?;
+    let devices = runs
+        .iter()
+        .map(|(_, _, device)| device)
+        .collect::<std::collections::BTreeSet<_>>();
+    for device in devices {
+        super::native_recovery::lock_device(tx, device).await?;
+    }
+    for (run, _, _) in &runs {
+        db::load_run(tx, *run).await?;
+    }
+    let mut partitions = Vec::new();
+    partitions.push(rss_mdm_audit_integration::source_partition(
+        tx.tenant_id(),
+        "mdm",
+        "request",
+    )?);
+    for (_, _, device) in &runs {
+        partitions.push(rss_mdm_audit_integration::source_partition(
+            tx.tenant_id(),
+            "device",
+            device,
+        )?);
+    }
+    Ok(PreparedRecovery {
+        id,
+        runs,
+        partitions,
+    })
+}
+pub(crate) async fn recover(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
-    id: Uuid,
+    prepared: PreparedRecovery,
 ) -> Result<()> {
-    crate::sources::storage::lock(tx, id).await?;
-
+    let PreparedRecovery { id, runs, .. } = prepared;
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(id).execute(c).await?;
+        Ok(())
+    })).await?;
     if let Some(policy) = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
         && policy.definition.action.kind() == rss_mdm_policy::ActionKind::Software
     {
@@ -36,15 +80,10 @@ pub async fn recover(
             .advance_stats_in(&service.admission(), tx, id)
             .await?;
     }
-    let tenant = tx.tenant_id().to_string();
-    let runs=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_commands.policy_recovery(tenant_id,policy) VALUES($1::uuid,$2::uuid) ON CONFLICT DO NOTHING").bind(&tenant).bind(id.to_string()).execute(&mut *c).await?;
-        sqlx::query_as::<_,(Uuid,Option<Uuid>)>("SELECT r.id,(SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE r.tenant_id=$1::uuid AND v.frozen->>'kind'<>'native_collection' AND v.policy=$2::uuid AND ((r.state->>'execution'='not_started' AND r.state->>'cancellation'<>'confirmed') OR r.state->>'execution' IN('running','unknown')) AND r.id>coalesce((SELECT recovery_after FROM mdm_commands.policy_recovery WHERE tenant_id=$1::uuid AND policy=$2::uuid),'00000000-0000-0000-0000-000000000000'::uuid) ORDER BY r.id LIMIT 128").bind(tenant).bind(id.to_string()).fetch_all(c).await
-    })).await?;
     let total = runs.len();
-    let mut last = runs.first().and_then(|(_, previous)| *previous);
+    let mut last = runs.first().and_then(|(_, previous, _)| *previous);
     let mut processed = 0;
-    for (id, _) in runs {
+    for (id, _, _) in runs {
         if tx.deadline().timeout() < std::time::Duration::from_secs(3) {
             break;
         }
@@ -123,9 +162,11 @@ impl ExecutionService {
             "command_dispatch",
         );
         audit.operation(id, "command_dispatch");
+        audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
+            service.audit_store.prepare_in(tx,audit,&[]).await?;
             let fact=Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
@@ -163,20 +204,15 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, id) = *ctx;
-                    crate::sources::storage::lock(tx, id).await?;
-                    if let Some(policy) =
-                        crate::sources::storage::read_in(&service.policy_reader, tx, id).await?
-                        && matches!(
-                            policy.definition.action,
-                            rss_mdm_policy::Action::Software {
-                                channel: rss_mdm_policy::SoftwareChannel::Mdm,
-                                ..
-                            }
-                        )
-                    {
-                        super::native_software::admit_policy(service, tx, id).await?;
-                    }
-                    recover(service, tx, id).await
+                    let audit = rss_mdm_audit_integration::RequestAudit::new(
+                        tx.tenant_id().to_string(),
+                        "management_write",
+                    );
+                    let prepared =
+                        crate::recovery::prepare(service, tx, &format!("policy.{id}"), &audit)
+                            .await?;
+                    crate::recovery::apply_prepared(service, tx, prepared, &audit).await?;
+                    Ok(())
                 })
             },
         )

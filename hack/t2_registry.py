@@ -319,9 +319,10 @@ add('diagnostics.http', selectors=('api::t2::runtime_diagnostics::',), fixtures=
 MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant', support_inputs=('crates/app/tests/support/audit.rs','crates/app/tests/device/support.rs','crates/app/tests/inventory_runtime/support.rs','crates/app/tests/planning/support.rs'), policies=(
     CasePolicy('api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', 'instance', 'tenant'),
     CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
+    CasePolicy('api::t2::runtime_diagnostics::management_audit_capacity_is_visible_without_cross_tenant_counts', 'reuse', 'pair'),
 ))
 add('host.lifecycle', build=None, python='host', fixtures=('identity',),
-    sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs'),
+    sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs', 'crates/app/src/audit_health.rs', 'crates/app/src/audit_projection.rs'),
     support=('hack/t2_modules/host.py',))
 app_family('assets')
 for name, target in (('persistence', 't2'), ('generations', 'generations')):
@@ -540,7 +541,7 @@ MODULES['api.identity_context'] = replace(MODULES['api.identity_context'], db_mo
 MODULES['host.lifecycle'] = replace(MODULES['host.lifecycle'], db_mode='fresh', scope='objects')
 MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope='objects', policies=(
     CasePolicy('assets::t2::http::field_layout::shared_layout_round_trip_permissions_and_retired_fields', 'fresh', 'pair'),
-    CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'pair'),
+    CasePolicy('assets::t2::http::storage::asset_capability_owns_execution_and_receipt_recovery', 'reuse', 'tenant'),
     CasePolicy('assets::t2::http::storage::asset_commit_unknown_recovers_original_receipts', 'reuse', 'objects'),
 ))
 MODULES['assets.queries'] = replace(MODULES['assets.queries'], db_mode='reuse', scope='tenant')
@@ -1808,6 +1809,7 @@ for owner in ('agent-channel', 'apple-channel', 'windows-channel',
     if owner not in {'pki-service', 'device-service', 'timeline-service', 'certificate-archive-service'}:
         consume((f'crates/{owner}/schema/relations.sql',), consumers)
 
+consume(('crates/inventory-service/schema/source-facts.sql',), 'device.associations')
 consume(('crates/inventory-service/schema/group-selections.sql',),
         'assets.http assets.queries assets.sources assets.group_input inventory.runtime '
         'agent.reports windows.management apple.collection planning.onboarding')
@@ -1923,6 +1925,7 @@ consume(('crates/registration-service/src/agent/activation.rs','crates/registrat
 consume(('crates/apple-channel/src/runtime_materials/*','crates/apple-channel/schema/runtime-materials.sql'), 'apple.host')
 consume(('crates/app/src/setup/host.rs',), 'api.diagnostics apple.host')
 consume(('crates/app/src/tenant_provisioning.rs','crates/app/schema/provisioning.sql'), 'deployment.management-tenant')
+consume(('crates/app/src/webhooks/mod.rs',), 'deployment.management-tenant')
 
 consume(('crates/app/tests/support/task_signing.rs',), 'execution.agent.task_trust execution.agent.delivery')
 
@@ -2087,6 +2090,20 @@ consume(('crates/device-service/src/personnel.rs',), 'device.views agent.current
 MODULES['device.views'] = replace(MODULES['device.views'], test_inputs=(*MODULES['device.views'].test_inputs, 'crates/app/tests/device/personnel.rs'))
 
 consume(('crates/device-service/src/personnel.rs',), 'identity.sso')
+
+# Final-history assertions drive the same installed projector as the product worker.
+for name in (*APP_HELPER_CONSUMERS['support/audit.rs'], 'publication.winget', 'publication.brew', 'publication.mapping', 'publication.withdrawal', 'publication.recovery'):
+    MODULES[name] = replace(MODULES[name], support_inputs=(*MODULES[name].support_inputs, 'tests/support/audit_projection.rs'))
+
+consume(('crates/apple-channel/src/operations.rs',), 'apple.scep apple.identity apple.collection apple.renewal apple.ade apple.account_enrollment apple.host')
+
+consume(('crates/flow-service/src/automation/inventory_tasks.rs', 'crates/flow-service/src/automation/model.rs'), 'planning.assets planning.onboarding assets.queries')
+consume(('crates/flow-service/src/planning/receipts.rs',), 'planning.http planning.scope planning.policy planning.software planning.recovery')
+consume(('crates/flow-service/src/resource_catalog/receipts.rs',), 'planning.http planning.resource_archive')
+consume(('crates/inventory-service/src/assets/receipts.rs', 'crates/inventory-service/src/transaction.rs'), 'assets.http assets.queries planning.assets')
+consume(('crates/inventory-service/src/operations.rs',), 'agent.reports windows.management apple.collection inventory.runtime')
+consume(('crates/windows-channel/src/diagnostic.rs',), 'api.diagnostics windows.management')
+
 
 consume(('crates/app/src/native/gateway.rs',), 'gateway.admission apple.host')
 consume(('crates/app/src/channel_status.rs',), 'diagnostics.http apple.host')

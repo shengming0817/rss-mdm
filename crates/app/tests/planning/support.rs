@@ -24,11 +24,8 @@ pub(crate) fn fixture() -> Value {
         .unwrap()
 }
 
-pub(crate) fn audit_records() -> Vec<crate::audit_test_support::Record> {
-    crate::audit_test_support::decode_hex(&sql(
-        &format!("SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", tenant()),
-    ))
-    .unwrap()
+pub(crate) async fn audit_records() -> Vec<crate::audit_test_support::Record> {
+    crate::audit_test_support::audit_records().await.unwrap()
 }
 
 pub(crate) fn sql(statement: &str) -> String {
@@ -101,6 +98,13 @@ pub(crate) async fn runtime_role(t: TenantId, role: &str) -> Arc<PgRuntime> {
 pub(crate) async fn planning(t: TenantId) -> Planning {
     let audit = audit_store().await;
     let runtime = runtime(t).await;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        audit
+            .on_runtime(runtime.clone(), t, &budget.control())
+            .await
+            .unwrap(),
+    );
     let clock = Arc::new(crate::clock::SystemClock);
     crate::flow::admit_storage(&runtime, t).await.unwrap();
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
@@ -310,10 +314,20 @@ pub(crate) async fn audit_store_with_integrity(
         let cutoff = deadline;
         rss_audit_postgres::Control::new(&timer, cutoff, cutoff, &cancel)
     };
+    let runtime = crate::audit_test_support::source_runtime(&pool, tenant())
+        .await
+        .unwrap();
     Arc::new(
-        rss_mdm_audit_integration::AuditStore::new(pool, integrity, &control)
-            .await
-            .unwrap(),
+        rss_mdm_audit_integration::AuditStore::new(
+            pool,
+            integrity,
+            runtime,
+            tenant(),
+            Default::default(),
+            &control,
+        )
+        .await
+        .unwrap(),
     )
 }
 

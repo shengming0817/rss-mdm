@@ -125,7 +125,7 @@ impl Fixture {
                 access.registration(),
                 case_tenant().into(),
                 access
-                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
                     .await?,
             )
             .with_retirement_test_budget(Duration::from_secs(30)),
@@ -138,7 +138,7 @@ impl Fixture {
             rss_request_context::TenantId::parse(case_tenant())?,
             monotonic.clone(),
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
         )
         .await?;
@@ -150,7 +150,7 @@ impl Fixture {
             .open(
                 runtime.clone(),
                 access
-                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
                     .await?,
                 rss_request_context::TenantId::parse(case_tenant())?,
                 clock.clone(),
@@ -175,7 +175,7 @@ impl Fixture {
             config,
             config.native_protector()?,
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             content,
             std::collections::BTreeMap::new(),
@@ -194,14 +194,14 @@ impl Fixture {
         let config = compiled.config;
         let timeline = access.timeline(
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             identity.tenant,
             &management.cursor_key,
         )?;
         timeline.initialize().await?;
         let agent_audit = access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
         let agent_pki = config.agent_pki.load(
             &config.identity.instance_id,
@@ -253,7 +253,7 @@ impl Fixture {
         crate::test_support::pki::seed_trust(&access.archive_pool(), pki.bindings()).await?;
         let associations = Arc::new(rss_mdm_device_service::Associations::new(
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             rss_request_context::TenantId::parse(case_tenant())?,
             &[7; 32],
@@ -276,6 +276,7 @@ impl Fixture {
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
+            audit_projection_health: Default::default(),
             channels: execution.channels.clone(),
             telemetry: None,
             runtime_observation: crate::setup::host::Observation::new(&config.runtime_binding, identity.tenant.to_string(), identity.instance.to_string()),
@@ -288,7 +289,7 @@ impl Fixture {
             certificate_archive: crate::certificate_archive::assemble(
                 &access,
                 access
-                    .audit_store(&crate::config::AuditConfig::Plain)
+                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
                     .await?,
                 Arc::new(crate::clock::SystemClock),
             ),
@@ -299,7 +300,7 @@ impl Fixture {
             protection: execution.protection.clone(),
             execution_runtime: execution.runtime.clone(),
             audit_store: access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
             execution: execution.service.clone(),
             flow: management,
@@ -405,7 +406,7 @@ impl Fixture {
                     manage,
                     native,
                     access
-                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?,
                     case_tenant().into(),
                     crate::native::ChannelKind::AppleManagement,
@@ -417,7 +418,7 @@ impl Fixture {
                     webhook,
                     hooks,
                     access
-                        .audit_store(&crate::config::AuditConfig::Plain)
+                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?,
                     case_tenant().into(),
                     crate::native::ChannelKind::AppleWebhookFixture,
@@ -1020,8 +1021,9 @@ impl Fixture {
                 rss_request_context::TenantId::parse(case_tenant())?,
                 // Only preparation is batched; the worker recovers each run in its own production transaction.
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(30)),
-                (&self.app.execution, &self.app.audit_store), |(service, audit), tx| Box::pin(async move {
-                    audit.lock_in(tx).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                &self.app.execution, |service, tx| Box::pin(async move {
+                    let partitions=pending.iter().map(|id|rss_mdm_audit_integration::source_partition(tx.tenant_id(),"mdm",&id.to_string())).collect::<std::result::Result<Vec<_>,_>>().map_err(|e|rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    tx.prepare_outbox_partitions(&partitions).await?;
                     for id in pending {
                         rss_mdm_execution_service::actions::production::queue_run_in(service, tx,
                             rss_mdm_execution_service::actions::production::RunInput {

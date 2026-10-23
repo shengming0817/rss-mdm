@@ -91,8 +91,15 @@ pub(crate) async fn open(
             .await
             .map_err(|_| Error::Unavailable(Failure::CommandStorage))?,
     );
+    let task_signing_audit = audit_store.clone();
     let result = async {
-        crate::database::admit_audit_runtime(&runtime, &audit_store, tenant).await?;
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit_store = Arc::new(
+            audit_store
+                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+                .await?,
+        );
         storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
         let outbox = Arc::new(
             PgOutboxStore::new(
@@ -234,7 +241,6 @@ pub(crate) async fn open(
                 agent_store: agent_store.clone(),
                 apple_results: apple_store.clone(),
                 policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
-                audit_store: audit_store.clone(),
                 runtime: runtime.clone(),
                 tenant,
                 inputs: inputs.clone(),
@@ -260,6 +266,7 @@ pub(crate) async fn open(
                 apple_results: apple_store.clone(),
                 policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
                 audit_store,
+                task_signing_audit,
                 runtime: runtime.clone(),
                 outbox,
                 store,

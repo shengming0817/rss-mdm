@@ -130,11 +130,11 @@ impl From<rss_mdm_audit_integration::InvalidFact> for Error {
         Self::Audit(e.into())
     }
 }
-pub(crate) fn transaction_error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
+pub(crate) fn transaction_error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match e {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => Error::Audit(e.into()),
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => Error::Audit(e),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 pub(crate) fn text(value: &str) -> bool {

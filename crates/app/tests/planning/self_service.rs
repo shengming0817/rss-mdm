@@ -88,10 +88,10 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
             .await?;
             let (resource, _, _) = f.script_resource(4096, true).await?;
             let (id, policy) = publish_definition(&mut f, definition(resource, true)).await?;
-            let reads = audit_count(|record| record.action() == "command_read")?;
+            let reads = audit_count(|record| record.action() == "command_read").await?;
             let directory = call(&f, Method::GET, DIRECTORY, None, true, true).await?;
             ensure!(
-                audit_count(|record| record.action() == "command_read")? == reads + 1,
+                audit_count(|record| record.action() == "command_read").await? == reads + 1,
                 "directory must retain its task read audit action"
             );
             ensure!(
@@ -105,16 +105,16 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                     && directory.1["items"][0]["selfService"]["presentation"]["vendorHelp"]["text"]
                         == "retained directory text"
             );
-            let reads = audit_count(|record| record.action() == "command_read")?;
+            let reads = audit_count(|record| record.action() == "command_read").await?;
             ensure!(
                 call(&f, Method::GET, DIRECTORY, None, false, true).await?.0
                     == StatusCode::UNAUTHORIZED
             );
             ensure!(
-                audit_count(|record| record.action() == "command_read")? == reads + 1,
+                audit_count(|record| record.action() == "command_read").await? == reads + 1,
                 "unauthenticated directory rejection must retain its task read audit action"
             );
-            let accepts = audit_count(|record| record.action() == "command_accept")?;
+            let accepts = audit_count(|record| record.action() == "command_accept").await?;
             ensure!(
                 call(
                     &f,
@@ -128,7 +128,7 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 .0 == StatusCode::BAD_REQUEST
             );
             ensure!(
-                audit_count(|record| record.action() == "command_accept")? == accepts + 1,
+                audit_count(|record| record.action() == "command_accept").await? == accepts + 1,
                 "JSON rejection before invocation service must retain its task accept audit action"
             );
             ensure!(
@@ -918,7 +918,7 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     let first_status = call(&f, Method::GET, &status_path, None, true, true).await?;
     ensure!(first_status.0 == StatusCode::OK && first_status.1["runId"] == accepted_one.1["runId"]);
     ensure!(run_count(first)?.trim() == "1" && run_count(second)?.trim() == "1");
-    let events = audit_records()?;
+    let events = audit_records().await?;
     let matching: Vec<_> = events
         .iter()
         .filter(|record| {
@@ -1468,9 +1468,31 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     let release = async {
         let overlap = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let waiters: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_locks w JOIN pg_locks held ON (w.database,w.classid,w.objid,w.objsubid)=(held.database,held.classid,held.objid,held.objsubid) WHERE held.pid=$1 AND held.locktype='advisory' AND held.granted AND w.locktype='advisory' AND NOT w.granted").bind(backend).fetch_one(&mut observer).await?;
-                let audit_chain: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_command_runtime' AND audit.usename='mdm_command_runtime' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%pg_advisory_xact_lock(hashtextextended($1,2465))%' AND audit.query LIKE '%rss_audit.reserve%' AND $1=ANY(pg_blocking_pids(business.pid)))").bind(backend).fetch_one(&mut observer).await?;
-                if waiters == 2 || audit_chain { return Ok::<_,anyhow::Error>(()); }
+                // This backend holds only this case's device lock. Both requests must
+                // reach its wait graph; the second may wait behind the first request's
+                // earlier business lock rather than directly on the device lock.
+                let overlapping: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_stat_activity direct_waiter
+                        JOIN pg_stat_activity competing ON competing.pid <> direct_waiter.pid
+                        WHERE direct_waiter.datname = current_database()
+                          AND competing.datname = current_database()
+                          AND direct_waiter.usename = 'mdm_command_runtime'
+                          AND competing.usename = 'mdm_command_runtime'
+                          AND direct_waiter.state = 'active'
+                          AND competing.state = 'active'
+                          AND direct_waiter.wait_event_type = 'Lock'
+                          AND competing.wait_event_type = 'Lock'
+                          AND $1 = ANY(pg_blocking_pids(direct_waiter.pid))
+                          AND ($1 = ANY(pg_blocking_pids(competing.pid))
+                               OR direct_waiter.pid = ANY(pg_blocking_pids(competing.pid)))
+                    )",
+                )
+                .bind(backend)
+                .fetch_one(&mut observer)
+                .await?;
+                if overlapping { return Ok::<_,anyhow::Error>(()); }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }).await;

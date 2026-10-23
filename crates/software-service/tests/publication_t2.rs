@@ -4,7 +4,7 @@ use rss_mdm_software_service::publication::*;
 mod publication_support;
 use publication_support::pg::*;
 use publication_support::*;
-fn assert_publication_audit(p: &rel::Attempt, record: &rel::PublicationKey, outcome: &str) {
+async fn assert_publication_audit(p: &rel::Attempt, record: &rel::PublicationKey, outcome: &str) {
     let digest: String = p
         .id()
         .digest()
@@ -13,6 +13,7 @@ fn assert_publication_audit(p: &rel::Attempt, record: &rel::PublicationKey, outc
         .map(|b| format!("{b:02x}"))
         .collect();
     let rows = audit_records()
+        .await
         .iter()
         .map(audit_payload)
         .filter(|p| {

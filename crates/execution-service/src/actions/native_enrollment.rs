@@ -29,7 +29,8 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, p, task, input, audit) = *ctx;
-                    storage::lock(tx, p.device()).await?;
+                    crate::transaction::lock_authority(s, tx).await?;
+                    super::native_recovery::lock_device(tx, p.device()).await?;
                     agent::principal(s, tx, p).await?;
                     let run = db::load_run(tx, task).await?;
                     agent::belongs(&run, p)?;
@@ -69,6 +70,7 @@ impl ExecutionService {
                     let attempt = input.attempt_id;
                     let authority = policy.frozen.grant;
                     let deadline = run.deadline;
+                    s.audit_store.prepare_in(tx, audit, &[]).await?;
                     let (receipt, replay) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {

@@ -1,7 +1,8 @@
 //! Real component and product receipt composition against the installer-owned schema.
 use anyhow::{Result, ensure};
-use rss_audit_postgres::{Committed, Control, Integrity, TransactionError};
+use rss_audit_postgres::{Control, Integrity};
 use rss_mdm_audit_integration::{AuditStore, Error, Fact, RequestAudit};
+use rss_mdm_audit_integration::{TransactionError, budget::SourceControl};
 use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging::transaction::LocalTxAttempt;
 use sqlx::{
@@ -11,7 +12,7 @@ use sqlx::{
 use std::{str::FromStr, time::Duration};
 use uuid::Uuid;
 
-fn state(attempt: LocalTxAttempt<Committed<()>, TransactionError<Error>>) -> &'static str {
+fn state<R, E>(attempt: LocalTxAttempt<R, E>) -> &'static str {
     attempt.fold(
         |_| "committed",
         |_| "not_started",
@@ -28,31 +29,14 @@ async fn bytes(pool: &PgPool, tenant: TenantId) -> Result<Vec<Vec<u8>>> {
         .execute(&mut *tx)
         .await?;
     let bytes = sqlx::query_scalar(
-        "SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid ORDER BY position",
-    )
-    .bind(tenant.to_string())
-    .fetch_all(&mut *tx)
-    .await?;
-    let mismatched: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts r JOIN rss_audit.records a USING(tenant_id,source_id,event_id) WHERE r.tenant_id=$1::uuid AND r.canonical<>a.canonical")
+        "SELECT source_bytes FROM mdm_audit.receipts WHERE tenant_id=$1::uuid ORDER BY source_id,event_id",
+    ).bind(tenant.to_string()).fetch_all(&mut *tx).await?;
+    let missing: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts r LEFT JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=r.message_id AND o.domain='mdm.audit' WHERE r.tenant_id=$1::uuid AND o.message_id IS NULL")
         .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
     ensure!(
-        mismatched == 0,
-        "receipt must contain the actual staged canonical bytes"
+        missing == 0,
+        "source receipt and Outbox must commit together"
     );
-    let receipts: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
-            .bind(tenant.to_string())
-            .fetch_one(&mut *tx)
-            .await?;
-    ensure!(receipts == bytes.len() as i64);
-    let ledger_entries: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_ledger.entries WHERE tenant_id=$1::uuid")
-            .bind(tenant.to_string())
-            .fetch_one(&mut *tx)
-            .await?;
-    let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND ledger_sequence IS NOT NULL")
-        .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
-    ensure!(ledger_entries == linked);
     tx.rollback().await?;
     Ok(bytes)
 }
@@ -69,9 +53,6 @@ fn integrity(ledger: bool) -> Result<Integrity> {
 }
 
 mod test_support;
-
-// Exercise batch correctness independently of product performance policy in
-// both modes; each event retains a separate identity and exact recovery receipt.
 
 mod budget;
 mod integrity;
@@ -99,4 +80,32 @@ async fn pool(role: &str) -> Result<PgPool> {
         .max_connections(1)
         .connect_with(options)
         .await?)
+}
+
+async fn new_store(pool: PgPool, integrity: Integrity, tenant: TenantId) -> Result<AuditStore> {
+    new_store_with_limits(pool, integrity, tenant, Default::default()).await
+}
+
+async fn new_store_with_limits(
+    pool: PgPool,
+    integrity: Integrity,
+    tenant: TenantId,
+    limits: rss_mdm_audit_integration::BacklogLimits,
+) -> Result<AuditStore> {
+    // Random tenants isolate receipt and integrity observations in the existing fixture DB.
+    use sqlx::Connection;
+    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
+        .ssl_mode(PgSslMode::VerifyFull)
+        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
+    let mut owner = sqlx::PgConnection::connect_with(&options).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant.to_string())
+        .execute(&mut owner)
+        .await?;
+    sqlx::query("INSERT INTO rss_transactional_messaging.tenant_epoch(tenant_id,epoch) VALUES($1::uuid,1) ON CONFLICT DO NOTHING")
+        .bind(tenant.to_string()).execute(&mut owner).await?;
+    owner.close().await?;
+    let runtime = crate::audit_test_support::source_runtime(&pool, tenant).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    Ok(AuditStore::new(pool, integrity, runtime, tenant, limits, &budget.control()).await?)
 }

@@ -109,6 +109,16 @@ impl ExecutionService {
                     if proof.tenant_id() != service.tenant.to_string() {
                         return Err(Error::Forbidden.into());
                     }
+                    crate::transaction::lock_authority(service, tx).await?;
+                    let mut permissions = vec![Permission::SecurityOperate];
+                    if matches!(input.action, Action::ConfigureFilevault) {
+                        permissions.push(Permission::ConfigurationWrite);
+                    }
+                    let snapshot =
+                        storage::authorized_native(tx, proof, device, &permissions).await?;
+                    storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
+                    crate::actions::native_recovery::lock_device(tx, device).await?;
+                    service.audit_store.prepare_in(tx, audit, &[]).await?;
                     rss_reconcile_postgres::messaging::wake_in(
                         tx,
                         &crate::service::target(service.tenant, device),
@@ -118,14 +128,7 @@ impl ExecutionService {
                     .await?;
                     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery)
                         .await?;
-                    let mut permissions = vec![Permission::SecurityOperate];
-                    if matches!(input.action, Action::ConfigureFilevault) {
-                        permissions.push(Permission::ConfigurationWrite);
-                    }
-                    let snapshot =
-                        storage::authorized_native(tx, proof, device, &permissions).await?;
-                    storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
-                    storage::lock(tx, device).await?;
+
                     let fingerprint = crate::protection::fingerprint(
                         &service.protection,
                         service.tenant,

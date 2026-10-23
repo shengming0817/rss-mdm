@@ -4,6 +4,38 @@ use rss_mdm_device_service::{Confirm, ViewRef};
 use serde_json::json;
 #[path = "personnel.rs"]
 mod personnel;
+// Hold the same publication fence as an association writer and observe the real
+// reader/mutation waiting there. Its authorization lock must remain available.
+pub(super) async fn publication_first<T>(
+    c: &mut PgConnection,
+    proof: &AuthorizedPrincipal,
+    operation: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    let mut hold = c.begin().await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, TenantId::parse(proof.tenant_id())?)
+        .await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3),async {
+            loop {
+                let waiting: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                if waiting { break; }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::task::yield_now().await;
+            }
+            let free: bool=sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))")
+                .bind(format!("{}:{}",proof.tenant_id(),proof.instance_id())).fetch_one(&mut *hold).await?;
+            anyhow::ensure!(free,"device consumer acquired authorization before publication watermark");
+            Ok::<_,anyhow::Error>(())
+        }).await;
+        hold.rollback().await?;
+        observed.context("device consumer must actually wait at publication fence")??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (result, released) = tokio::join!(operation, release);
+    released?;
+    result
+}
+
 #[tokio::test]
 #[ignore = "MODULE=device.views: real tenant transaction and authority"]
 async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow::Result<()> {
@@ -26,13 +58,15 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             seed(agent, "agent", "VIEW-SERIAL")?;
             seed(other, "mdm", "different")?;
             s.reconcile().await?;
-            let page = s
-                .views(
+            let page = publication_first(&mut c, &admin, async {
+                Ok(s.views(
                     &admin,
                     &query(1),
                     &people(&authority, &credential, &sessions)?,
                 )
-                .await?;
+                .await?)
+            })
+            .await?;
             assert_eq!(
                 page["statistics"],
                 json!({"endpointCount":3,"deviceViewCount":2})
@@ -48,13 +82,15 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 .views(&admin, &next, &people(&authority, &credential, &sessions)?)
                 .await?;
             assert_eq!(last["items"].as_array().unwrap().len(), 1);
-            let view = s
-                .view(
+            let view = publication_first(&mut c, &admin, async {
+                Ok(s.view(
                     &admin,
                     &reference,
                     &people(&authority, &credential, &sessions)?,
                 )
-                .await?;
+                .await?)
+            })
+            .await?;
             assert_eq!(
                 view["fields"]["device.model"]["sources"]
                     .as_array()
@@ -308,7 +344,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
         access.registration(),
         case_a().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let request = registration

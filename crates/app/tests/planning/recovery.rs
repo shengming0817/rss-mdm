@@ -254,7 +254,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             }
         };
         let before = sql(&format!(
-            "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'",
+            "SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id='{}' AND source_id='mdm.business'",
             tenant()
         ));
         let release = async {
@@ -283,7 +283,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
         ));
         assert_eq!(
             sql(&format!(
-                "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}'",
+                "SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id='{}' AND source_id='mdm.business'",
                 tenant()
             )),
             before
@@ -535,7 +535,9 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             &control,
         )
         .await;
-    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime");
+    sql(
+        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+    );
     assert!(result.is_err());
     assert_eq!(
         serde_json::from_str::<Value>(&snapshot(task)).unwrap()[1],
@@ -596,6 +598,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     assert_eq!(state.unwrap()["failure"], "automation_suspended");
     assert_eq!(
         audit_records()
+            .await
             .iter()
             .filter(|r| r.action() == "automation_failed"
                 && r.operation() == Some(task.to_string().as_str()))

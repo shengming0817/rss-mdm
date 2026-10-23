@@ -287,6 +287,7 @@ impl ExecutionService {
         audit.identify_service("command-dispatch");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
+            service.audit_store.prepare_in(tx,audit,&[]).await?;
             let fact=Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
@@ -321,6 +322,261 @@ async fn configuration_device(tx: &mut PgTransaction<'_>, digest: &str) -> Resul
             .bind(tenant).bind(digest).fetch_optional(c).await
     })).await?)
 }
+pub(crate) enum PreparedRecovery {
+    Empty,
+    Retirement(crate::unmanage::PreparedRetirement),
+    Native(actions::native_recovery::Work, Uuid),
+    Collection(actions::native_collection::PreparedAdmission),
+    Policy(
+        actions::recovery::PreparedRecovery,
+        Option<actions::native_software::PreparedAdmission>,
+    ),
+    Configuration(String),
+    Device(String),
+}
+/// Discover only this bounded operation under existing owner fences. No effect precedes claim validation.
+pub(crate) async fn prepare(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    entity: &str,
+    audit: &RequestAudit,
+) -> Result<PreparedRecovery> {
+    let tenant = tx.tenant_id();
+    tx.with_connection(move |c| {
+        Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await })
+    })
+    .await?;
+    crate::transaction::lock_authority(service, tx).await?;
+    let mut partitions = Vec::new();
+    let prepared = if let Some(id) = crate::unmanage::operation(entity) {
+        let batch = service.prepare_retirement_in(tx, id).await?;
+        partitions.extend(batch.partitions.iter().cloned());
+        PreparedRecovery::Retirement(batch)
+    } else if let Some(work) = actions::native_recovery::Work::parse(entity) {
+        let t = tenant.to_string();
+        let device: String = tx.with_connection(move |c| Box::pin(async move {
+            match work {
+                actions::native_recovery::Work::Run(id) => sqlx::query_scalar("SELECT device FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(id).fetch_one(c).await,
+                actions::native_recovery::Work::CheckIn { registration, .. } => sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2").bind(t).bind(registration).fetch_one(c).await,
+            }
+        })).await?;
+        actions::native_recovery::lock_device(tx, &device).await?;
+        if let actions::native_recovery::Work::Run(id) = work {
+            actions::storage::load_run(tx, id).await?;
+        }
+        let run_id = Uuid::new_v4();
+        partitions.push(rss_mdm_audit_integration::source_partition(
+            tenant,
+            "mdm",
+            &run_id.to_string(),
+        )?);
+        partitions.push(rss_mdm_audit_integration::source_partition(
+            tenant, "device", &device,
+        )?);
+        PreparedRecovery::Native(work, run_id)
+    } else if let Some(id) = actions::recovery::policy_id(entity) {
+        crate::sources::storage::lock(tx, id).await?;
+        let policy = crate::sources::storage::read_in(&service.policy_reader, tx, id).await?;
+        if policy.as_ref().is_some_and(|p| {
+            p.definition.action.kind() == rss_mdm_policy::ActionKind::NativeCollection
+        }) {
+            if let Some(batch) = actions::native_collection::prepare_policy(service, tx, id).await?
+            {
+                partitions.push(rss_mdm_audit_integration::source_partition(
+                    tenant,
+                    "mdm",
+                    &batch.run_id.to_string(),
+                )?);
+                PreparedRecovery::Collection(batch)
+            } else {
+                PreparedRecovery::Empty
+            }
+        } else {
+            let batch = actions::recovery::prepare(tx, id).await?;
+            partitions.extend(batch.partitions.iter().cloned());
+            let admission = actions::native_software::prepare_policy(service, tx, id).await?;
+            if let Some(admission) = &admission {
+                partitions.push(rss_mdm_audit_integration::source_partition(
+                    tenant,
+                    "mdm",
+                    &admission.run_id.to_string(),
+                )?);
+            }
+            PreparedRecovery::Policy(batch, admission)
+        }
+    } else {
+        let configuration = entity.strip_prefix("configuration:");
+        let device = match configuration {
+            Some(digest) => configuration_device(tx, digest).await?,
+            None => device(tx, entity).await?,
+        };
+        if let Some(device) = device {
+            actions::native_recovery::lock_device(tx, &device).await?;
+            partitions.push(rss_mdm_audit_integration::source_partition(
+                tenant, "device", &device,
+            )?);
+            if configuration.is_some() {
+                PreparedRecovery::Configuration(device)
+            } else {
+                PreparedRecovery::Device(device)
+            }
+        } else {
+            PreparedRecovery::Empty
+        }
+    };
+    partitions.push(rss_mdm_audit_integration::source_partition(
+        tenant, "mdm", "request",
+    )?);
+    service
+        .audit_store
+        .prepare_in(tx, audit, &partitions)
+        .await?;
+    Ok(prepared)
+}
+pub(crate) async fn apply_prepared(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    prepared: PreparedRecovery,
+    audit: &RequestAudit,
+) -> Result<bool> {
+    match prepared {
+        PreparedRecovery::Empty => Ok(false),
+        PreparedRecovery::Retirement(batch) => {
+            service.advance_retirement_in(tx, batch, audit).await
+        }
+        PreparedRecovery::Native(work, run_id) => {
+            actions::native_recovery::step(service, tx, work, run_id).await
+        }
+        PreparedRecovery::Collection(batch) => {
+            actions::native_collection::admit_policy(service, tx, batch).await
+        }
+        PreparedRecovery::Policy(batch, admission) => {
+            actions::recovery::recover(service, tx, batch).await?;
+            if let Some(admission) = admission {
+                actions::native_software::admit_policy(service, tx, admission).await
+            } else {
+                Ok(false)
+            }
+        }
+        PreparedRecovery::Configuration(device) => service
+            .reconcile_configuration(tx, &device, audit)
+            .await
+            .map(|()| false),
+        PreparedRecovery::Device(name) => {
+            let tenant = service.tenant.to_string();
+            let key = name.clone();
+            let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
+            let scope = dc::Scope::new(
+                service.tenant,
+                stored(dc::DeviceId::parse(
+                    &row.try_get::<String, _>("command_device")?,
+                ))?,
+            );
+            let after = row
+                .try_get::<Option<String>, _>("recovery_after")?
+                .map(|s| stored(dc::CommandId::parse(&s)))
+                .transpose()?;
+            let registration = storage::current_registration(
+                tx,
+                &name,
+                rss_mdm_registration_service::Purpose::Primary,
+            )
+            .await;
+            if let Ok((id, generation)) = registration {
+                storage::authority(service, tx, &name, id, generation).await?;
+            }
+            let tenant = service.tenant.to_string();
+            let command_device = scope.device().as_uuid().to_string();
+            let cursor = after.as_ref().map(|v| v.as_str().to_owned());
+            let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
+            let page = service
+                .store
+                .recover(
+                    tx,
+                    scope,
+                    checked_input(dc::BatchLimit::new(64))?,
+                    after.as_ref(),
+                )
+                .await?;
+            if matches!(registration, Err(Fault::Request(Error::Conflict))) {
+                for command in &page.commands {
+                    if !command.status().is_terminal() {
+                        let transition = service
+                            .store
+                            .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
+                            .await?;
+                        if transition.outcome == dc::Outcome::OutOfOrder {
+                            return Err(Error::Conflict.into());
+                        }
+                    }
+                }
+            } else {
+                registration?;
+            }
+            for command in &page.commands {
+                if !command.status().is_terminal() {
+                    let operation = storage::load(
+                        tx,
+                        &service.protection,
+                        stored(Uuid::parse_str(command.spec().id().as_str()))?,
+                    )
+                    .await?;
+                    let now = storage::now(tx).await?;
+                    if !storage::authority_valid(
+                        &service.source,
+                        &service.protection,
+                        tx,
+                        &operation,
+                        now,
+                    )
+                    .await?
+                        && service
+                            .store
+                            .cancel(tx, scope, command.spec().id(), command.spec().coordinate())
+                            .await?
+                            .outcome
+                            == dc::Outcome::OutOfOrder
+                    {
+                        return Err(Error::Conflict.into());
+                    }
+                }
+            }
+            for (id, version, status) in previous {
+                let operation =
+                    storage::load(tx, &service.protection, stored(Uuid::parse_str(&id))?).await?;
+                let command = service.required_command(tx, &operation).await?;
+                if command.version() != version {
+                    if command.status().is_terminal() {
+                        crate::wake::wake_native_in(service.source.clone(), tx, &operation.device)
+                            .await?;
+                    }
+                    let fact_audit = audit.transaction_copy();
+                    fact_audit.identify_service("command-recovery");
+                    fact_audit.operation(operation.id, "command_reconcile");
+                    fact_audit.target_device(&operation.device);
+                    fact_audit.registration(operation.registration);
+                    let details = serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
+                    let fingerprint = checked_input(serde_json::to_vec(&details))?;
+                    let fact = Fact::business(
+                        &fact_audit,
+                        &format!("command:{id}:recover:{}", command.version()),
+                        &fingerprint,
+                        200,
+                        "success",
+                        None,
+                    )?
+                    .with_details(details)?;
+                    fact_audit.finalize(None);
+                    service.audit_store.append_in(tx, &fact, false).await?;
+                }
+            }
+            let cursor = page.after.map(|s| s.as_str().to_owned());
+            let tenant = service.tenant.to_string();
+            tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
+            Ok(false)
+        }
+    }
+}
 impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     type State = bool;
     fn observe<T: rss_reconcile::Timer>(
@@ -333,7 +589,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
         Box::pin(async move {
             control.check()?;
             let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
-            let active=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
+            let active=crate::transaction::inspect(&self.runtime,self.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
             if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::active(tx,work).await; }
@@ -379,74 +635,53 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                 let audit = RequestAudit::new(self.tenant.to_string(), "management_write");
                 let error = Mutex::new(None);
                 control.check()?;
-                let attempt=self.runtime.local_tx_with_context(self.tenant,rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),(self,claim,(self,claim.target().entity(),&audit,&error)),|(service,claim,context),tx|Box::pin(async move {
-                if let Err(e)=service.audit_store.lock_in(tx).await {return Err(rejection(Fault::Request(e.into()),context.3));}
-                rss_reconcile_postgres::messaging::protect_in(tx,claim,context,|ctx,tx|Box::pin(async move {
-            let (service,entity,audit,failure) = *ctx;
-            let result:Result<bool>=async {
-                if let Some(id)=crate::unmanage::operation(entity){return service.advance_retirement_in(tx,id,audit).await;}
-                if let Some(work)=actions::native_recovery::Work::parse(entity) { return actions::native_recovery::step(service,tx,work).await; }
-                if let Some(id)=actions::recovery::policy_id(entity) {
-                    crate::sources::storage::lock(tx,id).await?;
-                    if let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await?
-                        && policy.definition.action.kind()==rss_mdm_policy::ActionKind::NativeCollection {
-                        return actions::native_collection::admit_policy(service,tx,id).await;
-                    }
-                    if let Some(policy)=crate::sources::storage::read_in(&service.policy_reader,tx,id).await?
-                        && matches!(policy.definition.action,rss_mdm_policy::Action::Software { channel:rss_mdm_policy::SoftwareChannel::Mdm,.. }) {
-                        let more=actions::native_software::admit_policy(service,tx,id).await?;
-                        actions::recovery::recover(service,tx,id).await?;
-                        return Ok(more);
-                    }
-                    actions::recovery::recover(service,tx,id).await?;
-                    return Ok(false);
-                }
-                if let Some(digest)=entity.strip_prefix("configuration:") {
-                    let Some(device)=configuration_device(tx,digest).await? else {return Ok(false)};
-                    return service.reconcile_configuration(tx,&device,audit).await.map(|()| false);
-                }
-                let Some(name)=device(tx,entity).await? else{return Ok(false)};
-                storage::lock(tx,&name).await?;
-                let tenant=service.tenant.to_string();let key=name.clone();
-                let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT command_device::text,generation,epoch,recovery_after FROM mdm_commands.devices WHERE tenant_id=$1::uuid AND device=$2 FOR UPDATE").bind(tenant).bind(key).fetch_one(c).await})).await?;
-                let scope=dc::Scope::new(service.tenant,stored(dc::DeviceId::parse(&row.try_get::<String,_>("command_device")?))?);
-                let after=row.try_get::<Option<String>,_>("recovery_after")?.map(|s|stored(dc::CommandId::parse(&s))).transpose()?;
-                let registration=storage::current_registration(tx, &name, rss_mdm_registration_service::Purpose::Primary).await;
-                if let Ok((id,generation))=registration {storage::authority(service,tx,&name,id,generation).await?;}
-                let tenant=service.tenant.to_string();let command_device=scope.device().as_uuid().to_string();let cursor=after.as_ref().map(|v|v.as_str().to_owned());
-                let previous=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(String,i64,String)>("SELECT command_id,version,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND device_id=$2::uuid AND terminal_at IS NULL AND ($3::text IS NULL OR command_id COLLATE \"C\">$3 COLLATE \"C\") ORDER BY command_id COLLATE \"C\" LIMIT 64").bind(tenant).bind(command_device).bind(cursor).fetch_all(c).await})).await?;
-                let page=service.store.recover(tx,scope,checked_input(dc::BatchLimit::new(64))?,after.as_ref()).await?;
-                if matches!(registration,Err(Fault::Request(Error::Conflict))) {
-                    for command in &page.commands {if !command.status().is_terminal(){let transition=service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?;if transition.outcome==dc::Outcome::OutOfOrder{return Err(Error::Conflict.into());}}}
-                } else {registration?;}
-                for command in &page.commands {
-                    if !command.status().is_terminal(){
-                        let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(command.spec().id().as_str()))?).await?;
-                        let now=storage::now(tx).await?;
-                        if !storage::authority_valid(&service.source, &service.protection,tx,&operation,now).await? && service.store.cancel(tx,scope,command.spec().id(),command.spec().coordinate()).await?.outcome==dc::Outcome::OutOfOrder {return Err(Error::Conflict.into());}
-
-                    }
-                }
-                for (id,version,status) in previous {
-                    let operation=storage::load(tx,&service.protection,stored(Uuid::parse_str(&id))?).await?;
-                    let command=service.required_command(tx,&operation).await?;
-                    if command.version()!=version {
-                        if command.status().is_terminal() {crate::wake::wake_native_in(service.source.clone(), tx,&operation.device).await?;}
-                        let fact_audit=audit.transaction_copy();fact_audit.identify_service("command-recovery");fact_audit.operation(operation.id,"command_reconcile");fact_audit.target_device(&operation.device);fact_audit.registration(operation.registration);
-                        let details=serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
-                        let fingerprint=checked_input(serde_json::to_vec(&details))?;
-                        let fact=Fact::business(&fact_audit,&format!("command:{id}:recover:{}",command.version()),&fingerprint,200,"success",None)?.with_details(details)?;
-                        fact_audit.finalize(None);
-                        service.audit_store.append_in(tx,&fact,false).await?;
-                    }
-                }
-                let cursor=page.after.map(|s|s.as_str().to_owned());let tenant=service.tenant.to_string();
-                tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.devices SET recovery_after=$3 WHERE tenant_id=$1::uuid AND device=$2").bind(tenant).bind(name).bind(cursor).execute(c).await?;Ok(())})).await?;
-                Ok(false)
-            }.await;
-            match result {Ok(more)=>{audit.mark_commit_started();Ok(more)},Err(e)=>Err(rejection(e,failure))}
-        })).await
-            })).await;
+                let attempt = self
+                    .runtime
+                    .local_tx_with_context(
+                        self.tenant,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            control.remaining(),
+                        ),
+                        (self, claim, (self, claim.target().entity(), &audit, &error)),
+                        |(service, claim, context), tx| {
+                            Box::pin(async move {
+                                if let Err(e) = service.audit_store.bind_in(tx).await {
+                                    return Err(rejection(Fault::Request(e.into()), context.3));
+                                }
+                                let prepared =
+                                    match prepare(service, tx, context.1, context.2).await {
+                                        Ok(prepared) => prepared,
+                                        Err(error) => return Err(rejection(error, context.3)),
+                                    };
+                                rss_reconcile_postgres::messaging::protect_in(
+                                    tx,
+                                    claim,
+                                    (context, Some(prepared)),
+                                    |ctx, tx| {
+                                        Box::pin(async move {
+                                            let ((service, _, audit, failure), prepared) = ctx;
+                                            match apply_prepared(
+                                                service,
+                                                tx,
+                                                prepared.take().expect("one recovery batch"),
+                                                audit,
+                                            )
+                                            .await
+                                            {
+                                                Ok(more) => {
+                                                    audit.mark_commit_started();
+                                                    Ok(more)
+                                                }
+                                                Err(e) => Err(rejection(e, failure)),
+                                            }
+                                        })
+                                    },
+                                )
+                                .await
+                            })
+                        },
+                    )
+                    .await;
                 let result = settle(attempt, &audit, error);
                 audit.finalize(
                     result

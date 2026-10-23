@@ -15,6 +15,7 @@ pub async fn accept_for_device(
     policy: &crate::sources::software::SoftwareExecutionPolicy,
     target: &Target,
     now: i64,
+    id: Uuid,
 ) -> Result<()> {
     if policy.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall {
         return Ok(());
@@ -22,7 +23,6 @@ pub async fn accept_for_device(
     let Some(slot) = slot_in(service, tx, policy, target, None, now).await? else {
         return Ok(());
     };
-    let id = Uuid::new_v4();
     queue_run_in(
         service,
         tx,

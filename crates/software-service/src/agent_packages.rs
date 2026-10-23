@@ -429,13 +429,14 @@ pub async fn publish<C: ManagementContentPort>(
                 let (app, p, i, a, hash, prepared) = ctx;
                 let current = transaction::current(tx, p).await?;
                 current.require(p, Permission::ReleasePublish, None)?;
-                if let Some(prepared) = prepared.as_ref() {
-                    tx.prepare_outbox_partitions(&[app
-                        .catalog
-                        .publication_partition(&prepared.version)?])
-                        .await?;
-                }
+                let partitions = prepared
+                    .as_ref()
+                    .map(|prepared| app.catalog.publication_partition(&prepared.version))
+                    .transpose()?
+                    .into_iter()
+                    .collect::<Vec<_>>();
                 app.catalog.reader().lock_in(tx).await?;
+                app.audit.prepare_in(tx, a, &partitions).await?;
                 let old = replay_in(tx, i.operation_id, hash).await?;
                 let replayed = old.is_some();
                 let package = if let Some(old) = old {
@@ -634,6 +635,7 @@ pub async fn withdraw<C: ManagementContentPort>(
   let (app,p,id,operation,a,hash)=ctx;
   transaction::current(tx,p).await?.require(p,Permission::SoftwareWithdraw,None)?;
   app.catalog.reader().lock_in(tx).await?;
+  app.audit.prepare_in(tx,a,&[]).await?;
   let tenant=app.tenant.to_string();let id=*id;let op=*operation;let d=hash.clone();
   let old=tx.with_connection(move|c|Box::pin(async move{
    if let Some(row)=sqlx::query("SELECT fingerprint FROM mdm_software.operations WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(op).fetch_optional(&mut *c).await?{return Ok(Some(row.try_get::<Vec<u8>,_>("fingerprint")?));}

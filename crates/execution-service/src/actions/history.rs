@@ -21,7 +21,7 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<crate::queries::records::Rollout, crate::queries::QueryError> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,id,audit),|ctx,tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,id,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,id,audit)=*ctx;
             let current=crate::action_admission::current(tx,proof).await?;
             current.require(proof,Permission::PolicyRead,None)?;
@@ -44,7 +44,7 @@ impl Queries {
                 prior=(counts.total,counts.verified);
                 prior_ready=counts.ready;
             }
-            service.audit_store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             crate::queries::records::decode(json!({"policyId":id,"versionId":policy.version,"paused":!policy.state.is_enabled(),"asOf":now,"stages":stages}))
         })).await.map_err(Into::into)
     }
@@ -61,8 +61,8 @@ impl Queries {
         {
             return Err(Error::Malformed.into());
         }
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,proof,id,page,audit),|ctx,tx|Box::pin(async move {
-            let (store,proof,id,page,audit)=*ctx;
+        crate::transaction::inspect(&self.runtime, self.tenant,(proof,id,page,audit),|ctx,tx|Box::pin(async move {
+            let (proof,id,page,audit)=*ctx;
             let current=crate::action_admission::current(tx,proof).await?;
             current.require(proof,Permission::PolicyRead,None)?;
             current.require_all_devices(proof,Permission::OperationRead)?;
@@ -75,7 +75,7 @@ impl Queries {
             })).await?;
             let more=rows.len()>20;rows.truncate(20);
             let next=if more {rows.last().map(|row|json!({"availableAt":row["availableAt"],"taskId":row["taskId"]}))}else{None};
-            store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             crate::queries::records::decode(json!({"items":rows,"nextCursor":next}))
         })).await.map_err(Into::into)
     }
@@ -86,8 +86,8 @@ impl Queries {
         id: Uuid,
         audit: &RequestAudit,
     ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
-        crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(&self.audit_store,&self.policy_reader,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
-            let (store,reader,proof,policy,id,audit)=*ctx;
+        crate::transaction::inspect(&self.runtime, self.tenant,(&self.policy_reader,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
+            let (reader,proof,policy,id,audit)=*ctx;
             let mut run=db::load_run(tx,id).await?;
             let plan=db::load_source(reader,tx,run.source).await?;
             if plan.owner()!=policy {
@@ -106,7 +106,7 @@ impl Queries {
             if let Some(native)=super::output::restore_native(tx,&plan,&run).await? {
                 run.result.as_mut().ok_or(Error::Malformed)?["native"]=crate::stored(serde_json::to_value(native))?;
             }
-            store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let mut value=json!({"taskId":id,"authorization":run.invocation.as_ref().map(|i|&i.authorization),"attemptId":run.state.attempt(),"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});

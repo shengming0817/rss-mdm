@@ -80,6 +80,13 @@ impl Backend {
         use rss_transactional_messaging_postgres::{
             PgConfig, PgPassword, PgPrivateCa, PgRecoveryStore,
         };
+        let audit_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+        let audit = Arc::new(
+            audit
+                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
+                .await?,
+        );
         let db = &config.recovery_database;
         let pg = PgConfig::new(
             &db.host,
@@ -170,7 +177,30 @@ impl Backend {
                 |ctx, tx| {
                     Box::pin(async move {
                         let (backend, proof, audit, command, failure) = ctx;
-                        backend.audit.lock_in(tx).await.map_err(PgError::from)?;
+                        let preserve_audit_error = |error: rss_mdm_audit_integration::Error| {
+                            match failure.lock() {
+                                Ok(mut failure) => *failure = Some(HttpError::from(&error)),
+                                Err(_) => {
+                                    return PgError::from(sqlx::Error::Protocol(
+                                        "webhook result lock".into(),
+                                    ));
+                                }
+                            }
+                            PgError::from(error)
+                        };
+                        if operation(command).is_some() {
+                            backend
+                                .audit
+                                .prepare_in(tx, audit, &[])
+                                .await
+                                .map_err(preserve_audit_error)?;
+                        } else {
+                            backend
+                                .audit
+                                .bind_in(tx)
+                                .await
+                                .map_err(preserve_audit_error)?;
+                        }
                         let owned = (*backend).clone();
                         let p = proof.clone();
                         let cmd = command.clone();
@@ -222,13 +252,9 @@ impl Backend {
                                 .audit
                                 .append_in(tx, &fact, replayed)
                                 .await
-                                .map_err(PgError::from)?;
+                                .map_err(preserve_audit_error)?;
                         } else {
-                            backend
-                                .audit
-                                .append_request_in(tx, audit, 200, "success")
-                                .await
-                                .map_err(PgError::from)?;
+                            audit.require_request_settlement();
                         }
                         audit.mark_commit_started();
                         Ok(value)

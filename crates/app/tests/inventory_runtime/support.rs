@@ -39,7 +39,7 @@ pub(crate) async fn report_statuses(
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
     let store = access
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     let audit = RequestAudit::new(principal.tenant().to_string(), "windows_management");
     audit.registration(principal.registration());
@@ -50,7 +50,7 @@ pub(crate) async fn report_statuses(
     let deadline = rss_request_context::Deadline::from_timeout(&timer, Duration::from_secs(2))?;
     let control = {
         let cutoff = deadline;
-        rss_audit_postgres::Control::new(&timer, cutoff, cutoff, &cancel)
+        rss_mdm_audit_integration::budget::SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
     let attempt = store
         .write(
@@ -72,7 +72,7 @@ pub(crate) async fn report_statuses(
                         store.append(tx, fact, false).await?;
                     }
                     audit.operation(id, "windows_management");
-                    store.append_request(tx, audit, 200, "success").await?;
+                    audit.require_request_settlement();
                     audit.mark_commit_started();
                     Ok::<_, anyhow::Error>((scope, id))
                 })
@@ -80,7 +80,7 @@ pub(crate) async fn report_statuses(
         )
         .await;
     let result = attempt.fold(
-        |value| Ok(value.into_value()),
+        Ok,
         |error| Err(anyhow::anyhow!("{error}")),
         |error| Err(anyhow::anyhow!("{error}")),
         |error| Err(anyhow::anyhow!("rollback unconfirmed: {error}")),
@@ -252,7 +252,7 @@ pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>>
         TenantId::parse(case_a())?,
         clock(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .await?)

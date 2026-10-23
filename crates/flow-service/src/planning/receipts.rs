@@ -35,7 +35,13 @@ pub async fn audit(
         .map_err(Error::from)?;
         store.append_in(tx, &fact, replayed).await
     } else {
-        store.append_request_in(tx, audit, status, result).await
+        {
+            audit.require_request_settlement();
+            if admitted {
+                audit.management_result(rss_mdm_audit_integration::ManagementResult::Unknown);
+            }
+            Ok(())
+        }
     };
     result.map_err(Error::from)?;
     Ok(())

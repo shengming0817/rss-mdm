@@ -86,6 +86,7 @@ pub fn settle<T>(
         |_| Err(Error::Unavailable(Failure::CommandStorage)),
     )
 }
+/// The owner locks its actual business objects before declaring partitions.
 pub async fn run<C: Send, R: Send, F>(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
@@ -111,7 +112,7 @@ where
             |state, tx| {
                 Box::pin(async move {
                     let (audit_store, context, operation, audit, failure) = state;
-                    if let Err(error) = audit_store.lock_in(tx).await {
+                    if let Err(error) = audit_store.bind_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure));
                     }
                     if let Err(error) = tx
@@ -347,4 +348,18 @@ impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
             Receipt::Invariant => Error::Unavailable(Failure::CommandStorage).into(),
         }
     }
+}
+
+/// Existing authorization and planning fences precede device and callback-owned locks.
+pub(crate) async fn lock_authority(
+    service: &crate::ExecutionService,
+    tx: &mut PgTransaction<'_>,
+) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    let instance = service.instance.clone();
+    tx.with_connection(move |c| {
+        Box::pin(async move { Ok(crate::authorization::lock_on(c, &tenant, &instance).await) })
+    })
+    .await??;
+    lock(tx).await
 }

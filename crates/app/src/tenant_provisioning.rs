@@ -124,9 +124,9 @@ impl Service {
         )
         .map_err(|_| Error::Malformed)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let attempt=self.audit.write(self.management,&budget.control(),(self,proof,operation,name,digest,fact,audit),|(service,proof,operation,name,digest,fact,audit),tx|Box::pin(async move {
+        let attempt=self.audit.write(self.management,&budget.source_control(),(self,proof,operation,name,digest,fact,audit),|(service,proof,operation,name,digest,fact,audit),tx|Box::pin(async move {
             let mut context=(&**service,*proof,*operation,*name,*digest);
-            let (receipt,administrator_operation,replayed)=tx.with_connection_context(&mut context,|(service,proof,operation,name,digest),c|Box::pin(async move {
+            let (receipt,administrator_operation,replayed)=tx.with_connection_context(&mut context,|(service,proof,operation,name,digest),c|Box::pin(async move { async {
                 sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_|Reason::Storage)?;
                 service.authorize(c,proof,Permission::TenantCreate).await?;
                 service.authorize(c,proof,Permission::TenantAdministratorCreate).await?;
@@ -149,16 +149,16 @@ impl Service {
                     .execute(&mut *c).await.map_err(|_|Reason::Storage)?;
                 scope(c,proof.tenant_id()).await?;
                 Ok::<_,Reason>((receipt,administrator_operation,false))
-            })).await?;
+            }.await.map_err(project) })).await?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            else {service.audit.append(tx,fact,false).await.map_err(|_|Reason::Storage)?;}
+            else {service.audit.append(tx,fact,false).await?;}
             audit.mark_commit_started();
-            Ok::<_,Reason>((receipt,administrator_operation))
+            Ok::<_,Error>((receipt,administrator_operation))
         })).await;
         attempt.fold(
             |value| {
                 audit.mark_committed();
-                Ok(value.into_value())
+                Ok(value)
             },
             |error| Err(tx_error(error)),
             |error| {

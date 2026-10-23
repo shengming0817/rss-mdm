@@ -171,9 +171,9 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .is_success(),
         "exported BST must not authenticate"
     );
-    host.app
-        .audit_store
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    host.app.audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let unknown = post(wire.clone()).send().await?;
     ensure!(
         unknown.status() == StatusCode::INTERNAL_SERVER_ERROR,
@@ -998,6 +998,10 @@ async fn renew(
     let device: String = sqlx::query_scalar("SELECT r.device FROM mdm_access.registrations r JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) WHERE c.tenant_id=$1::uuid AND c.locator=$2")
         .bind(case_tenant()).bind(format!("{:x}",sha2::Sha256::digest(certificate))).fetch_one(&mut blocker).await?;
     let mut lock = blocker.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *lock)
+        .await?;
     rss_mdm_registration_service::device::store::lock_channel(
         &mut lock,
         case_tenant(),

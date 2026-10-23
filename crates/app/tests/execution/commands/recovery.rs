@@ -126,10 +126,36 @@ impl Client {
             max_attempts: 3,
         })?;
         let scope = recovery_scope(self.app.identity.tenant);
-        let report = restarted
-            .service
-            .run_recovery(&scope, policy, &control, &tokio::sync::Notify::new())
-            .await?;
+        let mut fence = pg.begin().await?;
+        crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.app.identity.tenant).await?;
+        let release = async {
+            tokio::time::timeout(Duration::from_secs(1),async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)))")
+                        .fetch_one(&mut *fence).await?;
+                    if waiting { break; }
+                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *fence).await?;
+                    tokio::task::yield_now().await;
+                }
+                // Exercise the real producer wake while the worker is waiting for its
+                // earlier business fence. The old protect-before-watermark path times out.
+                sqlx::query("SET LOCAL lock_timeout='250ms'").execute(&mut *fence).await?;
+                let target = rss_mdm_execution_service::target(self.app.identity.tenant,case_device());
+                sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
+                    .bind(case_tenant()).bind(target.scope().reconciler()).bind(target.entity())
+                    .execute(&mut *fence).await?;
+                Ok::<_,anyhow::Error>(())
+            }).await??;
+            fence.commit().await?;
+            Ok::<_,anyhow::Error>(())
+        };
+        let notify = tokio::sync::Notify::new();
+        let (report,released) = tokio::join!(
+            restarted.service.run_recovery(&scope,policy,&control,&notify), release
+        );
+        released?;
+        let report = report?;
         ensure!(
             report.execution_failed == 0 && report.suspended == 0,
             "recovery did not complete {:?}",

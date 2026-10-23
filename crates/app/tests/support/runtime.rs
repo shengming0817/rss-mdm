@@ -32,7 +32,7 @@ pub(crate) async fn app_with_access(
     Resources,
 )> {
     let c: Config = serde_json::from_value(value.clone())?;
-    let audit_store = access.audit_store(&c.audit).await?;
+    let audit_store = access.audit_store_fixture(&c.audit).await?;
     let (router, _, _, _, resources) = crate::api::application_fixture(
         c,
         Arc::new(crate::clock::SystemClock),
@@ -72,7 +72,7 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         crate::lifecycle::AccessResource(access.clone()),
     ));
-    let audit_store = access.audit_store(&config.audit).await?;
+    let audit_store = access.audit_store_fixture(&config.audit).await?;
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
         access.inventory(),

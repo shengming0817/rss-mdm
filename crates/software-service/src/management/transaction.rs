@@ -94,7 +94,7 @@ where
                     let (context, operation, failure, audit) = state;
                     if let Some((store, _)) = *audit {
                         store
-                            .lock_in(tx)
+                            .bind_in(tx)
                             .await
                             .map_err(|e| rejected(Error::from(e).into(), failure, owner))?;
                     }

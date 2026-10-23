@@ -1,12 +1,16 @@
-use crate::{Fact, InvalidFact};
-use rss_audit_core::PreparedAuditV1;
-use rss_audit_postgres::{
-    Control, Integrity, PgAudit, ReadAuditTransaction, Record, WriteAuditTransaction,
+use crate::{
+    AuditReadStore, BacklogLimits, Fact, InvalidFact, RequestAudit, SourceTransaction,
+    TransactionError,
 };
-use rss_contract::Timepoint;
-use rss_request_context::ExecutionTimer;
-use rss_transactional_messaging_postgres::{PgError, PgTransaction};
-use sqlx::{PgConnection, PgPool, Row};
+use crate::{budget::SourceControl, queue::StagedFact, source::FrozenFact};
+use rss_audit_postgres::{Control, Integrity};
+use rss_request_context::{ExecutionTimer, TenantId};
+use rss_transactional_messaging::{
+    message::PartitionIdentity, policy::OperationDeadline, transaction::LocalTxAttempt,
+};
+use rss_transactional_messaging_postgres::{PgError, PgOutboxWriter, PgRuntime, PgTransaction};
+use sqlx::{PgConnection, PgPool};
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -24,6 +28,10 @@ pub enum Error {
     CommitUnknown,
     #[error("audit rollback is unconfirmed")]
     RollbackFailed,
+    #[error("audit source backlog is full")]
+    BacklogFull,
+    #[error("audit failure-fact reserve is exhausted")]
+    ReserveExhausted,
 }
 impl From<sqlx::Error> for Error {
     fn from(e: sqlx::Error) -> Self {
@@ -45,6 +53,7 @@ impl From<Error> for PgError {
         match e {
             Error::Audit(e) => e.into(),
             Error::Fact(_) => rss_audit_postgres::Error::InvalidBound.into(),
+            Error::BacklogFull | Error::ReserveExhausted => sqlx::Error::PoolTimedOut.into(),
             Error::Receipt
             | Error::Isolation
             | Error::Admission
@@ -53,495 +62,301 @@ impl From<Error> for PgError {
         }
     }
 }
+
+/// Source production and final-history reading use separate admitted capabilities.
 #[derive(Clone)]
 pub struct AuditStore {
-    adapter: PgAudit,
-    ledger: bool,
+    read: AuditReadStore,
+    pub(crate) runtime: Arc<PgRuntime>,
+    writer: Arc<PgOutboxWriter>,
+    pub(crate) limits: BacklogLimits,
+}
+impl std::ops::Deref for AuditStore {
+    type Target = AuditReadStore;
+    fn deref(&self) -> &Self::Target {
+        &self.read
+    }
 }
 impl AuditStore {
-    /// Public installation mode; never exposes the integrity key.
-    pub fn uses_ledger(&self) -> bool {
-        self.ledger
-    }
-
-    /// 停写转交/恢复时逐页验证至已捕获的链头；同库链头本身不是外部防截断证明。
-    pub async fn verify_history_to(
-        &self,
-        tenant: rss_request_context::TenantId,
-        last: Option<u64>,
-        tag: &[u8; 32],
-    ) -> Result<u64, Error> {
-        if !self.ledger {
-            return Err(Error::Admission);
-        }
-        let mut start = 0u64;
-        loop {
-            let budget = crate::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-            let window = self
-                .adapter
-                .read_verified(
-                    tenant,
-                    rss_ledger::Sequence::new(start),
-                    rss_ledger_postgres::ReadLimit::new(64, 4 * 1024 * 1024)
-                        .map_err(rss_audit_postgres::Error::from)?,
-                    &budget.control(),
-                )
-                .await
-                .fold(
-                    |v| Ok(v.into_value()),
-                    |e| Err(Error::Audit(e)),
-                    |e| Err(Error::Audit(e)),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
-                    |e| Err(Error::Audit(e)),
-                )?;
-            let verified = window.ledger_verification();
-            let Some(expected) = last else {
-                return if verified.count() == 0 && tag == &[0u8; 32] {
-                    Ok(0)
-                } else {
-                    Err(Error::Receipt)
-                };
-            };
-            let end = verified.last().ok_or(Error::Receipt)?.get();
-            if verified.first().map(|v| v.get()) != Some(start) || end > expected {
-                return Err(Error::Receipt);
-            }
-            if end == expected {
-                if verified.tail_tag().as_ref().map(|v| v.as_bytes()) != Some(tag) {
-                    return Err(Error::Receipt);
-                }
-                return expected.checked_add(1).ok_or(Error::Receipt);
-            }
-            start = end.checked_add(1).ok_or(Error::Receipt)?;
-        }
-    }
-    #[cfg(feature = "integration")]
-    pub fn inject_next_fault(&self, fault: rss_audit_postgres::PgFault) {
-        self.adapter.inject_next_fault(fault);
-    }
-    /// Admit the host-owned pool and explicit integrity mode. Does not close the pool.
-    /// Rejects unsafe receipt privileges/schema and non-READ-COMMITTED isolation.
+    /// Host supplies the producer runtime and read pool for the same configured database.
+    /// The host owns both resources and must rebuild them after controlled configuration changes.
     pub async fn new<T: ExecutionTimer>(
         pool: PgPool,
         integrity: Integrity,
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+        limits: BacklogLimits,
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
-        let mut connection = tokio::time::timeout(control.total_remaining(), pool.acquire())
-            .await
-            .map_err(|_| {
-                rss_audit_postgres::Error::Deadline(
-                    rss_transactional_messaging::transaction::LocalTxDeadlineStage::Acquire,
-                )
-            })??;
-        let isolation =
-            tokio::time::timeout(control.total_remaining(), admit_receipts(&mut connection)).await;
-        match isolation {
-            Ok(result) => result?,
-            Err(_) => {
-                connection.close_on_drop();
-                return Err(rss_audit_postgres::Error::Deadline(
-                    rss_transactional_messaging::transaction::LocalTxDeadlineStage::Operation,
-                )
-                .into());
-            }
-        }
-        drop(connection);
-        let ledger = matches!(integrity, Integrity::Ledger(_));
-        Ok(Self {
-            adapter: PgAudit::new(pool, integrity, control).await?,
-            ledger,
-        })
+        let read = AuditReadStore::new(pool, integrity, control).await?;
+        let store = Self {
+            read,
+            writer: Arc::new(PgOutboxWriter::new(runtime.clone(), FrozenFact::domain()?)),
+            runtime,
+            limits,
+        };
+        store.admit(tenant, control).await?;
+        Ok(store)
     }
-    /// Admit the configured tenant before serving requests. Verify a bounded authenticated
-    /// record when present so a wrong secret fails startup, even with the same key ID.
-    /// Validate this tenant's stored integrity mode and, for Ledger, authenticate an existing window.
-    /// This uses the same bounded owner transaction and never repairs or downgrades stored data.
-    pub async fn validate_tenant<T: ExecutionTimer>(
+    /// Construct a separate immutable producer capability for another admitted same-database owner.
+    pub async fn on_runtime<T: ExecutionTimer>(
         &self,
-        tenant: rss_request_context::TenantId,
+        runtime: Arc<PgRuntime>,
+        tenant: TenantId,
+        control: &Control<'_, T>,
+    ) -> Result<Self, Error> {
+        let store = Self {
+            read: self.read.clone(),
+            writer: Arc::new(PgOutboxWriter::new(runtime.clone(), FrozenFact::domain()?)),
+            runtime,
+            limits: self.limits,
+        };
+        store.admit(tenant, control).await?;
+        Ok(store)
+    }
+    async fn admit<T: ExecutionTimer>(
+        &self,
+        tenant: TenantId,
         control: &Control<'_, T>,
     ) -> Result<(), Error> {
-        let ledger = self.ledger;
-        self.read(tenant, control, (), move |_, tx| {
-            Box::pin(async move {
-                let page = tx
-                    .read_page(
-                        rss_audit_postgres::Cursor::start(tenant),
-                        rss_audit_postgres::ReadLimit::new(
-                            1,
-                            rss_audit_core::MAX_RECORD_BYTES as u64,
-                        )?,
-                    )
-                    .await?;
-                if page
-                    .records()
-                    .iter()
-                    .any(|r| r.ledger_sequence().is_some() != ledger)
-                {
-                    return Err(Error::Receipt);
-                }
-                Ok(())
-            })
-        })
-        .await
-        .fold(
-            |_| Ok(()),
-            |error| Err(transaction_error(error)),
-            |error| Err(transaction_error(error)),
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |error| Err(transaction_error(error)),
-        )?;
-        if ledger {
-            self.adapter
-                .read_verified(
-                    tenant,
-                    rss_ledger::Sequence::new(0),
-                    rss_ledger_postgres::ReadLimit::new(1, 262144)
-                        .map_err(rss_audit_postgres::Error::from)?,
-                    control,
-                )
-                .await
-                .fold(
-                    |_| Ok(()),
-                    |e| Err(Error::Audit(e)),
-                    |e| Err(Error::Audit(e)),
-                    |_| Err(Error::RollbackFailed),
-                    |_| Err(Error::CommitUnknown),
-                    |e| Err(Error::Audit(e)),
-                )?;
-        }
-        Ok(())
-    }
-    /// Read under the Audit owner without creating or locking Audit/Ledger heads.
-    pub async fn read<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
-        &self,
-        tenant: rss_request_context::TenantId,
-        control: &Control<'_, T>,
-        context: C,
-        operation: F,
-    ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<R>,
-        rss_audit_postgres::TransactionError<E>,
-    >
-    where
-        F: for<'a> FnOnce(
-                &'a mut C,
-                &'a mut ReadAuditTransaction<'_, '_, '_, T>,
-            ) -> futures::future::BoxFuture<'a, Result<R, E>>
-            + Send,
-    {
-        self.adapter
-            .read_tx_with_context(
+        self.runtime
+            .local_tx_with_context(
                 tenant,
-                control,
-                (context, Some(operation)),
-                |(context, operation), tx| {
-                    Box::pin(async move {
-                        tx.with_connection(|c| Box::pin(check_isolation(c)))
-                            .await
-                            .map_err(E::from)?;
-                        let operation = operation
-                            .take()
-                            .expect("component invokes its transaction callback once");
-                        operation(context, tx).await
-                    })
+                OperationDeadline::from_remaining(control.total_remaining()),
+                self,
+                |store, tx| {
+                    Box::pin(async move { store.validate_in(tx).await.map_err(Into::into) })
                 },
             )
-            .await
-    }
-    /// Run product SQL under Audit then optional Ledger locks, using the component owner.
-    pub async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
-        &self,
-        tenant: rss_request_context::TenantId,
-        control: &Control<'_, T>,
-        context: C,
-        operation: F,
-    ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<R>,
-        rss_audit_postgres::TransactionError<E>,
-    >
-    where
-        F: for<'a> FnOnce(
-                &'a mut C,
-                &'a mut WriteAuditTransaction<'_, '_, '_, T>,
-            ) -> futures::future::BoxFuture<'a, Result<R, E>>
-            + Send,
-    {
-        self.adapter
-            .write_tx_with_context(
-                tenant,
-                control,
-                (context, Some(operation)),
-                |(context, operation), tx| {
-                    Box::pin(async move {
-                        tx.with_connection(|c| Box::pin(check_isolation(c)))
-                            .await
-                            .map_err(E::from)?;
-                        tx.with_connection(|c|Box::pin(async move {
-                            // reason: Audit-only consumers have no execution binding; publishing SQL always requires one.
-                            let bound: bool = sqlx::query_scalar("SELECT nullif(current_setting('rss.storage_target',true),'') IS NOT NULL")
-                                .fetch_one(&mut *c).await?;
-                            if bound {
-                                sqlx::query("SELECT rss_transactional_messaging.check_execution()")
-                                    .execute(c).await?;
-                            }
-                            Ok::<_, Error>(())
-                        })).await.map_err(E::from)?;
-                        let operation = operation
-                            .take()
-                            .expect("component invokes its transaction callback once");
-                        operation(context, tx).await
-                    })
-                },
-            )
-            .await
-    }
-    /// First operation in an RSS transaction: check isolation, then lock Audit and Ledger.
-    /// Must precede business and outbox locks. Reuses the owner's connection and remaining budget;
-    /// errors must propagate to that owner. This method neither commits nor proves prior rollback.
-    pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
-        tx.with_connection(|c| Box::pin(async move { Ok(check_isolation(c).await) }))
-            .await
-            .map_err(rss_audit_postgres::Error::from)??;
-        self.adapter.lock_head_in(tx).await?;
-        Ok(())
-    }
-    /// Validate receipts and Audit/Ledger on the actual borrowed worker connection at startup.
-    /// The caller owns the original budget and settlement; no pool lease is acquired.
-    pub async fn validate_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
-        tx.with_connection(|c| Box::pin(async move { Ok(admit_receipts(c).await) }))
-            .await
-            .map_err(rss_audit_postgres::Error::from)??;
-        self.adapter.validate_in(tx).await?;
-        Ok(())
-    }
-    /// Persist the independent request outcome using the component's settlement result.
-    /// This never overwrites the recorded outcome of the business transaction.
-    pub async fn settle_request<T: ExecutionTimer>(
-        &self,
-        request: &crate::RequestAudit,
-        status: u16,
-        result: &str,
-        control: &Control<'_, T>,
-    ) -> Result<(), Error> {
-        self.record(Fact::request(request, status, result)?, control)
             .await
             .fold(
                 |_| Ok(()),
-                |error| Err(transaction_error(error)),
-                |error| Err(transaction_error(error)),
+                |e| Err(Error::Audit(e.into())),
+                |e| Err(Error::Audit(e.into())),
                 |_| Err(Error::RollbackFailed),
                 |_| Err(Error::CommitUnknown),
-                |error| Err(transaction_error(error)),
+                |e| Err(Error::Audit(e.into())),
             )
     }
-    /// Settle a standalone request fact before returning its protected response.
-    async fn record<T: ExecutionTimer>(
+    #[cfg(feature = "integration")]
+    pub fn inject_next_fault(
         &self,
-        fact: Fact,
-        control: &Control<'_, T>,
-    ) -> rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<()>,
-        rss_audit_postgres::TransactionError<Error>,
-    > {
-        self.write(
-            fact.identity().tenant(),
+        fault: rss_transactional_messaging_postgres::PgTransactionFault,
+    ) {
+        self.runtime.inject_next_transaction_fault(fault);
+    }
+    /// Validate the actual runtime connection once at assembly; no full scan runs on requests.
+    pub async fn validate_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
+        self.writer
+            .validate_transaction(tx)
+            .map_err(rss_audit_postgres::Error::from)?;
+        let budget = crate::budget::AuditBudget::new(tx.deadline().timeout());
+        let control = budget.control();
+        tx.with_connection_context(
+            &mut (&self.read.adapter, &control),
+            |(reader, control), connection| {
+                Box::pin(async move {
+                    let result = async {
+                        admit_receipts(connection).await?;
+                        reader.validate_connection(connection, control).await?;
+                        Ok::<_, Error>(())
+                    }
+                    .await;
+                    Ok(result)
+                })
+            },
+        )
+        .await
+        .map_err(rss_audit_postgres::Error::from)??;
+        Ok(())
+    }
+    /// Runtime provenance and isolation only; never obtains an Audit/Ledger head lock.
+    pub async fn bind_in(&self, tx: &mut PgTransaction<'_>) -> Result<(), Error> {
+        self.writer
+            .validate_transaction(tx)
+            .map_err(rss_audit_postgres::Error::from)?;
+        tx.with_connection(|c| Box::pin(async move { Ok(check_isolation(c).await) }))
+            .await
+            .map_err(rss_audit_postgres::Error::from)??;
+        Ok(())
+    }
+    /// Declare audit and business partitions together before ordered appends in an existing RSS owner.
+    pub async fn prepare_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        request: &RequestAudit,
+        business: &[PartitionIdentity],
+    ) -> Result<(), Error> {
+        self.bind_in(tx).await?;
+        if request.tenant() != tx.tenant_id().to_string() {
+            return Err(Error::Receipt);
+        }
+        let snapshot = request.snapshot();
+        let mut partitions = business.to_vec();
+        partitions.push(crate::source::partition(
+            tx.tenant_id(),
+            snapshot.target_type,
+            snapshot.target.as_deref().unwrap_or("request"),
+        )?);
+        tx.prepare_outbox_partitions(&partitions)
+            .await
+            .map_err(rss_audit_postgres::Error::from)?;
+        Ok(())
+    }
+    /// Business SQL, frozen facts and source receipts share the RSS owner's one commit.
+    /// Audit-owned reads remain a separate read-only capability.
+    pub async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
+        &self,
+        tenant: TenantId,
+        control: &SourceControl<'_, T>,
+        context: C,
+        operation: F,
+    ) -> LocalTxAttempt<R, TransactionError<E>>
+    where
+        F: for<'a> FnOnce(
+                &'a mut C,
+                &'a mut SourceTransaction<'_, '_>,
+            ) -> futures::future::BoxFuture<'a, Result<R, E>>
+            + Send,
+    {
+        crate::source_transaction::write(
+            &self.runtime,
+            tenant,
             control,
-            (self, fact),
-            |(store, fact), tx| Box::pin(async move { store.append_checked(tx, fact, None).await }),
+            (self, context, Some(operation)),
+            |(store, context, operation), tx| {
+                Box::pin(async move {
+                    store.bind_in(tx.inner).await.map_err(E::from)?;
+                    let operation = operation.take().expect("source operation is invoked once");
+                    let value = operation(context, tx).await?;
+                    store.flush(tx).await.map_err(E::from)?;
+                    Ok(value)
+                })
+            },
         )
         .await
     }
-
-    /// Stage a request fact under an Audit-owned transaction for a final known response.
-    /// Request tenant must match the transaction. The owner must propagate errors and settle;
-    /// use `settle_request` instead after a separate business transaction has ended.
-    pub async fn append_request<T: ExecutionTimer>(
-        &self,
-        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
-        request: &crate::RequestAudit,
-        status: u16,
-        result: &str,
-    ) -> Result<(), Error> {
-        let fact = Fact::request(request, status, result)?;
-        self.append_checked(tx, &fact, None).await
-    }
-    /// Stage a business fact inside `write`; head locks must already precede business locks.
-    /// `replayed` must reflect the producer's actual locked business receipt. A mismatched pair
-    /// is an integrity failure, never permission to reconstruct or overwrite an event.
-    /// Return errors to the original owner; this result is not a commit receipt.
-    pub async fn append<T: ExecutionTimer>(
-        &self,
-        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
-        fact: &Fact,
-        replayed: bool,
-    ) -> Result<(), Error> {
-        self.append_checked(tx, fact, Some(replayed)).await
-    }
-    // These two carrier adapters share restore/read_receipt/save_receipt and the component's
-    // append implementation. Keep transaction ownership explicit rather than introducing an
-    // erased writer/transaction trait that could expose a second settlement path.
-    async fn append_checked<T: ExecutionTimer>(
-        &self,
-        tx: &mut WriteAuditTransaction<'_, '_, '_, T>,
-        fact: &Fact,
-        existing: Option<bool>,
-    ) -> Result<(), Error> {
-        if fact.identity().tenant() != tx.tenant_id() {
-            return Err(rss_audit_postgres::Error::ScopeMismatch.into());
-        }
-        let identity = fact.identity().clone();
-        let receipt = tx
-            .with_connection(move |c| Box::pin(async move { read_receipt(c, &identity).await }))
-            .await?;
-        let staged = tx
-            .append_with(fact.identity(), |record, now| {
-                resolve(fact, receipt, record, self.ledger, existing, now)
-            })
-            .await?;
-        if staged.inserted() {
-            let save = staged.record().prepared().clone();
-            let fingerprint = *fact.fingerprint();
-            tx.with_connection(move |c| {
-                Box::pin(async move { save_receipt(c, &save, fingerprint).await })
-            })
+    async fn flush(&self, tx: &mut SourceTransaction<'_, '_>) -> Result<(), Error> {
+        let facts = std::mem::take(&mut tx.facts);
+        let partitions = facts
+            .iter()
+            .map(|fact| fact.frozen.partition())
+            .collect::<Result<Vec<_>, _>>()?;
+        tx.inner
+            .prepare_outbox_partitions(&partitions)
+            .await
+            .map_err(rss_audit_postgres::Error::from)?;
+        for fact in facts {
+            crate::queue::append(
+                tx.inner,
+                &self.writer,
+                &fact.frozen,
+                fact.existing,
+                self.limits,
+            )
             .await?;
         }
         Ok(())
     }
-    /// Stage a business fact in the existing RSS owner after `lock_in`.
-    /// `replayed` is the producer's locked business-receipt result, not a guessed HTTP property.
-    /// Pairing, fingerprint and canonical bytes must agree; success remains staged until owner commit.
+    pub async fn append(
+        &self,
+        tx: &mut SourceTransaction<'_, '_>,
+        fact: &Fact,
+        replayed: bool,
+    ) -> Result<(), Error> {
+        self.stage(tx, fact, Some(replayed)).await
+    }
+    async fn stage(
+        &self,
+        tx: &mut SourceTransaction<'_, '_>,
+        fact: &Fact,
+        existing: Option<bool>,
+    ) -> Result<(), Error> {
+        self.writer
+            .validate_transaction(tx.inner)
+            .map_err(rss_audit_postgres::Error::from)?;
+        if tx.tenant_id() != fact.identity().tenant() {
+            return Err(Error::Receipt);
+        }
+        let now = source_time(tx.inner).await?;
+        tx.facts.push(StagedFact {
+            frozen: FrozenFact::freeze(fact, now)?,
+            existing,
+        });
+        Ok(())
+    }
+    /// Native RSS owners prepare the complete partition set before business appends.
     pub async fn append_in(
         &self,
         tx: &mut PgTransaction<'_>,
         fact: &Fact,
         replayed: bool,
     ) -> Result<(), Error> {
-        self.append_checked_in(tx, fact, Some(replayed)).await
+        self.enqueue_in(tx, fact, Some(replayed)).await
     }
-    /// Stage an independent request identity in the RSS owner's transaction after `lock_in`.
-    /// Only use after the final response facts are known; this does not settle or release a response.
-    pub async fn append_request_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        request: &crate::RequestAudit,
-        status: u16,
-        result: &str,
-    ) -> Result<(), Error> {
-        let fact = Fact::request(request, status, result)?;
-        self.append_checked_in(tx, &fact, None).await
-    }
-    async fn append_checked_in(
+    async fn enqueue_in(
         &self,
         tx: &mut PgTransaction<'_>,
         fact: &Fact,
         existing: Option<bool>,
     ) -> Result<(), Error> {
-        if fact.identity().tenant() != tx.tenant_id() {
-            return Err(rss_audit_postgres::Error::ScopeMismatch.into());
+        self.writer
+            .validate_transaction(tx)
+            .map_err(rss_audit_postgres::Error::from)?;
+        if tx.tenant_id() != fact.identity().tenant() {
+            return Err(Error::Receipt);
         }
-        let identity = fact.identity().clone();
-        let receipt = tx
-            .with_connection(move |c| Box::pin(async move { Ok(read_receipt(c, &identity).await) }))
-            .await
-            .map_err(rss_audit_postgres::Error::from)??;
-        let staged = self
-            .adapter
-            .append_with_in(tx, fact.identity(), |record, now| {
-                resolve(fact, receipt, record, self.ledger, existing, now)
+        let frozen = FrozenFact::freeze(fact, source_time(tx).await?)?;
+        crate::queue::append(tx, &self.writer, &frozen, existing, self.limits).await
+    }
+    /// Queue a final request outcome before releasing its response; this does not wait for projection.
+    pub async fn settle_request<T: ExecutionTimer>(
+        &self,
+        request: &RequestAudit,
+        status: u16,
+        result: &str,
+        control: &SourceControl<'_, T>,
+    ) -> Result<(), Error> {
+        let fact = Fact::request(request, status, result)?;
+        self.write(
+            fact.identity().tenant(),
+            control,
+            (self, fact),
+            |(store, fact), tx| Box::pin(async move { store.stage(tx, fact, None).await }),
+        )
+        .await
+        .fold(
+            |_| Ok(()),
+            |e| Err(transaction_error(e)),
+            |e| Err(transaction_error(e)),
+            |_| Err(Error::RollbackFailed),
+            |_| Err(Error::CommitUnknown),
+            |e| Err(transaction_error(e)),
+        )
+    }
+}
+async fn source_time(tx: &mut PgTransaction<'_>) -> Result<rss_contract::Timepoint, Error> {
+    let now: i64 = tx
+        .with_connection(|connection| {
+            Box::pin(async move {
+                sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                    .fetch_one(connection)
+                    .await
             })
-            .await?;
-        if staged.inserted() {
-            let save = staged.record().prepared().clone();
-            let fingerprint = *fact.fingerprint();
-            tx.with_connection(move |c| {
-                Box::pin(async move { Ok(save_receipt(c, &save, fingerprint).await) })
-            })
-            .await
-            .map_err(rss_audit_postgres::Error::from)??;
-        }
-        Ok(())
-    }
-}
-struct Receipt {
-    fingerprint: Vec<u8>,
-    canonical: Vec<u8>,
-}
-fn restore(
-    fact: &Fact,
-    receipt: Option<Receipt>,
-    record: Option<&Record>,
-    ledger: bool,
-    existing: Option<bool>,
-) -> Result<Option<PreparedAuditV1>, Error> {
-    match (receipt, record) {
-        (None, None) if existing != Some(true) => Ok(None),
-        (Some(receipt), Some(record))
-            if existing != Some(false)
-                && receipt.fingerprint == fact.fingerprint()
-                && receipt.canonical == record.prepared().canonical_bytes()
-                && record.ledger_sequence().is_some() == ledger =>
-        {
-            Ok(Some(record.prepared().clone()))
-        }
-        _ => Err(Error::Receipt),
-    }
-}
-fn resolve(
-    fact: &Fact,
-    receipt: Option<Receipt>,
-    record: Option<&Record>,
-    ledger: bool,
-    existing: Option<bool>,
-    now: Timepoint,
-) -> Result<PreparedAuditV1, Error> {
-    match restore(fact, receipt, record, ledger, existing)? {
-        Some(prepared) => Ok(prepared),
-        None => rss_audit_core::prepare(fact.event(now)?, now)
-            .map_err(|error| Error::Audit(error.into())),
-    }
-}
-async fn read_receipt(
-    c: &mut PgConnection,
-    id: &rss_audit_core::RecordIdentity,
-) -> Result<Option<Receipt>, Error> {
-    let row = sqlx::query("SELECT fingerprint,canonical FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND source_id=$2 AND event_id=$3")
-        .bind(id.tenant().to_string()).bind(id.source().source_id().as_str()).bind(id.event_id().as_str()).fetch_optional(c).await?;
-    row.map(|r| {
-        Ok(Receipt {
-            fingerprint: r.try_get("fingerprint")?,
-            canonical: r.try_get("canonical")?,
         })
-    })
-    .transpose()
-}
-async fn save_receipt(
-    c: &mut PgConnection,
-    prepared: &PreparedAuditV1,
-    fingerprint: [u8; 32],
-) -> Result<(), Error> {
-    let decoded = rss_audit_core::decode_untrusted(prepared.canonical_bytes())
+        .await
         .map_err(rss_audit_postgres::Error::from)?;
-    let id = decoded.event().identity();
-    sqlx::query("INSERT INTO mdm_audit.receipts(tenant_id,source_id,event_id,fingerprint,canonical) VALUES($1::uuid,$2,$3,$4,$5)")
-        .bind(id.tenant().to_string()).bind(id.source().source_id().as_str()).bind(id.event_id().as_str())
-        .bind(fingerprint.as_slice()).bind(prepared.canonical_bytes()).execute(c).await?;
-    Ok(())
+    rss_contract::Timepoint::try_from(now).map_err(|_| Error::Receipt)
 }
-
 async fn check_isolation(c: &mut PgConnection) -> Result<(), Error> {
     let isolation: String = sqlx::query_scalar("SHOW transaction_isolation")
-        .fetch_one(&mut *c)
+        .fetch_one(c)
         .await?;
     if isolation != "read committed" {
         return Err(Error::Isolation);
     }
     Ok(())
 }
-
 async fn admit_receipts(c: &mut PgConnection) -> Result<(), Error> {
     check_isolation(c).await?;
     let valid: Option<bool> = sqlx::query_scalar(include_str!("admission.sql"))
@@ -552,12 +367,10 @@ async fn admit_receipts(c: &mut PgConnection) -> Result<(), Error> {
     }
     Ok(())
 }
-
-fn transaction_error(error: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn transaction_error(error: TransactionError<Error>) -> Error {
     match error {
-        rss_audit_postgres::TransactionError::Operation(error) => error,
-        rss_audit_postgres::TransactionError::Audit(error) => Error::Audit(error),
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        TransactionError::Operation(error) | TransactionError::Storage(error) => error,
+        TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
 
@@ -572,6 +385,8 @@ pub enum ErrorClass {
     AuditAdmission,
     AuditIsolation,
     AuditContract,
+    AuditBackpressure,
+    AuditReserveExhausted,
     Audit,
 }
 impl Error {
@@ -585,6 +400,8 @@ impl Error {
             Error::Admission => ErrorClass::AuditAdmission,
             Error::Isolation => ErrorClass::AuditIsolation,
             Error::Fact(_) => ErrorClass::AuditContract,
+            Error::BacklogFull => ErrorClass::AuditBackpressure,
+            Error::ReserveExhausted => ErrorClass::AuditReserveExhausted,
             Error::Audit(error) => {
                 use rss_audit_postgres::Error as Audit;
                 match error {

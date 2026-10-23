@@ -452,7 +452,7 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
-            service.planning.audit_store.lock_in(tx).await.map_err(crate::storage_error)?;
+            service.planning.audit_store.prepare_in(tx, &audit, &[]).await.map_err(crate::storage_error)?;
             let tenant=service.tenant;
             let replayed = tx.with_connection(move|c|Box::pin(async move {
                 let result=async {

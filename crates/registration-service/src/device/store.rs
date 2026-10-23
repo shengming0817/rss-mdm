@@ -83,13 +83,12 @@ impl DeviceService {
             return Err(Error::Forbidden);
         }
         let budget = self.retirement_budget();
-        let control = budget.control();
         let attempt = self
             .audit_store
             .write(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &control,
+                &budget.source_control(),
                 (
                     &self.audit_store,
                     BindingInputs {
@@ -163,13 +162,12 @@ impl DeviceService {
             digest: &digest,
         };
         let budget = self.retirement_budget();
-        let control = budget.control();
         let attempt = self
             .audit_store
             .write(
                 rss_request_context::TenantId::parse(admin.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &control,
+                &budget.source_control(),
                 (
                     &self.audit_store,
                     RevokeInputs {
@@ -396,6 +394,7 @@ pub(crate) async fn bind_authorized_in(
     if credential.purpose != Purpose::Primary || credential.tenant.to_string() != tenant {
         return Err(Error::Forbidden);
     }
+    lock_channel(tx, tenant, &device, credential.channel).await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
         .bind(format!("request:{}:{}", tenant, command.request_id))
         .execute(&mut *tx)
@@ -559,6 +558,7 @@ async fn revoke_on(
     let operation = *operation;
     let registration = *registration;
     let key = *key;
+    crate::lifecycle::lock_device_in(tx, admin.tenant_id(), device).await?;
     if let Some(old) = crate::operations::replay(tx, operation).await? {
         let receipt = serde_json::from_str(&old).map_err(|_| Error::Storage)?;
         audit.registration(registration);
@@ -637,6 +637,7 @@ async fn bind_on(
     } else {
         admin.enrollment(&device)?
     };
+    crate::lifecycle::lock_device_in(tx, admin.tenant_id(), &device).await?;
     audit.target_device(&device);
     let digest = digest(&(
         "registration_bind",

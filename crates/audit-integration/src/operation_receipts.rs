@@ -27,6 +27,11 @@ pub async fn replay(
     let tenant = tx.tenant_id().to_string();
     let actor = audit.snapshot().actor.ok_or(Error::Malformed)?;
     let row = tx.with_connection(move |c| Box::pin(async move {
+        // Serialize the actual receipt key before observing absence or changing business state.
+        // JSON framing keeps actor text unambiguous; a hash collision only adds contention.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text,$3::text,$4::text)::text,2889))")
+            .bind(&tenant).bind("planning").bind(&actor).bind(id.to_string())
+            .execute(&mut *c).await?;
         sqlx::query("SELECT fingerprint,response::text FROM mdm_planning.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND actor=$3")
             .bind(tenant).bind(id.to_string()).bind(actor).fetch_optional(c).await
     })).await?;

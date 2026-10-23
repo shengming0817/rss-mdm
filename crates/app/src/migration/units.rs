@@ -62,7 +62,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/installation.sql"),
         ),
         (
-            "identity-authority-v14",
+            "identity-authority-v16",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -291,6 +291,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
         (
             "platform-sso-identity-v1",
             include_str!("../../schema/platform-sso-identity.sql"),
+        ),
+        (
+            "inventory-source-facts-v1",
+            rss_mdm_inventory_service::SOURCE_FACTS_SQL,
         ),
     ]
 }

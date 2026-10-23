@@ -14,6 +14,9 @@ pub(crate) struct Database {
     registration: std::sync::Arc<rss_mdm_registration_service::Store>,
     authorization: std::sync::Arc<rss_mdm_authorization_service::Store>,
     pool: PgPool,
+    #[cfg(test)]
+    pub(crate) fixture_source_runtime:
+        tokio::sync::OnceCell<std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>>,
 }
 impl Database {
     pub(crate) fn archive_pool(&self) -> PgPool {
@@ -74,19 +77,31 @@ impl Database {
                 std::sync::Arc::new(crate::lifecycle::RuntimeTimer),
             )),
             pool,
+            #[cfg(test)]
+            fixture_source_runtime: tokio::sync::OnceCell::new(),
         })
     }
     /// Host assembly shares this pool with Audit; Database remains its shutdown owner.
     pub(crate) async fn audit_store(
         &self,
         config: &crate::config::AuditConfig,
+        runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        tenant: rss_request_context::TenantId,
+        limits: rss_mdm_audit_integration::BacklogLimits,
     ) -> Result<std::sync::Arc<rss_mdm_audit_integration::AuditStore>, Error> {
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let control = budget.control();
-        rss_mdm_audit_integration::AuditStore::new(self.pool.clone(), config.integrity()?, &control)
-            .await
-            .map(std::sync::Arc::new)
-            .map_err(Error::from)
+        rss_mdm_audit_integration::AuditStore::new(
+            self.pool.clone(),
+            config.integrity()?,
+            runtime,
+            tenant,
+            limits,
+            &control,
+        )
+        .await
+        .map(std::sync::Arc::new)
+        .map_err(Error::from)
     }
     pub(crate) fn timeline(
         &self,
@@ -126,6 +141,10 @@ impl Database {
         .await
     }
     pub async fn close(&self) {
+        #[cfg(test)]
+        if let Some(runtime) = self.fixture_source_runtime.get() {
+            runtime.close().await;
+        }
         self.pool.close().await;
     }
     #[cfg(test)]
@@ -244,49 +263,6 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         return Err(Error::Unavailable(Failure::AccessAdmission));
     }
     tx.rollback().await.map_err(db)
-}
-
-/// Probe each borrowed transaction owner at startup without changing its isolation or pool.
-pub(crate) async fn admit_audit_runtime(
-    runtime: &rss_transactional_messaging_postgres::PgRuntime,
-    store: &rss_mdm_audit_integration::AuditStore,
-    tenant: rss_request_context::TenantId,
-) -> Result<(), Error> {
-    let failure = std::sync::Mutex::new(None);
-    runtime
-        .local_tx_with_context(
-            tenant,
-            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                Duration::from_secs(5),
-            ),
-            (store, &failure),
-            |(store, failure), tx| {
-                Box::pin(async move {
-                    match store.validate_in(tx).await {
-                        Ok(()) => Ok(()),
-                        Err(error) => {
-                            *failure.lock().expect("startup audit failure") =
-                                Some(Error::from(error));
-                            Err(rss_audit_postgres::Error::StorageContract.into())
-                        }
-                    }
-                })
-            },
-        )
-        .await
-        .fold(
-            Ok,
-            |_| Err(Error::Unavailable(Failure::Audit)),
-            |_| {
-                Err(failure
-                    .into_inner()
-                    .expect("startup audit failure")
-                    .unwrap_or(Error::Unavailable(Failure::Audit)))
-            },
-            |_| Err(Error::RollbackFailed),
-            |_| Err(Error::CommitUnknown),
-            |_| Err(Error::Unavailable(Failure::Audit)),
-        )
 }
 
 impl Database {

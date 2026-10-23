@@ -70,11 +70,12 @@ impl DeviceService {
             digest: &digest,
         };
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
-        let control = budget.control();
-        let result = self.audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?,&control,(&self.audit_store,p,device,change,&op,audit), |ctx,tx| Box::pin(async move {
+        let result = self.audit_store.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?,
+            &budget.source_control(),(&self.audit_store,p,device,change,&op,audit), |ctx,tx| Box::pin(async move {
             let (store,p,device,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,device,change,op,audit), |ctx,c| Box::pin(async move {
                 let (p,device,change,op,audit) = *ctx;
+                sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)").bind(p.tenant_id()).execute(&mut *c).await.map_err(db)?;
                 rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
                 rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?.require(p,rss_mdm_authorization_service::Permission::Enrollment,Some(device)).map_err(rss_mdm_authorization_service::Error::from)?;
                 lock_on(c,p.tenant_id(),device).await?;

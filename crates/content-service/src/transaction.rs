@@ -76,11 +76,16 @@ pub fn settle<T>(
         |_| Err(Error::Storage),
     )
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction context retains owner, deadline and complete message partition declaration"
+)]
 pub async fn run<C: Send, R: Send, F>(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
     tenant: TenantId,
     audit: &RequestAudit,
+    partitions: &[rss_transactional_messaging::message::PartitionIdentity],
     budget: Option<crate::UploadBudget>,
     context: C,
     operation: F,
@@ -102,11 +107,18 @@ where
                     b.remaining().min(Duration::from_secs(6)),
                 )
             }),
-            (audit_store, context, Some(operation), audit, &failure),
+            (
+                audit_store,
+                context,
+                Some(operation),
+                audit,
+                &failure,
+                partitions,
+            ),
             move |state, tx| {
                 Box::pin(async move {
-                    let (audit_store, context, operation, audit, failure) = state;
-                    if let Err(error) = audit_store.lock_in(tx).await {
+                    let (audit_store, context, operation, audit, failure, partitions) = state;
+                    if let Err(error) = audit_store.prepare_in(tx, audit, partitions).await {
                         return Err(rejection(Error::from(error).into(), failure));
                     }
                     let f = operation.take().expect("one callback");

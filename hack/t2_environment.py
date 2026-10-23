@@ -271,7 +271,7 @@ class Environment:
         for role in ('mdm_policy_runtime','mdm_resource_runtime','mdm_software_release_runtime','mdm_group_runtime',
                      'mdm_flow_runtime','mdm_command_runtime','mdm_software_driver','mdm_webhook_operator'):
             sql += f"ALTER ROLE {role} LOGIN PASSWORD 'runtime-fixture';"
-        for role, password in [('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_identity_audit','identity-audit-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
+        for role, password in [('mdm_audit_worker','audit-projection-fixture'),('mdm_identity_runtime','identity-runtime-fixture'),('mdm_identity_maintenance','identity-maintenance-fixture'),('mdm_identity_audit','identity-audit-fixture'),('mdm_tenant_registry','tenant-registry-fixture'),('mdm_identity_provisioning','identity-provisioning-fixture')]:
             sql += f"ALTER ROLE {role} LOGIN PASSWORD '{password}';"
         sql += 'CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT rss_tmsg_relay TO mdm_group_owner;'
         self.sql('BEGIN;'+sql+' COMMIT;')
@@ -381,7 +381,7 @@ class Environment:
             private(directory/'ca.crt',(self.root/'ca.crt').read_text())
         passwords={'mdm_owner':'owner-fixture','mdm_access':'access-fixture','mdm_runtime':'runtime-fixture',
                    'mdm_identity_runtime':'identity-runtime-fixture','mdm_identity_maintenance':'identity-maintenance-fixture',
-                   'mdm_identity_audit':'identity-audit-fixture'}
+                   'mdm_identity_audit':'identity-audit-fixture','mdm_audit_worker':'audit-projection-fixture'}
         def path(directory,name):return '/run/mdm/'+name if mode=='container' else str(directory/name)
         def database(directory,role):
             private(directory/(role+'-password'),passwords.get(role,'runtime-fixture'))
@@ -396,6 +396,13 @@ class Environment:
         config['agent_pki']={'mode':'disabled'}
         config['access_database']=database(runtime,'mdm_access');config['runtime_database']=database(runtime,'mdm_runtime')
         config['identity']['database']=database(runtime,'mdm_identity_runtime');config['identity']['audit_worker']=database(runtime,'mdm_identity_audit')
+        config['audit_projection']['database']=database(runtime,'mdm_audit_worker')
+        for owner, key, filename in [(config['audit_projection'], 'recovery_keys', 'audit-recovery.key'),
+                                     (config['identity'], 'audit_recovery_keys', 'identity-audit-recovery.key')]:
+            material = runtime / filename
+            if not material.exists():
+                private(material, '').write_bytes(secrets.token_bytes(32))
+            owner[key] = dict(active_file=path(runtime,filename),historical_files=[])
         config['execution']['database']=database(runtime,'mdm_command_runtime')
         config['webhooks']['recovery_database']=database(runtime,'mdm_webhook_operator')
         config['flow']['storage']['database']=database(runtime,'mdm_flow_runtime');config['flow']['publication']['database']=database(runtime,'mdm_software_driver')

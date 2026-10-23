@@ -62,7 +62,7 @@ pub(crate) struct Identity {
     pub(crate) tenant: TenantId,
     pub(crate) management_tenant: TenantId,
     pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
-    pub(crate) audit_readiness: Arc<crate::identity_audit::Readiness>,
+    pub(crate) audit_readiness: Arc<crate::audit_health::Readiness>,
     pub(crate) federation: Option<rss_identity_postgres::Federation>,
     routes: Router,
     bearer_routes: Router,

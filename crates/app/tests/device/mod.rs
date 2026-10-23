@@ -19,7 +19,7 @@ async fn fixture() -> anyhow::Result<(
         access.registration(),
         case_a().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;

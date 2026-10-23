@@ -18,7 +18,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         access.registration(),
         case_tenant().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let proof =
@@ -30,7 +30,7 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .await?;

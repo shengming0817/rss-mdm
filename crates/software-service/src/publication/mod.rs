@@ -192,14 +192,11 @@ pub mod references;
 
 /// Compose version revocation with durable per-publication withdrawal intents in the caller transaction.
 /// The catalog lifecycle lock must already be held. No source I/O or transaction commit occurs here.
-pub async fn withdraw_version_in(
+pub async fn withdrawal_records_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
     resource: &str,
     version: &str,
-    at: i64,
-    audit: &dyn crate::AuditPort,
-    actor: &rss_mdm_software_release::ActorId,
-) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+) -> std::result::Result<Vec<String>, rss_transactional_messaging_postgres::PgError> {
     let tenant = tx.tenant_id();
     let resource = resource.to_owned();
     let version = version.to_owned();
@@ -207,10 +204,22 @@ pub async fn withdraw_version_in(
         sqlx::query_scalar::<_,String>("SELECT record FROM mdm_software_composition.subjects WHERE tenant_id=$1::uuid AND resource=$2 AND version=$3 ORDER BY record COLLATE \"C\"")
             .bind(tenant.to_string()).bind(resource).bind(version).fetch_all(c).await
     })).await?;
+    Ok(records)
+}
+/// Queue withdrawal for records discovered under the catalog lock.
+/// The caller must prepare all source partitions before invoking this operation.
+pub async fn withdraw_version_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    records: &[String],
+    at: i64,
+    audit: &dyn crate::AuditPort,
+    actor: &rss_mdm_software_release::ActorId,
+) -> std::result::Result<(), rss_transactional_messaging_postgres::PgError> {
+    let tenant = tx.tenant_id();
     for record in records {
         let id = storage::required(
             "version withdrawal",
-            rss_mdm_software_release::PublicationKey::new(tenant, &record),
+            rss_mdm_software_release::PublicationKey::new(tenant, record.as_str()),
         )?;
         let c = storage::required(
             "version withdrawal",

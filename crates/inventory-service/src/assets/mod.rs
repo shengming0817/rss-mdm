@@ -323,6 +323,13 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, command, audit, authorize, initialization) = *ctx;
+                    let tenant = tx.tenant_id();
+                    tx.with_connection(move |c| {
+                        Box::pin(async move {
+                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                        })
+                    })
+                    .await?;
                     if let Some(proof) = initialization {
                         let target = match command {
                             Command::FieldWrite { field, .. } => field.as_str(),
@@ -353,6 +360,7 @@ impl AssetService {
     ) -> Result<Value> {
         crate::transaction::lock(tx).await?;
         authorize()?;
+        self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = operation_identity(command, audit)?;
         if let Some(id) = operation
             && let Some(old) = crate::assets::receipts::replay(tx, audit, id, &fingerprint).await?

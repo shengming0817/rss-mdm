@@ -38,9 +38,9 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         init_key,
     )
     .await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_access")?;
+    pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
     ensure!(matches!(failed, Err(rss_mdm_authorization_service::Error::Audit(_))));
-    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success")? == 0);
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success").await? == 0);
     for table in [
         "authorization_initializations",
         "authorization_rules",
@@ -48,7 +48,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     ] {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{}'", isolated.instance_id, TENANT = case_tenant()))?.trim() == "0");
     }
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    audit_store.inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
     ensure!(matches!(
         crate::authorization::store::initialize_authorization(
             &audit_store,
@@ -64,7 +64,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         init_key,
     )
     .await?;
-    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success")? == 1);
+    ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success").await? == 1);
     // Simulate the persisted result of deleting the seed, without changing its marker/receipt.
     pg(&format!(
         "UPDATE mdm_access.authorization_rules SET revision=2,document=NULL WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'",
@@ -75,7 +75,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     let reopened = database(&base).await?;
     let replayed = crate::authorization::store::initialize_authorization(
         reopened
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?
             .as_ref(),
         isolated.clone(),
@@ -86,7 +86,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     ensure!(matches!(
         crate::authorization::store::initialize_authorization(
             reopened
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?
                 .as_ref(),
             isolated.clone(),
@@ -146,8 +146,8 @@ async fn bounded_initialization_recovery() -> Result<()> {
     let store = fixture.audit.as_ref();
     // The same command deadline projection is used before COMMIT and after a durable but unacknowledged COMMIT.
     for (fault, committed) in [
-        (rss_audit_postgres::PgFault::BeforeCommitPending, false),
-        (rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+        (rss_transactional_messaging_postgres::PgTransactionFault::CommitPending, false),
+        (rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck, true),
     ] {
         let mut user = crate::test_support::identity::user(case_tenant(), case_admin());
         user.instance_id = Uuid::new_v4().to_string();
@@ -185,7 +185,7 @@ async fn bounded_initialization_recovery() -> Result<()> {
         ))?;
         ensure!(durable.trim() == if committed { "1" } else { "0" });
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{}' AND operation_id='{key}'", case_tenant()))?.trim() == if committed { "1" } else { "0" });
-        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(key.to_string().as_str()) && r.result() == "success")? == usize::from(committed));
+        ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(key.to_string().as_str()) && r.result() == "success").await? == usize::from(committed));
 
         let receipt =
             crate::authorization::store::initialize_authorization(store, user.clone(), key).await?;

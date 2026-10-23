@@ -107,6 +107,8 @@ pub enum Failure {
     AuditIsolation,
     AuditAdmission,
     AuditContract,
+    AuditBackpressure,
+    AuditReserveExhausted,
     InventoryQuery,
     ManualQuery,
     CollectionQuery,

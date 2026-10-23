@@ -96,25 +96,25 @@ SELECT current_user='mdm_command_runtime' AND session_user=current_user
  AND EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='mdm_agent.bindings'::regclass AND tgname='software_bindings' AND tgfoid='mdm_commands.advance_software_bindings()'::regprocedure AND tgenabled='O')
  AND NOT EXISTS(SELECT 1 FROM pg_rewrite WHERE ev_class IN(SELECT oid FROM tables))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN allowed a ON a.relation=n.nspname||'.'||c.relname
-  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN('r','v','m','f')
+  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN ('information_schema','mdm_audit') AND c.relkind IN('r','v','m','f')
   AND (has_table_privilege(current_user,c.oid,'SELECT')<>coalesce(a.sel,false)
    OR has_table_privilege(current_user,c.oid,'INSERT')<>coalesce(a.ins,false)
    OR has_table_privilege(current_user,c.oid,'DELETE')<>coalesce(a.del,false)
    OR has_table_privilege(current_user,c.oid,'TRUNCATE,REFERENCES,TRIGGER')
    OR (has_table_privilege(current_user,c.oid,'UPDATE') AND a.relation IS DISTINCT FROM 'rss_transactional_messaging.inbox')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute a ON a.attrelid=c.oid
-  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind='r' AND a.attnum>0 AND NOT a.attisdropped
+  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN ('information_schema','mdm_audit') AND c.relkind='r' AND a.attnum>0 AND NOT a.attisdropped
   AND has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')<>(n.nspname||'.'||c.relname='rss_transactional_messaging.inbox' OR EXISTS(SELECT 1 FROM update_columns u WHERE u.relation=n.nspname||'.'||c.relname AND u.col=a.attname)))
 
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_attribute col ON col.attrelid=c.oid LEFT JOIN allowed a ON a.relation=n.nspname||'.'||c.relname
-  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND c.relkind IN('r','v','m','f') AND col.attnum>0 AND NOT col.attisdropped
+  WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN ('information_schema','mdm_audit') AND c.relkind IN('r','v','m','f') AND col.attnum>0 AND NOT col.attisdropped
   AND (has_column_privilege(current_user,c.oid,col.attnum,'SELECT')<>(coalesce(a.sel,false) OR EXISTS(SELECT 1 FROM read_columns r WHERE r.relation=n.nspname||'.'||c.relname AND r.col=col.attname))
     OR has_column_privilege(current_user,c.oid,col.attnum,'INSERT')<>coalesce(a.ins,false)
     OR has_column_privilege(current_user,c.oid,col.attnum,'REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
   WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname NOT IN('information_schema','rss_device_command','rss_reconcile')
   AND p.oid IS DISTINCT FROM to_regprocedure('mdm_apple.account_current(uuid,uuid,bigint,uuid,text)')
- AND p.oid NOT IN('mdm_commands.retirement_commands(uuid,text)'::regprocedure,'mdm_commands.save_retired_command(uuid,uuid,bigint,bigint)'::regprocedure,'mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb)'::regprocedure,'mdm_commands.installation_status(uuid)'::regprocedure,'mdm.lock_asset_watermark(uuid)'::regprocedure,'rss_audit.reserve(uuid)'::regprocedure,'rss_audit.append(uuid,text,text,bigint,bytea,bigint)'::regprocedure,'rss_ledger.prepare_append(uuid,text,text,smallint)'::regprocedure,'rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.next_outbox_wakeup(uuid,text)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
+   AND p.oid NOT IN('mdm_commands.retirement_commands(uuid,text)'::regprocedure,'mdm_commands.save_retired_command(uuid,uuid,bigint,bigint)'::regprocedure,'mdm_commands.save_retired_action(uuid,uuid,jsonb,jsonb)'::regprocedure,'mdm_commands.installation_status(uuid)'::regprocedure,'mdm.lock_asset_watermark(uuid)'::regprocedure,'mdm_planning.scope_admission(uuid,text)'::regprocedure,'mdm_planning.policy_lock(uuid)'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure,'rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint)'::regprocedure,'rss_transactional_messaging.next_outbox_wakeup(uuid,text)'::regprocedure,'rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid)'::regprocedure,'rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid)'::regprocedure)
   AND has_function_privilege(current_user,p.oid,'EXECUTE'))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname NOT LIKE 'pg_%' AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
 

@@ -180,15 +180,25 @@ impl Fixture {
             )?
             .as_bytes()
             .to_vec();
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let source = self
+            .app
+            .audit_store
+            .on_runtime(
+                self.app.execution_runtime.clone(),
+                rss_request_context::TenantId::parse(case_tenant())?,
+                &budget.control(),
+            )
+            .await?;
         self.app
             .execution_runtime
             .local_tx_with_context(
                 rss_request_context::TenantId::parse(case_tenant())?,
                 crate::identity::deadline(),
-                (&self.app.execution, &self.app.audit_store, &audit),
+                (&self.app.execution, &source, &audit),
                 |(service, audit_store, audit), tx| {
                     Box::pin(async move {
-                        audit_store.lock_in(tx).await.map_err(|e| {
+                        audit_store.prepare_in(tx, audit, &[]).await.map_err(|e| {
                             rss_transactional_messaging_postgres::PgError::from(
                                 sqlx::Error::Protocol(e.to_string()),
                             )

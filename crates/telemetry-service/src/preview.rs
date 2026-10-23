@@ -27,7 +27,7 @@ impl Service {
         let rejection = Arc::new(Mutex::new(None));
         let rejected = rejection.clone();
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
-            service.planning.audit_store.lock_in(tx).await.map_err(crate::storage_error)?;
+            service.planning.audit_store.bind_in(tx).await.map_err(crate::storage_error)?;
             let prepared_failure=rejected.clone();
             let actor=proof.clone();
             let snapshot=tx.with_connection(move|c|Box::pin(async move {
@@ -72,7 +72,7 @@ impl Service {
                 Ok(result)
             })).await?;
             let value=value.map_err(|e|{*prepared_failure.lock().expect("preview target page")=Some(e);crate::storage_error(e)})?;
-            service.planning.audit_store.append_request_in(tx,&audit,200,"success").await.map_err(crate::storage_error)?;
+            audit.require_request_settlement();
             Ok(value)
         })).await.fold(Ok,|_|Err(Error::Storage),|_|Err(rejection.lock().expect("preview rejection").unwrap_or(Error::Storage)),|_|Err(Error::Unknown),|_|Err(Error::Unknown),|_|Err(Error::Storage))
     }

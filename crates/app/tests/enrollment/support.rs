@@ -45,7 +45,7 @@ pub(crate) async fn create_windows(
     let a = audit(proof, key, device, "enrollment_create");
     let receipt = crate::enrollment::store::create_enrollment(
         store
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?
             .as_ref(),
         proof.enrollment(device)?,

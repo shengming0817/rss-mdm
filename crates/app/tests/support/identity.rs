@@ -170,13 +170,29 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
     )?;
     let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
     let access = crate::Database::connect(value.access_options()?).await?;
-    let audit = access.audit_store(&value.audit).await?;
+    let tenant = rss_request_context::TenantId::parse(&value.identity.tenant_id)?;
+    let source_runtime = crate::identity::open_runtime(
+        &value.access_database,
+        &value.flow.storage.target,
+        &value.flow.storage.lineage,
+        &[(tenant, value.flow.storage.epoch)],
+    )
+    .await?;
+    let audit = access
+        .audit_store(
+            &value.audit,
+            source_runtime.clone(),
+            tenant,
+            Default::default(),
+        )
+        .await?;
     let result = crate::authorization::store::initialize_authorization(
         &audit,
         user(&value.identity.tenant_id, BOOTSTRAP),
         uuid::Uuid::new_v4(),
     )
     .await;
+    source_runtime.close().await;
     access.close().await;
     result?;
     refresh_management(root).await
@@ -548,7 +564,10 @@ async fn set_grants_in(
             .load_authorization(access.authorization())
             .await?;
             grant(
-                access.audit_store(&config(tenant)?.audit).await?.as_ref(),
+                access
+                    .audit_store_fixture(&config(tenant)?.audit)
+                    .await?
+                    .as_ref(),
                 &principal,
                 tenant,
                 subject,
