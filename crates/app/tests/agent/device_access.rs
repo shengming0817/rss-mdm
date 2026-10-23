@@ -455,6 +455,31 @@ async fn directory(f: &Fixture, user: bool) -> Result<(StatusCode, Value)> {
     let bytes = response.into_body().collect().await?.to_bytes();
     Ok((status, serde_json::from_slice(&bytes)?))
 }
+fn pending_binding(
+    reply: &(StatusCode, Value),
+    id: Uuid,
+    account: &wire::AccessAccount,
+) -> Result<()> {
+    ensure!(reply.0 == StatusCode::OK, "directory failed: {}", reply.0);
+    let bindings = reply
+        .1
+        .get("bindings")
+        .and_then(Value::as_array)
+        .context("binding list")?;
+    let binding = bindings
+        .iter()
+        .find(|b| b.get("id") == Some(&json!(id)))
+        .context("target binding")?;
+    ensure!(
+        binding.get("account") == Some(&serde_json::to_value(account)?),
+        "account mismatch"
+    );
+    ensure!(
+        binding.get("appliedRevision") == Some(&Value::Null),
+        "not an explicit pending revision"
+    );
+    Ok(())
+}
 fn access_envelope(task: &wire::AccessTaskSpec, sid: &str) -> Result<wire::CredentialEnvelope> {
     use base64::{
         Engine,
@@ -558,7 +583,9 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let p = event(&f,&offered,&c,&registration,serde_json::to_value(&prepared)?).await?;
         ensure!(p.0 == StatusCode::OK,"prepared {p:?}");
         let pending = directory(&f,true).await?;
-        ensure!(pending.1["bindings"][0]["appliedRevision"].is_null());
+        pending_binding(&pending,id,&account)?;
+        ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[]})),id,&account).is_err());
+        ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[{"id":id,"account":account}]})),id,&account).is_err());
         let path = format!("/api/v1/agent/runtime/tasks/{}/events",task.task_id);
         let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":task.attempt_id,"executionContext":c,"event":escrow});
         let ack = agent_call(&f.router,Method::POST,&path,Some(execution::case_credential()),Some(input.clone())).await?;
@@ -567,7 +594,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let ack: wire::TaskEventAck = serde_json::from_value(ack.1)?;
         ensure!(ack.credentials().len() == 1);
         let receipt = ack.credentials()[0].clone();
-        ensure!(directory(&f,true).await?.1["bindings"][0]["appliedRevision"].is_null());
+        pending_binding(&directory(&f,true).await?,id,&account)?;
         let result = wire::AccessResult { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,
             effect:wire::AccessEffect::Applied { account:account.clone(),role:wire::AccessRole::Standard,mac:None,
                 windows:Some(wire::AccessWindowsFacts { factor_generation:task.factor_generation,recovery:receipt.clone() }) } };
@@ -586,6 +613,16 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
             ensure!(state.1["bindings"][0]["revoked"] == true && state.1["bindings"][0]["appliedRevision"].is_null());
             let pending = pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND pending",case_tenant(),task.task_id))?;
             ensure!(pending.trim() == "0","withdrawn task left pending materials: {pending}");
+            let unbind = offer(&f,&c,&registration).await?.1["task"].clone();
+            for kind in ["received","start"] { ensure!(event(&f,&unbind,&c,&registration,json!({"kind":kind})).await?.0 == StatusCode::OK); }
+            let spec=&unbind["payload"]["task"];
+            let mut cleared=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"unknown"}});
+            ensure!(event(&f,&unbind,&c,&registration,cleared.clone()).await?.0 == StatusCode::OK);
+            let retained=pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND invalidated_at IS NULL AND sealed IS NOT NULL",case_tenant(),task.task_id))?;
+            ensure!(retained.trim() == "1","Unknown must retain material");
+            cleared["effect"]=json!({"state":"unbound"});
+            ensure!(event(&f,&unbind,&c,&registration,cleared).await?.0 == StatusCode::OK);
+            verify_unbound_retention(&receipt).await?;
             return Ok(());
         }
         let ready = directory(&f,true).await?;
@@ -601,4 +638,40 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         ensure!(event(&f,&preserved,&c,&registration,json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
     }).await
+}
+
+async fn verify_unbound_retention(receipt: &wire::CredentialReceipt) -> Result<()> {
+    use rss_mdm_recovery_credentials::storage;
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_runtime")?)
+            .await?;
+    let tenant = Uuid::parse_str(case_tenant())?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut c)
+        .await?;
+    let invalidated:bool=sqlx::query_scalar("SELECT invalidated_at IS NOT NULL AND NOT pending AND sealed IS NOT NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut c).await?;
+    ensure!(invalidated, "native Unbound must start retention");
+    ensure!(
+        !storage::expired_in(&mut c, tenant)
+            .await?
+            .iter()
+            .any(|m| m.id == receipt.material && m.version == receipt.version)
+    );
+    sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).execute(&mut c).await?;
+    ensure!(
+        storage::expired_in(&mut c, tenant)
+            .await?
+            .iter()
+            .any(|m| m.id == receipt.material && m.version == receipt.version)
+    );
+    storage::clear_expired_in(&mut c, tenant, receipt.material, receipt.version).await?;
+    let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut c).await?;
+    ensure!(erased, "expired material must be erased");
+    c.close().await?;
+    Ok(())
 }

@@ -710,7 +710,25 @@ pub async fn finish_in(
     let event = input.operation_id();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(access::storage::result_in(c, tenant, run, attempt, event, &value, project).await)
+            let result = async {
+                let applied =
+                    access::storage::result_in(c, tenant, run, attempt, event, &value, project)
+                        .await?;
+                if applied && matches!(value.effect, wire::AccessEffect::Unbound) {
+                    rss_mdm_recovery_credentials::storage::access_unbound_in(
+                        c,
+                        tenant,
+                        value.binding_id,
+                        value.binding_generation,
+                        value.revision,
+                    )
+                    .await
+                    .map_err(crate::recovery_credentials::error)?;
+                }
+                Ok::<_, Error>(applied)
+            }
+            .await;
+            Ok(result)
         })
     })
     .await??;
