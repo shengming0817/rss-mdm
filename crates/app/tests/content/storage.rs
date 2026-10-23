@@ -932,12 +932,59 @@ async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persisten
         let mut pending = binding(b"reserved", StorageClass::Artifact);
         pending.length = 128 * 1024 * 1024 - 2;
         pending.sha256 = [8; 32];
-        store.begin(Uuid::new_v4(), pending, now, store.upload_budget()?).await?;
-        ensure!(store.finish(&actor, id, now, store.upload_budget()?).await?.complete);
+        let pending_id = Uuid::new_v4();
+        store.begin(pending_id, pending, now, store.upload_budget()?).await?;
+        let completed = store.finish(&actor, id, now, store.upload_budget()?).await?;
+        ensure!(completed.complete);
         let digest = b.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
         let query = format!("SELECT document->'value'->'inspections'->'pkg'->>'status' FROM mdm_content.manifests WHERE tenant_id='{}' AND sha256=decode('{digest}','hex') AND class='artifact'",case_tenant());
         ensure!(pg(&query)?.trim().is_empty(), "quota failure must not pretend to have parsed");
-        // Completion releases upload reservation; explicit parsing can now use its own deletion pin.
+        // Prepare a live-file owner at expired lease/retention boundaries. Retry and GC
+        // below use the real public Store paths; the blocking guard itself has a T1 proof.
+        let row = format!("tenant_id='{}' AND document->'value'->'upload'->>'id'='{id}'", case_tenant());
+        let baseline: u64 = pg(&format!("SELECT reserved FROM mdm_content.uploads WHERE {row}"))?.trim().parse()?;
+        pg(&format!("UPDATE mdm_content.uploads SET expires=0 WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{pending_id}'", case_tenant()))?;
+        let small_id = Uuid::new_v4();
+        let mut small = binding(b"p", StorageClass::Artifact);
+        small.purpose = Purpose::Software { resource: small_id.to_string(), filename: "small.pkg".into() };
+        store.begin(small_id, small.clone(), now, store.upload_budget()?).await?;
+        store.append(&small.actor, small_id, 0, now, &b"p"[..], store.upload_budget()?).await?;
+        let small_row = format!("tenant_id='{}' AND document->'value'->'upload'->>'id'='{small_id}'", case_tenant());
+        let epoch = Uuid::new_v4();
+        let length = b.length;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, stopped) = std::sync::mpsc::channel();
+        let work = tokio::task::spawn_blocking(move || {
+            let file = tempfile::tempfile()?;
+            file.set_len(length)?;
+            let small_file = tempfile::tempfile()?;
+            small_file.set_len(1)?;
+            entered.send(()).map_err(|_| std::io::Error::other("file owner abandoned"))?;
+            let _ = stopped.recv();
+            drop((file, small_file));
+            Ok::<_, std::io::Error>(())
+        });
+        started.await?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch='{epoch}',held_until=0,reserved={length} WHERE {row}"))?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch='{epoch}',held_until=0 WHERE {small_row}"))?;
+        let mut contender = (*second).clone();
+        // Old+new large copies would fit; a Conflict must come from owner fencing.
+        contender.config.max_temporary_bytes = length * 2 + 2;
+        ensure!(matches!(contender.parse_upload(&actor, id, now).await, Err(rss_mdm_content_service::Error::Conflict)));
+        ensure!(matches!(contender.finish(&small.actor, small_id, now, contender.upload_budget()?).await, Err(rss_mdm_content_service::Error::Conflict)));
+        ensure!(pg(&format!("SELECT epoch::text||':'||reserved::text FROM mdm_content.uploads WHERE {row}"))?.trim() == format!("{epoch}:{length}"));
+        pg(&format!("UPDATE mdm_content.uploads SET expires=0 WHERE {row} OR {small_row}"))?;
+        pg(&format!("UPDATE mdm_content.objects SET expires=0 WHERE tenant_id='{}' AND owner=(SELECT id FROM mdm_content.uploads WHERE {small_row})", case_tenant()))?;
+        contender.begin(Uuid::new_v4(), binding(b"x", StorageClass::Artifact), now, contender.upload_budget()?).await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE ({row} OR {small_row}) AND epoch='{epoch}'"))?.trim() == "2", "GC must not discard live file reservations after retention expiry");
+        ensure!(pg(&format!("SELECT reserved FROM mdm_content.uploads WHERE {row}"))?.trim() == length.to_string());
+        release.send(())?;
+        work.await??;
+        // Confirmation is supplied only after the fixture owner has closed both files.
+        pg(&format!("UPDATE mdm_content.uploads SET epoch=NULL,held_until=0,reserved={baseline},expires={} WHERE {row}", completed.expires))?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch=NULL,held_until=0 WHERE {small_row}"))?;
+        contender.begin(Uuid::new_v4(), binding(b"x", StorageClass::Artifact), now, contender.upload_budget()?).await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE {small_row}"))?.trim() == "0", "confirmed expired owners are reclaimable");
         second.parse_upload(&actor, id, now).await?;
         ensure!(pg(&query)?.trim() == "rejected", "malformed metadata must be recorded");
         let no_parse_budget = store.clone();

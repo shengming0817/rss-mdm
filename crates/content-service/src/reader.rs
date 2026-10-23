@@ -148,16 +148,9 @@ impl Store {
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
-        mut spool: Option<tempfile::NamedTempFile>,
+        mut spool: Option<File>,
         guard: G,
-    ) -> Result<
-        (
-            Option<Zeroizing<Vec<u8>>>,
-            [u8; 32],
-            Option<tempfile::NamedTempFile>,
-        ),
-        Error,
-    > {
+    ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32], Option<File>), Error> {
         if pieces.is_empty() || pieces.len() > 8193 || (c.protected() && pieces.len() != 1) {
             return Err(Error::Invariant);
         }
@@ -220,7 +213,7 @@ impl Store {
             }
             if let Some(mut file) = spool.take().filter(|_| self.timer.now() < spool_cutoff) {
                 let task = blocking(guard.clone(), move || {
-                    std::io::Write::write_all(file.as_file_mut(), &logical)
+                    std::io::Write::write_all(&mut file, &logical)
                         .ok()
                         .map(|()| file)
                 });

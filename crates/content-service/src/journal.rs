@@ -166,7 +166,7 @@ impl Store {
     ) -> Result<(Saved, Uuid), Error> {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
-        let row=sqlx::query("SELECT document,held_until FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3 FOR UPDATE")
+        let row=sqlx::query("SELECT document,held_until,epoch FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND expires>$3 FOR UPDATE")
    .bind(self.tenant.to_string()).bind(key).bind(now).fetch_optional(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.ok_or(Error::Conflict)?;
         let saved: Saved = self.unsign(
             &key.to_string(),
@@ -181,6 +181,11 @@ impl Store {
             .map_err(|e| journal::pg_error(concat!(file!(), ":", line!()), e))?
             > now
             || saved.upload.complete
+            || (saved.upload.offset == saved.upload.binding.length
+                && row
+                    .try_get::<Option<Uuid>, _>("epoch")
+                    .map_err(|_| storage())?
+                    .is_some())
             || offset.is_some_and(|o| o != saved.upload.offset)
         {
             return Err(Error::Conflict);
@@ -201,7 +206,7 @@ impl Store {
         let key = upload::storage_key(actor, id);
         let mut tx = self.tx().await?;
         self.quota(&mut tx, length).await?;
-        let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,reserved=$6,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND held_until<=$5")
+        let changed = sqlx::query("UPDATE mdm_content.uploads SET epoch=$3,reserved=$6,held_until=ceil(extract(epoch FROM clock_timestamp())+$4)::bigint WHERE tenant_id=$1::uuid AND id=$2 AND complete AND expires>$5 AND epoch IS NULL")
             .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(budget.remaining().as_secs_f64()).bind(now).bind(length as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
         if changed != 1 {
             return Err(Error::Conflict);

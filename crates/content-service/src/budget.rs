@@ -82,7 +82,7 @@ impl UploadLease {
         .await
         .map_err(|_| Error::Cleanup)
         .and_then(|value| value);
-        // A failed bounded release remains fenced until its persisted expiry; don't spin/retry.
+        // Unconfirmed work remains charged; expiry alone never proves its resources closed.
         self.released = true;
         if result.is_err() {
             tracing::warn!(upload=%self.key, epoch=%self.epoch, "upload lease cleanup unconfirmed");
@@ -107,7 +107,7 @@ impl Drop for UploadLease {
                 }
             });
         } else {
-            tracing::warn!(upload=%key, epoch=%epoch, "upload cleanup unavailable; lease expiry fences recovery");
+            tracing::warn!(upload=%key, epoch=%epoch, "upload cleanup unavailable; reservation remains fenced");
         }
     }
 }

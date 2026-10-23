@@ -65,7 +65,7 @@ pub(super) fn automatic(kind: Option<Kind>, length: u64) -> bool {
 }
 
 pub(super) async fn observe(
-    mut file: tempfile::NamedTempFile,
+    mut file: File,
     kind: Kind,
     config: Config,
     timer: Arc<dyn Clock>,
@@ -98,7 +98,7 @@ pub(super) async fn observe(
             cancel,
             deadline,
         };
-        let result = match inspect(file.as_file_mut(), kind.name(), &config, &clock, deadline) {
+        let result = match inspect(&mut file, kind.name(), &config, &clock, deadline) {
             Ok(facts) => {
                 rss_mdm_software_service::management::content::InstallerInspection::Parsed { facts }
             }

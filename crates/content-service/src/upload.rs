@@ -403,7 +403,7 @@ impl Store {
             self.claim_parse(actor, id, now, epoch, budget, artifact.length()).await?;
             let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
             let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone());
-            let temporary = tempfile::NamedTempFile::new().map_err(|_| storage())?;
+            let temporary = tempfile::tempfile().map_err(|_| storage())?;
             let (_, digest, temporary) = self.check_pieces(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(temporary), lease.clone()).await?;
             let temporary = temporary.ok_or(Error::Storage)?;
             if digest != artifact.digest().bytes() { return Err(Error::Invariant); }
@@ -460,7 +460,7 @@ impl Store {
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
    let temporary = if automatic {
        match self.reserve_parse(key, epoch, a.length()).await {
-           Ok(()) => tempfile::NamedTempFile::new().ok(),
+           Ok(()) => tempfile::tempfile().ok(),
            Err(Error::Conflict) => None,
            Err(error) => return Err(error),
        }
