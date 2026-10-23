@@ -441,7 +441,10 @@ class RunFixtures:
                 raise RuntimeError('gateway startup failed before port discovery:\n' + diagnostic) from error
             yield name, port
         finally:
-            environment.reset()
+            # The scenario owns the bind root until all gateway probes finish.
+            # Recreating it between probes can invalidate Docker Desktop's shared mount.
+            environment.verify_ownership()
+            environment.compose('--profile', '*', 'down', '--volumes', '--remove-orphans', timeout=30)
 
     def evidence(self, job):
         context = self.case_contexts[job.key]
