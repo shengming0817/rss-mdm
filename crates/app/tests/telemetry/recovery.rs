@@ -21,7 +21,9 @@ pub(super) async fn receive_commit_unknown(f: &mut Fixture, body: &Value) -> Res
         // This runtime has no relay or maintenance tasks: the injection belongs only
         // to the receiving transaction, rather than racing a shared background pool.
         let runtime=Arc::new(PgRuntime::connect_producer(pg_config,crate::lifecycle::RuntimeTimer,binding).await?);
-        let planning=Arc::new(rss_mdm_flow_service::planning::Planning::new(f.planning.audit_store.clone(),runtime.clone(),f.planning.tenant,
+        let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit=Arc::new(f.planning.audit_store.on_runtime(runtime.clone(),f.planning.tenant,&budget.control()).await?);
+        let planning=Arc::new(rss_mdm_flow_service::planning::Planning::new(audit,runtime.clone(),f.planning.tenant,
             f.planning.clock.clone(),&[9;32],f.planning.objects.clone()).await?);
         let config:crate::telemetry::Config=serde_json::from_value(f.base["telemetry"].clone())?;
         let service=Arc::new(rss_mdm_telemetry_service::Service::new(f.planning.tenant,runtime.clone(),planning,config.open_backend(f.planning.tenant).await?,f.execution.clone(),config.ingress.clone(),

@@ -86,7 +86,7 @@ def execute(fixture):
     for table in ('mdm_audit.receipts', 'rss_audit.records'):
         sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
         try:
-            command('serve', config, accepted=False, reason='AuditAdmission')
+            command('serve', config, accepted=False, reason='startup.identity: Audit')
         finally:
             sql(f'REVOKE UPDATE ON {table} FROM mdm_identity_provisioning')
     path = private(root / 'runtime.json', config)
@@ -176,7 +176,7 @@ def execute(fixture):
         require(operations(delegate) == set(), 'revoked grant remained effective')
         from t2_modules.tenant_http import exercise
         exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
-                 builds, root, stack, login, write, rule)
+                 builds, root, stack, login, write, rule, fixture.owner, fixture.database)
         # Membership and account enable state are authoritative on every request.
         for state in ('membership', 'enabled'):
             require(admin.call('POST', api + '/accounts/' + delegate_id + '/' + state, dict(enabled=False))[0] == 200,

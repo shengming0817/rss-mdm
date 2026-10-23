@@ -31,6 +31,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     audit.operation(config.operation_id, "authorization_initialize");
     let mut owned = Resources {
         runtime: None,
+        source_runtime: None,
         kdf: Arc::new(PasswordKdf::new()),
         access: None,
     };
@@ -51,6 +52,9 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
                 }
             },
             async {
+                if let Some(runtime) = &owned.source_runtime {
+                    runtime.close().await;
+                }
                 if let Some(access) = &owned.access {
                     access.close().await;
                 }
@@ -75,6 +79,7 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     result
 }
 struct Resources {
+    source_runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
     runtime: Option<Arc<rss_transactional_messaging_postgres::PgRuntime>>,
     kdf: Arc<PasswordKdf>,
     access: Option<Database>,
@@ -163,7 +168,17 @@ async fn initialize_owned(
         .access
         .as_ref()
         .ok_or(Error::Unavailable(Failure::Database))?;
-    let store = database.audit_store(&config.audit).await?;
+    let source_runtime = identity::open_runtime(
+        &config.database,
+        &config.installation.target,
+        &config.installation.lineage,
+        &[(tenant, config.expected_epoch)],
+    )
+    .await?;
+    owned.source_runtime = Some(source_runtime.clone());
+    let store = database
+        .audit_store(&config.audit, source_runtime, tenant, Default::default())
+        .await?;
     let pool = database.archive_pool();
     let management: String =
         sqlx::query_scalar("SELECT management_tenant_id::text FROM public.mdm_installation")

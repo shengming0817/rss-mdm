@@ -12,13 +12,14 @@ fn members(count: u128) -> Vec<Value> {
         )
         .collect()
 }
-fn no_write(id: Uuid, operation: Uuid, table: &str) -> Result<()> {
+async fn no_write(id: Uuid, operation: Uuid, table: &str) -> Result<()> {
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.{table} WHERE tenant_id='{TENANT}' AND instance='{INSTANCE}' AND id='{id}'", TENANT = case_tenant()))?.trim() == "0");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.authorization_operations WHERE tenant_id='{TENANT}' AND operation_id='{operation}'", TENANT = case_tenant()))?.trim() == "0");
     ensure!(
         audit_count(|r| r.source() == "mdm.business"
             && r.operation() == Some(operation.to_string().as_str())
-            && r.result() == "success")?
+            && r.result() == "success")
+        .await?
             == 0
     );
     Ok(())
@@ -67,7 +68,8 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         ensure!(
             audit_count(|r| r.action() == "authorization_members_read"
                 && r.target() == id.to_string()
-                && r.status() == status)?
+                && r.status() == status)
+            .await?
                 > 0
         );
     }
@@ -169,7 +171,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
             .await?
             .0 == StatusCode::CONFLICT
         );
-        no_write(over, operation, table)?;
+        no_write(over, operation, table).await?;
         pg(&format!(
             "INSERT INTO mdm_access.{table}(tenant_id,instance,id,revision,document) VALUES('{TENANT}','{INSTANCE}','{over}',1,NULL)",
             TENANT = case_tenant()
@@ -243,7 +245,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
     )
     .await?;
     ensure!(rejected.0 == StatusCode::CONFLICT && rejected.1["code"] == "operation_conflict");
-    no_write(over, operation, "user_groups")?;
+    no_write(over, operation, "user_groups").await?;
     let oversized = Uuid::new_v4();
     pg(&format!(
         "INSERT INTO mdm_access.user_groups SELECT tenant_id,instance,'{oversized}',1,document FROM mdm_access.user_groups WHERE tenant_id='{}' AND instance='{INSTANCE}' AND id='{}'",
@@ -284,7 +286,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         .await?
         .0 == StatusCode::PAYLOAD_TOO_LARGE
     );
-    no_write(id, operation, "user_groups")?;
+    no_write(id, operation, "user_groups").await?;
 
     Ok(())
 }

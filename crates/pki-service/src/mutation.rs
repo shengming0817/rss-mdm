@@ -35,30 +35,34 @@ pub(crate) async fn run<C: Send, R: Send>(
         return Err(Error::Forbidden);
     }
     let budget = AuditBudget::new(Duration::from_secs(5));
-    let control = budget.control();
     let outcome = store
-        .write(tenant, &control, (store, a, ctx, Some(f)), |ctx, tx| {
-            Box::pin(async move {
-                let (store, a, context, f) = ctx;
-                let f = f.take().ok_or(Error::Storage)?;
-                let change = tx
-                    .with_connection_context(context, |ctx, c| f(ctx, c))
-                    .await?;
-                if change.key.is_empty() {
-                    return Ok((change.value, false));
-                }
-                let fact =
-                    Fact::business(a, &change.key, &change.fingerprint, 200, "success", None)
-                        .map_err(|e| Error::Audit(e.into()))?;
-                store.append(tx, &fact, change.replay).await?;
-                a.mark_commit_started();
-                Ok((change.value, true))
-            })
-        })
+        .write(
+            tenant,
+            &budget.source_control(),
+            (store, a, ctx, Some(f)),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let (store, a, context, f) = ctx;
+                    let f = f.take().ok_or(Error::Storage)?;
+                    let change = tx
+                        .with_connection_context(context, |ctx, c| f(ctx, c))
+                        .await?;
+                    if change.key.is_empty() {
+                        return Ok((change.value, false));
+                    }
+                    let fact =
+                        Fact::business(a, &change.key, &change.fingerprint, 200, "success", None)
+                            .map_err(|e| Error::Audit(e.into()))?;
+                    store.append(tx, &fact, change.replay).await?;
+                    a.mark_commit_started();
+                    Ok((change.value, true))
+                })
+            },
+        )
         .await;
     let result = outcome.fold(
         |r| {
-            let (value, committed) = r.into_value();
+            let (value, committed) = r;
             if committed {
                 a.mark_committed();
             }
@@ -92,13 +96,11 @@ pub(crate) async fn run<C: Send, R: Send>(
     result
 }
 
-fn error(e: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn error(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match e {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            Error::Audit(rss_mdm_audit_integration::Error::Audit(e))
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => {
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => Error::Audit(e),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => {
             Error::Audit(rss_mdm_audit_integration::Error::RollbackFailed)
         }
     }

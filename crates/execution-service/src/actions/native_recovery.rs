@@ -105,6 +105,7 @@ pub(crate) async fn step(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     work: Work,
+    run_id: Uuid,
 ) -> Result<bool> {
     match work {
         Work::Run(id) => {
@@ -120,7 +121,7 @@ pub(crate) async fn step(
         Work::CheckIn {
             registration,
             generation,
-        } => checkin_step(service, tx, registration, generation).await,
+        } => checkin_step(service, tx, registration, generation, run_id).await,
     }
 }
 async fn checkin_step(
@@ -128,6 +129,7 @@ async fn checkin_step(
     tx: &mut PgTransaction<'_>,
     registration: Uuid,
     generation: i64,
+    run_id: Uuid,
 ) -> Result<bool> {
     let tenant = tx.tenant_id().to_string();
     let device: Option<String> = tx.with_connection(move |c| Box::pin(async move {
@@ -181,7 +183,9 @@ async fn checkin_step(
                 generation,
             };
             let now = storage::now(tx).await?;
-            super::production::accept_for_device(service, tx, &plan, &target, trigger, now).await?;
+            let id = run_id;
+            super::production::accept_for_device(service, tx, &plan, &target, trigger, now, id)
+                .await?;
         }
     }
     let tenant = tx.tenant_id().to_string();
@@ -221,7 +225,19 @@ impl ExecutionService {
             self.tenant,
             &audit,
             (self, id),
-            |ctx, tx| Box::pin(async move { step(ctx.0, tx, Work::Run(ctx.1)).await.map(|_| ()) }),
+            |ctx, tx| {
+                Box::pin(async move {
+                    let audit = rss_mdm_audit_integration::RequestAudit::new(
+                        tx.tenant_id().to_string(),
+                        "command_reconcile",
+                    );
+                    let entity = Work::Run(ctx.1).entity();
+                    let prepared = crate::recovery::prepare(ctx.0, tx, &entity, &audit).await?;
+                    crate::recovery::apply_prepared(ctx.0, tx, prepared, &audit)
+                        .await
+                        .map(|_| ())
+                })
+            },
         )
         .await;
         audit.finalize(

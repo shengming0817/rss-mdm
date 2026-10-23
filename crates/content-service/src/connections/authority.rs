@@ -15,19 +15,17 @@ pub struct Directory {
     pub desired_revision: Option<i64>,
     pub versions: Vec<Receipt>,
 }
-fn failure(value: rss_audit_postgres::TransactionError<Failure>) -> Failure {
+fn failure(value: rss_mdm_audit_integration::TransactionError<Failure>) -> Failure {
     match value {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(e) => {
-            rss_mdm_audit_integration::Error::from(e).into()
-        }
-        rss_audit_postgres::TransactionError::Rollback { .. } => Failure::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(e) => e.into(),
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Failure::RollbackFailed,
     }
 }
 fn settle<T>(
     value: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<T>,
-        rss_audit_postgres::TransactionError<Failure>,
+        T,
+        rss_mdm_audit_integration::TransactionError<Failure>,
     >,
     audit: &RequestAudit,
     write: bool,
@@ -37,7 +35,7 @@ fn settle<T>(
             if write {
                 audit.mark_committed();
             }
-            Ok(v.into_value())
+            Ok(v)
         },
         |e| Err(failure(e)),
         |e| {
@@ -118,7 +116,7 @@ impl Authority {
         audit.operation(operation, "storage_provision");
         audit.require_request_settlement();
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.write(self.tenant,&budget.control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
+        let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);
             let (value,replayed)=tx.with_connection_context(&mut context,|(service,p,operation,input),c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;

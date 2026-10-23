@@ -124,7 +124,7 @@ pub async fn complete_verified_administrator(
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(6));
     let tenant = TenantId::parse(&user.tenant_id).map_err(|_| Error::Malformed)?;
-    let result=store.write(tenant,&budget.control(),(store,&user,operation,audit,fact),|(store,user,operation,audit,fact),tx|Box::pin(async move {
+    let result=store.write(tenant,&budget.source_control(),(store,&user,operation,audit,fact),|(store,user,operation,audit,fact),tx|Box::pin(async move {
         let mut context=(*user,*operation);
         let (receipt,replay)=tx.with_connection_context(&mut context,|(user,operation),c|Box::pin(async move {
             crate::lock_on(c,&user.tenant_id,&user.instance_id).await?;

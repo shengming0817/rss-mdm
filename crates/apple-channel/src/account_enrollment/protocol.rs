@@ -104,12 +104,11 @@ pub(super) async fn enroll(
     let tenant = app.identity.tenant().to_string();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (&app, &tenant, organization, flow, &digest, &audit),
             |(app, tenant, organization, flow, digest, audit), tx| {
                 Box::pin(async move {
@@ -181,12 +180,11 @@ async fn profile(
     audit.target_device(&admission.coordinates().device);
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (app, &tenant, token, digest, &admission, flow_id, audit),
             |(app, tenant, token, digest, admission, flow_id, audit), tx| {
                 Box::pin(async move {

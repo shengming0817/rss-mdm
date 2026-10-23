@@ -151,7 +151,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     .await?;
     identity_resources.finish(async {
     let access = database(&base).await?;
-    let audit_store = access.audit_store(&config.audit).await?;
+    let audit_store = access.audit_store_fixture(&config.audit).await?;
     let (router, _, _, _, resources) = crate::api::application_fixture(
         config,
         Arc::new(crate::clock::SystemClock),

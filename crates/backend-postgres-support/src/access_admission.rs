@@ -22,10 +22,12 @@ pub async fn verify(
             let entries = value[key]
                 .as_array()
                 .ok_or_else(|| sqlx::Error::Protocol("invalid static access contract".into()))?;
-            merged[key]
-                .as_array_mut()
-                .expect("static arrays")
-                .extend(entries.iter().cloned());
+            let target = merged[key].as_array_mut().expect("static arrays");
+            for entry in entries {
+                if !target.contains(entry) {
+                    target.push(entry.clone());
+                }
+            }
         }
     }
     // Render policy expressions independent of the connection's default search path.

@@ -1,12 +1,11 @@
+use crate::api::Assembly;
 use crate::windows::test_support::*;
-use crate::{api::Assembly, device::test_support::options};
 use anyhow::ensure;
 use axum::http::StatusCode;
 use rss_mdm_windows_mdm::{
     CodecLimits,
     soap::{self, Operation},
 };
-use sqlx::{Connection, PgConnection};
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.limits"]
 async fn accepted_peer_rate_limit_and_refill() -> anyhow::Result<()> {
@@ -32,8 +31,7 @@ async fn ingress_burst(
     )?;
     request.header.to = Some(url.clone());
     let bytes = soap::encode(&request, &CodecLimits::default())?;
-    let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
-    let before = crate::audit_test_support::read(&mut pg)
+    let before = crate::audit_test_support::audit_records()
         .await?
         .iter()
         .filter(|r| r.action() == "windows_discovery")
@@ -67,7 +65,7 @@ async fn ingress_burst(
         refused == 64 && accepted == 64,
         "forwarded headers bypassed peer admission"
     );
-    let after = crate::audit_test_support::read(&mut pg)
+    let after = crate::audit_test_support::audit_records()
         .await?
         .iter()
         .filter(|r| r.action() == "windows_discovery")
@@ -87,6 +85,5 @@ async fn ingress_burst(
             .status()
             == StatusCode::OK
     );
-    pg.close().await?;
     Ok(())
 }

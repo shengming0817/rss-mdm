@@ -168,7 +168,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             && r.result() == "denied"
             && matches!(r.action(), "management_read" | "management_write")
             && r.actor().is_some()
-            && r.payload["instance"] == INSTANCE)?
+            && r.payload["instance"] == INSTANCE).await?
         .to_string()
             == expected_denied.to_string(),
         "denied action/target/actor audit incomplete"

@@ -125,8 +125,8 @@ pub async fn download(
     }
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control,
+    let outcome = app.audit_store.write(app.identity.tenant(),
+            &budget.source_control(),
         (&app, apple, &auth, &proof, &input, &audit, id),
         |(app, apple, auth, proof, input, audit, id), tx| Box::pin(async move {
             let (attempt, replayed, bytes) = tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *input, *id),
@@ -259,8 +259,8 @@ pub async fn challenge(
     let (auth, proof) = authorized(&app, csr.enrollment(), Some(challenge), &audit).await?;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
-    let outcome = app.audit_store.write(app.identity.tenant(), &control,
+    let outcome = app.audit_store.write(app.identity.tenant(),
+            &budget.source_control(),
         (&app, apple, &auth, &proof, &csr, input.transaction.as_str(), provisioner, issuer, &audit),
         |(app, apple, auth, proof, csr, transaction, provisioner, issuer, audit), tx| Box::pin(async move {
             tx.with_connection_context(&mut (*app, *apple, *auth, *proof, *csr, *transaction, *provisioner, *issuer),
@@ -337,12 +337,11 @@ pub async fn notify(
     }
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (&app, apple, &leaf, &csr, input.transaction.as_str(), &audit),
             |(app, apple, leaf, csr, transaction, audit), tx| {
                 Box::pin(async move {
@@ -507,12 +506,11 @@ pub async fn bind(
         auth.operation,
     ));
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let attempt = app
         .audit_store
         .write(
             app.identity.tenant(),
-            &control,
+            &budget.source_control(),
             (
                 app,
                 &fingerprint,

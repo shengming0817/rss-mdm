@@ -30,6 +30,7 @@ pub(crate) struct Assembly {
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) audit_projection_health: Arc<crate::audit_health::Readiness>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
@@ -88,7 +89,7 @@ pub(crate) async fn application_fixture(
                 .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?,
             monotonic.clone(),
             access
-                .audit_store(&crate::config::AuditConfig::Plain)
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
                 .await?,
         )
         .await?;
@@ -182,6 +183,7 @@ pub(crate) async fn application_fixture(
             compiled,
             AssemblyDependencies {
                 mount_channels: false,
+                audit_projection_health: Default::default(),
                 telemetry,
                 certificate_archive: crate::certificate_archive::assemble(
                     &access,
@@ -247,6 +249,7 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) audit_projection_health: Arc<crate::audit_health::Readiness>,
     pub(crate) execution: crate::execution_assembly::Assembly,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
@@ -271,6 +274,7 @@ pub(crate) async fn from_compiled(
         timeline,
         associations,
         audit_store,
+        audit_projection_health,
         execution,
         clock,
         monotonic,
@@ -568,6 +572,7 @@ pub(crate) async fn from_compiled(
         #[cfg(test)]
         execution_runtime: _execution_runtime,
         audit_store,
+        audit_projection_health,
         apple,
         execution,
         flow: planning,
@@ -671,10 +676,13 @@ pub(crate) fn from_state(
         pki: state.pki.clone(),
         apple_store: state.access.apple_store(),
         access: state.access.archive_pool(),
+        audit_store: state.audit_store.clone(),
         telemetry: state.telemetry.clone(),
         execution: state.execution.clone(),
         inventory: state.inventory.clone(),
         identity_audit: state.identity.audit_readiness.clone(),
+        mdm_audit: state.audit_projection_health.clone(),
+        management_tenant: state.identity.management_tenant,
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
@@ -841,7 +849,7 @@ pub(crate) fn from_state(
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
                 &state.flow.cursor_key,
                 state.flow.runtime.clone(),
-                state.audit_store.clone(),
+                state.flow.audit_store.clone(),
                 state.identity.tenant,
                 state.flow.planning.policy_store.clone(),
                 state.inputs.clone(),
@@ -867,7 +875,7 @@ pub(crate) fn from_state(
                     state.identity.tenant,
                 )),
                 runtime: state.flow.runtime.clone(),
-                audit_store: state.audit_store.clone(),
+                audit_store: state.flow.audit_store.clone(),
                 tenant: state.identity.tenant,
                 content: state.content_writer.clone(),
                 clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
@@ -1060,12 +1068,12 @@ pub(crate) fn software_access(
         resources: state.flow.software_resources.clone(),
         clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
         runtime: state.flow.runtime.clone(),
-        audit: state.audit_store.clone(),
+        audit: state.flow.audit_store.clone(),
         tenant: state.identity.tenant,
         catalog: rss_mdm_software_service::catalog::Catalog::new(
             state.flow.runtime.clone(),
             state.identity.tenant,
-            state.audit_store.clone(),
+            state.flow.audit_store.clone(),
         ),
         content: state.content_writer.as_ref().map(|store| {
             Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
@@ -1110,6 +1118,12 @@ async fn apple_management_settlement(
             | AppleFailure::AuditIsolation
             | AppleFailure::AuditAdmission,
         )) => Some(ResponseFailure::AuditContract),
+        Some(AppleError::Unavailable(AppleFailure::AuditBackpressure)) => {
+            Some(ResponseFailure::AuditBackpressure)
+        }
+        Some(AppleError::Unavailable(AppleFailure::AuditReserveExhausted)) => {
+            Some(ResponseFailure::AuditReserveExhausted)
+        }
         Some(AppleError::Unavailable(AppleFailure::Audit)) => {
             Some(ResponseFailure::AuditUnavailable)
         }

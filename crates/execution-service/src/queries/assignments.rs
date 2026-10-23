@@ -3,7 +3,6 @@ use crate::{
     Error,
     authorization::{Permission, context::AuthorizedPrincipal},
     queries::Queries,
-    transaction::*,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_policy::Action;
@@ -23,12 +22,12 @@ pub async fn assignments(
     );
     auth.manage(Permission::PolicyRead)?;
     auth.require_all_devices(Permission::InventoryRead)?;
-    run(&service.audit_store,&service.runtime,service.tenant,audit,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
+    crate::transaction::inspect(&service.runtime, service.tenant,(&service,&auth,audit,after),|ctx,tx|Box::pin(async move {
         let (s,a,audit,after)=ctx;let current=crate::action_admission::current(tx,a).await?;current.require(a,Permission::PolicyRead,None)?;current.require_all_devices(a,Permission::InventoryRead)?;
         let p=storage::read_in(&s.policy_reader,tx,id).await?.ok_or(Error::NotFound)?;
         if matches!(p.definition.action,Action::UnmanageDevice {..}) {
             let page=super::lifecycle::assignments_in(s,tx,&p,after.as_deref()).await?;
-            s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            audit.require_request_settlement();
             return Ok(page);
         }
         let onboarding=if matches!(p.definition.action,Action::EnsureAgentInstalled{..}|Action::RequestMdmEnrollment{..}){Some(crate::sources::storage::version_in(&s.policy_reader,tx,p.version).await?.1)}else{None};
@@ -63,7 +62,7 @@ pub async fn assignments(
             }
             items.push(json!({"object":object.object,"channel":object.channel,"availability":object.availability,"reason":object.reason,"target":object.target,"qualification":object.admission,"sources":object.sources,"scopeResult":object.scope_result,"taskAdmission":task_admission,"operationIds":operations}));
         }
-        s.audit_store.append_request_in(tx,audit,200,"success").await?;
+        audit.require_request_settlement();
         super::records::decode(json!({"items":items,"nextCursor":next}))
     })).await.map_err(|error| match error { Error::NotFound => super::QueryError::Missing(super::Missing::Policy), other => other.into() })
 }

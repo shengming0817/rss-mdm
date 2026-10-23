@@ -86,7 +86,8 @@ async fn restored_ca_preserves_authorized_agent_issuance_and_activation() -> any
     let devices = crate::device::DeviceService::new(
         db.registration(),
         case_a().into(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
     );
     devices
         .revoke(

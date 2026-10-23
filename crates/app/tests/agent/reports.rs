@@ -308,8 +308,8 @@ async fn durable_reports_and_projection() -> Result<()> {
     crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
     for (number, fault, committed) in [
-        (1, rss_audit_postgres::PgFault::BeforeCommitPending, false),
-        (2, rss_audit_postgres::PgFault::CommitUnknownAfterAck, true),
+        (1, rss_transactional_messaging_postgres::PgTransactionFault::CommitPending, false),
+        (2, rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck, true),
     ] {
         let expected = "operation_unknown";
         let fault_report = uuid::Uuid::new_v4();

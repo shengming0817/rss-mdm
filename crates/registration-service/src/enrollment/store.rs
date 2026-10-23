@@ -79,12 +79,11 @@ pub async fn create_enrollment(
     };
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let attempt = store
         .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (
                 store,
                 CreateInputs {
@@ -266,12 +265,11 @@ pub async fn change_enrollment(
     };
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
-    let control = budget.control();
     let attempt = store
         .write(
             rss_request_context::TenantId::parse(proof.tenant_id())
                 .map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (
                 store,
                 ChangeInputs {

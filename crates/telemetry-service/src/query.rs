@@ -157,7 +157,7 @@ impl Service {
                     service
                         .planning
                         .audit_store
-                        .lock_in(tx)
+                        .bind_in(tx)
                         .await
                         .map_err(crate::storage_error)?;
                     let read_service = service.clone();
@@ -174,12 +174,7 @@ impl Service {
                             })
                         })
                         .await?;
-                    service
-                        .planning
-                        .audit_store
-                        .append_request_in(tx, &audit, 200, "success")
-                        .await
-                        .map_err(crate::storage_error)?;
+                    audit.require_request_settlement();
                     Ok(result)
                 })
             })

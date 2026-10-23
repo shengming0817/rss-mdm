@@ -232,9 +232,11 @@ async fn lifecycle_contract(
     let failed = user
         .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
+    pg(
+        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+    )?;
     ensure!(
-        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error",
+        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
         "audit failure: {failed:?}"
     );
     let before = user.call(router, Method::GET, admission_path, None).await?;
@@ -386,7 +388,7 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
             audit_count(|record| record.source() == "mdm.business"
                 && record.operation() == Some(operation.to_string().as_str())
                 && record.status() == 201
-                && record.result() == "success")?
+                && record.result() == "success").await?
                 == expected_count
         );
         if expected == StatusCode::BAD_REQUEST {
@@ -510,7 +512,7 @@ async fn large_streams_use_content_budget_and_bind_exact_bytes() -> Result<()> {
             let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
             ensure!(receipt.1["sha256"] == json!(digest.to_vec()));
             ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim() == "1");
-            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 1);
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success").await? == 1);
         }
         Ok(())
     }).await
@@ -591,7 +593,7 @@ async fn streaming_revalidates_permission_and_original_session_before_success() 
             let status = response.status(); let body = response.text().await?;
             ensure!(status == if revoke_session { StatusCode::UNAUTHORIZED } else { StatusCode::FORBIDDEN }, "revoked authority: {status} {body}");
             ensure!(pg(&format!("SELECT count(*) FROM mdm_content.bindings WHERE tenant_id='{}' AND operation='{operation}'",case_tenant()))?.trim()=="0");
-            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success")? == 0);
+            ensure!(audit_count(|r| r.source()=="mdm.business" && r.operation()==Some(operation.to_string().as_str()) && r.status()==201 && r.result()=="success").await? == 0);
             if !revoke_session {
                 let grants = [crate::authorization::Permission::ResourceRead, crate::authorization::Permission::ResourceWrite]
                     .into_iter().map(|operation| crate::authorization::Grant {operation, scope:crate::authorization::Scope::Tenant}).collect();

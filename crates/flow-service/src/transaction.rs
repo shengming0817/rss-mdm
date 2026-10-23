@@ -93,6 +93,10 @@ pub fn settle<T>(
         |_| Err(Error::Unavailable(owner.failure())),
     )
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "transaction context retains owner, deadline and complete message partition declaration"
+)]
 pub async fn run<C: Send, R: Send, F>(
     audit_store: &rss_mdm_audit_integration::AuditStore,
     runtime: &PgRuntime,
@@ -119,7 +123,7 @@ where
             |state, tx| {
                 Box::pin(async move {
                     let (audit_store, context, operation, audit, failure) = state;
-                    if let Err(error) = audit_store.lock_in(tx).await {
+                    if let Err(error) = audit_store.bind_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure, owner));
                     }
                     if let Err(error) = tx

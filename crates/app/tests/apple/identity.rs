@@ -381,7 +381,8 @@ async fn token_is_required_before_management() -> Result<()> {
                 == r.payload["registration"]
                     .as_str()
                     .map(|id| format!("device:{id}"))
-                    .as_deref())?
+                    .as_deref())
+        .await?
             >= 1,
         "successful management audit must identify the verified device registration"
     );

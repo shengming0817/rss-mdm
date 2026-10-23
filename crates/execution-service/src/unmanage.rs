@@ -3,6 +3,7 @@ use crate::actions::storage::{TaskIssue, agent_profile_in};
 use crate::{Error, ExecutionService, Result, Target, checked_input};
 use rss_mdm_agent_wire::runtime as wire;
 use rss_transactional_messaging_postgres::PgTransaction;
+use sqlx::Row;
 use uuid::Uuid;
 
 pub struct RetirementPlan {
@@ -125,14 +126,20 @@ pub async fn wake_device_in(tx: &mut PgTransaction<'_>, device: &str) -> Result<
     Ok(())
 }
 
+pub(crate) struct PreparedRetirement {
+    id: Uuid,
+    original: rss_mdm_device_service::lifecycle::Retirement,
+    executions: std::collections::BTreeMap<Uuid, Uuid>,
+    cleanup: std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>,
+    pub(crate) partitions: Vec<rss_transactional_messaging::message::PartitionIdentity>,
+}
+
 impl ExecutionService {
-    pub async fn advance_retirement_in(
+    pub(crate) async fn prepare_retirement_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
-        audit: &rss_mdm_audit_integration::RequestAudit,
-    ) -> Result<bool> {
-        use crate::actions::state::Execution;
+    ) -> Result<PreparedRetirement> {
         use rss_mdm_device_service::lifecycle::{self as owner, Stage};
         let tenant = tx.tenant_id();
         let original = tx
@@ -176,6 +183,66 @@ impl ExecutionService {
                 )
             })
             .await??;
+        let mut partitions = Vec::new();
+        let mut executions = std::collections::BTreeMap::new();
+        let mut cleanup = std::collections::BTreeMap::new();
+        for channel in &original.channels {
+            partitions.push(rss_mdm_audit_integration::source_partition(
+                tenant,
+                "mdm",
+                &channel.registration.to_string(),
+            )?);
+            partitions.push(rss_mdm_audit_integration::source_partition(
+                tenant,
+                "device",
+                &channel.device,
+            )?);
+            if channel.channel == rss_mdm_inventory::Channel::Agent {
+                let execution = Uuid::new_v4();
+                partitions.push(rss_mdm_audit_integration::source_partition(
+                    tenant,
+                    "mdm",
+                    &execution.to_string(),
+                )?);
+                executions.insert(channel.registration, execution);
+                if channel.stage == Stage::Cleanup {
+                    let rows = cleanup_candidates(tx, channel.registration).await?;
+                    for row in rows.iter().take(128) {
+                        let run = cleanup_run_id(tenant, id, row.try_get("id")?)?;
+                        partitions.push(rss_mdm_audit_integration::source_partition(
+                            tenant,
+                            "mdm",
+                            &run.to_string(),
+                        )?);
+                    }
+                    cleanup.insert(channel.registration, rows);
+                }
+            }
+        }
+        Ok(PreparedRetirement {
+            id,
+            original,
+            executions,
+            cleanup,
+            partitions,
+        })
+    }
+    pub(crate) async fn advance_retirement_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        prepared: PreparedRetirement,
+        audit: &rss_mdm_audit_integration::RequestAudit,
+    ) -> Result<bool> {
+        use crate::actions::state::Execution;
+        use rss_mdm_device_service::lifecycle::{self as owner, Stage};
+        let tenant = tx.tenant_id();
+        let PreparedRetirement {
+            id,
+            original,
+            mut executions,
+            mut cleanup,
+            ..
+        } = prepared;
         for channel in &original.channels {
             if matches!(channel.stage, Stage::Complete | Stage::Revoke) {
                 continue;
@@ -261,7 +328,16 @@ impl ExecutionService {
                     continue;
                 }
                 if channel.channel == rss_mdm_inventory::Channel::Agent
-                    && !self.cleanup_software_retirement_in(tx, id, channel).await?
+                    && !self
+                        .cleanup_software_retirement_in(
+                            tx,
+                            id,
+                            channel,
+                            cleanup
+                                .remove(&channel.registration)
+                                .ok_or(Error::Conflict)?,
+                        )
+                        .await?
                 {
                     continue;
                 }
@@ -371,7 +447,7 @@ impl ExecutionService {
                     .await??;
                     continue;
                 }
-                let execution = Uuid::new_v4();
+                let execution = executions.remove(&registration).ok_or(Error::Conflict)?;
                 tx.with_connection(move |c| {
                     Box::pin(async move {
                         Ok(
@@ -643,18 +719,12 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         retirement: Uuid,
         channel: &rss_mdm_device_service::lifecycle::ChannelResult,
+        rows: Vec<sqlx::postgres::PgRow>,
     ) -> Result<bool> {
         use crate::actions::{production, state::Execution, storage as runs};
         use rss_mdm_device_service::lifecycle as owner;
-        use sha2::{Digest, Sha256};
-        use sqlx::Row;
         let tenant = tx.tenant_id();
-        let t = tenant.to_string();
         let registration = channel.registration;
-        let rows=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
-                .bind(t).bind(registration).fetch_all(c).await
-        })).await?;
         if rows.len() > 128 {
             return self
                 .block_retirement_cleanup(tx, retirement, registration, "software_cleanup_limit")
@@ -684,14 +754,7 @@ impl ExecutionService {
             }
             let original: Uuid = row.try_get("id")?;
             let version: Uuid = row.try_get("policy_version")?;
-            let hash = Sha256::digest(checked_input(serde_json::to_vec(&(
-                tenant.to_string(),
-                retirement,
-                original,
-            )))?);
-            let mut bytes = [0; 16];
-            bytes.copy_from_slice(&hash[..16]);
-            let id = Uuid::from_bytes(bytes);
+            let id = cleanup_run_id(tenant, retirement, original)?;
             let t = tenant.to_string();
             let exists:bool=tx.with_connection(move|c|Box::pin(async move{
                 sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(t).bind(id).fetch_one(c).await
@@ -869,4 +932,31 @@ fn delivery_ended(state: &crate::actions::state::RunState, now: i64) -> bool {
     use crate::actions::state::{Cancellation, Execution};
     state.execution == Execution::NotStarted
         && (state.cancellation != Cancellation::None || now >= state.deadline)
+}
+
+async fn cleanup_candidates(
+    tx: &mut PgTransaction<'_>,
+    registration: Uuid,
+) -> Result<Vec<sqlx::postgres::PgRow>> {
+    let t = tx.tenant_id().to_string();
+    let rows=tx.with_connection(move|c|Box::pin(async move{
+            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
+                .bind(t).bind(registration).fetch_all(c).await
+        })).await?;
+    Ok(rows)
+}
+fn cleanup_run_id(
+    tenant: rss_request_context::TenantId,
+    retirement: Uuid,
+    original: Uuid,
+) -> Result<Uuid> {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(checked_input(serde_json::to_vec(&(
+        tenant.to_string(),
+        retirement,
+        original,
+    )))?);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    Ok(Uuid::from_bytes(bytes))
 }

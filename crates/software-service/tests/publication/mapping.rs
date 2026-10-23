@@ -40,7 +40,9 @@ async fn record_receipts_and_persisted_source_admission() {
     input.expected_resource_revision -= 1;
     let connect = || async {
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()).await,
+            try_host(runtime.clone(), audit_store.clone())
+                .await
+                .map_err(|_| Error::Identity)?,
             tenant(),
             server.logical.clone(),
             server.winget(),
@@ -56,7 +58,9 @@ async fn record_receipts_and_persisted_source_admission() {
     assert!(connect().await.is_ok());
     sql("GRANT INSERT ON mdm_audit.receipts TO mdm_software_driver WITH GRANT OPTION");
     let delegation = connect().await;
-    sql("REVOKE GRANT OPTION FOR INSERT ON mdm_audit.receipts FROM mdm_software_driver");
+    sql(
+        "REVOKE INSERT ON mdm_audit.receipts FROM mdm_software_driver; GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_software_driver",
+    );
     assert!(delegation.is_err());
     assert!(connect().await.is_ok());
     sql("ALTER POLICY tenant ON mdm_audit.receipts USING(true) WITH CHECK(true)");

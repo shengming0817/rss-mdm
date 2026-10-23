@@ -22,11 +22,10 @@ pub async fn prune_management(
     let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
     audit.identify_service("service:management-retention");
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
-    let control = budget.control();
     let attempt = store
         .write(
             rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            &control,
+            &budget.source_control(),
             (store, tenant, &audit),
             |(store, tenant, audit), tx| {
                 Box::pin(async move {

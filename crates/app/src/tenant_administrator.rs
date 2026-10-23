@@ -21,7 +21,7 @@ impl Service {
         &self,
         target: TenantId,
         epoch: i64,
-    ) -> std::result::Result<(Arc<PgRuntime>, AccountProvisioner), Error> {
+    ) -> std::result::Result<(Arc<PgRuntime>, AccountProvisioner, AuditStore), Error> {
         let runtime = crate::identity::open_runtime(
             &self.config.provisioning_database,
             &self.installation.target,
@@ -30,8 +30,12 @@ impl Service {
         )
         .await?;
         let provisioner = async {
-            crate::database::admit_audit_runtime(&runtime, &self.audit, target).await?;
-            AccountProvisioner::connect(
+            let budget = AuditBudget::new(Duration::from_secs(5));
+            let audit = self
+                .audit
+                .on_runtime(runtime.clone(), target, &budget.control())
+                .await?;
+            let provisioner = AccountProvisioner::connect(
                 runtime.clone(),
                 self.kdf.clone(),
                 crate::identity::authority_config(
@@ -43,17 +47,18 @@ impl Service {
                 crate::identity::deadline(),
             )
             .await
-            .map_err(crate::identity::failure)
+            .map_err(crate::identity::failure)?;
+            Ok::<_, Error>((provisioner, audit))
         }
         .await;
-        let provisioner = match provisioner {
+        let (provisioner, audit) = match provisioner {
             Ok(provisioner) => provisioner,
             Err(error) => {
                 runtime.close().await;
                 return Err(error);
             }
         };
-        Ok((runtime, provisioner))
+        Ok((runtime, provisioner, audit))
     }
     pub(super) async fn create_administrator(
         &self,
@@ -100,7 +105,8 @@ impl Service {
         )
         .await?;
         let target_id = TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-        let (runtime, provisioner) = self.provisioner(target_id, target.current_epoch).await?;
+        let (runtime, provisioner, source) =
+            self.provisioner(target_id, target.current_epoch).await?;
         let prepared = provisioner
             .prepare_local_account(login, password, crate::identity::deadline())
             .await
@@ -127,10 +133,10 @@ impl Service {
         .map_err(|_| Error::Malformed)?;
         let saved_error = std::sync::OnceLock::new();
         let outcome = runtime.local_tx_with_context(target_id,crate::identity::deadline(),
-            (self, &provisioner, actor, Some(prepared), request, operator, fact, audit, &saved_error),
-            |(service,provisioner,actor,prepared,request,operator,fact,audit,saved_error),tx| Box::pin(async move {
+            (self, &provisioner, actor, Some(prepared), request, operator, fact, audit, &saved_error, &source, &target_audit),
+            |(service,provisioner,actor,prepared,request,operator,fact,audit,saved_error,source,target_audit),tx| Box::pin(async move {
                 let result = async {
-                    service.audit.lock_in(tx).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+                    source.prepare_in(tx,target_audit,&[]).await?;
                     tx.with_connection(|c| Box::pin(async move {
                         sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(c).await?;
                         Ok(())
@@ -171,7 +177,7 @@ impl Service {
                             .bind(operation).bind(&tenant).bind(request).bind(receipt_json).bind(operator).execute(c).await?;
                         Ok(())
                     })).await.map_err(pg_error)?;
-                    service.audit.append_in(tx,fact,false).await.map_err(|_| Error::Unavailable(Failure::Database))?;
+                    source.append_in(tx,fact,false).await?;
                     audit.mark_commit_started();
                     Ok(receipt)
                 }.await;

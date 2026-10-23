@@ -177,7 +177,7 @@ impl Associations {
             .audit
             .write(
                 self.tenant,
-                &budget.control(),
+                &budget.source_control(),
                 (self, proof),
                 |(service, proof), tx| {
                     Box::pin(async move {
@@ -185,6 +185,11 @@ impl Associations {
                             &mut (*service, *proof),
                             |(service, proof), c| {
                                 Box::pin(async move {
+                                    rss_mdm_inventory_postgres::lock_watermark_in(
+                                        c,
+                                        service.tenant,
+                                    )
+                                    .await?;
                                     let snapshot = read::authorization(c, proof).await?;
                                     let (sensitive, grants) = scope(&snapshot, proof)?;
                                     let world = identity::world(c, service.tenant).await?;
@@ -207,7 +212,7 @@ impl Associations {
             )
             .await
             .fold(
-                |v| Ok(v.into_value()),
+                Ok,
                 |e| Err(model::transaction_error(e)),
                 |e| Err(model::transaction_error(e)),
                 |_| Err(Error::RollbackFailed),
@@ -306,9 +311,9 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let (mut value, bindings, sensitive, grants) = self.audit.write(self.tenant,&budget.control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
+        let (mut value, bindings, sensitive, grants) = self.audit.write(self.tenant,&budget.source_control(),(self,proof,reference,list),|(service,proof,reference,list),tx|Box::pin(async move {
             tx.with_connection_context(&mut (*service,*proof,*reference,*list),|(service,proof,reference,list),c|Box::pin(async move {
-                let snapshot=read::authorization(c,proof).await?;
+                rss_mdm_inventory_postgres::lock_watermark_in(c,service.tenant).await?;let snapshot=read::authorization(c,proof).await?;
                 let (sensitive,grants)=scope(&snapshot,proof)?;
                 let world=identity::world(c,service.tenant).await?;
                 let (mut groups,bindings)=groups(c,proof.tenant_id(),snapshot.inventory_devices(proof)?,&world,&snapshot,proof).await?;
@@ -351,7 +356,7 @@ impl Associations {
                 let mut value=group.summary();value["fields"]=serde_json::to_value(fields).map_err(|_|Error::Storage)?;value["lists"]=serde_json::to_value(lists).map_err(|_|Error::Storage)?;value["inventorySources"]=json!(provenance);
                 proof.check_live()?;Ok((value,bindings,sensitive,grants))
             })).await
-        })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))?;
         if let Some(rows) = value.get_mut("endpoints").and_then(Value::as_array_mut) {
             crate::presentation::current_users(
                 rows,
@@ -395,10 +400,7 @@ impl Associations {
             )
             .await
             .fold(
-                |v| {
-                    v.into_value();
-                    Ok(())
-                },
+                Ok,
                 |e| Err(model::transaction_error(e)),
                 |e| Err(model::transaction_error(e)),
                 |_| Err(Error::RollbackFailed),

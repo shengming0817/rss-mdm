@@ -70,8 +70,8 @@ pub(super) async fn admit(
         revision: settings.revision,
     });
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
-    let control = budget.control();
-    let result=app.audit_store.write(entra.tenant,&control,(app,Some(proof),policy,&settings,opaque,&digest,a),|(app,proof,policy,settings,opaque,digest,a),tx|Box::pin(async move {
+    let result=app.audit_store.write(entra.tenant,
+            &budget.source_control(),(app,Some(proof),policy,&settings,opaque,&digest,a),|(app,proof,policy,settings,opaque,digest,a),tx|Box::pin(async move {
         let (app,settings,opaque,digest,a)=(*app,*settings,*opaque,*digest,*a);
         let (admission,replayed)=tx.with_connection_context(&mut (proof,policy,settings,opaque,digest),|(proof,policy,settings,opaque,digest),c|Box::pin(async move {
             let (settings,opaque,digest)=(*settings,*opaque,*digest);

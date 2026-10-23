@@ -27,7 +27,7 @@ pub(crate) async fn setup() -> anyhow::Result<(
     .await?;
     let service = Associations::new(
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
         TenantId::parse(case_a())?,
         &[7; 32],
@@ -78,7 +78,12 @@ pub(crate) fn hardware(
     )?
     .encode()?;
     let coverage = serde_json::to_string(&definition.coverage()?)?;
-    let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(serial.into()))?;
+    let canonical = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|definition| definition.key == field)
+        .context("serial field")?
+        .canonical_value(rss_mdm_inventory::Scalar::String(serial.into()))?;
+    let value = serde_json::to_string(&canonical)?;
     crate::test_support::process::pg(&format!(
         "INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),'{}','mdm.observation.v1','inventory-projection-v1','{}','{}','device.serial_number','{}','hardware-fixture',1,2,'known','{}','hardware-fixture',1,2,'{}','{}','{}',0)",
         case_a(),
@@ -288,14 +293,37 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
     let release = async {
         let observed=tokio::time::timeout(Duration::from_secs(3),async {
             loop {
-                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity business JOIN pg_stat_activity audit ON business.pid=ANY(pg_blocking_pids(audit.pid)) WHERE business.datname=current_database() AND audit.datname=current_database() AND business.usename='mdm_access' AND audit.usename='mdm_access' AND business.wait_event_type='Lock' AND audit.wait_event_type='Lock' AND business.query LIKE '%mdm.lock_asset_watermark%' AND audit.query LIKE '%rss_audit.reserve%' AND pg_backend_pid()=ANY(pg_blocking_pids(business.pid)))").fetch_one(&mut *hold).await?;
+                let waiting:bool=sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*)=2 FROM blocked").fetch_one(&mut *hold).await?;
                 if waiting {return Ok::<_,sqlx::Error>(());}
                 sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }).await;
-        hold.rollback().await?;
         observed.context("both membership contenders must overlap at the publication fence")??;
+        // A staged source producer must reach the publication fence before authorization
+        // or endpoint locks, otherwise the online owner can form the reverse wait edge.
+        let free: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))")
+                .bind(format!("{}:{}", admin.tenant_id(), admin.instance_id()))
+                .fetch_one(&mut *hold)
+                .await?;
+        anyhow::ensure!(
+            free,
+            "association waiter acquired authorization before watermark"
+        );
+        for device in [mdm, one, two] {
+            let key = serde_json::to_string(&(case_a(), device))?;
+            let free: bool =
+                sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))")
+                    .bind(key)
+                    .fetch_one(&mut *hold)
+                    .await?;
+            anyhow::ensure!(
+                free,
+                "association waiter acquired lifecycle before watermark"
+            );
+        }
+        hold.rollback().await?;
         Ok::<_, anyhow::Error>(())
     };
     let (a, b, released) = tokio::join!(
@@ -319,6 +347,11 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
             .state,
         State::Confirmed
     );
+    crate::audit_test_support::projection::drain(
+        TenantId::parse(case_a())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let mut changes = s.changes(&admin, None).await?;
     let mut found = 0;
     loop {
@@ -340,7 +373,7 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
 -> anyhow::Result<()> {
     let (access, _, admin, mut c) = setup().await?;
     let store = access
-        .audit_store(&crate::config::AuditConfig::Plain)
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
         .await?;
     let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
     let mdm = crate::test_support::case::name("recovery-mdm");
@@ -355,11 +388,12 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         agent: member(&mut c, agent, Channel::Agent).await?,
         evidence: "physically verified".into(),
     };
-    store.inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+    store
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     assert!(matches!(
         s.confirm(&admin, &request, &audit("device_association_confirm"))
             .await,
-        Err(rss_mdm_device_service::Error::RollbackFailed)
+        Err(rss_mdm_device_service::Error::CommitUnknown)
     ));
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_devices.associations WHERE tenant_id=$1::uuid",
@@ -380,7 +414,9 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
             .fetch_one(&mut c)
             .await?;
     assert_eq!(members, 0);
-    store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     assert!(matches!(
         s.confirm(&admin, &request, &audit("device_association_confirm"))
             .await,
@@ -403,7 +439,9 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     let other_agent = crate::test_support::case::name("worker-recovery-agent");
     seed(other_mdm, "mdm", "worker-serial")?;
     seed(other_agent, "agent", "WORKER-SERIAL")?;
-    store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     assert!(matches!(
         s.reconcile().await,
         Err(rss_mdm_device_service::Error::CommitUnknown)
@@ -413,6 +451,11 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     assert_eq!(counts, (2, 4, 2));
     let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
     assert!(checkpoint);
+    crate::audit_test_support::projection::drain(
+        TenantId::parse(case_a())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let mut changes = s.changes(&admin, None).await?;
     let mut found = 0;
     loop {
@@ -486,6 +529,11 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     );
     request.association_id = Some(relation.id);
     request.expected_version = relation.version;
+    crate::audit_test_support::projection::drain(
+        TenantId::parse(case_a())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let first = service.changes(&admin, Some(&empty)).await?;
     assert!(first["nextCursor"].is_string());
     // A write after the first page must wait for the next polling window.
@@ -522,11 +570,16 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         .context("position")?;
     let restarted = Associations::new(
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
         TenantId::parse(case_a())?,
         &[7; 32],
     )?;
+    crate::audit_test_support::projection::drain(
+        TenantId::parse(case_a())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let (items, checkpoint) = drain(
         &restarted,
         &admin,
@@ -602,7 +655,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let tenant = TenantId::parse(case_a())?;
     let reader = rss_mdm_device_service::planning::PlanningObjects::new(
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let snapshot = reader.freeze(&mut c, tenant).await?;
@@ -695,15 +748,19 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     );
     c.execute("COMMIT").await?;
     let before = lifecycle::read_in(&mut c, tenant, accepted.0).await?;
-    s.force_retirement(
-        &principal,
-        accepted.0,
-        &rss_mdm_device_service::lifecycle_management::ForceRevoke {
-            operation_id: Uuid::new_v4(),
-            reason: "offline exit".into(),
-        },
-        &audit("device_retirement_force_revoke"),
-    )
+    super::views::publication_first(&mut c, &principal, async {
+        s.force_retirement(
+            &principal,
+            accepted.0,
+            &rss_mdm_device_service::lifecycle_management::ForceRevoke {
+                operation_id: Uuid::new_v4(),
+                reason: "offline exit".into(),
+            },
+            &audit("device_retirement_force_revoke"),
+        )
+        .await?;
+        Ok(())
+    })
     .await?;
     // A worker holding the old cleanup observation cannot move force-revoke back.
     for channel in before.channels {

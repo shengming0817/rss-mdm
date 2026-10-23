@@ -105,6 +105,7 @@ impl Policies {
                     }
                     crate::transaction::lock(tx).await?;
                     storage::lock(tx, id).await?;
+                    s.audit_store.prepare_in(tx,audit,&[]).await?;
                     let hash = fingerprint(&(id, &op.input, op.expected_revision, p.actor()))?;
                     if let Some(value) = checked(
                         s.policy_store
@@ -200,7 +201,7 @@ impl Policies {
         run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
             let (s, p, a) = *ctx;
             crate::action_admission::current(tx, p).await?.require(p, Permission::PolicyRead, None)?;
-            s.audit_store.append_request_in(tx, a, 200, "success").await?;
+            a.require_request_settlement();
             Ok(json!({"defaultSoftwareChannel":"agent", "mdmSoftwareDistributionEnabled":s.inputs.software_distribution().mdm_enabled}))
         }), TransactionOwner::Planning).await
     }

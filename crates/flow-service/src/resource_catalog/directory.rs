@@ -8,13 +8,9 @@ impl ResourceCatalog {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        crate::transaction::run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
-            let (s, proof, audit) = *ctx;
-            proof.manage(Permission::ResourceRead)?;
-            s.audit_store.append_request_in(tx, audit, 200, "success").await?;
-            proof.check_live()?;
-            Ok(json!({"categories":r::blueprints::CATEGORIES,"items":r::blueprints::catalog()}))
-        }), crate::transaction::TransactionOwner::ResourceCatalog).await
+        audit.require_request_settlement();
+        proof.check_live()?;
+        Ok(json!({"categories":r::blueprints::CATEGORIES,"items":r::blueprints::catalog()}))
     }
 
     pub async fn directory(
@@ -24,11 +20,9 @@ impl ResourceCatalog {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        crate::transaction::run(
-            &self.audit_store,
+        crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            audit,
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
@@ -43,9 +37,7 @@ impl ResourceCatalog {
                         None
                     };
                     p.check_live()?;
-                    s.audit_store
-                        .append_request_in(tx, audit, 200, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     Ok(json!({"items":items,"nextCursor":next}))
                 })
             },

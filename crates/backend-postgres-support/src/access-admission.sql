@@ -22,7 +22,13 @@ SELECT current_user=$1 AND session_user=current_user
  AND NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname NOT LIKE 'pg_temp_%' AND has_schema_privilege(current_user,oid,'CREATE'))
  AND NOT EXISTS(SELECT 1 FROM schemas WHERE NOT has_schema_privilege(current_user,schema,'USAGE'))
  AND (SELECT count(*) FROM owned)=(SELECT count(*) FROM contract)
- AND NOT EXISTS(SELECT 1 FROM relations WHERE relkind NOT IN('r','i') OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
+ AND NOT EXISTS(SELECT 1 FROM relations WHERE
+  (relkind NOT IN('r','i') AND NOT (relkind='v' AND $2->'external_relations' ? (schema||'.'||relname)
+   AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
+   AND reloptions @> ARRAY['security_barrier=true']
+   AND NOT has_table_privilege(current_user,oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+   AND NOT has_any_column_privilege(current_user,oid,'INSERT,UPDATE,REFERENCES')))
+  OR relkind='r' AND oid NOT IN(SELECT oid FROM owned))
  AND NOT EXISTS(SELECT 1 FROM owned WHERE NOT relrowsecurity OR NOT relforcerowsecurity OR relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
   OR has_table_privilege(current_user,oid,'SELECT')<>(read_write OR read_only)
   OR NOT (read_write OR read_only) AND has_any_column_privilege(current_user,oid,'SELECT')
@@ -41,7 +47,7 @@ SELECT current_user=$1 AND session_user=current_user
   AND NOT ($2->'verified_schemas' ? n.nspname::text) AND NOT ($2->'external_relations' ? (n.nspname||'.'||c.relname))
   AND c.relkind IN('r','p','v','m','f') AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND c.relkind='S' AND CASE WHEN c.relkind='S' THEN has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE') ELSE false END)
- AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))=(SELECT count(*) FROM functions)+3
+ AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname NOT IN('pg_catalog','information_schema') AND has_function_privilege(current_user,p.oid,'EXECUTE'))=(SELECT count(*) FROM functions)
  AND (SELECT count(*) FROM public_scope_functions)=3
  AND NOT EXISTS(SELECT 1 FROM functions f WHERE (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname||'.'||p.proname=f.name AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) AND p.proconfig @> ARRAY[f.search_path] AND has_function_privilege(current_user,p.oid,'EXECUTE'))<>1)
  AND NOT EXISTS(SELECT 1 FROM owned c WHERE

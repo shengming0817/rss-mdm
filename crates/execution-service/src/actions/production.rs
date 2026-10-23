@@ -74,6 +74,7 @@ pub async fn accept_for_device(
     target: &crate::Target,
     trigger: AdmissionTrigger,
     now: i64,
+    id: Uuid,
 ) -> Result<()> {
     use rss_mdm_policy::Frequency;
     let (version, owner, schedule, lifetime, frequency, entry, entry_source) = match policy {
@@ -284,7 +285,6 @@ pub async fn accept_for_device(
     if !occurrence_available_in(tx, version, target, &occurrence, now).await? {
         return Ok(());
     }
-    let id = Uuid::new_v4();
     queue_run_in(
         service,
         tx,

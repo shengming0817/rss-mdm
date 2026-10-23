@@ -253,7 +253,8 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         ensure!(
             crate::audit_test_support::audit_count(|r| r.source() == "mdm.business"
                 && r.operation() == Some(request_id.to_string().as_str())
-                && r.result() == "success")?
+                && r.result() == "success")
+            .await?
                 == 0,
             "rejected reauthorization appended a success business fact"
         );

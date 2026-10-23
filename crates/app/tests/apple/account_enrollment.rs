@@ -250,6 +250,10 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let expired = request(&f, Method::POST, &path, payload.clone(), &[]).await?;
     let expired_id = Uuid::parse_str(flow_path(&expired.1)?.rsplit('/').next().unwrap())?;
     sqlx::query("UPDATE mdm_apple.account_flows SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(expired_id).execute(&mut pg).await?;

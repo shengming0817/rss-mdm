@@ -129,6 +129,13 @@ def inputs(root, example, deployment_directory, *, database_host="postgres", hos
     config["webhooks"]["recovery_database"]=database(runtime,"mdm_webhook_operator")
     config["identity"]["database"]=database(runtime,"mdm_identity_runtime")
     config["identity"]["audit_worker"]=database(runtime,"mdm_identity_audit")
+    config["audit_projection"]["database"]=database(runtime,"mdm_audit_worker")
+    for owner, key, filename in [(config["audit_projection"], "recovery_keys", "audit-recovery.key"),
+                                 (config["identity"], "audit_recovery_keys", "identity-audit-recovery.key")]:
+        path = runtime / filename
+        path.touch(mode=0o600)
+        path.write_bytes(os.urandom(32))
+        owner[key] = dict(active_file="/run/mdm/"+filename, historical_files=[])
     config["tenant_administration"]=dict(registry_database=database(runtime,"mdm_tenant_registry"),
         provisioning_database=database(runtime,"mdm_identity_provisioning"),
         fingerprint_key_file="/run/mdm/native-data.key")
@@ -468,7 +475,7 @@ class Candidate:
             roles=''.join("CREATE ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture' NOSUPERUSER NOBYPASSRLS;" for role in ['mdm_owner','mdm_api','mdm_access','mdm_runtime'])
             roles+='GRANT CREATE ON DATABASE mdm_test TO mdm_owner; GRANT CREATE ON SCHEMA public TO mdm_owner;'
             for owner in ROLE_NAMES:roles+=(self.directory/f'deployment/{owner}-roles.sql').read_text()
-            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit','mdm_webhook_operator','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
+            for role in ['mdm_command_runtime','mdm_flow_runtime','mdm_software_driver','mdm_identity_runtime','mdm_identity_maintenance','mdm_identity_audit','mdm_audit_worker','mdm_webhook_operator','mdm_tenant_registry','mdm_identity_provisioning']:roles+="ALTER ROLE "+role+" LOGIN PASSWORD '"+role+"-fixture';"
             self.sql(roles)
             self.copy_runtime()
             self.runtime_volume=self.name+'_runtime';self.operator_volume=self.name+'_operator';self.gateway_inputs=self.name+'_gateway'

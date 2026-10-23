@@ -92,6 +92,7 @@ pub async fn serve(
                         automation,
                         publications,
                         identity_audit,
+                        audit_projection,
                         archive,
                         associations,
                         notifications,
@@ -160,10 +161,54 @@ pub async fn serve(
                         .map_err(|e| ProcessError::at("startup.projection", e.into()))?;
                         let projection_store = projection.store.clone();
                         startup.stage_resource(DynManagedResource::new_box(projection));
-                        let audit_store = access
-                            .audit_store(&compiled.config.audit)
-                            .await
-                            .map_err(|e| ProcessError::at("startup.audit", e))?;
+                        let audit_tenant = rss_request_context::TenantId::parse(
+                            &compiled.config.identity.tenant_id,
+                        )
+                        .map_err(|_| assembly_error(Error::Configuration(ConfigIssue::Tenant)))?;
+                        let management_tenant = crate::identity::management_tenant(
+                            &compiled.config.identity.database,
+                            rss_identity_core::InstanceId::parse(
+                                &compiled.config.identity.instance_id,
+                            )
+                            .map_err(|_| {
+                                assembly_error(Error::Configuration(
+                                    ConfigIssue::IdentityConfiguration,
+                                ))
+                            })?,
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.audit_source", e))?;
+                        let mut audit_tenants =
+                            vec![(audit_tenant, compiled.config.flow.storage.epoch)];
+                        if management_tenant != audit_tenant {
+                            audit_tenants.push((
+                                management_tenant,
+                                rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
+                            ));
+                        }
+                        let source_runtime = crate::identity::open_runtime(
+                            &compiled.config.access_database,
+                            &compiled.config.flow.storage.target,
+                            &compiled.config.flow.storage.lineage,
+                            &audit_tenants,
+                        )
+                        .await
+                        .map_err(|e| ProcessError::at("startup.audit_source", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(AuditSourceResource(
+                            source_runtime.clone(),
+                        )));
+                        let audit_store =
+                            access
+                                .audit_store(
+                                    &compiled.config.audit,
+                                    source_runtime,
+                                    audit_tenant,
+                                    compiled.config.audit_projection.limits().map_err(|e| {
+                                        ProcessError::at("startup.audit_capacity", e)
+                                    })?,
+                                )
+                                .await
+                                .map_err(|e| ProcessError::at("startup.audit", e))?;
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
@@ -298,6 +343,12 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
+                        let audit_projection =
+                            crate::audit_projection::Worker::open(&compiled.config, |resource| {
+                                startup.stage_resource(resource)
+                            })
+                            .await
+                            .map_err(|error| ProcessError::at("startup.audit_projection", error))?;
                         let associations = Arc::new(
                             rss_mdm_device_service::Associations::new(
                                 audit_store.clone(),
@@ -336,6 +387,7 @@ pub async fn serve(
                                 timeline: timeline.clone(),
                                 associations: associations.clone(),
                                 audit_store: audit_store.clone(),
+                                audit_projection_health: audit_projection.health.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
                                 access: access.clone(),
@@ -386,6 +438,7 @@ pub async fn serve(
                             automation,
                             planning.publications.clone(),
                             identity_audit,
+                            audit_projection,
                             archive,
                             associations,
                             notifications,
@@ -440,6 +493,8 @@ pub async fn serve(
                     }
                     launch.stage_deferred_task_with_token(publications.registration().critical());
                     launch.stage_deferred_task_with_token(identity_audit.registration().critical());
+                    launch
+                        .stage_deferred_task_with_token(audit_projection.registration().critical());
                     launch.stage_deferred_task_with_token(
                         associations.registration(Arc::new(crate::registration_lifecycle::Bridge)),
                     );
@@ -586,3 +641,17 @@ pub async fn signal() -> Result<(), std::io::Error> {
 #[cfg(test)]
 #[path = "../tests/lifecycle/unit.rs"]
 mod tests;
+
+struct AuditSourceResource(Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl ManagedResource for AuditSourceResource {
+    fn name(&self) -> &str {
+        "audit-source-runtime"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+    async fn shutdown(&self) -> Result<(), ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}

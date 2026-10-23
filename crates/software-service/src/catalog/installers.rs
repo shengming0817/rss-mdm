@@ -25,14 +25,18 @@ impl Catalog {
     ) -> Result<Value> {
         use rss_mdm_resource_postgres::{Command, Request};
         let key = format!("resource/{id}/v1");
-        tx.prepare_outbox_partitions(&[
-            event::partition(self.tenant, &key)?,
-            event::partition(self.tenant, "source/private-upload/1")?,
-            resources.partition(id)?,
-        ])
-        .await?;
-        self.audit.lock_in(tx).await?;
         storage::lock(tx).await?;
+        self.audit
+            .prepare_in(
+                tx,
+                audit,
+                &[
+                    event::partition(self.tenant, &key)?,
+                    event::partition(self.tenant, "source/private-upload/1")?,
+                    resources.partition(id)?,
+                ],
+            )
+            .await?;
         if let Some(value) = storage::replay(tx, operation, hash).await? {
             self.record(tx, audit, (&key, operation, hash), &value, true)
                 .await?;

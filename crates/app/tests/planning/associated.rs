@@ -412,6 +412,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}'",
         tenant()
     ));
+    let revoke_audit = RequestAudit::new(tenant().to_string(), "device_association_revoke");
     associations
         .revoke(
             &admin,
@@ -421,8 +422,12 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                 expected_version: associations.get(&admin, association).await.unwrap().version,
                 reason: "separate ownership".into(),
             },
-            &RequestAudit::new(tenant().to_string(), "device_association_revoke"),
+            &revoke_audit,
         )
+        .await
+        .unwrap();
+    revoke_audit.finalize(None);
+    crate::audit_test_support::projection::drain(tenant(), rss_audit_postgres::Integrity::Plain)
         .await
         .unwrap();
     service.forward_asset_changes().await.unwrap();

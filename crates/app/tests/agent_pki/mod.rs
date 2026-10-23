@@ -70,7 +70,9 @@ async fn service_with_provider(
     kid: Option<&str>,
 ) -> anyhow::Result<Arc<Service>> {
     let db = Database::connect(options("mdm_access")?).await?;
-    let audit = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let audit = db
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
+        .await?;
     let providers = if let Some(kid) = kid {
         let mut config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
             root()
@@ -193,7 +195,9 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     }
     let original = service(deployment()).await?;
     let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let audit_store = db
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
+        .await?;
     let pki = serde_json::from_value::<crate::agent_pki::Config>(deployment())?
         .load(
             crate::test_support::identity::INSTANCE,
@@ -247,7 +251,9 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     // after activation so it cannot precede the certificate's validity window.
     time.0.store(now(), Ordering::Release);
     s.authenticate(&evidence).await?;
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let lost = s.renew(&evidence, &renewal, &audit()).await.unwrap_err();
     assert_eq!(lost.code, wire::ErrorCode::ActivationUnknown);
     assert!(
@@ -541,7 +547,9 @@ async fn envelope(host: &str) -> anyhow::Result<rss_mdm_agent_channel::boundary:
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: host.into(),
         clock: crate::test_support::runtime::monotonic(),
-        audit_store: db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        audit_store: db
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         tenant: case_a().into(),
     })
@@ -1028,7 +1036,9 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     };
     let receipt = s.activate(&evidence, &activation, &audit()).await?;
     let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let audit_store = db
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
+        .await?;
     let binding = s.trust().trust.clone();
     let registry = Registry::new(
         db.archive_pool(),
@@ -1208,7 +1218,9 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         "the fault must target the first activation mutation"
     );
     // The first mutation commits but loses its ACK; exact competing callers can recover it.
-    audit_store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    audit_store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let gate = tokio::sync::Barrier::new(2);
     let first_audit = audit();
     let second_audit = audit();
@@ -1491,7 +1503,8 @@ async fn root_revocation_is_accepted_durably_and_denies_live_issuer_without_eras
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![s.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -1569,7 +1582,8 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![s.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -1646,7 +1660,8 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     assert_eq!(durable, accepted);
     let registry = Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![rss_mdm_device_trust::DeviceTrust::restore(
             durable,
             Purpose::Agent,
@@ -1682,7 +1697,8 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![s.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -1919,7 +1935,9 @@ async fn frozen_signing_uses_original_issuer_after_direct_activation() -> anyhow
     let s = service(deployment()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db.audit_store(&crate::config::AuditConfig::Plain).await?;
+    let audit_store = db
+        .audit_store_fixture(&crate::config::AuditConfig::Plain)
+        .await?;
     let providers = fixture_providers()?;
     let binding = s.trust().trust.clone();
     let registry = Registry::new(
@@ -2137,7 +2155,8 @@ async fn corrupt_persisted_root_crl_is_fatal_to_admission() -> anyhow::Result<()
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = rss_mdm_pki_service::registry::Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![service.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -2145,6 +2164,10 @@ async fn corrupt_persisted_root_crl_is_fatal_to_admission() -> anyhow::Result<()
     let mut trust = registry.trust(Purpose::Agent)?;
     trust.issuers[0].root_crl = "corrupt".into();
     let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant.to_string())
+        .execute(&mut c)
+        .await?;
     sqlx::query("UPDATE mdm_pki.trust SET body=$2 WHERE tenant_id=$1::uuid AND purpose='agent'")
         .bind(tenant.to_string())
         .bind(serde_json::to_vec(&trust)?)

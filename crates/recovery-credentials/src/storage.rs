@@ -411,10 +411,27 @@ pub async fn validate_keys_in(
     }
     Ok(())
 }
-/// Re-encryption changes no material identity or validity and is safe to resume after interruption.
-pub async fn rewrap_in(c: &mut PgConnection, tenant: Uuid, keys: &KeyRing) -> Result<u64, Error> {
+/// The maintenance owner retains this bounded locked page until it declares its source partition.
+pub struct RewrapPage {
+    tenant: Uuid,
+    rows: Vec<sqlx::postgres::PgRow>,
+}
+pub async fn prepare_rewrap_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    keys: &KeyRing,
+) -> Result<RewrapPage, Error> {
     let rows=sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND v.sealed IS NOT NULL AND v.key_id<>$2 ORDER BY e.id,v.version LIMIT 100 FOR UPDATE OF v"))
         .bind(tenant).bind(keys.active()).fetch_all(&mut *c).await?;
+    Ok(RewrapPage { tenant, rows })
+}
+/// Re-encryption changes no material identity or validity; consume the page once.
+pub async fn rewrap_in(
+    c: &mut PgConnection,
+    page: RewrapPage,
+    keys: &KeyRing,
+) -> Result<u64, Error> {
+    let RewrapPage { tenant, rows } = page;
     let count = rows.len() as u64;
     for r in rows {
         let m = decode(&r)?;

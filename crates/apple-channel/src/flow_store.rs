@@ -84,28 +84,18 @@ impl channels::ApplePush for Store {
         configuration: [u8; 32],
     ) -> Pending<'a, Vec<channels::PushCandidate>> {
         Box::pin(async move {
-            let rows=sqlx::query("SELECT registration,generation,user_key,material,token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<clock_timestamp()) ORDER BY next_push,registration,user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
+            let rows=sqlx::query("SELECT registration,generation,user_key,material,token_revision,(SELECT device FROM mdm_access.registrations r WHERE r.tenant_id=mdm_apple.channels.tenant_id AND r.id=registration) AS device FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND state='active' AND (push_outcome IS DISTINCT FROM 'rejected' OR push_configuration IS DISTINCT FROM $2) AND next_push<=clock_timestamp() AND (push_lease_until IS NULL OR push_lease_until<clock_timestamp()) ORDER BY next_push,registration,user_key LIMIT 32 FOR UPDATE SKIP LOCKED").bind(&tenant).bind(configuration.as_slice()).fetch_all(&mut *c).await.map_err(storage)?;
             let mut result = Vec::new();
             for row in rows {
                 let registration = row.try_get("registration").map_err(storage)?;
-                if !rss_mdm_registration_service::device::store::active_source_in(
+                let active = rss_mdm_registration_service::device::store::active_source_in(
                     c,
                     &tenant,
                     registration,
                     rss_mdm_inventory::ReportSource::MdmApple,
                 )
                 .await
-                .map_err(|e| channels::Rejection::from(Error::from(e)))?
-                {
-                    self.defer_push(
-                        c,
-                        tenant.clone(),
-                        registration,
-                        row.try_get("user_key").map_err(storage)?,
-                    )
-                    .await?;
-                    continue;
-                }
+                .map_err(|e| channels::Rejection::from(Error::from(e)))?;
                 let user_key: String = row.try_get("user_key").map_err(storage)?;
                 let revision: i64 = row.try_get("token_revision").map_err(storage)?;
                 let sealed: Vec<u8> = row.try_get("material").map_err(storage)?;
@@ -133,14 +123,14 @@ impl channels::ApplePush for Store {
                             && !value.magic.is_empty()
                             && value.magic.len() <= 1024
                     });
-                let Some(material) = material else {
-                    sqlx::query("UPDATE mdm_apple.channels SET state='pending_token',push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2 AND user_key=$3 AND token_revision=$4")
-                        .bind(&tenant).bind(registration).bind(&user_key).bind(revision)
-                        .execute(&mut *c).await.map_err(storage)?;
-                    if user_key.is_empty() {
-                        sqlx::query("UPDATE mdm_apple.devices SET state='pending_token' WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
-                            .bind(&tenant).bind(registration).execute(&mut *c).await.map_err(storage)?;
+                let disposition = if !active {
+                    channels::PushDisposition::Inactive
+                } else if let Some(material) = material {
+                    channels::PushDisposition::Ready {
+                        token: material.token,
+                        magic: material.magic,
                     }
+                } else {
                     let scope = self
                         .protection
                         .mac(user_key.as_bytes(), &aad)
@@ -150,21 +140,41 @@ impl channels::ApplePush for Store {
                             ))
                         })?;
                     let scope: String = scope.iter().map(|byte| format!("{byte:02x}")).collect();
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({"event":"apple_push_material_rejected","registration":registration,"token_revision":revision,"channel":if user_key.is_empty(){"device"}else{"user"},"scope":scope,"failure":"material_integrity"})
-                    );
-                    continue;
+                    channels::PushDisposition::Invalid { scope }
                 };
                 result.push(channels::PushCandidate {
                     registration,
                     revision,
                     user_key,
-                    token: material.token,
-                    magic: material.magic,
+                    device: row.try_get("device").map_err(storage)?,
+                    disposition,
                 });
             }
             Ok(result)
+        })
+    }
+    fn reject_push<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        registration: Uuid,
+        user_key: String,
+        revision: i64,
+        scope: String,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            sqlx::query("UPDATE mdm_apple.channels SET state='pending_token',push_id=NULL,push_lease_until=NULL,push_status=NULL,push_outcome='rejected' WHERE tenant_id=$1::uuid AND registration=$2 AND user_key=$3 AND token_revision=$4")
+                        .bind(&tenant).bind(registration).bind(&user_key).bind(revision)
+                        .execute(&mut *c).await.map_err(storage)?;
+            if user_key.is_empty() {
+                sqlx::query("UPDATE mdm_apple.devices SET state='pending_token' WHERE tenant_id=$1::uuid AND registration=$2 AND state='active'")
+                            .bind(&tenant).bind(registration).execute(&mut *c).await.map_err(storage)?;
+            }
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"apple_push_material_rejected","registration":registration,"token_revision":revision,"channel":if user_key.is_empty(){"device"}else{"user"},"scope":scope,"failure":"material_integrity"})
+            );
+            Ok(())
         })
     }
     fn defer_push<'a>(

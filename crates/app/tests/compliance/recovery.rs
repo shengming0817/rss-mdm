@@ -87,7 +87,9 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     ensure!(
         audit_count(
             |r| r.source() == "mdm.business" && r.operation() == recompute["operationId"].as_str()
-        )? == 1
+        )
+        .await?
+            == 1
     );
     let task = restarted_run["task"].as_str().unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -115,7 +117,9 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
             == "0"
     );
     ensure!(
-        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 0
+        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")
+            .await?
+            == 0
     );
     ensure!(
         pg(&format!(
@@ -152,7 +156,9 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.devices d WHERE d.tenant_id='{}' AND NOT EXISTS(SELECT 1 FROM mdm_compliance.results r WHERE r.tenant_id=d.tenant_id AND r.device=d.id AND r.task='{task}')", case_tenant()))?.trim() == "0");
     status(&mut browser, router, "compliance-a", "non_compliant").await?;
     ensure!(
-        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")? == 1
+        audit_count(|r| r.operation() == Some(task) && r.action() == "automation_completed")
+            .await?
+            == 1
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.compliance_sources s JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(s.tenant_id,s.id::text) WHERE s.document->>'run'='{task}' AND o.domain='mdm-webhook-source'"))?.trim()=="1", "published run must atomically append one webhook source");
     crate::test_support::runtime::stop_worker(automation).await?;
@@ -307,7 +313,8 @@ async fn rule_and_fact_revisions_fence_stale_publication() -> Result<()> {
             == "0"
     );
     ensure!(
-        audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(op.as_str()))? == 0
+        audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(op.as_str())).await?
+            == 0
     );
     fixture.close().await;
     Ok(())

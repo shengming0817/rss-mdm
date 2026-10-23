@@ -97,7 +97,7 @@ class PreparationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             fixture=object.__new__(RunFixtures)
             environment=SimpleNamespace(root=Path(temporary),extra={},prepare_inputs=Mock(),verify_ownership=Mock(),reset=Mock())
-            environment.compose=Mock(side_effect=lambda *args: '127.0.0.1:12345' if args[0]=='port' else 'owned-container' if args[0]=='ps' else '')
+            environment.compose=Mock(side_effect=lambda *args, **kwargs: '127.0.0.1:12345' if args[0]=='port' else 'owned-container' if args[0]=='ps' else '')
             fixture.gateway_owner=environment
             with fixture.gateway('first configuration',{'server.crt':'first certificate'}):
                 first=Path(environment.extra['MDM_GATEWAY_PROBE_DIRECTORY'])
@@ -108,7 +108,8 @@ class PreparationTests(unittest.TestCase):
                 self.assertEqual((first/'server.crt').read_text(),'first certificate')
                 self.assertEqual((second/'nginx.conf').read_text(),'second configuration')
                 self.assertEqual((second/'server.crt').read_text(),'second certificate')
-            self.assertEqual(environment.reset.call_count,2)
+            environment.reset.assert_not_called()
+            self.assertEqual(sum(call.args == ('--profile', '*', 'down', '--volumes', '--remove-orphans') for call in environment.compose.call_args_list), 2)
 
     def fixture(self, output):
         recovery_patch = patch('apple_ca.recover')

@@ -33,8 +33,8 @@ impl Quotas {
             digest: &digest,
         };
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
-        let control = budget.control();
-        let result = self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?, &control, (&self.audit,p,&subject,change,&op,audit), |ctx, tx| Box::pin(async move {
+        let result = self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_| Error::Malformed)?,
+            &budget.source_control(), (&self.audit,p,&subject,change,&op,audit), |ctx, tx| Box::pin(async move {
             let (store,p,subject,change,op,audit) = *ctx;
             let (value,replayed) = tx.with_connection_context(&mut (p,subject,change,op,audit), |ctx,c| Box::pin(async move {
                 let (p,subject,change,op,audit) = *ctx;

@@ -147,7 +147,8 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
     let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
         db.archive_pool(),
-        db.audit_store(&crate::config::AuditConfig::Plain).await?,
+        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         vec![windows, binding],
         providers,
     );
@@ -156,6 +157,10 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         .await?;
     let mut pg =
         <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut pg)
+        .await?;
     for (serial, attempt) in &serials {
         sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,purpose,issuer,serial,attempt,state) VALUES($1::uuid,'agent',$2,$3,$4,'pending')")
             .bind(case_a()).bind(&issuer.digest).bind(serial).bind(attempt).execute(&mut pg).await?;

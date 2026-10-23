@@ -59,6 +59,8 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
             C::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
             C::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
             C::AuditContract => Self::Unavailable(Failure::AuditContract),
+            C::AuditBackpressure => Self::Unavailable(Failure::AuditBackpressure),
+            C::AuditReserveExhausted => Self::Unavailable(Failure::AuditReserveExhausted),
             C::Audit => Self::Unavailable(Failure::Audit),
         }
     }
@@ -147,6 +149,8 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::AuditAdmission => crate::Failure::AuditAdmission,
                 F::AuditIsolation => crate::Failure::AuditIsolation,
                 F::AuditContract => crate::Failure::AuditContract,
+                F::AuditBackpressure => crate::Failure::AuditBackpressure,
+                F::AuditReserveExhausted => crate::Failure::AuditReserveExhausted,
             }),
         }
     }
@@ -180,6 +184,8 @@ impl From<rss_mdm_execution_service::channels::Rejection> for Error {
             R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
             R::AuditIntegrity => Self::Unavailable(crate::Failure::AuditIntegrity),
             R::AuditContract => Self::Unavailable(crate::Failure::AuditContract),
+            R::AuditBackpressure => Self::Unavailable(crate::Failure::AuditBackpressure),
+            R::AuditReserveExhausted => Self::Unavailable(crate::Failure::AuditReserveExhausted),
             R::Audit => Self::Unavailable(crate::Failure::Audit),
         }
     }
@@ -345,6 +351,10 @@ impl From<rss_mdm_execution_service::Error> for Error {
                 rss_mdm_execution_service::Failure::AuditIntegrity => Failure::AuditIntegrity,
                 rss_mdm_execution_service::Failure::AuditIsolation => Failure::AuditIsolation,
                 rss_mdm_execution_service::Failure::AuditContract => Failure::AuditContract,
+                rss_mdm_execution_service::Failure::AuditBackpressure => Failure::AuditBackpressure,
+                rss_mdm_execution_service::Failure::AuditReserveExhausted => {
+                    Failure::AuditReserveExhausted
+                }
                 rss_mdm_execution_service::Failure::AuditAdmission => Failure::AuditAdmission,
                 rss_mdm_execution_service::Failure::InventoryQuery => Failure::InventoryQuery,
                 rss_mdm_execution_service::Failure::AssetCandidates => Failure::AssetCandidates,
@@ -435,6 +445,12 @@ impl From<rss_mdm_flow_service::Error> for Error {
                 }
                 rss_mdm_flow_service::Failure::AuditContract => {
                     Self::Unavailable(Failure::AuditContract)
+                }
+                rss_mdm_flow_service::Failure::AuditBackpressure => {
+                    Self::Unavailable(Failure::AuditBackpressure)
+                }
+                rss_mdm_flow_service::Failure::AuditReserveExhausted => {
+                    Self::Unavailable(Failure::AuditReserveExhausted)
                 }
                 rss_mdm_flow_service::Failure::AuditAdmission => {
                     Self::Unavailable(Failure::AuditAdmission)

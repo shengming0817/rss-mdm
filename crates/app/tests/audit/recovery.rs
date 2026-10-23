@@ -1,25 +1,21 @@
 use super::*;
 
-async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
+async fn settlement_recovery(pool: &PgPool) -> Result<()> {
     let timer = crate::lifecycle::RuntimeTimer;
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = {
         let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(3))?;
-        Control::new(&timer, cutoff, cutoff, &cancel)
+        SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
-    let operation = rss_audit_postgres::Control::new(
-        &timer,
-        Deadline::from_timeout(&timer, control.total_remaining())?,
-        Deadline::from_timeout(&timer, Duration::from_secs(3))?,
-        &cancel,
-    );
-    let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
-    store.inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+    store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+    );
     let attempt = store
-        .write(tenant, &operation, (&store, &fact), |(s, f), tx| {
+        .write(tenant, &control, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, false).await })
         })
         .await;
@@ -27,16 +23,18 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
     let attempt = store
-        .write(tenant, &operation, (&store, &fact), |(s, f), tx| {
+        .write(tenant, &control, (&store, &fact), |(s, f), tx| {
             Box::pin(async move { s.append(tx, f, true).await })
         })
         .await;
     ensure!(state(attempt) == "committed");
     ensure!(bytes(pool, tenant).await? == original);
     let failed = Fact::business(&request, "rollback-ack-loss", b"B", 200, "success", None)?;
-    store.inject_next_fault(rss_audit_postgres::PgFault::RollbackFailedAfterAck);
+    store.inject_next_fault(
+        rss_transactional_messaging_postgres::PgTransactionFault::RollbackFailedAfterAck,
+    );
     let attempt = store
-        .write(tenant, &operation, (&store, &failed), |(s, f), tx| {
+        .write(tenant, &control, (&store, &failed), |(s, f), tx| {
             Box::pin(async move {
                 s.append(tx, f, false).await?;
                 Err::<(), _>(Error::Receipt)
@@ -49,9 +47,9 @@ async fn settlement_recovery(pool: &PgPool, ledger: bool) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn crash_write<T: rss_request_context::ExecutionTimer>(
+pub(super) async fn crash_write(
     store: &AuditStore,
-    tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+    tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
     fact: &Fact,
 ) -> Result<(), Error> {
     let tenant = tx.tenant_id().to_string();
@@ -70,14 +68,10 @@ pub(super) async fn crash_write<T: rss_request_context::ExecutionTimer>(
     store.append(tx, fact, false).await
 }
 
-async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
+async fn process_interruption(pool: &PgPool) -> Result<()> {
     use tokio::io::AsyncBufReadExt;
     // Business rows require an installer-admitted product tenant, unlike neutral audit-only facts.
-    let tenant = TenantId::parse(if ledger {
-        crate::test_support::case::peer()
-    } else {
-        crate::test_support::case::tenant()
-    })?;
+    let tenant = TenantId::parse(crate::test_support::case::tenant())?;
     let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args([
             "--ignored",
@@ -86,7 +80,6 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
             "--nocapture",
         ])
         .env("MDM_AUDIT_CRASH_TENANT", tenant.to_string())
-        .env("MDM_AUDIT_CRASH_LEDGER", if ledger { "1" } else { "0" })
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
@@ -104,28 +97,13 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = {
         let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(3))?;
-        Control::new(&timer, cutoff, cutoff, &cancel)
+        SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
-    let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
+    let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
     let short = {
         let cutoff = Deadline::from_timeout(&timer, Duration::from_millis(50))?;
-        Control::new(&timer, cutoff, cutoff, &cancel)
+        SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
-    let attempted = std::sync::atomic::AtomicBool::new(false);
-    let locked = store
-        .write(tenant, &short, &attempted, |attempted, _| {
-            Box::pin(async move {
-                attempted.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok::<(), Error>(())
-            })
-        })
-        .await;
-    ensure!(
-        state(locked) != "committed" && !attempted.load(std::sync::atomic::Ordering::SeqCst),
-        "absence before old transaction ends is not recovery authority"
-    );
-    child.kill().await?;
-    child.wait().await?;
     let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
     let fact = Fact::business(
         &request,
@@ -135,6 +113,27 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
         "success",
         None,
     )?;
+    let attempted = std::sync::atomic::AtomicBool::new(false);
+    let locked = store
+        .write(
+            tenant,
+            &short,
+            (&attempted, &store, &fact),
+            |(attempted, store, fact), tx| {
+                Box::pin(async move {
+                    crash_write(store, tx, fact).await?;
+                    attempted.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Ok::<(), Error>(())
+                })
+            },
+        )
+        .await;
+    ensure!(
+        state(locked) != "committed" && !attempted.load(std::sync::atomic::Ordering::SeqCst),
+        "absence before old transaction ends is not recovery authority"
+    );
+    child.kill().await?;
+    child.wait().await?;
     let recovered = store
         .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move { crash_write(store, tx, fact).await })
@@ -164,11 +163,9 @@ async fn process_interruption(pool: &PgPool, ledger: bool) -> Result<()> {
 async fn recovery_preserves_single_receipt() -> Result<()> {
     for role in ROLES {
         let pool = pool(role).await?;
-        for ledger in [false, true] {
-            settlement_recovery(&pool, ledger).await?;
-            if role == "mdm_access" {
-                process_interruption(&pool, ledger).await?;
-            }
+        settlement_recovery(&pool).await?;
+        if role == "mdm_access" {
+            process_interruption(&pool).await?;
         }
         pool.close().await;
     }

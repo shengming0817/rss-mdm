@@ -159,7 +159,7 @@ pub async fn configure(
     ));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.control(),(&app,&p,&audit,&input,&key,id,op,&digest),|ctx,tx|Box::pin(async move{
+    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,&p,&audit,&input,&key,id,op,&digest),|ctx,tx|Box::pin(async move{
         let (app,p,audit,input,key,id,op,digest)=*ctx;
         let value=tx.with_connection_context(&mut (app,p,input,key,id,op,digest),|ctx,c|Box::pin(async move{
             let(app,p,input,key,id,op,digest)=*ctx;
@@ -308,7 +308,7 @@ pub async fn operation(
     };
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-    let result=app.audit_store.write(app.identity.tenant(),&budget.control(),(&app,&p,&audit,&input,&request,&imported,id,op,revision,token_revision,&digest),|ctx,tx|Box::pin(async move{
+    let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,&p,&audit,&input,&request,&imported,id,op,revision,token_revision,&digest),|ctx,tx|Box::pin(async move{
         let(app,p,audit,input,request,imported,id,op,revision,token_revision,digest)=*ctx;
         let (value,replayed)=tx.with_connection_context(&mut(app,p,input,request,imported,id,op,revision,token_revision,digest),|ctx,c|Box::pin(async move{
             let(app,p,input,request,imported,id,op,revision,token_revision,digest)=*ctx;
@@ -448,9 +448,9 @@ pub(super) async fn save(
     sqlx::query("INSERT INTO mdm_apple.ade_operations(tenant_id,organization,id,kind,digest,actor,instance,server_revision,token_revision,request,state,result,full_sync,created_at,receipt) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)").bind(tenant).bind(organization).bind(id).bind(kind).bind(digest).bind(actor).bind(instance).bind(revision).bind(token_revision).bind(request).bind(state).bind(result).bind(full).bind(now).bind(result.cloned().unwrap_or_else(||json!({"operationId":id,"state":state}))).execute(c).await.map_err(db)?;
     Ok(())
 }
-async fn append<T: rss_request_context::ExecutionTimer>(
+async fn append(
     app: &HttpState,
-    tx: &mut rss_audit_postgres::WriteAuditTransaction<'_, '_, '_, T>,
+    tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
     audit: &RequestAudit,
     op: Uuid,
     digest: &str,

@@ -114,12 +114,11 @@ pub(crate) async fn issue(
         fingerprint: leaf.fingerprint(),
     };
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             principal.tenant(),
-            &control,
+            &budget.source_control(),
             (app, &principal, &proof, &digest, audit, &issued),
             |(app, p, proof, digest, audit, issued), tx| {
                 Box::pin(async move {
@@ -146,10 +145,12 @@ pub(crate) async fn issue(
                             .await
                             .map_err(Error::from)?;
                     }
-                    app.audit_store
-                        .append_request(tx, audit, 200, if replayed { "replay" } else { "success" })
-                        .await
-                        .map_err(Error::from)?;
+                    audit.require_request_settlement();
+                    if replayed {
+                        audit.management_result(
+                            rss_mdm_audit_integration::ManagementResult::Replayed,
+                        );
+                    }
                     let response = provision(app, &certificate, &kind, purpose)?;
                     audit.mark_commit_started();
                     Ok(response)
@@ -303,12 +304,11 @@ pub(crate) async fn activate(
     }
     let audit = RequestAudit::new(tenant.to_string(), "windows_renewal");
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let outcome = app
         .audit_store
         .write(
             tenant,
-            &control,
+            &budget.source_control(),
             (app, leaf, device, &audit, purpose),
             |(app, leaf, device, audit, purpose), tx| {
                 Box::pin(async move {

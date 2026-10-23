@@ -24,7 +24,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         access.registration(),
         case_tenant().into(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     );
     let proof =
@@ -36,7 +36,7 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
         access
-            .audit_store(&crate::config::AuditConfig::Plain)
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?,
     )
     .await?;

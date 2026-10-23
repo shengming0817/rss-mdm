@@ -48,8 +48,11 @@ impl ExecutionService {
             let (service,protection,audit)=*ctx;
             let tenant=checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
             let keys=protection.keys.clone();
-            let rewrapped=tx.with_connection(move|c|Box::pin(async move{Ok(materials::rewrap_in(c,tenant,&keys).await)})).await?.map_err(crate::recovery_credentials::error)?;
+            let prepared=tx.with_connection(move|c|Box::pin(async move{Ok(materials::prepare_rewrap_in(c,tenant,&keys).await)})).await?.map_err(crate::recovery_credentials::error)?;
             let expired=tx.with_connection(move|c|Box::pin(async move{Ok(materials::expired_in(c,tenant).await)})).await?.map_err(crate::recovery_credentials::error)?;
+            service.audit_store.prepare_in(tx,audit,&[]).await?;
+            let keys=protection.keys.clone();
+            let rewrapped=tx.with_connection(move|c|Box::pin(async move{Ok(materials::rewrap_in(c,prepared,&keys).await)})).await?.map_err(crate::recovery_credentials::error)?;
             let mut cleared=Vec::new();
             let mut purged=Vec::new();
             let mut examined=Vec::new();

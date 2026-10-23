@@ -173,7 +173,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
         .body(Body::from(serde_json::to_vec(&json!({"deviceId":crate::test_support::case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))?))?).await?;
     ensure!(response.status() == StatusCode::UNAUTHORIZED);
     let request_id = response.headers()["x-request-id"].to_str()?;
-    ensure!(audit_count(|r| r.request() == Some(request_id) && r.action() == "enrollment_create" && r.result() == "denied" && r.actor().is_none())? == 1);
+    ensure!(audit_count(|r| r.request() == Some(request_id) && r.action() == "enrollment_create" && r.result() == "denied" && r.actor().is_none()).await? == 1);
     println!("enrollment identity/authorization/replay/audit failure matrix passed");
     Ok(())
 

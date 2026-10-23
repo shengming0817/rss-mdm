@@ -387,6 +387,26 @@ async fn rewrap_native(
     Ok(rewritten)
 }
 
+async fn rewrap_recovery(
+    c: &mut sqlx::PgConnection,
+    tenant: Uuid,
+    config: &crate::config::Config,
+) -> Result<u64> {
+    let recovery = config
+        .recovery_credentials
+        .as_ref()
+        .ok_or(Error::Corrupt)?
+        .open()
+        .map_err(|_| Error::Corrupt)?;
+    let prepared =
+        rss_mdm_recovery_credentials::storage::prepare_rewrap_in(c, tenant, &recovery.keys)
+            .await
+            .map_err(|_| Error::Corrupt)?;
+    rss_mdm_recovery_credentials::storage::rewrap_in(c, prepared, &recovery.keys)
+        .await
+        .map_err(|_| Error::Corrupt)
+}
+
 async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) -> Result<u64> {
     let mut rewritten = 0;
 
@@ -412,19 +432,7 @@ async fn rewrap_host(c: &mut sqlx::PgConnection, host: &Host, purpose: Purpose) 
                 .map_err(|_| Error::Corrupt)? as u64;
         }
         Purpose::Recovery => {
-            let recovery = config
-                .recovery_credentials
-                .as_ref()
-                .ok_or(Error::Corrupt)?
-                .open()
-                .map_err(|_| Error::Corrupt)?;
-            rewritten += rss_mdm_recovery_credentials::storage::rewrap_in(
-                &mut tx,
-                host.tenant,
-                &recovery.keys,
-            )
-            .await
-            .map_err(|_| Error::Corrupt)?;
+            rewritten += rewrap_recovery(&mut tx, host.tenant, &config).await?;
         }
         Purpose::Windows => {
             let protector = purpose.protector(&config)?;

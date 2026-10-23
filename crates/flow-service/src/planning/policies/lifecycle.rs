@@ -3,16 +3,32 @@ use super::*;
 use rss_mdm_device_service::lifecycle::{self, Acceptance};
 use rss_mdm_execution_service::source_authority::ScopeAdmission;
 
+pub(crate) struct PreparedLifecycle {
+    policy: Policy,
+    frozen: Frozen,
+    objects: Vec<rss_mdm_execution_service::source_authority::DeviceAssignment>,
+    triggers: Vec<(Uuid, i64)>,
+    more: bool,
+    next: Option<String>,
+    now: i64,
+}
+
 impl super::super::Planning {
-    pub async fn advance_lifecycle_assignment_in(
+    pub(crate) async fn prepare_lifecycle_assignment_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        task: Uuid,
         policy: &Policy,
         after: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<PreparedLifecycle>> {
+        let terminal_partition = rss_mdm_audit_integration::source_partition(
+            tx.tenant_id(),
+            "policy",
+            &policy.id.to_string(),
+        )
+        .map_err(Error::from)?;
         if !policy.state.is_enabled() {
-            return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
+            tx.prepare_outbox_partitions(&[terminal_partition]).await?;
+            return Ok(None);
         }
         let published = checked(
             self.policy_store
@@ -34,6 +50,18 @@ impl super::super::Planning {
         let t = tenant.to_string();
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
+        let authority = grant.clone();
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(authority
+                    .valid(c, crate::authorization::Permission::DeviceUnmanage, now)
+                    .await)
+            })
+        })
+        .await?
+        .map_err(Error::from)?
+        .then_some(())
+        .ok_or(Error::Forbidden)?;
         let triggers=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_as::<_,(Uuid,i64)>("SELECT id,created_at FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64")
                 .bind(t).bind(version).bind(now).fetch_all(c).await
@@ -58,6 +86,57 @@ impl super::super::Planning {
         let more = objects.len() > 64;
         objects.truncate(64);
         let next = objects.last().map(|o| o.cursor.clone());
+        let mut partitions = vec![terminal_partition];
+        for item in &objects {
+            partitions.push(
+                rss_mdm_audit_integration::source_partition(
+                    tenant,
+                    "mdm",
+                    &item.object.object.key(),
+                )
+                .map_err(Error::from)?,
+            );
+        }
+        tx.prepare_outbox_partitions(&partitions).await?;
+        Ok(Some(PreparedLifecycle {
+            policy: policy.clone(),
+            frozen: Frozen::UnmanageDevice {
+                schedule,
+                run_lifetime_seconds,
+                grant,
+            },
+            objects,
+            triggers,
+            more,
+            next,
+            now,
+        }))
+    }
+    pub(crate) async fn advance_lifecycle_assignment_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        prepared: PreparedLifecycle,
+    ) -> Result<()> {
+        let PreparedLifecycle {
+            policy,
+            frozen,
+            objects,
+            triggers,
+            more,
+            next,
+            now,
+        } = prepared;
+        let Frozen::UnmanageDevice {
+            schedule,
+            run_lifetime_seconds,
+            grant,
+        } = frozen
+        else {
+            return Err(Error::Malformed.into());
+        };
+        let tenant = tx.tenant_id();
+        let version = policy.version;
         for item in objects {
             if !matches!(item.admission, ScopeAdmission::Eligible { .. }) {
                 continue;

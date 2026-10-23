@@ -8,6 +8,8 @@ pub enum ResponseFailure {
     Denied,
     AuditIntegrity,
     AuditContract,
+    AuditBackpressure,
+    AuditReserveExhausted,
     AuditUnavailable,
 }
 pub enum Replacement {
@@ -35,6 +37,10 @@ pub async fn complete(
     status: u16,
     failure: Option<ResponseFailure>,
 ) -> Option<Replacement> {
+    if failure == Some(ResponseFailure::AuditReserveExhausted) {
+        audit.finalize(Some(FailureReason::Persistent));
+        return Some(Replacement::Audit(Error::ReserveExhausted));
+    }
     let snapshot = audit.snapshot();
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
         protected_result(failure, snapshot.write_outcome)
@@ -60,7 +66,7 @@ pub async fn complete(
         let result = request_result(status, failure, &snapshot, unknown);
         let budget = crate::budget::AuditBudget::new(std::time::Duration::from_secs(2));
         if let Err(error) = store
-            .settle_request(audit, status, result, &budget.control())
+            .settle_request(audit, status, result, &budget.source_control())
             .await
         {
             reason = Some(failure_reason(&error));

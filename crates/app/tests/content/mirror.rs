@@ -55,10 +55,12 @@ async fn mirror_matrix(
         mirror_resource(user, router, definition, server, "audit.msi", b"abc").await?;
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed = user.call(router, Method::POST, &url, None).await;
-    pg("GRANT INSERT ON mdm_audit.receipts TO mdm_flow_runtime")?;
+    pg(
+        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+    )?;
     let failed = failed?;
     ensure!(
-        failed.0 == StatusCode::INTERNAL_SERVER_ERROR && failed.1["code"] == "audit_contract_error",
+        failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",
         "audit failure: {failed:?}"
     );
     ensure!(

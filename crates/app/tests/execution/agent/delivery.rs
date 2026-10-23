@@ -999,11 +999,7 @@ async fn native_inventory_case(
             tokio::time::timeout(Duration::from_secs(20),async{
             loop{let rows=pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.memory.bytes' AND value::jsonb->>'value'='{}'",case_tenant(),spec.registration_id,8192+stage))?;if rows.trim()=="1"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}
         }).await??;
-            let network = pg(&format!(
-                "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.network.interfaces'",
-                case_tenant(),
-                spec.registration_id
-            ))?;
+            let network = projected_value(spec.registration_id, "device.network.interfaces", None).await?;
             if stage == 0 {
                 prior_network = network.clone();
             } else if stage == 1 {
@@ -1017,9 +1013,9 @@ async fn native_inventory_case(
                 ensure!(v["value"] == json!([]));
             }
             if !large_raw && stage<=2 {
-                let certificates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
+                let certificates:Value=serde_json::from_str(&projected_value(spec.registration_id, "device.certificates.metadata", None).await?)?;
                 ensure!(certificates["value"].as_array().unwrap().len()==if stage==2 {0}else{1},"certificate partial/empty replacement failed: {certificates}");
-                let updates:Value=serde_json::from_str(pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.updates.available' AND source='agent.native'",case_tenant(),spec.registration_id))?.trim())?;
+                let updates:Value=serde_json::from_str(&projected_value(spec.registration_id, "device.updates.available", None).await?)?;
                 ensure!(updates["value"].as_array().unwrap().len()==if stage==2 {0}else{1});
                 if stage==0 {prior_updates=updates.clone();}
                 if stage==1 {ensure!(updates==prior_updates,"truncated update replaced prior complete discovery");}
@@ -1049,11 +1045,7 @@ async fn native_inventory_case(
                 );
             }
             if map_software {
-                let software = pg(&format!(
-                    "SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='{software_field}'",
-                    case_tenant(),
-                    spec.registration_id
-                ))?;
+                let software = projected_value(spec.registration_id, software_field, None).await?;
                 if stage == 0 {
                     let value: Value = serde_json::from_str(software.trim())?;
                     if macos {
@@ -1382,11 +1374,8 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         datasets.push(pg(&format!("SELECT attempts::jsonb#>>'{{definition,dataset}}' FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?);
     }
     ensure!(datasets[0] == datasets[2] && datasets[0] != datasets[1]);
-    let rows: Value = serde_json::from_str(pg(&format!(
-        "SELECT jsonb_agg(jsonb_build_object('field',field,'scope',field_scope::jsonb,'value',value::jsonb->'value')) FROM mdm.inventory WHERE tenant_id='{}' AND source='agent.native' AND field IN ('device.software.installations','device.software.packages')",
-        case_tenant()
-    ))?.trim())?;
-    let rows = rows.as_array().context("scoped software facts")?;
+    let mut rows = projected_fields(None, &["device.software.installations", "device.software.packages"]).await?;
+    for row in &mut rows { row["value"] = row["value"]["value"].take(); }
     ensure!(
         rows.len() == 4,
         "expected both fields for both users: {rows:?}"
@@ -1533,10 +1522,9 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }}).await??;
             let scope=json!({"kind":"native_certificates","platform":platform,"store":store,"owner":if !user {Value::Null}else if macos {json!({"kind":"macos","uid":n,"generated_uid":guid})}else{json!({"kind":"windows","sid":sid})}});
-            let escaped=scope.to_string().replace('\'',"''");
             // Observation delivery precedes asynchronous inventory projection.
             let saved=tokio::time::timeout(Duration::from_secs(20),async {loop {
-                let value=pg(&format!("SELECT value::text FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata' AND field_scope::jsonb='{}'::jsonb",case_tenant(),spec.registration_id,escaped))?;
+                let value=projected_value(spec.registration_id, "device.certificates.metadata", Some(&scope)).await?;
                 if !value.trim().is_empty() {
                     let parsed:Value=serde_json::from_str(value.trim())?;
                     if parsed["value"].as_array().context("certificate projection")?.len()==if stage==5 {0}else{1} {break Ok::<_,anyhow::Error>(value);}
@@ -1549,8 +1537,8 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             if stage==4 {ensure!(saved==prior_user,"partial replaced previous certificate");}
             if stage<4 {scopes.push(scope);}
         }
-        let facts:Value=serde_json::from_str(pg(&format!("SELECT jsonb_agg(jsonb_build_object('scope',field_scope::jsonb,'value',value::jsonb)) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND field='device.certificates.metadata'",case_tenant(),registration["registrationId"].as_str().unwrap()))?.trim())?;
-        let facts=facts.as_array().context("certificate facts")?;ensure!(facts.len()==4);
+        let facts=projected_fields(Some(Uuid::parse_str(registration["registrationId"].as_str().unwrap())?), &["device.certificates.metadata"]).await?;
+        ensure!(facts.len()==4);
         for (i,scope) in scopes.iter().enumerate() {
             let fact=facts.iter().find(|f|f["scope"]==*scope).context("missing store")?;
             ensure!(fact["value"]["value"].as_array().unwrap().len()==if i==1 {0}else{1},"unrelated certificate scope replaced");
@@ -1909,4 +1897,49 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         ensure!(!late.0.is_success());
         Ok(())
     }).await
+}
+
+// Assertions consume the Inventory owner's current decoder, including versioned arrays.
+async fn projected_fields(registration: Option<Uuid>, fields: &[&str]) -> Result<Vec<Value>> {
+    use sqlx::Connection;
+    let mut connection =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(tenant.to_string())
+        .execute(&mut connection)
+        .await?;
+    let scopes: Vec<String> = sqlx::query_scalar("SELECT DISTINCT scope FROM mdm.inventory WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR registration=$2) AND source='agent.native' AND field=ANY($3)")
+        .bind(tenant.to_string()).bind(registration.map(|id| id.to_string())).bind(fields).fetch_all(&mut connection).await?;
+    let scopes = scopes
+        .iter()
+        .map(|scope| serde_json::from_str::<rss_observation::Scope>(scope))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let facts = rss_mdm_inventory_postgres::read_in(&mut connection, tenant, &scopes).await?;
+    connection.close().await?;
+    facts
+        .into_iter()
+        .filter(|fact| fields.contains(&fact.field.as_str()))
+        .filter_map(|fact| {
+            let rss_mdm_inventory::State::Known(value) = fact.fact.state else {
+                return None;
+            };
+            Some(Ok(
+                json!({"field":fact.field,"scope":fact.fact.evidence.scope,"value":value}),
+            ))
+        })
+        .collect()
+}
+async fn projected_value(registration: Uuid, field: &str, scope: Option<&Value>) -> Result<String> {
+    let rows = projected_fields(Some(registration), &[field]).await?;
+    let values = rows
+        .into_iter()
+        .filter(|row| scope.is_none_or(|scope| row["scope"] == *scope))
+        .collect::<Vec<_>>();
+    ensure!(values.len() <= 1, "ambiguous projected field scope");
+    values
+        .first()
+        .map(|row| serde_json::to_string(&row["value"]).map_err(Into::into))
+        .unwrap_or_else(|| Ok(String::new()))
 }

@@ -65,7 +65,7 @@ impl Associations {
             };
             proof.check_live()?;
             Ok(json!({"items":items,"nextCursor":next,"checkpoint":checkpoint}))
-        })).await.fold(|v|Ok(v.into_value()),|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
+        })).await.fold(Ok,|e|Err(model::transaction_error(e)),|e|Err(model::transaction_error(e)),|_|Err(Error::RollbackFailed),|_|Err(Error::CommitUnknown),|e|Err(model::transaction_error(e)))
     }
     fn change_token(&self, binding: &Value, position: Position) -> Result<String> {
         self.encode(json!({"binding":binding,"position":position}), 0)

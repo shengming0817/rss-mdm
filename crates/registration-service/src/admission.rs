@@ -28,9 +28,15 @@ pub struct Change {
     pub admission: State,
 }
 
-/// The same tenant lock precedes business rows even when no setting exists yet.
-/// Tenant-wide serialization also orders cross-channel enrollment consistently.
+/// Registration may publish asset authority later in this transaction. Its existing
+/// watermark fence must precede admission/quota and authorization, including reenrollment.
+/// The admission lock also orders cross-channel enrollment when no setting exists yet.
 pub async fn lock_in(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(tenant)
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
     crate::quotas::lock_on(c, tenant).await
 }
 pub async fn read_in(
@@ -131,8 +137,8 @@ impl Admission {
             digest: &digest,
         };
         let budget = AuditBudget::new(std::time::Duration::from_secs(6));
-        let control = budget.control();
-        let result=self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,&control,(&self.audit,p,channel,change,&op,audit),|ctx,tx|Box::pin(async move {
+        let result=self.audit.write(rss_request_context::TenantId::parse(p.tenant_id()).map_err(|_|Error::Malformed)?,
+            &budget.source_control(),(&self.audit,p,channel,change,&op,audit),|ctx,tx|Box::pin(async move {
             let (store,p,channel,change,op,audit)=*ctx;
             let (revision,replayed)=tx.with_connection_context(&mut (p,channel,change,op,audit),|ctx,c|Box::pin(async move {
                 let (p,channel,change,op,audit)=*ctx;

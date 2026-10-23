@@ -1,21 +1,41 @@
 use super::*;
+pub(crate) enum PreparedAssignment {
+    Empty,
+    Lifecycle(Box<super::lifecycle::PreparedLifecycle>),
+    Ordinary {
+        policy: Box<Policy>,
+        assignments: Vec<rss_mdm_execution_service::source_authority::AssignmentObject>,
+        readable: bool,
+        more: bool,
+        channel: rss_mdm_inventory::Channel,
+    },
+}
 impl super::super::Planning {
-    pub async fn advance_assignment_in(
+    pub(crate) async fn prepare_assignment_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        task: Uuid,
         policy: Uuid,
         after: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<PreparedAssignment> {
+        let terminal_partition = rss_mdm_audit_integration::source_partition(
+            tx.tenant_id(),
+            "policy",
+            &policy.to_string(),
+        )
+        .map_err(Error::from)?;
         let Some(p) = storage::read_in(self.policy_store.reader(), tx, policy).await? else {
-            return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
+            tx.prepare_outbox_partitions(&[terminal_partition]).await?;
+            return Ok(PreparedAssignment::Empty);
         };
         if matches!(p.definition.action, Action::UnmanageDevice { .. }) {
-            return self
-                .advance_lifecycle_assignment_in(tx, task, &p, after)
-                .await;
+            return Ok(
+                match self.prepare_lifecycle_assignment_in(tx, &p, after).await? {
+                    Some(prepared) => PreparedAssignment::Lifecycle(Box::new(prepared)),
+                    None => PreparedAssignment::Empty,
+                },
+            );
         }
-        use rss_mdm_execution_service::source_authority::{Availability, SourceAuthority};
+        use rss_mdm_execution_service::source_authority::SourceAuthority;
         let channel =
             rss_mdm_execution_service::source_authority::action_channel(&p.definition.action)?;
         let source = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
@@ -41,6 +61,39 @@ impl super::super::Planning {
             .map_err(rss_mdm_execution_service::Error::from)?;
         let more = assignments.len() > 64;
         assignments.truncate(64);
+        tx.prepare_outbox_partitions(&[terminal_partition]).await?;
+        Ok(PreparedAssignment::Ordinary {
+            policy: Box::new(p),
+            assignments,
+            readable,
+            more,
+            channel,
+        })
+    }
+    pub(crate) async fn advance_assignment_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        task: Uuid,
+        prepared: PreparedAssignment,
+    ) -> Result<()> {
+        use rss_mdm_execution_service::source_authority::Availability;
+        let (p, assignments, readable, more, channel) = match prepared {
+            PreparedAssignment::Empty => {
+                return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None)
+                    .await;
+            }
+            PreparedAssignment::Lifecycle(batch) => {
+                return self.advance_lifecycle_assignment_in(tx, task, *batch).await;
+            }
+            PreparedAssignment::Ordinary {
+                policy,
+                assignments,
+                readable,
+                more,
+                channel,
+            } => (policy, assignments, readable, more, channel),
+        };
+        let tenant = tx.tenant_id();
         let mut devices = Vec::new();
         let mut keys = Vec::new();
         for mut assignment in assignments {

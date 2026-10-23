@@ -67,8 +67,8 @@ pub async fn cycle(
             let audit = audit(tenant, id, registration);
             let budget =
                 rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
-            let control = budget.control();
-            let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
+            let outcome=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+            &budget.source_control(),(store,&audit,eligibility,tenant,device.as_str(),registration,generation,revision,id,push.configuration,push.material_revision),|inputs,tx|Box::pin(async move {
                 let (store,audit,eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision)=*inputs;
                 let sealed=tx.with_connection_context(&mut (eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),|(eligibility,tenant,device,registration,generation,revision,id,configuration,material_revision),c|Box::pin(async move {
                     if !eligibility.pending_in(c, device, *registration, *generation).await? { return Ok::<_,Error>(None) }
@@ -134,8 +134,8 @@ async fn settle(
     let retry_after = receipt.retry_after;
     let audit = audit(tenant, wake.id, wake.registration);
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(3));
-    let control = budget.control();
-    let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,&control,(store,&audit,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
+    let result=store.write(TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
+            &budget.source_control(),(store,&audit,tenant,wake,status,outcome,retry_after),|inputs,tx|Box::pin(async move {
         let (store,audit,tenant,wake,status,outcome,retry_after)=*inputs;
         let changed=tx.with_connection_context(&mut (tenant,wake,status,outcome,retry_after),|(tenant,wake,status,outcome,retry_after),c|Box::pin(async move {
             let row=sqlx::query("SELECT lease_id,settled_id,failures,status,outcome FROM mdm_windows.push_channels WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND revision=$4 FOR UPDATE")

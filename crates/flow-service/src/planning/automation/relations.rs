@@ -26,7 +26,7 @@ impl Planning {
             return Ok(0);
         }
         self.runtime.local_tx_with_context(self.tenant,deadline(),(self,window),|(service,window),tx|Box::pin(async move {
-            service.audit_store.lock_in(tx).await.map_err(PgError::from)?;
+            service.audit_store.bind_in(tx).await.map_err(PgError::from)?;
             let owner_tenant=tx.tenant_id();
             tx.with_connection(move|c|Box::pin(async move {rss_mdm_inventory_postgres::lock_watermark_in(c,owner_tenant).await})).await?;
             let tenant=tx.tenant_id().to_string();

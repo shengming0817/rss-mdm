@@ -235,7 +235,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                         Box::pin(async move {
                             service
                                 .audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(PgError::from)?;
                             let tenant = tx.tenant_id();
@@ -245,28 +245,56 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 })
                             })
                             .await?;
+                            crate::transaction::lock(tx)
+                                .await
+                                .map_err(|e| fault(e, context.2))?;
+                            let prepared: Result<_> = async {
+                                if context.1 == "changes" {
+                                    return Ok(None);
+                                }
+                                let id = Uuid::parse_str(
+                                    context.1.strip_prefix("job:").ok_or(Error::Malformed)?,
+                                )
+                                .map_err(|_| Error::Malformed)?;
+                                let (job, done, _, cursor, _) =
+                                    crate::automation::jobs::read_in(tx, id).await?;
+                                let assignment = if done {
+                                    None
+                                } else if let JobInput::PolicyReconcile { policy } = &job {
+                                    Some(
+                                        service
+                                            .prepare_assignment_in(tx, *policy, cursor.clone())
+                                            .await?,
+                                    )
+                                } else {
+                                    let mut partitions = vec![
+                                        job.audit_partition(tx.tenant_id()).map_err(Error::from)?,
+                                    ];
+                                    if let JobInput::Group { group, .. } = &job {
+                                        partitions
+                                            .push(service.groups.partition(&group.to_string())?);
+                                    }
+                                    tx.prepare_outbox_partitions(&partitions).await?;
+                                    None
+                                };
+                                Ok(Some((id, job, done, cursor, assignment)))
+                            }
+                            .await;
+                            let prepared = prepared.map_err(|e| fault(e, context.2))?;
                             rss_reconcile_postgres::messaging::protect_in(
                                 tx,
                                 claim,
-                                context,
-                                |ctx, tx| {
+                                (context, prepared),
+                                |(ctx, prepared), tx| {
+                                    let prepared = prepared.take();
                                     Box::pin(async move {
                                         let result: Result<()> = async {
                                             if ctx.1 == "changes" {
                                                 ctx.0.dispatch_assets_in(tx, ctx.4).await?;
                                                 return ctx.0.clear_ingress_failure_in(tx).await;
                                             }
-                                            let id = checked_input(
-                                                ctx.1
-                                                    .strip_prefix("job:")
-                                                    .ok_or(Error::Malformed)
-                                                    .and_then(|s| {
-                                                        Uuid::parse_str(s)
-                                                            .map_err(|_| Error::Malformed)
-                                                    }),
-                                            )?;
-                                            let (job, done, _, cursor, _) =
-                                                crate::automation::jobs::read_in(tx, id).await?;
+                                            let (id, job, done, cursor, assignment) =
+                                                prepared.ok_or(Error::Malformed)?;
                                             if done {
                                                 return Ok(());
                                             }
@@ -290,14 +318,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                                     )
                                                     .await
                                                     .map_err(Into::into),
-                                                JobInput::Group { group, .. } => {
-                                                    tx.prepare_outbox_partitions(&[ctx
-                                                        .0
-                                                        .groups
-                                                        .partition(
-                                                        &group.to_string(),
-                                                    )?])
-                                                    .await?;
+                                                JobInput::Group { .. } => {
                                                     ctx.0
                                                         .advance_group_job_in(tx, id, &job, cursor)
                                                         .await
@@ -307,10 +328,12 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                                         .advance_scope_job_in(tx, id, scope, cursor)
                                                         .await
                                                 }
-                                                JobInput::PolicyReconcile { policy } => {
+                                                JobInput::PolicyReconcile { .. } => {
                                                     ctx.0
                                                         .advance_assignment_in(
-                                                            tx, id, policy, cursor,
+                                                            tx,
+                                                            id,
+                                                            assignment.ok_or(Error::Malformed)?,
                                                         )
                                                         .await
                                                 }
@@ -383,7 +406,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                         Box::pin(async move {
                             service
                                 .audit_store
-                                .lock_in(tx)
+                                .bind_in(tx)
                                 .await
                                 .map_err(PgError::from)?;
                             let tenant = tx.tenant_id();
@@ -393,6 +416,18 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                 })
                             })
                             .await?;
+                            crate::transaction::lock(tx)
+                                .await
+                                .map_err(|e| fault(e, &Mutex::new(None)))?;
+                            let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, id)
+                                .await
+                                .map_err(|e| fault(e, &Mutex::new(None)))?;
+                            let mut partitions =
+                                vec![job.audit_partition(tx.tenant_id()).map_err(PgError::from)?];
+                            if let JobInput::Group { group, .. } = &job {
+                                partitions.push(service.groups.partition(&group.to_string())?);
+                            }
+                            tx.prepare_outbox_partitions(&partitions).await?;
                             rss_reconcile_postgres::messaging::protect_in(
                                 tx,
                                 claim,

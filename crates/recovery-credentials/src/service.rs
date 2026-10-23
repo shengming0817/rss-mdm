@@ -77,13 +77,12 @@ impl Credentials {
         )
         .map_err(|_| Error::Audit)?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-        let control = budget.control();
         let attempt = self
             .audit
             .write(
                 rss_request_context::TenantId::parse(principal.tenant_id())
                     .map_err(|_| Error::Malformed)?,
-                &control,
+                &budget.source_control(),
                 (self, principal, device, id, version, audit, fact),
                 |context, tx| {
                     Box::pin(async move {
@@ -166,8 +165,8 @@ impl Credentials {
         )
         .map_err(|_| Error::Audit)?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-        let control = budget.control();
-        let attempt=self.audit.write(rss_request_context::TenantId::parse(principal.tenant_id()).map_err(|_|Error::Malformed)?,&control,(self,principal,device,id,version,audit,fact),|context,tx|Box::pin(async move {
+        let attempt=self.audit.write(rss_request_context::TenantId::parse(principal.tenant_id()).map_err(|_|Error::Malformed)?,
+            &budget.source_control(),(self,principal,device,id,version,audit,fact),|context,tx|Box::pin(async move {
             let material=tx.with_connection_context(context,|context,c|Box::pin(async move {
                 let (_,principal,device,id,version,_,_)=context;
                 // Read metadata first, then acquire authorization and registration before material locks.
@@ -244,15 +243,15 @@ async fn read_locked(
 
 fn finish<R>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
-        rss_audit_postgres::Committed<R>,
-        rss_audit_postgres::TransactionError<Error>,
+        R,
+        rss_mdm_audit_integration::TransactionError<Error>,
     >,
     audit: &RequestAudit,
 ) -> Result<R, Error> {
     attempt.fold(
         |v| {
             audit.mark_committed();
-            Ok(v.into_value())
+            Ok(v)
         },
         |e| Err(tx_error(e)),
         |e| {
@@ -267,10 +266,10 @@ fn finish<R>(
         |e| Err(tx_error(e)),
     )
 }
-fn tx_error(value: rss_audit_postgres::TransactionError<Error>) -> Error {
+fn tx_error(value: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
     match value {
-        rss_audit_postgres::TransactionError::Operation(e) => e,
-        rss_audit_postgres::TransactionError::Audit(_) => Error::Audit,
-        rss_audit_postgres::TransactionError::Rollback { .. } => Error::RollbackFailed,
+        rss_mdm_audit_integration::TransactionError::Operation(e) => e,
+        rss_mdm_audit_integration::TransactionError::Storage(_) => Error::Audit,
+        rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }

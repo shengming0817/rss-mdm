@@ -120,12 +120,11 @@ pub async fn checkin(
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let budget = app.devices.retirement_budget();
-    let control = budget.control();
     let attempt = app
         .audit_store
         .write(
             principal.tenant(),
-            &control,
+            &budget.source_control(),
             (
                 &app.audit_store,
                 CheckinInputs {
@@ -152,10 +151,12 @@ pub async fn checkin(
                         store.append(tx, fact, false).await.map_err(Error::from)?;
                     }
                     if let Some(result) = request_result {
-                        store
-                            .append_request(tx, inputs.audit, 200, result)
-                            .await
-                            .map_err(Error::from)?;
+                        inputs.audit.require_request_settlement();
+                        if result == "replay" {
+                            inputs.audit.management_result(
+                                rss_mdm_audit_integration::ManagementResult::Replayed,
+                            );
+                        }
                     }
                     inputs.audit.mark_commit_started();
                     Ok(std::mem::take(&mut inputs.response))

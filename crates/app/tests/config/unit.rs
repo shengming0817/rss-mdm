@@ -9,6 +9,38 @@ fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         value["identity"][role]["password_file"] = serde_json::json!(path);
     }
+    for pointer in [
+        "/access_database",
+        "/runtime_database",
+        "/execution/database",
+        "/flow/storage/database",
+        "/flow/publication/database",
+        "/audit_projection/database",
+        "/tenant_administration/registry_database",
+        "/tenant_administration/provisioning_database",
+    ] {
+        if let Some(database) = value.pointer_mut(pointer).filter(|v| v.is_object()) {
+            let name = pointer.replace('/', "-");
+            let path = root.join(&name);
+            std::fs::write(&path, &name).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            database["password_file"] = serde_json::json!(path);
+        }
+    }
+    for (index, pointer) in [
+        "/audit_projection/recovery_keys/active_file",
+        "/identity/audit_recovery_keys/active_file",
+        "/native_protection/active_file",
+        "/native_protection/fingerprint_file",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = root.join(format!("key-{index}"));
+        std::fs::write(&path, [index as u8 + 1; 32]).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        *value.pointer_mut(pointer).unwrap() = serde_json::json!(path);
+    }
     root
 }
 #[test]
@@ -32,6 +64,7 @@ fn worker_rejects_shared_password_path_and_contents() {
     }
     let mut value: serde_json::Value =
         serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    let other = independent_secrets(&mut value);
     value["identity"]["database"]["password_file"] = serde_json::json!(runtime);
     for path in [&runtime, &worker] {
         value["identity"]["audit_worker"]["password_file"] = serde_json::json!(path);
@@ -39,10 +72,11 @@ fn worker_rejects_shared_password_path_and_contents() {
             serde_json::from_value::<Config>(value.clone())
                 .unwrap()
                 .compile(),
-            Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase))
+            Err(Error::Configuration(ConfigIssue::Audit))
         ));
     }
     std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(other).unwrap();
 }
 #[test]
 fn identity_worker_requires_its_own_same_database_credentials() {
@@ -157,6 +191,7 @@ fn startup_configuration_diagnostics_identify_safe_fields() {
         let mut value_config: serde_json::Value =
             serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json"))
                 .unwrap();
+        let root = independent_secrets(&mut value_config);
         *value_config.pointer_mut(pointer).unwrap() = value;
         let config: Config = serde_json::from_value(value_config).unwrap();
         let error = match config.compile() {
@@ -164,8 +199,9 @@ fn startup_configuration_diagnostics_identify_safe_fields() {
             Ok(_) => panic!("invalid configuration accepted"),
         };
         let diagnostic = crate::ProcessError::at("startup.configuration", error).to_string();
-        assert!(diagnostic.contains(field));
+        assert!(diagnostic.contains(field), "{pointer}: {diagnostic}");
         assert!(!diagnostic.contains("synthetic-secret"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 #[test]

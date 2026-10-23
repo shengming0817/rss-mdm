@@ -102,10 +102,16 @@ impl Fixture {
         }
         let budget = AuditBudget::new(Duration::from_secs(3));
         let control = budget.control();
-        let attempt = self
-            .authority
-            .audit
-            .write(
+        let config: Config = serde_json::from_value(self.authority.base.clone())?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(config.audit_projection.database.options()?)
+            .await?;
+        let sink =
+            rss_audit_postgres::PgAudit::new(pool.clone(), config.audit.integrity()?, &control)
+                .await?;
+        let attempt = sink
+            .write_tx_with_context(
                 TenantId::parse(proof.tenant_id())?,
                 &control,
                 records,
@@ -121,6 +127,7 @@ impl Fixture {
                 },
             )
             .await;
+        pool.close().await;
         audit.finalize(None);
         ensure!(attempt.fold(
             |_| true,
@@ -278,6 +285,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         )
         .await?;
     ensure!(status == StatusCode::FORBIDDEN);
+    let stored = audit_records().await?;
     let page = f.get(&format!("/api/v1/devices/{device}/timeline")).await?;
     let items = page["items"].as_array().unwrap();
     for action in [
@@ -302,7 +310,6 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         && v["operationId"] == denied.to_string()
         && v["auditOutcome"] == "denied"
         && v["deviceId"] == device));
-    let stored = audit_records()?;
     for item in items {
         ensure!(
             stored
@@ -338,6 +345,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     for _ in 0..6 {
         f.get("/api/v1/audit-events").await?;
     }
+    audit_records().await?;
     let first = f.get("/api/v1/audit-events?limit=2").await?;
     let through = first["coverage"]["indexedThrough"].as_u64().unwrap();
     let all = f.get("/api/v1/audit-events?limit=200").await?;
@@ -351,6 +359,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     let mut items = first["items"].as_array().unwrap().clone();
     let mut cursor = first["nextCursor"].as_str().map(str::to_owned);
     f.get("/api/v1/audit-events").await?;
+    audit_records().await?;
     let stale = cursor.clone().unwrap();
     for _ in 0..50 {
         let Some(token) = cursor.take() else { break };

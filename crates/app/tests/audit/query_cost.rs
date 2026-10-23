@@ -80,7 +80,7 @@ async fn startup_probes_leave_both_transaction_hot_paths() -> Result<()> {
 
 async fn exercise(
     pool: &PgPool,
-    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
     ledger: bool,
     wide: bool,
     counts: &Counts,
@@ -89,8 +89,10 @@ async fn exercise(
     let cancel = tokio_util::sync::CancellationToken::new();
     let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(20))?;
     let control = Control::new(&timer, cutoff, cutoff, &cancel);
-    let store = AuditStore::new(pool.clone(), integrity(ledger)?, &control).await?;
     let tenant = crate::planning::test_support::tenant();
+    let store = new_store(pool.clone(), integrity(ledger)?, tenant).await?;
+    let store = store.on_runtime(runtime.clone(), tenant, &control).await?;
+    let source_control = SourceControl::new(&timer, cutoff, cutoff, &cancel);
     runtime
         .local_tx_with_context(
             tenant,
@@ -125,10 +127,10 @@ async fn exercise(
                         rss_transactional_messaging::policy::OperationDeadline::from_cutoff(
                             cutoff, &timer,
                         ),
-                        (&store, &fact),
-                        |(store, fact), tx| {
+                        (&store, &fact, &request),
+                        |(store, fact, request), tx| {
                             Box::pin(async move {
-                                store.lock_in(tx).await?;
+                                store.prepare_in(tx, request, &[]).await?;
                                 store
                                     .append_in(tx, fact, replayed)
                                     .await
@@ -142,9 +144,14 @@ async fn exercise(
                 ensure!(
                     state(
                         store
-                            .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
-                                Box::pin(async move { store.append(tx, fact, replayed).await })
-                            })
+                            .write(
+                                tenant,
+                                &source_control,
+                                (&store, &fact),
+                                |(store, fact), tx| {
+                                    Box::pin(async move { store.append(tx, fact, replayed).await })
+                                }
+                            )
                             .await
                     ) == "committed"
                 );

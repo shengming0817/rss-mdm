@@ -855,6 +855,10 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let prepared: bool = sqlx::query_scalar(
         "SELECT state='prepared' FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND id=$2",
     )

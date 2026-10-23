@@ -34,7 +34,7 @@ impl Authority {
                         })
                         .await?,
                     );
-                    let audit = access.audit_store(&config.audit).await?;
+                    let audit = access.audit_store_fixture(&config.audit).await?;
                     Ok(Self {
                         resources: Default::default(),
                         base,

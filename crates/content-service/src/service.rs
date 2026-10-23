@@ -369,20 +369,19 @@ pub async fn record(
             &app.runtime,
             app.tenant,
             audit,
+            &[],
             Some(budget),
-            (app, proof, upload, audit, verified),
+            (proof, upload, audit, verified),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (app, proof, upload, audit, verified) = ctx;
+                    let (proof, upload, audit, verified) = ctx;
                     let snapshot = transaction::authorize(tx, proof).await?;
                     snapshot.require(proof, Permission::ResourceWrite, None)?;
                     snapshot.require(proof, Permission::SoftwareWrite, None)?;
                     if !upload.complete || !verified.matches(&upload.binding.artifact()?) {
                         return Err(Error::Conflict.into());
                     }
-                    app.audit_store
-                        .append_request_in(tx, audit, 201, "success")
-                        .await?;
+                    audit.require_request_settlement();
                     proof.check_live()?;
                     Ok(())
                 })
@@ -395,16 +394,19 @@ pub async fn record(
         &app.runtime,
         app.tenant,
         audit,
+        &[
+            crate::event::partition(app.tenant, &upload.binding.resource()?.resource).map_err(
+                |error| match error {
+                    crate::bindings::Error::Content(error) => Error::Content(error),
+                    _ => Error::Invariant,
+                },
+            )?,
+        ],
         Some(budget),
         (app, proof, audit, upload, &verified, source_catalog),
         |ctx, tx| {
             Box::pin(async move {
                 let (app, proof, audit, upload, verified, source_catalog) = *ctx;
-                tx.prepare_outbox_partitions(&[crate::event::partition(
-                    app.tenant,
-                    &upload.binding.resource()?.resource,
-                )?])
-                .await?;
                 if let Some(catalog) = source_catalog {
                     catalog
                         .source_admitted_in(
@@ -618,16 +620,14 @@ pub async fn receipt(
     proof.require(Permission::ResourceRead, None)?;
     audit.set_action("management_read");
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
-    transaction::run(
-        &app.audit_store,
+    transaction::inspect(
         &app.runtime,
         app.tenant,
-        audit,
         None,
-        (app, proof, audit, &id, operation),
+        (proof, audit, &id, operation),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, proof, audit, id, operation) = *ctx;
+                let (proof, audit, id, operation) = *ctx;
                 transaction::authorize(tx, proof).await?.require(
                     proof,
                     Permission::ResourceRead,
@@ -637,9 +637,7 @@ pub async fn receipt(
                 let value = crate::bindings::read_in(tx, &actor, id, operation)
                     .await?
                     .ok_or(Error::Missing)?;
-                app.audit_store
-                    .append_request_in(tx, audit, 200, "success")
-                    .await?;
+                audit.require_request_settlement();
                 Ok(value)
             })
         },

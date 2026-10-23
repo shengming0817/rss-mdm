@@ -62,7 +62,7 @@ impl Groups {
         };
         audit.target_device(device);
         audit.set_action("management_read");
-        run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
             let (s,p,device,q,audit,authority)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let current=tx.with_connection(move|c|Box::pin(async move {
@@ -99,7 +99,7 @@ impl Groups {
                 let mut bytes=checked_input(serde_json::to_vec(&Cursor{family:"device_groups".into(),tenant:tenant.to_string(),device:device.to_string(),authority:authority.clone(),after}))?;
                 bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
             } else {None};
-            p.check_live()?;s.audit_store.append_request_in(tx,audit,200,"success").await?;
+            p.check_live()?;audit.require_request_settlement();
             Ok(serde_json::json!({"items":items,"nextCursor":next,"associationCurrent":resolved.current}))
         }),TransactionOwner::Assets).await
     }

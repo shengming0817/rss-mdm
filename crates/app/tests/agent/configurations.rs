@@ -885,7 +885,7 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let input = exchange(&file, &package, 0)?;
     authority
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::BeforeCommitPending);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(
         post(
             "/api/v1/agent/enroll/configurations/exchange",
@@ -897,7 +897,7 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     ensure!(read(&f, &mut user, file.configuration.configuration_id).await?["reserved"] == 0);
     authority
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
     ensure!(
         post(
             "/api/v1/agent/enroll/configurations/exchange",
@@ -929,7 +929,7 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let signing = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"grantId":status.1["grantId"],"secret":input.secret,"csr":input.csr,"runtime":input.runtime});
     authority
         .audit
-        .inject_next_fault(rss_audit_postgres::PgFault::CommitUnknownAfterAck);
+        .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck);
     ensure!(
         post("/api/v1/agent/enroll/certificates", signing.clone())
             .await?

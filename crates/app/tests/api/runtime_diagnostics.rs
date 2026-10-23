@@ -32,7 +32,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         r.action() == "runtime_diagnostics_read"
                             && r.status() == 200
                             && r.actor() == Some(subject.as_str())
-                    })?;
+                    })
+                    .await?;
                     let (status, value) = member.call(&router, Method::GET, PATH, None).await?;
                     ensure!(status == StatusCode::OK, "{status} {value}");
                     ensure!(value.as_object().unwrap().len() == 4);
@@ -41,6 +42,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         &value["components"],
                         &[
                             "inventory",
+                            "audit_source",
+                            "audit_projection",
                             "identity_audit",
                             "automation",
                             "execution_recovery",
@@ -49,7 +52,8 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                     ensure!(
                         audit_count(|r| r.action() == "runtime_diagnostics_read"
                             && r.status() == 200
-                            && r.actor() == Some(subject.as_str()))?
+                            && r.actor() == Some(subject.as_str()))
+                        .await?
                             == before + 1
                     );
                     set_management_grants(&subject, json!([])).await?;
@@ -110,6 +114,9 @@ impl Fixture {
             execution.providers.clone(),
         ));
         let source = Arc::new(crate::runtime_diagnostics::RuntimeDiagnostics {
+            audit_store: authority.audit.clone(),
+            mdm_audit: Default::default(),
+            management_tenant: authority.identity.management_tenant,
             channels: execution.channels.clone(),
             pki: pki.clone(),
             registration: Arc::new(crate::registration_channels::Channels {
@@ -737,4 +744,77 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     ensure!(component(&fixture.query().await?, "inventory")["task"] == "failed");
     fixture.close().await?;
     result
+}
+
+#[tokio::test]
+#[ignore = "MODULE=diagnostics.http: management capacity affects host admission without exposing its counters"]
+async fn management_audit_capacity_is_visible_without_cross_tenant_counts() -> Result<()> {
+    use rss_mdm_audit_integration::{AuditStore, BacklogLimits, Fact, RequestAudit};
+    use rss_request_context::TenantId;
+    let mut fixture = Fixture::open().await?;
+    let own = fixture.authority.identity.tenant;
+    let management = TenantId::parse(crate::test_support::case::peer())?;
+    let pool = fixture.authority.access.archive_pool();
+    let runtime = crate::audit_test_support::source_runtime(&pool, own).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(20));
+    let store = Arc::new(
+        AuditStore::new(
+            pool,
+            rss_audit_postgres::Integrity::Plain,
+            runtime.clone(),
+            own,
+            BacklogLimits::new(1, 1_000_000)?,
+            &budget.control(),
+        )
+        .await?,
+    );
+    let source = Arc::get_mut(&mut fixture.source).expect("unshared diagnostics fixture");
+    source.audit_store = store.clone();
+    source.management_tenant = management;
+    let request = RequestAudit::new(management.to_string(), "capacity_test");
+    let fact = Fact::business(
+        &request,
+        "management-capacity",
+        b"management",
+        200,
+        "success",
+        None,
+    )?;
+    let attempt = store
+        .write(
+            management,
+            &budget.source_control(),
+            (&store, &fact),
+            |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+        )
+        .await;
+    ensure!(attempt.fold(
+        |_| true,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false,
+        |_| false
+    ));
+    let value = fixture.query().await?;
+    let audit = component(&value, "audit_source");
+    ensure!(audit["readiness"] == "not_ready" && audit["health"] == "degraded");
+    ensure!(
+        audit["reasons"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("audit_backpressure"))
+    );
+    ensure!(
+        audit["auditBacklog"]["events"] == 0,
+        "management counters leaked"
+    );
+    crate::audit_test_support::projection::drain(management, rss_audit_postgres::Integrity::Plain)
+        .await?;
+    let value = fixture.query().await?;
+    ensure!(component(&value, "audit_source")["readiness"] == "ready");
+    request.finalize(None);
+    runtime.close().await;
+    fixture.close().await?;
+    Ok(())
 }

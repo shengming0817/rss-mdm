@@ -600,12 +600,15 @@ impl ResourceCatalog {
                         .await?;
                     }
                     admit_in(tx).await?;
-                    if let Command::Resource { id, .. } = command {
-                        tx.prepare_outbox_partitions(&[s.resources.partition(id)?])
-                            .await?;
-                    }
                     crate::transaction::lock(tx).await?;
                     authorize()?;
+                    let partitions = match command {
+                        Command::Resource { id, .. } => {
+                            vec![s.resources.partition(id).map_err(|_| Error::Malformed)?]
+                        }
+                        _ => vec![],
+                    };
+                    s.audit_store.prepare_in(tx, audit, &partitions).await?;
                     let operation = match command {
                         Command::Resource { change, .. } => Some(change.operation_id),
                         _ => None,
