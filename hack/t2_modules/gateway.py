@@ -261,7 +261,7 @@ def verify_sni(context):
         backend=HTTPServer(('0.0.0.0',0),Backend)
         thread=threading.Thread(target=backend.serve_forever,daemon=True);thread.start()
         try:
-            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None},web=False,certificates='/run/probe')
+            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None,'https://device.example.test:8443':None},web=False,certificates='/run/probe')
             files={name:(root/name).read_text() for name in ['server.crt','server.key']}
             with context.gateway(config,files) as (name,port):
                 def request(host,identity=None,authority=None,forged=True):

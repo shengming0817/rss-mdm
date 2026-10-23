@@ -13,6 +13,38 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 class EnvironmentTests(unittest.TestCase):
+    def test_gateway_ports_survive_new_lower_ports_hosts_and_regeneration(self):
+        import importlib.util
+        source = Path(__file__).resolve().parents[1] / 'deployment/render_gateway.py'
+        spec = importlib.util.spec_from_file_location('gateway_renderer', source)
+        renderer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(renderer)
+        self.assertEqual(len({renderer.internal_port(p) for p in range(1,65536)}),65535)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            def host(identity, console, origins):
+                directory=root/identity;directory.mkdir(exist_ok=True)
+                (directory/'deployment.json').write_text(json.dumps(dict(hostId=identity,backend='127.0.0.1:8081',
+                    consoleOrigin=console,origins=origins,scep=[],
+                    certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')))
+            def mappings():
+                return {int(v.split(':')[-2]):int(v.split(':')[-1]) for v in renderer.render(root)}
+            identity='33333333333343338333333333333333'
+            console='https://console.example.test'
+            origins=[console,'https://agent.example.test:9445']
+            host(identity,console,origins)
+            original=mappings()
+            self.assertEqual(original[443],8443)
+            host(identity,console,origins+['https://agent.example.test:9443'])
+            self.assertEqual({p:mappings()[p] for p in original},original)
+            # The new first host has a different console port, including a low internal listener.
+            host('11111111111141118111111111111111','https://new.example.test:8443',['https://new.example.test:8443'])
+            expanded=mappings()
+            self.assertEqual({p:expanded[p] for p in original},original)
+            self.assertEqual(expanded[8443],443)
+            (root/'nginx.conf').unlink();(root/'gateway-ports.compose.yaml').unlink()
+            self.assertEqual(mappings(),expanded)
+
     def test_postgres_endpoint_belongs_to_one_successful_lifecycle(self):
         from contextlib import ExitStack
         with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:

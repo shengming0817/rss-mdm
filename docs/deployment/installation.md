@@ -342,7 +342,7 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 只支持 Nginx 公网网关。gateway 与各租户 server 使用受控主机上的隔离网络；Rust 只保留一个不公开的内部 HTTP 入口。Nginx 终止 TLS/mTLS，覆盖公开 origin、TLS 客户端叶证书和真实来源地址；Rust 先核验实际 TCP peer 等于 `trusted_gateway`，再按通道验证证书用途、撤销、租户和注册。设备路由清除管理会话 Cookie；Windows 原生 Entra 凭据由原生通道验证。
 
-运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。四类能力可共享域名和端口，也可分开。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。
+运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。四类能力可共享域名和端口，也可分开。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。内部端口固定为 443 与 8443 互换、其它端口同号，不随宿主或入口集合排序改变；维护 `probe_addresses` 使用生成的目标端口。标准初始化从同一映射生成控制台 probe 地址。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
 
 新格式安装后的连接更新使用稳定安装 `instance_id` 与 tenant。先在现有部署设置保存 Agent 首选和候选 HTTPS origins，再由运维修改宿主输入、准备运行文件、运行部署 renderer、应用 Compose 与 Nginx 配置。部署层可用以下命令刷新网关（对应宿主准备必须先完成）：
 

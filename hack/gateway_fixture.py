@@ -29,8 +29,9 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
     config = config.replace(f'/run/gateway/{host_id}/tls.crt', certificates + '/server.crt')
     config = config.replace(f'/run/gateway/{host_id}/tls.key', certificates + '/server.key')
     config = config.replace(f'/run/gateway/{host_id}/', certificates + '/')
-    config = config.replace('listen 8443 ssl;', f'listen {public_port} ssl;')
-    config = config.replace('listen 8443 ssl default_server;', f'listen {public_port} ssl default_server;')
+    private_port = renderer.internal_port(renderer.origin(origin)[1])
+    config = config.replace(f'listen {private_port} ssl;', f'listen {public_port} ssl;')
+    config = config.replace(f'listen {private_port} ssl default_server;', f'listen {public_port} ssl default_server;')
     if not web:
         start = config.index('        location / {\n            limit_except')
         end = config.index('\n        }', start) + len('\n        }')

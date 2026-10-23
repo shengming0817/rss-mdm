@@ -23,6 +23,11 @@ def origin(value):
     return parsed.hostname, parsed.port or 443, parsed.netloc
 
 
+def internal_port(public):
+    """Stable bijection; adding or removing another host/port never moves an existing route."""
+    return {443: 8443, 8443: 443}.get(public, public)
+
+
 def write(path, content):
     if path.is_symlink():
         raise ValueError('gateway output must not be a symlink')
@@ -135,9 +140,8 @@ def render(root, publish_address='0.0.0.0'):
         hosts.append(host)
     if not hosts or len(hosts) > 1024:
         raise ValueError('bounded exported gateway hosts required')
-    primary_port = origin(hosts[0]['consoleOrigin'])[1]
-    ports = [primary_port] + sorted({origin(value)[1] for host in hosts for value in host['origins']} - {primary_port})
-    internal = {public: 8443 + index for index, public in enumerate(ports)}
+    ports = sorted({origin(value)[1] for host in hosts for value in host['origins']})
+    internal = {public: internal_port(public) for public in ports}
     pairs = set()
     blocks = [f'    server {{ listen {port} ssl default_server; ssl_reject_handshake on; }}\n' for port in internal.values()]
     for host in hosts:
