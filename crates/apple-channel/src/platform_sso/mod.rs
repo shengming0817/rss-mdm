@@ -15,9 +15,14 @@ use rss_mdm_apple_mdm::platform_sso::{Configuration, Endpoints};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Deployment-owned signing ring. Dropping a key stops advertising it; no HTTP key upload exists.
+pub(super) fn browser_audience(origin: &str) -> String {
+    format!("{origin}/login")
+}
+
 pub struct Runtime {
     pub configuration: Configuration,
     pub endpoints: Endpoints,
+    browser_audience: String,
     active: String,
     keys: BTreeMap<String, crypto::Signer>,
 }
@@ -44,6 +49,7 @@ impl Runtime {
         Ok(Self {
             configuration,
             endpoints,
+            browser_audience: browser_audience(origin),
             active,
             keys,
         })

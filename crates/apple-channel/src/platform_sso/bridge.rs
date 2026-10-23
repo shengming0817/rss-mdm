@@ -14,7 +14,7 @@ pub struct Verifier {
 impl Verifier {
     pub fn new(origin: &str) -> Self {
         Self {
-            audience: format!("{origin}/login"),
+            audience: super::browser_audience(origin),
             app: OnceLock::new(),
         }
     }

@@ -265,7 +265,11 @@ async fn begin(
         "{COOKIE}={}.{}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=120",
         challenge.id, browser
     );
-    let mut response = Json(challenge).into_response();
+    let mut response = Json(json!({
+        "id": challenge.id, "nonce": challenge.nonce, "expiresAt": challenge.expires_at,
+        "audience": Context::new(&app).runtime()?.browser_audience
+    }))
+    .into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&cookie).map_err(|_| Error::Malformed)?,
