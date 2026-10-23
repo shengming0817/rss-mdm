@@ -1298,7 +1298,7 @@ consume(('crates/execution-service/src/queries.rs',
          'crates/execution-service/src/queries/error.rs'), QUERY_CONSUMERS)
 consume(('crates/execution-service/src/queries/assignments.rs',), 'planning.http planning.agent_policy')
 consume(('crates/execution-service/src/queries/preview.rs',), 'planning.agent_policy planning.software planning.policy')
-consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v1.json'), COMMAND_CONSUMERS)
+consume(('crates/execution-service/src/service.rs', 'crates/execution-service/src/dispatch-v1.json', 'crates/execution-service/src/actions/dispatch-v1.json'), COMMAND_CONSUMERS)
 consume(('crates/execution-service/src/apple.rs',), 'apple.profile apple.onboarding execution.commands.admission')
 consume(('crates/execution-service/src/apple_push.rs',), 'apple.push apple.fairness apple.host')
 consume(('crates/execution-service/src/protocol.rs',), 'windows.management windows.commands execution.commands.windows execution.commands.configuration execution.commands.onboarding')
@@ -2096,7 +2096,7 @@ MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_tr
 consume(('hack/ingress_network.py',), 'gateway.admission')
 # Device Access owns the joint human/device ceremony and exact application receipts.
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','shared_worker'),
-    sources=('crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
+    sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
 consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
