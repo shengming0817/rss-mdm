@@ -135,12 +135,9 @@ pub(crate) fn proxy(
     target: SocketAddr,
     root: std::path::PathBuf,
     origin: String,
+    key_file: &str,
 ) -> anyhow::Result<rss_runtime::ManagedTaskRegistration> {
-    let tls = super::tls::server(
-        &root,
-        "apple-tls.pk8",
-        Some(Arc::new(super::tls::Possession)),
-    )?;
+    let tls = super::tls::server(&root, key_file, Some(Arc::new(super::tls::Possession)))?;
     let client = reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())

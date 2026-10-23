@@ -433,7 +433,7 @@ impl Tls {
         };
         let router = Router::new().nest(
             "/api/v1/agent/enroll",
-            crate::agent::enroll::router(service, envelope),
+            crate::agent::enroll::router(service.clone(), envelope),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -450,16 +450,33 @@ impl Tls {
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
-        owner.startup()?.stage_task_with_token(
-            crate::test_support::gateway::registration(
-                listener,
-                tls,
-                authority.audit.clone(),
-                case_tenant().into(),
-                crate::native::ChannelKind::Agent,
-            )
-            .await?,
+        let internal = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let internal_address = internal.local_addr()?;
+        let router = crate::native::gateway::router(
+            Router::new(),
+            vec![(crate::native::ChannelKind::Agent, tls)],
+            "https://mdm.example.test".into(),
+            Some(service),
         );
+        {
+            let mut startup = owner.startup()?;
+            startup.stage_task_with_token(rss_axum::serve_http1_registration(
+                internal,
+                router,
+                crate::native::gateway::Transport {
+                    gateway: "127.0.0.1".parse()?,
+                },
+                "configuration-internal-http",
+                crate::lifecycle::http_policy(),
+            ));
+            startup.stage_task_with_token(crate::test_support::gateway::proxy(
+                listener,
+                internal_address,
+                root(),
+                origin.into(),
+                "agent-tls.pk8",
+            )?);
+        }
         Ok(Self { address, owner })
     }
     async fn activate(&self, candidate: &Value, n: usize) -> Result<Value> {
@@ -1829,6 +1846,8 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         tx.commit().await?;
         let retired=user.call(&f.router,Method::POST,"/api/v1/agent-connections/publish",Some(retire)).await?;
         ensure!(retired.0==StatusCode::OK && retired.1["configuration"]["origins"]==json!([b]),"confirmed B retirement {retired:?}");
+        let removed=client_a.get(url(tls_a.address,"/api/v1/agent/enroll/connections")).header("host",a.trim_start_matches("https://")).send().await?;
+        ensure!(removed.status()==StatusCode::FORBIDDEN,"retired Agent origin remained admitted");
         let current=client_b.get(url(tls_b.address,"/api/v1/agent/enroll/connections")).header("host",b.trim_start_matches("https://")).send().await?;
         ensure!(current.status()==StatusCode::OK && current.json::<Value>().await?==retired.1);
         let failed_new=json!({"operationId":Uuid::new_v4(),"revision":3,"reason":"persistence_failed"});

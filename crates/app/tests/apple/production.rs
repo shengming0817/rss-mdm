@@ -79,6 +79,7 @@ impl Fixture {
                 native_address,
                 self.root.clone(),
                 peer.origin.clone(),
+                "apple-tls.pk8",
             )?);
         let stop = tokio_util::sync::CancellationToken::new();
         let stopped = stop.clone();
