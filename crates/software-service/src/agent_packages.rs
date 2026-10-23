@@ -20,6 +20,27 @@ use sqlx::Row;
 use uuid::Uuid;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
+/// Safe domain reasons after authorization; no storage/provider details cross the HTTP boundary.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, thiserror::Error)]
+#[serde(rename_all = "snake_case")]
+#[error("Agent package rejected: {self:?}")]
+pub enum Rejection {
+    InstallerMismatch,
+    LifecycleNotAdmitted,
+    SourceNotAdmitted,
+    BindingNotAdmitted,
+}
+fn publication_fault(error: crate::catalog::Error) -> transaction::Fault {
+    match error {
+        crate::catalog::Error::NotAdmitted => {
+            Error::AgentPackage(Rejection::LifecycleNotAdmitted).into()
+        }
+        crate::catalog::Error::Dependency => {
+            Error::AgentPackage(Rejection::SourceNotAdmitted).into()
+        }
+        other => other.into(),
+    }
+}
 /// Publish a previously saved software version. Internal coordinates are returned by preparation.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -74,7 +95,7 @@ fn definition<'a>(v: &'a r::Version, i: &Selection) -> Result<&'a r::SoftwareDef
         .find(|x| x.platform() == p && x.architecture() == a && x.key().as_str() == i.variant)
         .ok_or_else(invalid)?;
     let r::Declaration::Software { definition } = selected.declaration() else {
-        return Err(invalid());
+        return Err(Error::AgentPackage(Rejection::InstallerMismatch));
     };
     match (definition.spec().material.format, i.target.platform) {
         (
@@ -168,7 +189,7 @@ async fn prepare<C: ManagementContentPort>(
             .is_some_and(|v| v != &def.spec().version)
         || (!facts.architectures.is_empty() && !facts.architectures.contains(&architecture))
     {
-        return Err(invalid());
+        return Err(Error::AgentPackage(Rejection::InstallerMismatch));
     }
     let package = w::Package {
         release_id: Uuid::new_v4(),
@@ -315,7 +336,7 @@ async fn insert_in(
         })
         .await??;
     if !admitted {
-        return Err(Error::Forbidden.into());
+        return Err(Error::AgentPackage(Rejection::BindingNotAdmitted).into());
     }
     Ok(())
 }
@@ -446,7 +467,8 @@ pub async fn publish<C: ManagementContentPort>(
                                 p.principal_id(),
                                 i.operation_id,
                             )
-                            .await?;
+                            .await
+                            .map_err(publication_fault)?;
                         insert_in(tx, &prepared.package, &prepared.binding).await?;
                         prepared.package.clone()
                     };

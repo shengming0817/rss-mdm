@@ -5,6 +5,8 @@ pub enum Error {
     Malformed,
     #[error("software management permission denied")]
     Forbidden,
+    #[error(transparent)]
+    AgentPackage(#[from] crate::agent_packages::Rejection),
     #[error("software management conflict")]
     Conflict,
     #[error("software management operation unsupported")]
