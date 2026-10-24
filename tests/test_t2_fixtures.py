@@ -321,6 +321,33 @@ class PreparationTests(unittest.TestCase):
             self.assertEqual(str(caught.exception.__cause__), 'original database failure')
             pool.owner.sql.assert_called_once()
 
+    def test_helper_failure_keeps_its_log_for_later_blocked_cases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            self.addCleanup(fixture.cert_directory.cleanup)
+            pool = fixture.normal
+            pool.generation = 1
+            root = fixture.root / 'shared'
+            root.mkdir()
+            fixture.identities[('normal', 1, 'shared')] = dict(management='management', refreshed=-1000)
+            fixture.builds.discover.return_value = [object()]
+            failure = RuntimeError('helper SQL failed')
+            def execute(case, env, output):
+                output.mkdir(parents=True)
+                (output / 'test.log').write_text('original SQL failure')
+                raise failure
+            fixture.builds.execute.side_effect = execute
+            output = Path(tmp) / 'first' / 'identity-setup'
+            with self.assertRaisesRegex(RuntimeError, 'helper SQL failed') as first:
+                fixture.identity_environment(pool, 'shared', output)
+            with self.assertRaisesRegex(RuntimeError, 'previously failed') as blocked:
+                fixture.identity_environment(pool, 'shared', Path(tmp) / 'second' / 'identity-setup')
+            expected = output / 'refresh' / 'test.log'
+            self.assertEqual(first.exception.root_cause, str(expected))
+            self.assertEqual(blocked.exception.root_cause, str(expected))
+            self.assertEqual(expected.read_text(), 'original SQL failure')
+            fixture.builds.execute.assert_called_once()
+
 
 class CostTests(unittest.TestCase):
     def test_cost_updates_have_one_owner_across_pools(self):
@@ -507,3 +534,33 @@ class HostOwnershipTests(unittest.TestCase):
                 self.assertTrue(second.is_set())
                 for host in fixture.hosts.values():
                     host.close()
+
+
+    def test_dead_retained_host_blocks_different_configuration_without_restart(self):
+        import threading
+        from t2_execution import Processes
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = RunFixtures(SimpleNamespace(processes=Processes()), Path(tmp), 2)
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = replace(MODULES['execution.agent.content'], scope='objects')
+            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(3)]
+            fixture.prepare(jobs)
+            host = Mock(failed=threading.Event(), log_path=Path(tmp) / 'host.log')
+            def check():
+                if host.failed.is_set():
+                    raise RuntimeError('unexpected exit')
+            host.check.side_effect = check
+            with patch('t2_fixtures.compatibility', side_effect=lambda value: value), patch('t2_fixtures.Host', return_value=host) as start:
+                with fixture.workers(jobs[0], 'db', 'first'):
+                    pass
+                host.close.assert_not_called()
+                host.failed.set()
+                with self.assertRaisesRegex(RuntimeError, 'unexpected exit'):
+                    with fixture.workers(jobs[1], 'db', 'changed'):
+                        self.fail('dead host was replaced')
+                with self.assertRaisesRegex(RuntimeError, 'previously failed') as blocked:
+                    with fixture.workers(jobs[2], 'db', 'third'):
+                        self.fail('failed generation was reused')
+                start.assert_called_once()
+                host.close.assert_called_once()
+                self.assertEqual(blocked.exception.root_cause, str(Path(tmp) / 'failure.json'))

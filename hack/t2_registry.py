@@ -1100,7 +1100,7 @@ APP_HELPER_CONSUMERS = {
         'execution.commands.onboarding', 'execution.commands.windows', 'planning.agent_policy', 'planning.assets',
         'planning.group_scope', 'planning.recovery', 'planning.resource_archive', 'planning.scope',
         'planning.self_service', 'settings.first_use', 'software.http', 'timeline.http',
-        'windows.enrollment', 'windows.issuance', 'windows.limits',
+        'windows.enrollment', 'windows.issuance', 'windows.limits', 'windows.retention',
     ),
     'support/runtime.rs': (
         'agent.configurations', 'agent.pki', 'agent.registration', 'agent.reports',

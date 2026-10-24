@@ -183,8 +183,12 @@ class RunFixtures:
                    MDM_PREPARATION=str(private(root / 'preparation.json', manifest)))
         cases = self.builds.discover(PREPARATION)
         require(len(cases) == 1, 'identity setup target is ambiguous')
-        with measure(self.costs, manifest['stage'], database=database):
-            self.builds.execute(cases[0], env, output)
+        try:
+            with measure(self.costs, manifest['stage'], database=database):
+                self.builds.execute(cases[0], env, output)
+        except BaseException as error:
+            error.root_cause = str(output / 'test.log')
+            raise
         self.costs.increment('identityHelpers', 1)
         for event in json.loads((root / 'preparation-costs.json').read_text()):
             self.costs.append(dict(event, database=database))
@@ -227,7 +231,8 @@ class RunFixtures:
                 # The caller owns a credential snapshot; a later refresh cannot overwrite it.
                 return root, state['management'], (root / 'source-session').read_text()
             except BaseException as error:
-                error.root_cause = str(output.parent / 'fixture.log')
+                if not getattr(error, 'root_cause', None):
+                    error.root_cause = str(output.parent / 'fixture.log')
                 self.identities[key] = error
                 raise
 
@@ -293,7 +298,8 @@ class RunFixtures:
                             secret=(root / f"credential-{actor['tenant']}-{actor['role']}").read_text(),
                             until=json.loads((root / f"credential-meta-{actor['tenant']}-{actor['role']}").read_text()))
             except BaseException as error:
-                error.root_cause = str(output.parent / 'fixture.log')
+                if not getattr(error, 'root_cause', None):
+                    error.root_cause = str(output.parent / 'fixture.log')
                 with self.lock:
                     state['origin'] = job.key
                     state['error'] = error
@@ -389,28 +395,30 @@ class RunFixtures:
             host = self.hosts.get(key)
             if isinstance(host, BaseException):
                 raise DependencyBlocked('host preparation previously failed', host) from host
-            if host is not None and host.signature != signature:
-                # Keep ownership if shutdown fails; never publish a second owner.
-                host.close()
-                del self.hosts[key]
-                host = None
-            if host is None:
-                output = self.output / 'hosts' / database / tenant / job.key
-                try:
-                    with measure(self.costs, 'host-start', database=database, tenant=tenant):
-                        host = Host(self.builds, config, output)
-                    host.signature = signature
-                    self.hosts[key] = host
-                    self.costs.increment('hostStarts', 1)
-                except BaseException as error:
-                    error.root_cause = str(output / 'host.log')
-                    self.hosts[key] = error
-                    raise
             try:
+                if host is not None:
+                    host.check()
+                if host is not None and host.signature != signature:
+                    # Keep ownership if shutdown fails; never publish a second owner.
+                    host.close()
+                    del self.hosts[key]
+                    host = None
+                if host is None:
+                    output = self.output / 'hosts' / database / tenant / job.key
+                    try:
+                        with measure(self.costs, 'host-start', database=database, tenant=tenant):
+                            host = Host(self.builds, config, output)
+                        host.signature = signature
+                        self.hosts[key] = host
+                        self.costs.increment('hostStarts', 1)
+                    except BaseException as error:
+                        error.root_cause = str(output / 'host.log')
+                        self.hosts[key] = error
+                        raise
                 with self.builds.processes.depending_on(host.check):
                     yield host
             except BaseException as error:
-                if host.failed.is_set():
+                if host is not None and host.failed.is_set():
                     error.root_cause = str(host.log_path.with_name('failure.json'))
                     self.hosts[key] = error
                     with self.builds.processes.cleanup():
