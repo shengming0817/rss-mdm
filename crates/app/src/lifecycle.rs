@@ -328,7 +328,10 @@ pub async fn serve(
                                         |e| ProcessError::at("startup.asset_automation", e),
                                     )?,
                                 )
-                                .await?,
+                                .await
+                                .map_err(|e| {
+                                    ProcessError::at("startup.asset_automation", e.into())
+                                })?,
                                 planning.assets.clone(),
                                 planning.compliance.clone(),
                             )

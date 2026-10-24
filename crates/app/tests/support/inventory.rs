@@ -79,7 +79,11 @@ pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<
     );
     crate::inventory_runtime::test_support::report(
         &service,
-        &access,
+        &access.inventory(),
+        access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?
+            .as_ref(),
         &proof,
         [Some("fixture"), Some("1")],
     )

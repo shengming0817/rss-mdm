@@ -520,15 +520,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "expected an unfinished native channel collection"
     );
     host.replace(&peer).await?;
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(case_tenant())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
-    let records = crate::audit_test_support::decode_hex(&pg(&format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}'",
-        case_tenant()
-    ))?)?;
+    let records = crate::audit_test_support::audit_records().await?;
     let terminal = records
         .iter()
         .find(|r| r.action() == "collection_finish" && r.operation() == Some(incomplete))

@@ -16,12 +16,14 @@ pub(super) fn clock() -> Arc<dyn rss_observation::Clock> {
 
 pub(crate) async fn report(
     service: &DeviceService,
+    inventory: &rss_mdm_inventory_service::Store,
     store: &rss_mdm_audit_integration::AuditStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
     report_statuses(
         service,
+        inventory,
         store,
         credential,
         values,
@@ -32,6 +34,7 @@ pub(crate) async fn report(
 
 pub(crate) async fn report_statuses(
     service: &DeviceService,
+    inventory: &rss_mdm_inventory_service::Store,
     store: &rss_mdm_audit_integration::AuditStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
@@ -95,7 +98,7 @@ pub(crate) async fn report_statuses(
     );
     let (scope, id) = result?;
     Ok(
-        crate::collection::store::collection(&Arc::new(access.clone()), &scope, Some(id))
+        crate::collection::store::collection(inventory, &scope, Some(id))
             .await?
             .unwrap(),
     )
@@ -245,7 +248,7 @@ pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run)
 pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>> {
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
-        Arc::new(access.clone()),
+        access.inventory(),
         TenantId::parse(case_a())?,
         clock(),
         access

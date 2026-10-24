@@ -71,9 +71,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
     let first = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &credential,
         [Some("First"), Some("10")],
     )
@@ -282,27 +284,33 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let (_, registration) = bind(&service, &admin, &newer, "collection-recovery", 1).await?;
     let full = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &newer,
         [Some("New"), Some("11")],
     )
     .await?;
     let partial = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &newer,
         [Some("Unconfirmed"), None],
     )
     .await?;
     let failed = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &newer,
         [None, None],
     )
@@ -349,9 +357,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     .await?;
     let newer_run = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &newer,
         [Some("Newer"), Some("12")],
     )
@@ -400,9 +410,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     // Stop after Inventory writes but before its projection transaction commits. Restart replays.
     let broken = report(
         &service,
-        &access
+        &access.inventory(),
+        access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+            .await?
+            .as_ref(),
         &newer,
         [Some("After-failure"), Some("12")],
     )
@@ -464,9 +476,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(
         report(
             &service,
-            &access
+            &access.inventory(),
+            access
                 .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?,
+                .await?
+                .as_ref(),
             &newer,
             [Some("wrap"), Some("13")]
         )

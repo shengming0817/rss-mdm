@@ -274,7 +274,7 @@ async fn published_scope_job_does_not_swallow_new_definition() {
 #[tokio::test]
 #[ignore = "MODULE=planning.scope: persistent pending sources and restart"]
 async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() {
-    use rss_reconcile::{DurableStore, Reconciler};
+    use rss_reconcile::DurableStore;
     let first = Arc::new(planning(tenant()).await);
     let device = format!("pending-source-{}", Uuid::new_v4());
     seed_device(&device);

@@ -280,7 +280,7 @@ class CiImpactContract(unittest.TestCase):
                     if mode == 'staged':
                         self.repo.git('add', str(path))
                 self.assert_selected(
-                    self.repo.select()[1], ['leaf'], ['leaf']
+                    self.repo.select()[1], ['leaf', 'leaf-integration'], ['leaf']
                 )
 
     def test_reverse_cargo_closure_does_not_expand_t2(self):
@@ -381,7 +381,7 @@ class CiImpactContract(unittest.TestCase):
         )
         self.repo.change('crates/leaf/src/obsolete.rs')
         self.assert_selected(
-            self.repo.select()[1], ['leaf'], ['leaf']
+            self.repo.select()[1], ['leaf', 'leaf-integration'], ['leaf']
         )
 
     def test_deleted_module_requires_current_carrier_owner(self):

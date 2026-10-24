@@ -38,7 +38,8 @@ async fn collection_matrix(
     let owner = start(runtime.clone()).await?;
     let full = report(
         &service,
-        &authority.audit.clone(),
+        &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+        &authority.audit,
         &proof,
         [Some("Collected"), Some("11")],
     )
@@ -49,7 +50,14 @@ async fn collection_matrix(
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        let incomplete = report(&service, &authority.audit, &proof, values).await?;
+        let incomplete = report(
+            &service,
+            &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+            &authority.audit,
+            &proof,
+            values,
+        )
+        .await?;
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 let delivery = runtime.inspect(&incomplete).await?;
@@ -106,7 +114,8 @@ async fn collection_matrix(
     }
     let unsupported = crate::inventory_runtime::test_support::report_statuses(
         &service,
-        &authority.audit.clone(),
+        &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+        &authority.audit,
         &proof,
         [None, Some("11")],
         [501, 200],

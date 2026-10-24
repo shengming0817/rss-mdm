@@ -578,7 +578,7 @@ def analyze_dependencies(oldroot, root, changes, graphs):
                 resolved_change |= bool(
                     {
                         (g.packages[node]['name'], g.packages[node]['version'], g.packages[node]['source'])
-                        for node in reachable
+                        for node in reachable if node not in g.members
                     }
                     & changed_lock
                 )

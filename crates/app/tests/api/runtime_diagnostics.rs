@@ -591,6 +591,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     bind(&service, &operator, &credential, "diagnostic-device", 0).await?;
     let report = crate::inventory_runtime::test_support::report(
         &service,
+        &rss_mdm_inventory_service::Store::from_pool(fixture.authority.pool.clone()),
         &fixture.authority.audit,
         &credential,
         [Some("safe-name"), Some("10")],

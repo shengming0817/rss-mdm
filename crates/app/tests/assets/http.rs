@@ -406,6 +406,7 @@ mod storage {
 }
 
 mod manual {
+    use super::AssetHttp;
     use crate::assets::t2::*;
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "MODULE=assets.http: real Router and persisted assets"]

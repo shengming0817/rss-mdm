@@ -1,5 +1,5 @@
 pub(crate) use crate::publication_support::pg::projection;
-// Test assertions decode the component's canonical records, including their source identity.
+// Business assertions read committed source facts without driving projections.
 use rss_audit_core::AuditEventV1;
 use serde_json::Value;
 
@@ -8,10 +8,6 @@ pub(crate) struct Record {
     pub payload: Value,
 }
 impl Record {
-    fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
-        let decoded = rss_audit_core::decode_untrusted(bytes)?;
-        Self::from_event(decoded.event().clone())
-    }
     fn from_source(bytes: &[u8]) -> anyhow::Result<Self> {
         Self::from_event(rss_mdm_audit_integration::decode_source_event(bytes)?)
     }
@@ -62,21 +58,6 @@ pub(crate) async fn read(connection: &mut sqlx::PgConnection) -> anyhow::Result<
     .await?;
     rows.iter().map(|row| Record::from_source(row)).collect()
 }
-pub(crate) fn decode_hex(lines: &str) -> anyhow::Result<Vec<Record>> {
-    lines
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            anyhow::ensure!(line.len() % 2 == 0, "canonical hex length");
-            let bytes = (0..line.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&line[i..i + 2], 16))
-                .collect::<Result<Vec<_>, _>>()?;
-            Record::decode(&bytes)
-        })
-        .collect()
-}
-
 pub(crate) async fn request_store() -> anyhow::Result<(
     sqlx::PgPool,
     std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,

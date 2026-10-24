@@ -48,7 +48,17 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     def["criteria"]["criteria"] = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Collected"}});
     ok(b, router, Method::PUT, &path, Some(request(0, def.clone()))).await?;
     for (model, expected) in [("Collected", "compliant"), ("Changed", "non_compliant")] {
-        let run = report(&service, &access, &proof, [Some(model), Some("11")]).await?;
+        let run = report(
+            &service,
+            &access.inventory(),
+            access
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
+                .await?
+                .as_ref(),
+            &proof,
+            [Some(model), Some("11")],
+        )
+        .await?;
         wait_ready_projection(&runtime, &run).await?;
         let response = status(b, router, device, expected).await?;
         let current = &response["rules"][0]["current"];
@@ -62,7 +72,17 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
                     "SELECT current_run::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
                     case_tenant()
                 ))?;
-                let incomplete = report(&service, &access, &proof, values).await?;
+                let incomplete = report(
+                    &service,
+                    &access.inventory(),
+                    access
+                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
+                        .await?
+                        .as_ref(),
+                    &proof,
+                    values,
+                )
+                .await?;
                 tokio::time::timeout(Duration::from_secs(8), async {
                     loop {
                         let delivery = runtime.inspect(&incomplete).await?;

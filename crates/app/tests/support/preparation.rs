@@ -55,7 +55,7 @@ async fn prepare() -> Result<()> {
         }
     };
     std::fs::write(
-        &root.join("preparation-costs.json"),
+        root.join("preparation-costs.json"),
         &serde_json::to_vec(&costs)?,
     )?;
     Ok(())

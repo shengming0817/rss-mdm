@@ -16,7 +16,7 @@ pub(crate) async fn prepare(root: &std::path::Path) -> Result<()> {
         let keyfile = root.join("task-signing.pk8");
         std::fs::write(&keyfile, pkcs8.as_ref())?;
         std::fs::write(
-            &root.join("task-signing.json"),
+            root.join("task-signing.json"),
             &serde_json::to_vec(&json!({
                 "private_key_file":keyfile,"key_id":"t2","trusted_keys":{"t2":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}
             }))?,
