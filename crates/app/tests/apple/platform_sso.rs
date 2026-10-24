@@ -616,9 +616,11 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         sqlx::query("DELETE FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND purpose='login'").bind(case_tenant()).execute(&mut c).await?;
         c.close().await?;
         let pending=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
-        ensure!(token(&f,&pending).await?.0==StatusCode::BAD_REQUEST,"pending binding cannot log in");
+        let pending_response=token(&f,&pending).await?;
+        ensure!(pending_response.0==if mode {StatusCode::OK}else{StatusCode::BAD_REQUEST},"Password bootstrap may synchronize a pending binding; key login requires applied binding");
+        if mode {let pending_tokens=decrypt(&encryption,&pending_response.1)?;ensure!(browser_exchange(&f,binding,&user,&registered,pending_tokens["access_token"].as_str().context("pending token")?).await?.0==StatusCode::UNAUTHORIZED,"password verification does not prove local synchronization");}
         applied_binding(binding).await?;
-        if mode {password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;}
+        if let Some(provider)=&password {password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
         let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
         let (one,two)=(one?,two?);

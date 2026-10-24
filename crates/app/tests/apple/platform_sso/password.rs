@@ -69,6 +69,82 @@ impl Fixture {
             ca,
         })
     }
+    pub(super) async fn failure_recovery(
+        &self,
+        f: &super::Fixture,
+        device: &Key,
+        encryption: &Key,
+        id: &Value,
+    ) -> Result<()> {
+        // The runner holds the isolated IdP lifecycle lock for this entire scenario.
+        let container = std::env::var("MDM_TEST_SSO_CONTAINER")?;
+        let assertion = request(f, device, encryption, id, PASSWORD).await?;
+        crate::test_support::process::command(&["pause", &container], None)?;
+        let unavailable = token(f, &assertion).await;
+        let resumed = crate::test_support::process::command(&["unpause", &container], None);
+        resumed?;
+        ensure!(
+            unavailable?.0 == StatusCode::SERVICE_UNAVAILABLE,
+            "IdP outage must remain unknown, not authenticate"
+        );
+        ensure!(
+            token(f, &assertion).await?.0 == StatusCode::BAD_REQUEST,
+            "outage does not reopen consumed nonce"
+        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(10))
+            .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(&self.ca)?)?)
+            .build()?;
+        let origin = self.issuer.trim_end_matches("/realms/mdm");
+        let response: Value = client
+            .post(format!(
+                "{origin}/realms/master/protocol/openid-connect/token"
+            ))
+            .form(&[
+                ("client_id", "admin-cli"),
+                ("grant_type", "password"),
+                ("username", "fixture-operator"),
+                ("password", "fixture-operator-password"),
+            ])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let credential = zeroize::Zeroizing::new(
+            response["access_token"]
+                .as_str()
+                .context("admin token")?
+                .to_owned(),
+        );
+        let user = format!("{origin}/admin/realms/mdm/users/{}", self.subject);
+        client
+            .put(&user)
+            .bearer_auth(credential.as_str())
+            .json(&json!({"requiredActions":["UPDATE_PASSWORD"]}))
+            .send()
+            .await?
+            .error_for_status()?;
+        let interactive = request(f, device, encryption, id, PASSWORD).await?;
+        ensure!(
+            token(f, &interactive).await?.0 == StatusCode::BAD_REQUEST,
+            "required IdP interaction cannot issue a native token"
+        );
+        client
+            .put(&user)
+            .bearer_auth(credential.as_str())
+            .json(&json!({"requiredActions":[]}))
+            .send()
+            .await?
+            .error_for_status()?;
+        let restored = request(f, device, encryption, id, PASSWORD).await?;
+        ensure!(
+            token(f, &restored).await?.0 == StatusCode::OK,
+            "new request recovers after provider and interaction are restored"
+        );
+        Ok(())
+    }
     pub(super) fn configuration(&self) -> Result<config::PlatformSso> {
         let mut configuration = super::configuration(self.directory.path())?;
         let url = url::Url::parse(&self.issuer)?;

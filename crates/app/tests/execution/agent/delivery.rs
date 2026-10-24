@@ -1230,7 +1230,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         crate::test_support::software_execution::Platform::MacOs,
     );
     context["interactiveUser"] =
-        json!({"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
+        json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
     let registration = crate::test_support::agent::seed_profile(&f.base, f.execution.clone(), case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
@@ -1295,7 +1295,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
         context["revision"] = json!(stage + 2);
         context["interactiveUser"] =
-            json!({"generatedUid":format!("00000000-0000-0000-0000-{:012}",uid.parse::<u32>().unwrap()),"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
+            json!({"windowsAuthority":null,"generatedUid":format!("00000000-0000-0000-0000-{:012}",uid.parse::<u32>().unwrap()),"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
         let policy = Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
         let task = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1506,7 +1506,7 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             let n=if stage==2 {502}else{501};
             let uid=n.to_string();let sid=format!("S-1-5-21-1-2-3-{n}");let guid=format!("00000000-0000-0000-0000-{n:012}");
             context["revision"]=json!(stage+2);
-            context["interactiveUser"]=json!({"identity":if macos {&uid}else{&sid},"generatedUid":if macos {Some(&guid)}else{None},"sessionId":Uuid::new_v4(),"administrator":false});
+            context["interactiveUser"]=json!({"identity":if macos {&uid}else{&sid},"windowsAuthority":null,"generatedUid":if macos {Some(&guid)}else{None},"sessionId":Uuid::new_v4(),"administrator":false});
             let blueprint=if macos {if user {"macos.agent.certificates_login"}else if stage==3 {"macos.agent.certificates_system_roots"}else{"macos.agent.certificates_system"}}else if stage==0 {"windows.agent.certificates_device_my"}else if stage==3 {"windows.agent.certificates_user_root"}else{"windows.agent.certificates_user_my"};
             let r::blueprints::Definition::AgentCollection {template:definition}=r::blueprints::get(blueprint,"1").unwrap().definition else {unreachable!()};
             let engines=definition.spec().plan.requirements();

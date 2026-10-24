@@ -1,6 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_apple.psso_password_providers','revision'),('mdm_apple.psso_password_providers','fingerprint'),
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document'),('mdm_commands.action_runs','access_binding'),
  ('mdm_webhook.key_heads','revision'),('mdm_webhook.key_heads','active_revision'),('mdm_webhook.key_heads','retiring_revision'),('mdm_webhook.key_materials','revoked'),
  ('mdm_webhook.subscriptions','revision'),('mdm_webhook.subscriptions','target_version'),('mdm_webhook.subscriptions','enabled'),('mdm_webhook.subscriptions','deleted'),('mdm_webhook.subscriptions','settings'),('mdm_webhook.versions','retired'),('mdm_webhook.compliance_sources','cursor'),('mdm_webhook.compliance_sources','complete'),('mdm_webhook.fanout','cursor'),('mdm_webhook.fanout','complete'),('mdm_webhook.deliveries','attempts'),('mdm_webhook.deliveries','last_outcome'),('mdm_webhook.deliveries','last_stage'),('mdm_webhook.deliveries','last_reason'),
@@ -46,6 +47,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
+ ('mdm_apple.psso_password_providers',true,true,false),
  ('mdm_access.device_access_bindings',true,false,false),('mdm_access.device_access_results',true,true,false),('mdm_recovery.rss_login_uses',true,true,false),
  ('mdm_webhook.key_heads',true,true,false),('mdm_webhook.key_materials',true,true,false),
  ('mdm_webhook.subscriptions',true,true,false),('mdm_webhook.versions',true,true,false),('mdm_webhook.events',true,true,false),('mdm_webhook.compliance_sources',true,true,false),('mdm_webhook.fanout',true,true,false),('mdm_webhook.deliveries',true,true,false),('mdm_webhook.operations',true,true,false),

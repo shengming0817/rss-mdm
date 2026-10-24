@@ -46,10 +46,8 @@ async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-        let binding=enterprise::ready(&mut f).await?;
         f.grants.extend(crate::test_support::identity::device_grants(None,&["credentials"])?);
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
-        ensure!(f.author.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);
+        let binding=enterprise::ready(&mut f).await?;
         let device=execution::case_device_id();
         let list=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/recovery-credentials"),None).await?;
         ensure!(list.0==StatusCode::OK,"materials {list:?}");

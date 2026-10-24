@@ -74,10 +74,10 @@ pub fn routes(
         )
         .route(
             "/device-access/enterprise/configuration",
-            get(enterprise_list).post(enterprise_change).owned(
-                &contracts::DEVICE_ACCESS,
-                &[RouteOperation::List, RouteOperation::Action],
-            ),
+            get(enterprise_list)
+                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List])
+                .post(enterprise_change)
+                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
         )
         .route(
             "/device-access/enterprise/configuration/step-up",

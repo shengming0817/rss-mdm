@@ -380,7 +380,10 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         let manager_id=browser_subject(&manager,&f.router).await?;
         crate::test_support::identity::set_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
         let id=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
-        let created=manager.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"delegated"}}}))).await?;
+        let saved_author=std::mem::replace(&mut f.author,manager);
+        let saved_authenticator=f.access_authenticator.take();
+        let created=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"delegated"}}}))).await?;
+        f.author=saved_author;f.access_authenticator=saved_authenticator;
         ensure!(created.0==StatusCode::OK,"manager create {created:?}");
         let offer=offer(&f,&c,&registration).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
@@ -420,7 +423,7 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         ensure!(cleanup["payload"]["kind"]=="unmanage","cleanup {offered:?}");
         let retired=pg(&format!("SELECT retirement IS NOT NULL FROM mdm_access.devices WHERE tenant_id='{}' AND id='{}'",case_tenant(),execution::case_device_id()))?;
         ensure!(retired.trim()=="t");
-        let denied=f.author.call(&f.router,Method::PUT,&format!("/api/v1/devices/{}/device-access/bindings/{}",execution::case_device_id(),bound.1["id"].as_str().context("binding id")?),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
+        let denied=f.access_call(Method::PUT,&format!("/api/v1/devices/{}/device-access/bindings/{}",execution::case_device_id(),bound.1["id"].as_str().context("binding id")?),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::FORBIDDEN,"ordinary work crossed retirement {denied:?}");
         for kind in ["received","start"] {ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":kind})).await?.0==StatusCode::OK);}
         ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":"unmanage_result","outcome":"unknown"})).await?.0==StatusCode::OK);
@@ -917,6 +920,10 @@ async fn concurrent_access_calls(
     let mut root = sqlx::PgConnection::connect_with(&options).await?;
     let mut observer = sqlx::PgConnection::connect_with(&options).await?;
     let mut hold = root.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *hold)
+        .await?;
     sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
         .bind(case_tenant())
         .execute(&mut *hold)

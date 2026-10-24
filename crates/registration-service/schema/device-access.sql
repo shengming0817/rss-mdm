@@ -84,7 +84,7 @@ ALTER TABLE mdm_access.device_access_lifecycles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_access.device_access_lifecycles FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.device_access_subject_denials USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_access.device_access_lifecycles USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT ON mdm_access.device_access_subject_denials,mdm_access.device_access_lifecycles TO mdm_access,mdm_command_runtime,mdm_identity_runtime;
+GRANT SELECT ON mdm_access.device_access_subject_denials,mdm_access.device_access_lifecycles TO mdm_access,mdm_identity_runtime;
 GRANT INSERT ON mdm_access.device_access_subject_denials,mdm_access.device_access_lifecycles TO mdm_identity_runtime;
 GRANT UPDATE(operation,denied) ON mdm_access.device_access_subject_denials TO mdm_identity_runtime;
 GRANT UPDATE(document) ON mdm_access.device_access_lifecycles TO mdm_identity_runtime;

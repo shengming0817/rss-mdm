@@ -113,7 +113,7 @@ CREATE TABLE mdm_access.registration_operations (
     digest text NOT NULL,
     result text NOT NULL,
     CONSTRAINT operations_digest_check CHECK ((length(digest) = 64)),
-    CONSTRAINT operations_result_check CHECK ((length(result) <= 2048))
+    CONSTRAINT operations_result_check CHECK ((octet_length(result) <= 65536))
 );
 
 ALTER TABLE ONLY mdm_access.registration_operations FORCE ROW LEVEL SECURITY;

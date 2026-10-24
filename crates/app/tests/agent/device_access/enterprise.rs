@@ -301,10 +301,8 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
     let mut f = Fixture::from_config(base).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-        let binding=ready(&mut f).await?;
         for operation in [crate::authorization::Permission::EnterpriseApplicationsWrite,crate::authorization::Permission::EnterpriseApplicationsRead]{f.grants.push(crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant});}
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
-        ensure!(f.author.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);
+        let binding=ready(&mut f).await?;
         let users=admin(&client,&admin_base,&token,reqwest::Method::GET,"/users?username=alice&exact=true",None).await?;let user=users[0]["id"].as_str().context("stable IdP subject")?;
         let assertion_sub=format!("{}/{}/{}",INSTANCE,case_tenant(),f.author_id);
         for rp in ["rp-a","rp-b"]{

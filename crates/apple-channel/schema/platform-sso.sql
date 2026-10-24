@@ -83,4 +83,7 @@ GRANT UPDATE(state) ON mdm_apple.psso_password_attempts TO mdm_access;
 CREATE POLICY expired_only ON mdm_apple.psso_password_attempts AS RESTRICTIVE FOR DELETE USING(expires_at < floor(extract(epoch FROM clock_timestamp()))::bigint-86400);
 GRANT DELETE ON mdm_apple.psso_password_attempts TO mdm_access;
 GRANT SELECT ON mdm_apple.psso_password_providers TO mdm_identity_runtime;
+-- The existing profile dispatcher fences provider generations before issuing the profile.
+GRANT SELECT,INSERT ON mdm_apple.psso_password_providers TO mdm_command_runtime;
+GRANT UPDATE(revision,fingerprint) ON mdm_apple.psso_password_providers TO mdm_command_runtime;
 COMMIT;

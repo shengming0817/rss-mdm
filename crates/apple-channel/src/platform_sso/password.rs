@@ -134,7 +134,7 @@ pub(super) async fn login(
                         &format!("psso-password-prepare:{operation}"),
                         prepared.id.as_bytes(),
                         200,
-                        "accepted",
+                        "success",
                         None,
                     )?;
                     app.audit_store.append(tx, &fact, false).await?;
@@ -192,7 +192,11 @@ pub(super) async fn login(
                         } else {
                             503
                         },
-                        state,
+                        match *state {
+                            "succeeded" => "success",
+                            "rejected" => "denied",
+                            _ => "unknown",
+                        },
                         None,
                     )?;
                     app.audit_store.append(tx, &fact, false).await?;

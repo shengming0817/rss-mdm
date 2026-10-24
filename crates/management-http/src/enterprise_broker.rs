@@ -47,7 +47,7 @@ pub fn routes(
         )
         .route(
             "/api/v1/device-access/broker/{id}",
-            get(status).owned(&catalog::DEVICE_ACCESS, &[Operation::Get]),
+            get(status).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
         )
         .route(
             "/api/v1/device-access/broker/{id}/cancel",
@@ -59,7 +59,7 @@ pub fn routes(
         )
         .route(
             "/api/v1/device-access/relying-parties/{rp}/sessions/{id}",
-            get(current).owned(&catalog::DEVICE_ACCESS, &[Operation::Get]),
+            get(current).owned(&catalog::DEVICE_ACCESS, &[Operation::Action]),
         )
         .with_state(Arc::new(Services {
             registration,
