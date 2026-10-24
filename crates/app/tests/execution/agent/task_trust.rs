@@ -40,9 +40,9 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
         let (status,latest)=f.author.call(&f.router,Method::GET,&query_path,None).await?;
         ensure!(status==StatusCode::OK && latest["observation"]==observation && latest["received_at"].as_i64().unwrap()>0);
         let denied_grants=f.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventoryRead).cloned().collect();
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,denied_grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,denied_grants).await?;
         ensure!(f.author.call(&f.router,Method::GET,&query_path,None).await?.0==StatusCode::FORBIDDEN);
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let mut conflict=observation.clone();conflict["observed_at"]=json!(3);
         ensure!(agent_call(&f.router,Method::POST,observation_path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
         observation["operation"]=json!(Uuid::new_v4());observation["sequence"]=json!(1);observation["state"]=json!("failed");observation["reason"]=json!("storage");observation["observed_at"]=json!(999999);
@@ -111,7 +111,7 @@ async fn settings_catalog_projects_authority_without_cross_session_or_secret_exp
                 operation: crate::authorization::Permission::RegistrationConfigurationRead,
                 scope: crate::authorization::Scope::Tenant,
             });
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::seed_grants(
                 case_tenant(),
                 &f.author_id,
                 f.grants.clone(),

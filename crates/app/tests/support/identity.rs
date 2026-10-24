@@ -8,6 +8,7 @@ use rss_identity_core::{
 };
 use rss_identity_postgres::AttemptSource;
 use std::sync::Arc;
+use uuid::Uuid;
 pub(crate) const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
 const BOOTSTRAP: &str = "44444444-4444-4444-8444-444444444444";
 pub(crate) const PASSWORD: &str = "Fixture-only-correct-horse-battery-2026!";
@@ -458,29 +459,98 @@ pub(crate) fn device_grants(
         })
         .collect()
 }
-pub(crate) async fn set_grants(
+/// Prepare a legal authorization state without issuing an online authorization mutation.
+pub(crate) async fn seed_grants(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants_in(tenant, subject, grants, false).await
+    use crate::authorization::{Rule, Subject};
+    let rule = Rule { subject: Subject::User { user: user(tenant, subject) }, grants };
+    rule.subject.validate(tenant, INSTANCE)?;
+    if !rule.grants.is_empty() { rule.validate(tenant, INSTANCE)?; }
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1)
+        .connect_with(config(tenant)?.access_options()?).await?;
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;
+        let existing: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id,document FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND document IS NOT NULL")
+            .bind(tenant).bind(INSTANCE).fetch_all(&mut *tx).await?;
+        for (id, document) in existing {
+            let prior: Rule = serde_json::from_value(document)?;
+            if matches!(&prior.subject, Subject::User { user } if user.principal_id == subject)
+                && !protected_management_rule(&prior) {
+                sqlx::query("UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3")
+                    .bind(tenant).bind(INSTANCE).bind(id).execute(&mut *tx).await?;
+            }
+        }
+        if !rule.grants.is_empty() {
+            sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+                .bind(tenant).bind(INSTANCE).bind(Uuid::new_v4()).bind(serde_json::to_value(&rule)?)
+                .execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }.await;
+    pool.close().await;
+    result
+}
+
+pub(crate) async fn seed_management_grants(
+    tenant: &str,
+    subject: &str,
+    mut grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    use crate::authorization::{Permission, Rule, Subject};
+    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1)
+        .connect_with(config(tenant)?.access_options()?).await?;
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;
+        let documents: Vec<serde_json::Value> = sqlx::query_scalar(
+            "SELECT document FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND document IS NOT NULL")
+            .bind(tenant).bind(INSTANCE).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
+        for document in documents {
+            let prior: Rule = serde_json::from_value(document)?;
+            if matches!(&prior.subject, Subject::User { user } if user.principal_id == subject)
+                && prior.grants.iter().all(|g| g.operation == Permission::InventoryRead) {
+                for grant in prior.grants {
+                    if !grants.contains(&grant) { grants.push(grant); }
+                }
+            }
+        }
+        Ok::<_, anyhow::Error>(grants)
+    }.await;
+    pool.close().await;
+    seed_grants(tenant, subject, result?).await
+}
+
+pub(crate) async fn change_grants(
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    change_grants_in(tenant, subject, grants, false).await
 }
 pub(crate) async fn independent_source_read(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants(tenant, subject, device_grants(None, &["inventory_read"])?).await?;
-    set_management_grants(tenant, subject, grants).await
+    let mut grants = grants;
+    grants.extend(device_grants(None, &["inventory_read"])?);
+    seed_grants(tenant, subject, grants).await
 }
-pub(crate) async fn set_management_grants(
+pub(crate) async fn change_management_grants(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants_in(tenant, subject, grants, true).await
+    change_grants_in(tenant, subject, grants, true).await
 }
-async fn set_grants_in(
+async fn change_grants_in(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,

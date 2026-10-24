@@ -5,7 +5,7 @@
 use crate::test_support::planning_http::*;
 use crate::test_support::{
     http::Browser, http::await_task, http::browser_subject, http::set_device_grants,
-    http::set_management_grants,
+    http::change_management_grants,
 };
 use crate::test_support::{process::*, runtime::*, *};
 #[tokio::test]
@@ -20,7 +20,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
                 .finish(async {
                     let mut browser = fixture.browser("other")?;
                     let subject = browser_subject(&browser, &router).await?;
-                    set_management_grants(
+                    seed_management_grants(
                         &subject,
                         json!(["group_read", "scope_read", "policy_read", "resource_read"]),
                     )
@@ -47,7 +47,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
                                 == StatusCode::BAD_REQUEST
                         );
                     }
-                    set_management_grants(&subject, json!([])).await?;
+                    change_management_grants(&subject, json!([])).await?;
                     for path in ["/api/v1/groups", "/api/v1/scopes", "/api/v1/resources"] {
                         ensure!(
                             browser.call(&router, Method::GET, path, None).await?.0
@@ -146,7 +146,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
-    identity::set_grants(
+    identity::seed_grants(
         case_tenant(),
         &subject,
         identity::device_grants(None, &["inventory_read", "enrollment", "credentials"])?,
@@ -333,7 +333,7 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
                 .filter(|grant| grant.operation != crate::authorization::Permission::ScriptExecute)
                 .cloned()
                 .collect();
-            identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+            identity::change_grants(case_tenant(), &fixture.author_id, grants).await?;
             let (status, detail) = fixture
                 .author
                 .call(
@@ -380,7 +380,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &subject, grants).await?;
+    identity::seed_grants(case_tenant(), &subject, grants).await?;
     let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {
@@ -481,7 +481,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .await?;
     ensure!(["devices", "policies", "software", "security", "operations"].iter().all(|id| workspace["modules"].as_array().unwrap().iter().any(|m| m["id"] == *id)), "required workspace modules missing: {workspace}");
 
-    set_management_grants(&subject, json!([])).await?;
+    change_management_grants(&subject, json!([])).await?;
     let (_, workspace) = browser
         .call(
             &router,
@@ -527,7 +527,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
+    seed_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
     let scope = Uuid::new_v4();
     let path = format!("/api/v1/scopes/{scope}");
     let owner = start_automation(&fixture.base).await?;
@@ -604,7 +604,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
             let member = browser_subject(&browser, &router).await?;
-            set_management_grants(&member, json!(["group_read","group_write","group_recompute","scope_read","scope_write","policy_read","policy_write","resource_read","resource_write"])).await?;
+            seed_management_grants(&member, json!(["group_read","group_write","group_recompute","scope_read","scope_write","policy_read","policy_write","resource_read","resource_write"])).await?;
             let group = uuid::Uuid::new_v4();
             let scope = uuid::Uuid::new_v4();
             let policy = uuid::Uuid::new_v4();
@@ -618,7 +618,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             for permission in ["group_read","group_write","group_recompute","scope_read","scope_write","policy_read","policy_write","resource_read","resource_write"] {
                 grants.push(crate::authorization::Grant { operation: serde_json::from_value(json!(permission))?, scope: crate::authorization::Scope::Tenant });
             }
-            identity::set_grants(case_tenant(), &member, grants).await?;
+            identity::change_grants(case_tenant(), &member, grants).await?;
             let policy_path = format!("/api/v1/policies/{policy}");
             call(&mut browser,&router,&policy_path,0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
             let referenced_scope = format!("SELECT json_build_array(s.deleted,s.revision,p.definition->>'scope') FROM mdm_planning.scopes s JOIN mdm_policy.policies p ON p.tenant_id=s.tenant_id AND p.id='{policy}' WHERE s.tenant_id='{}' AND s.id='{scope}'", case_tenant());
@@ -718,7 +718,7 @@ async fn derived_result_authorization(
                 &["inventory_read"],
             )?);
         }
-        Box::pin(crate::test_support::identity::set_grants(
+        Box::pin(crate::test_support::identity::change_grants(
             case_tenant(),
             member,
             grants,
@@ -732,7 +732,7 @@ async fn derived_result_authorization(
             );
         }
     }
-    Box::pin(set_management_grants(member, permissions)).await?;
+    Box::pin(change_management_grants(member, permissions)).await?;
     for path in &paths {
         let (status, body) = Box::pin(browser.call(router, Method::GET, path, None)).await?;
         ensure!(
@@ -753,7 +753,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
+    seed_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
     let catalog = browser
         .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
         .await?;
@@ -833,7 +833,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         call(&mut browser,&router,&another,0,json!({"action":"instantiate","blueprint":id,"version":"1"})).await?;
         ensure!(browser.call(&router,Method::GET,&target,None).await?==customized);
     }
-    set_management_grants(&subject, json!([])).await?;
+    change_management_grants(&subject, json!([])).await?;
     ensure!(
         browser
             .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
@@ -865,7 +865,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                         operation: crate::authorization::Permission::GroupRead,
                         scope: crate::authorization::Scope::Tenant,
                     });
-                    identity::set_grants(case_tenant(), &subject, grants).await?;
+                    identity::seed_grants(case_tenant(), &subject, grants).await?;
                     let proof =
                         crate::device::test_support::admin(case_tenant(), "other-a").await?;
                     proof.manage(crate::authorization::Permission::GroupRead)?;
@@ -885,7 +885,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                             crate::clock::SystemClock,
                         ))),
                     };
-                    identity::set_grants(case_tenant(), &subject, vec![]).await?;
+                    identity::change_grants(case_tenant(), &subject, vec![]).await?;
                     // The same proof still contains both old grants. The transaction must reject before existence reads.
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
                         case_tenant().into(),
@@ -935,17 +935,17 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             for name in ["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write"] {
                 grants.push(crate::authorization::Grant {operation:serde_json::from_value(json!(name))?,scope:crate::authorization::Scope::Tenant});
             }
-            identity::set_grants(case_tenant(),&subject,grants.clone()).await?;
+            identity::seed_grants(case_tenant(),&subject,grants.clone()).await?;
             let source=Uuid::new_v4();let nested=Uuid::new_v4();let grandparent=Uuid::new_v4();let scope=Uuid::new_v4();let compliance=Uuid::new_v4();
             let path=|id|format!("/api/v1/groups/{id}");
             let condition=|criteria:Value|json!({"selector":{"kind":"device"},"quantifier":"one","criteria":criteria});
             let reference=|id,op|json!({"kind":"group","groupId":id,"op":op});
             call(&mut browser,&router,&path(source),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-source","description":""},"criteria":condition(json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}))})).await?;
             let without_read: Vec<_> = grants.iter().filter(|g| g.operation != crate::authorization::Permission::GroupRead).cloned().collect();
-            identity::set_grants(case_tenant(),&subject,without_read).await?;
+            identity::change_grants(case_tenant(),&subject,without_read).await?;
             let rejected=browser.call(&router,Method::POST,&path(nested),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create","assetContext":"endpoint","presentation":{"name":"denied-reference","description":""},"criteria":condition(reference(source,"member_of"))}}))).await?;
             ensure!(rejected.0==StatusCode::FORBIDDEN,"group reference without GroupRead: {rejected:?}");
-            identity::set_grants(case_tenant(),&subject,grants.clone()).await?;
+            identity::change_grants(case_tenant(),&subject,grants.clone()).await?;
             for (id,target) in [(nested,source),(grandparent,nested)] {
                 call(&mut browser,&router,&path(id),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"nested-parent","description":""},"criteria":condition(reference(target,"member_of"))})).await?;
                 let (_,read)=browser.call(&router,Method::GET,&path(id),None).await?;
@@ -1026,10 +1026,10 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             ensure!(status==StatusCode::OK);let live_token=fresh["nextCursor"].as_str().context("fresh cursor missing")?.to_owned();
             ensure!(browser.call(&router,Method::GET,&format!("{refs}?limit=1&cursor={live_token}"),None).await?.0==StatusCode::OK);
             // Adding an unrelated grant leaves visible entries unchanged: view binding alone cannot reject this token.
-            set_management_grants(&subject,json!(["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write","inventory_fields_write"])).await?;
+            change_management_grants(&subject,json!(["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write","inventory_fields_write"])).await?;
             ensure!(browser.call(&router,Method::GET,&format!("{refs}?limit=1&cursor={live_token}"),None).await?.0==StatusCode::CONFLICT);
             // Current authority is checked on each page; absent category grants hide identities.
-            set_management_grants(&subject,json!(["group_read","group_write","group_recompute"])).await?;
+            change_management_grants(&subject,json!(["group_read","group_write","group_recompute"])).await?;
             let (status,filtered)=browser.call(&router,Method::GET,&refs,None).await?;
             ensure!(status==StatusCode::OK&&filtered["items"].as_array().unwrap().len()==4&&filtered["deletionBlocked"]==true,"filtered references: {status} {filtered}");
             ensure!(browser.call(&router,Method::GET,&format!("{refs}?kind=compliance_rule"),None).await?.0==StatusCode::FORBIDDEN);
@@ -1057,7 +1057,7 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
             let subject = browser_subject(&browser, &router).await?;
-            set_management_grants(&subject,json!(["resource_read","resource_write"])).await?;
+            seed_management_grants(&subject,json!(["resource_read","resource_write"])).await?;
             let ids=[case::name("query-a"),case::name("query-b"),case::name("query-c"),case::name("query-d"),case::name("query-e")];
             for (id,kind) in ids.iter().zip(["script","software","script","configuration","script"]) {
                 let path=format!("/api/v1/resources/{id}");
@@ -1124,13 +1124,13 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
             for raw in ["sort=active","fields=","filter=kind==bogus","filter=id==%27x%27%20OR%201=1","limit=1&limit=2","filter=id==%FF","filter=id==a*","after=x","filter=active=gt=false"] {
                 ensure!(browser.call(&router,Method::GET,&format!("/api/v1/resources?{raw}"),None).await?.0==StatusCode::BAD_REQUEST,"invalid query accepted: {raw}");
             }
-            set_management_grants(&subject,json!(["resource_read","resource_write","scope_read"])).await?;
+            change_management_grants(&subject,json!(["resource_read","resource_write","scope_read"])).await?;
             ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::CONFLICT,"old authorization binding accepted");
             let stale=crate::device::test_support::admin(case_tenant(),"other-a").await?;
             stale.manage(crate::authorization::Permission::ResourceRead)?;
             let catalog=crate::flow::catalog(planning.audit_store.clone(),runtime.clone(),tenant,
                 Arc::new(crate::clock::SystemClock)).await?;
-            set_management_grants(&subject,json!([])).await?;
+            change_management_grants(&subject,json!([])).await?;
             ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::FORBIDDEN,"cursor granted authority");
             let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"management_read");
             stale.bind_audit(&audit)?;

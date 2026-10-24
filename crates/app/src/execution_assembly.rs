@@ -284,8 +284,6 @@ pub(crate) async fn open(
             channels,
             providers,
             bootstrap,
-            #[cfg(test)]
-            webhooks: Arc::default(),
             service,
             inputs,
             queries,
@@ -307,8 +305,6 @@ pub(crate) struct Assembly {
     pub(crate) providers: Arc<rss_mdm_pki_service::providers::Providers>,
     pub(crate) bootstrap:
         Option<Arc<rss_mdm_registration_service::agent::bootstrap::Configuration>>,
-    #[cfg(test)]
-    pub(crate) webhooks: Arc<std::sync::OnceLock<Arc<crate::webhooks::Backend>>>,
     pub(crate) service: Arc<ExecutionService>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,

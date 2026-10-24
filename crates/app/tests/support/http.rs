@@ -275,7 +275,7 @@ pub(crate) async fn set_device_grants(
     operations: &[&str],
 ) -> Result<()> {
     let subject = browser_subject(browser, router).await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         &subject,
         crate::test_support::identity::device_grants(Some(device), operations)?,
@@ -283,7 +283,16 @@ pub(crate) async fn set_device_grants(
     .await
 }
 
-pub(crate) async fn set_management_grants(subject: &str, permissions: Value) -> Result<()> {
+pub(crate) async fn change_management_grants(subject: &str, permissions: Value) -> Result<()> {
+    let grants = management_grants(permissions)?;
+    crate::test_support::identity::change_grants(case_tenant(), subject, grants).await
+}
+
+pub(crate) async fn seed_management_grants(subject: &str, permissions: Value) -> Result<()> {
+    crate::test_support::identity::seed_grants(case_tenant(), subject, management_grants(permissions)?).await
+}
+
+fn management_grants(permissions: Value) -> Result<Vec<crate::authorization::Grant>> {
     let mut grants = permissions
         .as_array()
         .unwrap()
@@ -299,5 +308,5 @@ pub(crate) async fn set_management_grants(subject: &str, permissions: Value) -> 
         None,
         &["inventory_read"],
     )?);
-    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
+    Ok(grants)
 }

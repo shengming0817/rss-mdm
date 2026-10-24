@@ -21,7 +21,7 @@ async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_histo
         let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
         fixture.grants.extend(identity::device_grants(None,&["security_operate","credentials"])?);
-        identity::set_grants(case_tenant(),&fixture.author_id,fixture.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&fixture.author_id,fixture.grants.clone()).await?;
         fixture.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
         let policy=Uuid::new_v4();
         post(&mut fixture.author,&fixture.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"credential","operation":{"kind":"collect_bitlocker"},"architecture":"x86_64","schedule":{"trigger":{"kind":"check_in","minimumSeconds":60},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null},"frequency":"once_per_version","runLifetimeSeconds":300}}}})).await?;
@@ -575,7 +575,7 @@ async fn native_inventory_case(
         operation: crate::authorization::Permission::InventorySensitiveRead,
         scope: crate::authorization::Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let context = crate::test_support::software_execution::context(if macos {
         crate::test_support::software_execution::Platform::MacOs
@@ -650,7 +650,7 @@ async fn native_inventory_case(
     }
     if macos {
         f.grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventoryFieldsWrite, scope: crate::authorization::Scope::Tenant });
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
         for (original, key) in [("device.memory.bytes", "custom.ship_memory"), ("device.network.interfaces", "custom.ship_network")] {
             let mut field = rss_mdm_inventory::builtin::fields().into_iter().find(|f| f.key.as_str() == original).unwrap();
             field.key = rss_mdm_inventory::FieldKey::parse(key)?;
@@ -731,13 +731,13 @@ async fn native_inventory_case(
             .filter(|g| g.operation != crate::authorization::Permission::InventorySensitiveRead)
             .cloned()
             .collect();
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
         let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}}))).await?;
         ensure!(
             denied.0 == StatusCode::FORBIDDEN,
             "raw evidence publication bypass: {denied:?}"
         );
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         }
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}})).await?;
@@ -818,7 +818,7 @@ async fn native_inventory_case(
                 .cloned()
                 .collect();
             if !macos {
-                crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants)
+                crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants)
                     .await?;
             }
             let mut start = event(Uuid::new_v4(), json!({"kind":"start"}));
@@ -1150,7 +1150,7 @@ async fn native_inventory_case(
             .filter(|g| g.operation != crate::authorization::Permission::InventorySensitiveRead)
             .cloned()
             .collect();
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, ordinary).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
         for (path,secret) in sensitive_paths {
             let hidden=f.author.call(&f.router,Method::GET,&path,None).await?;
             ensure!(hidden.0==StatusCode::FORBIDDEN && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
@@ -1170,7 +1170,7 @@ async fn native_inventory_case(
             .filter(|g| g.operation != crate::authorization::Permission::InventoryRead)
             .cloned()
             .collect();
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, limited).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, limited).await?;
         ensure!(
             f.author
                 .call(&f.router, Method::GET, &detail_path, None)
@@ -1194,7 +1194,7 @@ async fn native_inventory_case(
                 && !summary.1.to_string().contains("private-native-evidence")
                 && !summary.1.to_string().contains("changed-truncated")
         );
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         }
         ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
@@ -1224,7 +1224,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         operation: crate::authorization::Permission::InventorySensitiveRead,
         scope: crate::authorization::Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let mut context = crate::test_support::software_execution::context(
         crate::test_support::software_execution::Platform::MacOs,
@@ -1488,7 +1488,7 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
     resources.finish(async {
         f.grants.extend(crate::test_support::identity::device_grants(None,&["inventory_collect","operation_read"])?);
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let mut context=crate::test_support::software_execution::context(if macos {crate::test_support::software_execution::Platform::MacOs}else{crate::test_support::software_execution::Platform::Windows});
         let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap().to_owned();
@@ -1719,7 +1719,7 @@ async fn recover_unknown_after_restart(
     let original=resources.finish(async{
         crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         credential_policy(&mut f,json!({"kind":"rotate_local_administrator","sid":sid})).await?;
         let task=claim_credential(&f,&context).await?;
@@ -1745,7 +1745,7 @@ async fn recover_unknown_after_restart(
         .finish(async {
             f.grants
                 .extend(identity::device_grants(None, &["account_write"])?);
-            identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
             let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
                 "postgres",
             )?)
@@ -1881,7 +1881,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let sid="S-1-5-21-101-202-303-1001";
         let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write","credentials"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;

@@ -96,7 +96,7 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
         let old_author=f.author.clone();
         f.author=crate::test_support::authority::Authority::prepared_browser("admin")?;
         let admin=crate::test_support::http::browser_subject(&f.author,&f.router).await?;
-        crate::test_support::identity::set_grants(case_tenant(),&admin,f.grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&admin,f.grants.clone()).await?;
         let switch=json!({"operationId":Uuid::new_v4(),"expectedRevision":bound.1["revision"]});
         let switched=call(&f,Method::PUT,Some(switch),true,true).await?;
         ensure!(switched.0==StatusCode::OK && switched.1["user"]["principalId"]==admin);
@@ -144,14 +144,14 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         // Hide ownership so a current-user search cannot pass by matching the same owner.
         let mut grants=crate::test_support::identity::device_grants(Some(device),&["inventory_read"])?;
         grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
         ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
         ensure!(visible.0==StatusCode::OK && visible.1["items"].as_array().is_some_and(|items|items.len()==1),"visible {visible:?}");
         let projected=visible.1["items"][0]["endpoints"][0]["currentUser"].clone();
@@ -196,7 +196,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
             let next=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
             ensure!(next.1["code"]=="device_view_cursor_invalidated","revoked cursor: {next:?}");
             let grant=f.grants.clone();
-            crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grant).await?;
+            crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grant).await?;
             ensure!(owner(&mut f,None).await?["user"]==owner_before["user"]);
             Ok(())
         }).await
@@ -218,7 +218,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
         ensure!(call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?.0==StatusCode::OK);
         let mut grants=f.grants.clone();
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,grants).await?;
         let mut authority=crate::test_support::authority::Authority::open().await?;
         let authority_resources=std::mem::take(&mut authority.resources);
         authority_resources.finish(async {

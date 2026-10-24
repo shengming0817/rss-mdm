@@ -229,7 +229,7 @@ impl Fixture {
                         None,
                         &["script_execute"],
                     )?);
-                    crate::test_support::identity::set_grants(
+                    crate::test_support::identity::seed_grants(
                         case_tenant(),
                         &author_id,
                         grants.clone(),
@@ -272,7 +272,7 @@ impl Fixture {
                 *id = registration["deviceId"].as_str().unwrap().into()
             }
         }
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::seed_grants(
             case_tenant(),
             &self.author_id,
             self.grants.clone(),

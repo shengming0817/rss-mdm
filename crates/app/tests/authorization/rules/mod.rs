@@ -392,7 +392,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     let mut member = Browser::default();
     ensure!(member.login(&router, "other").await? == StatusCode::OK);
     let subject = browser_subject(&member, &router).await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         &subject,
         crate::test_support::identity::device_grants(
@@ -451,7 +451,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(cancel_key.to_string().as_str()) && r.result() == "success").await? == 0);
 
     ensure!(member.call(&router, Method::GET, &path, None).await?.1["status"] == "pending");
-    crate::test_support::identity::set_grants(case_tenant(), &subject, vec![]).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         member

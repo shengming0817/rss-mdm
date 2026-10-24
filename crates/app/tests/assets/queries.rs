@@ -329,7 +329,7 @@ async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, grants).await?;
     let field = "custom.cursor_sort";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"string","maxLength":1024,"allowEmpty":false},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     ok(

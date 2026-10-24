@@ -370,7 +370,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+    crate::test_support::identity::change_management_grants(case_tenant(), &f.author_id, revoked)
         .await?;
     let mut start = json!({"kind":"start"});
     ensure!(
@@ -382,7 +382,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::OK);
     task_event(&f.router, &task, json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
-    crate::test_support::identity::set_management_grants(
+    crate::test_support::identity::change_management_grants(
         case_tenant(),
         &f.author_id,
         f.grants.clone(),
@@ -452,7 +452,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+    crate::test_support::identity::change_management_grants(case_tenant(), &f.author_id, revoked)
         .await?;
     let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
@@ -780,7 +780,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let key = "custom.self_service_secret";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
@@ -838,7 +838,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         .cloned()
         .collect();
     for grants in [no_read, f.grants.clone()] {
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
         let denied = call(&f, Method::GET, &path, None, true, true).await?;
         ensure!(
             denied.0 == StatusCode::OK
@@ -848,7 +848,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             "read denied without leakage: {denied:?}"
         );
     }
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, full).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, full).await?;
     let permitted = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
         permitted.0 == StatusCode::OK
@@ -856,7 +856,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && permitted.1["result"]["evidence"]["diagnostics"]["stdout"] == canary
             && permitted.1["result"]["evidence"]["diagnostics"]["stderr"] == canary
     );
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let denied = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
@@ -897,7 +897,7 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     ensure!(employee.login(&f.router, "admin").await? == StatusCode::OK);
     let other = browser_subject(&employee, &f.router).await?;
     ensure!(other != f.author_id);
-    crate::test_support::identity::set_grants(case_tenant(), &other, f.grants.clone()).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &other, f.grants.clone()).await?;
     f.author = employee;
     let mut two = request(second, &second_policy, json!({}));
     two["operationId"] = json!(shared);
@@ -1043,7 +1043,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             == StatusCode::OK
     );
     let publisher = browser_subject(&admin, &f.router).await?;
-    crate::test_support::identity::set_grants(case_tenant(), &publisher, f.grants.clone()).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &publisher, f.grants.clone()).await?;
     let mut published = Vec::new();
     for access in [
         json!({"kind":"device"}),
@@ -1067,7 +1067,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     cross_tenant["selfService"]["access"] = json!({"kind":"users","selectors":[{"kind":"user","instanceId":crate::test_support::identity::INSTANCE,"tenantId":Uuid::new_v4(),"principalId":f.author_id}]});
     let invalid = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{}", Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":cross_tenant}}))).await?;
     ensure!(invalid.0 == StatusCode::BAD_REQUEST);
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, Vec::new()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, Vec::new()).await?;
     let device_directory = call(&f, Method::GET, DIRECTORY, None, true, false).await?;
     ensure!(
         device_directory.0 == StatusCode::OK
@@ -1360,7 +1360,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             administrator_grants.push(grant);
         }
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         administrator["principalId"].as_str().unwrap(),
         administrator_grants,
@@ -1387,7 +1387,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .call(&f.router, Method::GET, "/api/v1/authorization", None)
         .await?
         .1;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         current["principalId"].as_str().unwrap(),
         Vec::new(),

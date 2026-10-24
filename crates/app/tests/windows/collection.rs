@@ -120,7 +120,7 @@ async fn template_flow(
             scope: Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,
@@ -695,7 +695,7 @@ async fn denied_template_result(
         }
     }
     let revoke = || {
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             vec![],
@@ -946,7 +946,7 @@ async fn dynamic_result(
         if completion == Completion::RevokedInventory
             && leaf_gets.iter().any(|(_, u)| u.ends_with("/Name"))
         {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 vec![],
@@ -1122,7 +1122,7 @@ async fn dynamic_result(
         retained == serde_json::to_value(&agent_value)?,
         "native collection modified Agent software"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         vec![],

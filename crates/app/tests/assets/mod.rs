@@ -41,7 +41,7 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
+    crate::test_support::identity::change_grants(case_tenant(), subject, grants).await
 }
 
 struct Fixture {

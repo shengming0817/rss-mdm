@@ -91,7 +91,7 @@ impl Fixture {
             None,
             &["inventory_read", "inventory_collect", "configuration_write"],
         )?);
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             grants,
@@ -396,7 +396,7 @@ impl Fixture {
         let definition = self.collection_template().await?;
         self.grant_native_actions(&["device_control"]).await?;
         let op = self.create_restart().await?;
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(
@@ -489,7 +489,7 @@ impl Fixture {
             && r.operation() == Some(run.to_string().as_str())
             && r.actor() == Some("service:collection-finalizer")));
         pg.close().await?;
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(

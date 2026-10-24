@@ -151,7 +151,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
             None,
             &["account_write"],
         )?);
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     ensure!(
         f.author
@@ -266,7 +266,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         let id=ready.1["items"][0]["id"].as_str().context("binding")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let grants=crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["inventory_read"])?;
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants).await?;
         ensure!(f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?.0==StatusCode::FORBIDDEN);
         Ok(())
     }).await
@@ -378,7 +378,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let mut manager=Browser::default();ensure!(manager.login(&f.router,"admin").await?==StatusCode::OK);
         let manager_id=browser_subject(&manager,&f.router).await?;
-        crate::test_support::identity::set_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
         let id=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let saved_author=std::mem::replace(&mut f.author,manager);
         let saved_authenticator=f.access_authenticator.take();
@@ -387,7 +387,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         ensure!(created.0==StatusCode::OK,"manager create {created:?}");
         let offer=offer(&f,&c,&registration).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
-        crate::test_support::identity::set_grants(case_tenant(),&manager_id,vec![]).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&manager_id,vec![]).await?;
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::FORBIDDEN);
         let next=claim(&f,&c).await?;ensure!(next.0==StatusCode::OK && next.1["task"].is_null());
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;

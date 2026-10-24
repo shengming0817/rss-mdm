@@ -848,7 +848,7 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
             scope: Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), subject, grants.clone()).await?;
+    identity::seed_grants(case_tenant(), subject, grants.clone()).await?;
     let endpoint = format!(
         "/api/v1/devices/{}/telemetry-configurations",
         case_device_id()
@@ -878,7 +878,7 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
         Permission::ResourceRead,
         Permission::InventoryRead,
     ] {
-        identity::set_grants(
+        identity::change_grants(
             case_tenant(),
             subject,
             grants
@@ -894,7 +894,7 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
             "configuration metadata survived {permission:?} revocation"
         );
     }
-    identity::set_grants(case_tenant(), subject, grants).await?;
+    identity::change_grants(case_tenant(), subject, grants).await?;
     let path = format!("/api/v1/policies/{}", policy["id"].as_str().unwrap());
     let disabled = post(
         &mut f.author,

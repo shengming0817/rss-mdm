@@ -228,7 +228,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let result=async {
         use crate::authorization::{Grant, Permission, Scope};
         let grants = vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}, Grant {operation:Permission::WebhookRead,scope:Scope::Tenant}, Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant}, Grant {operation:Permission::InventoryRead,scope:Scope::AllDevices}];
-        identity::set_grants(case_tenant(),case::admin(),grants.clone()).await?;
+        identity::seed_grants(case_tenant(),case::admin(),grants.clone()).await?;
         let mut browser=Browser::default();ensure!(browser.login(&router,"admin").await?==StatusCode::OK);
         let partition = rss_mdm_audit_integration::source_partition(rss_request_context::TenantId::parse(case_tenant())?, "mdm", "request")?;
         let declared = partition.clone();
@@ -255,12 +255,12 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
             let settings=json!({"presentation":{"name":name},"endpoint":format!("https://source.invalid:{port}/{name}"),"eventTypes":["device.registered"],"selection":{"kind":"allDevices"},"keyReference":"receiver","networkReference":"receiver"});
             if index == 0 {
                 let request=json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"change":{"kind":"put","value":settings}});
-                identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}]).await?;
+                identity::change_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}]).await?;
                 ensure!(browser.call(&router,Method::PUT,&path,Some(request.clone())).await?.0==StatusCode::FORBIDDEN);
-                identity::set_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:device.to_owned()}}]).await?;
+                identity::change_grants(case_tenant(),case::admin(),vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:device.to_owned()}}]).await?;
                 ensure!(browser.call(&router,Method::PUT,&path,Some(request)).await?.0==StatusCode::FORBIDDEN,"one-device grant expanded to all devices");
                 ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{id}'"))?.trim()=="0","denied create left a subscription");
-                identity::set_grants(case_tenant(),case::admin(),grants.clone()).await?;
+                identity::change_grants(case_tenant(),case::admin(),grants.clone()).await?;
             }
             let created=call(&mut browser,&router,&path,0,json!({"kind":"put","value":settings})).await?;ensure!(created["enabled"]==false);
             let enabled=call(&mut browser,&router,&path,1,json!({"kind":"enabled","value":true})).await?;
@@ -274,7 +274,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?.trim()=="0");
         let copied=event.clone();execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
-        identity::set_grants(case_tenant(),case::admin(),vec![]).await?;
+        identity::change_grants(case_tenant(),case::admin(),vec![]).await?;
         worker=Some(tokio::spawn(backend.clone().work(stop.clone())));
         let requests=match tokio::time::timeout(Duration::from_secs(30),&mut server).await {
             Ok(result)=>result??,
@@ -293,7 +293,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
                 Err(_) => {task.abort();let _=task.await;return Err(anyhow::anyhow!("webhook relay shutdown timed out"));}
             }
         }
-        identity::set_grants(case_tenant(),case::admin(),grants.clone()).await?;
+        identity::change_grants(case_tenant(),case::admin(),grants.clone()).await?;
         let test_path=format!("{}/test",subscriptions[0].0);
         let test_request=json!({"operationId":Uuid::new_v4(),"deviceId":device});
         let (status,test_receipt)=browser.call(&router,Method::POST,&test_path,Some(test_request.clone())).await?;
@@ -334,13 +334,13 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let another=case::name("another-device");
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','{another}')"))?;
         let limited=vec![Grant {operation:Permission::WebhookRead,scope:Scope::Tenant},Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant},Grant {operation:Permission::InventoryRead,scope:Scope::Device{id:another.to_owned()}}];
-        identity::set_grants(case_tenant(),case::admin(),limited).await?;
+        identity::change_grants(case_tenant(),case::admin(),limited).await?;
         ensure!(browser.call(&router,Method::GET,&format!("/api/v1/webhooks/deliveries/{source}"),None).await?.0==StatusCode::NOT_FOUND);
         ensure!(browser.call(&router,Method::POST,&replay_path,Some(replay_request)).await?.0==StatusCode::FORBIDDEN,"receipt bypassed current event read permission");
         ensure!(pg("SELECT count(*) FROM mdm_webhook.deliveries WHERE tenant_id=current_setting('rss.tenant_id')::uuid")?==delivery_count,"denied/repeated replay created delivery");
-        identity::set_grants(case_tenant(),case::admin(),identity::device_grants(None,&["inventory_read"])?).await?;
+        identity::change_grants(case_tenant(),case::admin(),identity::device_grants(None,&["inventory_read"])?).await?;
         ensure!(browser.call(&router,Method::GET,"/api/v1/webhooks/subscriptions",None).await?.0==StatusCode::FORBIDDEN);
-        identity::set_grants(case_tenant(),case::admin(),grants).await?;
+        identity::change_grants(case_tenant(),case::admin(),grants).await?;
         let foreign=Uuid::new_v4();
         pg(&format!("INSERT INTO mdm_webhook.subscriptions(tenant_id,id,revision,target_version,enabled,deleted,settings) SELECT (SELECT management_tenant_id FROM public.mdm_installation),'{foreign}',1,1,false,false,settings FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{}'",subscriptions[0].0.rsplit('/').next().unwrap()))?;
         ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.subscriptions WHERE tenant_id<>'{tenant}' AND id='{foreign}' AND revision=1"))?.trim()=="1","missing real foreign subscription");

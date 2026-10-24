@@ -114,7 +114,7 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 fresh["items"][0]["reference"],
                 next_page["items"][0]["reference"]
             );
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::seed_grants(
                 case_a(),
                 admin.principal_id(),
                 crate::test_support::identity::device_grants(
@@ -527,7 +527,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],1);
         let mut grants=crate::test_support::identity::device_grants(Some(needle),&["inventory_read"])?;
         grants.extend(crate::test_support::identity::device_grants(Some(peer),&["inventory_read"])?);
-        crate::test_support::identity::set_grants(case_a(),admin.principal_id(),grants).await?;
+        crate::test_support::identity::seed_grants(case_a(),admin.principal_id(),grants).await?;
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"]["deviceViewCount"],0,"unreadable ownership participated in search");
         let first_page=s.views(&admin,&query(1),&people(&authority)?).await?;
         assert_eq!(s.statistics(&admin,&query(1),&people(&authority)?).await?["statistics"],json!({"endpointCount":2,"deviceViewCount":2}));
@@ -553,7 +553,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let malformed=parameters(1,Some("search=icontains=' '"),None);
         assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await,Err(rss_mdm_device_service::Error::Malformed)));
-        crate::test_support::identity::set_grants(case_a(),admin.principal_id(),crate::test_support::identity::device_grants(None,&["inventory_read"])?).await?;
+        crate::test_support::identity::change_grants(case_a(),admin.principal_id(),crate::test_support::identity::device_grants(None,&["inventory_read"])?).await?;
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-budget-'||n FROM generate_series(1,4096) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await,Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
         let _=first;

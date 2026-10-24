@@ -455,7 +455,6 @@ impl Host {
             config.webhooks, execution.runtime.clone(), identity.tenant,
             agent_audit.clone(), clock.clone(), execution.protection.clone(), binding,
         ).await?;
-        execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         // This handler fixture owns its real transport outside production assembly.
         if let Some(agent) = &agent_pki {
@@ -730,7 +729,7 @@ impl Host {
         .await?;
         let password = Password::new(plain.to_owned())?;
         let receipt = if self_service {
-            crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![])
+            crate::test_support::identity::seed_grants(case_tenant(), proof.principal_id(), vec![])
                 .await?;
             let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
             let mut browser = crate::test_support::http::Browser {

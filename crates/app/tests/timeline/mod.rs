@@ -23,20 +23,8 @@ impl Fixture {
             Box::pin(async move {
                 let mut authority = authority::Authority::open().await?;
                 resources.extend(std::mem::take(&mut authority.resources));
-                let config: Config = serde_json::from_value(authority.base.clone())?;
-                let (router, _, runtime, _, application_resources) =
-                    crate::api::application_fixture(
-                        config,
-                        Arc::new(crate::clock::SystemClock),
-                        monotonic(),
-                        database(&authority.base).await?,
-                        None,
-                        authority.audit.clone(),
-                    )
-                    .await?;
-                resources.extend(application_resources);
                 let tenant = TenantId::parse(case_tenant())?;
-                let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+                let key = secret("timeline-cursor").to_vec();
                 let timeline = Arc::new(Timeline::new(
                     authority.pool.clone(),
                     authority.audit.clone(),
@@ -45,9 +33,14 @@ impl Fixture {
                 )?);
                 timeline.initialize().await?;
                 let admin = authority.browser("admin")?;
-                let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-                    "127.0.0.1".parse()?,
-                )));
+                let router = authority.router(
+                    Router::new().nest(
+                        "/api/v1",
+                        rss_mdm_management_http::timeline::routes()
+                            .with_state(timeline.clone())
+                            .into_axum(),
+                    ).merge(authority.authorization()),
+                )?;
                 Ok(Self {
                     resources: Default::default(),
                     authority,
@@ -158,6 +151,9 @@ impl Fixture {
 #[ignore = "make t2 MODULE=timeline.http"]
 async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let mut f = Fixture::open().await?;
+    let (router, resources) = app(&f.authority.base).await?;
+    f.resources.extend(resources);
+    f.router = router;
     let f_resources = std::mem::take(&mut f.resources);
     f_resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -190,7 +186,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             scope: crate::authorization::Scope::Tenant,
         }),
     );
-    identity::set_grants(case_tenant(), &subject, grants).await?;
+    identity::seed_grants(case_tenant(), &subject, grants).await?;
     let operation = Uuid::new_v4();
     f.admin.operation = Some(operation);
     let (status,issued)=f.admin.call(&f.router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":device,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
@@ -266,7 +262,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     ensure!(replay_status == StatusCode::OK);
     let other = f.authority.browser("other")?;
     let denied_subject = browser_subject(&other, &f.router).await?;
-    identity::set_grants(
+    identity::seed_grants(
         case_tenant(),
         &denied_subject,
         identity::device_grants(Some(device), &["inventory_read"])?,
@@ -508,7 +504,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
                     ))?
             );
             let subject = browser_subject(&other, &f.router).await?;
-            identity::set_grants(
+            identity::seed_grants(
                 case_tenant(),
                 &subject,
                 vec![crate::authorization::Grant {

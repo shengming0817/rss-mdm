@@ -40,7 +40,7 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
  let fresh=f.author.call(&f.router,Method::GET,&format!("{path}?{query}"),None).await?;
  let cursor=fresh.1["nextCursor"].as_str().context("fresh cursor")?;
- crate::test_support::identity::set_grants(case_tenant(),&f.author_id,vec![]).await?;
+ crate::test_support::identity::change_grants(case_tenant(),&f.author_id,vec![]).await?;
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::FORBIDDEN);
  c.close().await?;
  Ok(())

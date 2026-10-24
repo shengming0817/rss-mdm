@@ -115,9 +115,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         access: state.authorization.clone(),
         requests: state.requests,
     });
-    let identity_context_state = Arc::new(IdentityContextState {
-        identity_management: state.identity_management,
-    });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
         channels: state.registration_channels,
         service: state.enrollment,
@@ -211,13 +208,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::device_views::routes(sessions, directory_identity, state.platform_configuration)
                 .with_state(state.associations),
         );
-    let host_context = Router::new()
-        .route(
-            "/api/v1/identity-host/tenants/{tenant}/context",
-            get(identity_context)
-                .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
-                .with_state(identity_context_state),
-        )
+    let host_context = identity_context_routes(state.identity_management)
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,
@@ -290,6 +281,18 @@ struct IdentityHostContext {
     session_id: String,
     navigation: crate::authorization::identity_management::IdentityNavigation,
 }
+/// Product identity navigation over the existing authenticated request proof.
+pub fn identity_context_routes(
+    policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+) -> Router {
+    Router::new().route(
+        "/api/v1/identity-host/tenants/{tenant}/context",
+        get(identity_context)
+            .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
+            .with_state(Arc::new(IdentityContextState { identity_management: policy })),
+    )
+}
+
 async fn identity_context(
     State(app): State<Arc<IdentityContextState>>,
     Extension(auth): Extension<RequestAuth>,

@@ -70,7 +70,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants.clone()).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &subject, grants.clone()).await?;
     let stack = execution::worker_for(
         &serde_json::from_value(cfg)?,
         f.execution.clone(),
@@ -225,7 +225,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &subject, without_enable).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &subject, without_enable).await?;
     let denied = f
         .author
         .call(&f.router, Method::POST, collection, Some(request.clone()))
@@ -235,7 +235,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "draft permission: {denied:?}"
     );
     ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &subject, grants).await?;
     let accepted = f
         .author
         .call(&f.router, Method::POST, collection, Some(request.clone()))

@@ -14,7 +14,7 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         let operator=browser_subject(&f.author,&f.router).await?;
         let mut grants=f.grants.clone();
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&operator,grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;
         ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let successor_login=format!("successor-{}",Uuid::new_v4());
@@ -22,12 +22,12 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(successor.0==StatusCode::CREATED,"successor creation {successor:?}");
         let successor_id=successor.1["principalId"].as_str().context("successor principal")?;
         let mut successor_grants=f.grants.clone();successor_grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),successor_id,successor_grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),successor_id,successor_grants).await?;
         let operation=Uuid::new_v4();let offboard=json!({"operationId":operation,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}});
         let result=f.access_call(Method::PUT,&path,Some(offboard.clone())).await?;ensure!(result.0==StatusCode::OK,"offboard {result:?}");
         f.author.cookies.remove("__Host-identity-operation");ensure!(f.author.call(&f.router,Method::PUT,&path,Some(offboard)).await?==result);
         let status_path=format!("/api/v1/devices/{}/device-access/operations/{operation}/offboarding",execution::case_device_id());
-        crate::test_support::identity::set_grants(case_tenant(),&operator,vec![]).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&operator,vec![]).await?;
         ensure!(!f.author.call(&f.router,Method::GET,&status_path,None).await?.0.is_success());
         let mut next=Browser::default();
         ensure!(next.call(&f.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":successor_login,"password":crate::test_support::identity::PASSWORD}))).await?.0==StatusCode::OK);

@@ -51,7 +51,7 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
             scope: crate::authorization::Scope::AllDevices,
         });
     }
-    identity::set_grants(case_tenant(), &f.subject, grants).await?;
+    identity::seed_grants(case_tenant(), &f.subject, grants).await?;
     // Installer consumers need a current signed configuration; deployment/publication is a separate journey.
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let access = database(&base).await?;
@@ -2011,7 +2011,7 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
         let mut inventory_user=authority::Authority::prepared_browser("other")?;
         let subject=browser_subject(&inventory_user, &f.router).await?;
-        identity::set_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
+        identity::seed_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
         let observed=inventory_user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
         ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==3 && observed.1["failure"].is_null(),"inventory reader could not see target and installed facts: {observed:?}");
         ensure!(inventory_user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?.0==StatusCode::FORBIDDEN);

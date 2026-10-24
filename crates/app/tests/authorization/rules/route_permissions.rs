@@ -146,12 +146,12 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             "release_publish" | "release_withdraw" | "release_recover" => "release_read",
             _ => unreachable!(),
         };
-        set_management_grants(&member, json!([wrong])).await?;
+        seed_management_grants(&member, json!([wrong])).await?;
         let before = counts()?;
         let denied = browser.call(&router, method.clone(), path, body.clone()).await?;
         ensure!(denied.0 == StatusCode::FORBIDDEN && denied.1["code"] == "permission_denied", "{wrong} allowed {needed}: {denied:?}");
         ensure!(before == counts()?, "denied capability mutated product state");
-        set_management_grants(&member, json!([needed])).await?;
+        change_management_grants(&member, json!([needed])).await?;
         let accepted = browser.call(&router, method.clone(), path, body.clone()).await?;
         let (status, code) = match (*needed, method == Method::GET) {
             ("group_read" | "group_recompute", _) => (StatusCode::NOT_FOUND, "group_not_found"),

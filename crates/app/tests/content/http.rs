@@ -47,7 +47,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
                 original.0 == StatusCode::OK && original.1 == enabled,
                 "recovery preserves the historical enable receipt without granting new access"
             );
-            crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![])
+            crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, vec![])
                 .await?;
             ensure!(
                 user.call(&fixture.router, Method::GET, &admission_path, None)
@@ -581,7 +581,7 @@ async fn streaming_revalidates_permission_and_original_session_before_success() 
                     let logged_out = user.call(&fixture.router, Method::POST, &format!("/api/v1/identity/tenants/{}/session/logout",case_tenant()), None).await?;
                     ensure!(logged_out.0 == StatusCode::NO_CONTENT, "logout: {logged_out:?}");
                 } else {
-                    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![]).await?;
+                    crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, vec![]).await?;
                 }
                 sender.send(Ok(bytes[1..].to_vec())).await?;
                 Ok(())
@@ -597,7 +597,7 @@ async fn streaming_revalidates_permission_and_original_session_before_success() 
             if !revoke_session {
                 let grants = [crate::authorization::Permission::ResourceRead, crate::authorization::Permission::ResourceWrite]
                     .into_iter().map(|operation| crate::authorization::Grant {operation, scope:crate::authorization::Scope::Tenant}).collect();
-                crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+                crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, grants).await?;
             }
         }
         Ok(())

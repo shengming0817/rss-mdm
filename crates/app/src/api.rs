@@ -315,8 +315,6 @@ pub(crate) async fn from_compiled(
         protection,
         content: content_writer,
         runtime: _execution_runtime,
-        #[cfg(test)]
-            webhooks: fixture_webhooks,
     } = execution;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
@@ -576,10 +574,6 @@ pub(crate) async fn from_compiled(
         binding,
     )
     .await?;
-    #[cfg(test)]
-    fixture_webhooks
-        .set(webhooks.clone())
-        .map_err(|_| Error::Conflict)?;
     let platform_configuration = apple
         .as_ref()
         .and_then(|apple| apple.platform_sso.as_ref())
@@ -795,7 +789,13 @@ pub(crate) fn from_state(
     };
     let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
     let first_use = Arc::new(crate::first_use::FirstUse {
-        directory,
+        directory: settings.clone(),
+        tenant: state.identity.tenant,
+        instance: state.identity.instance,
+        audit: state.audit_store.clone(),
+        admission: rss_mdm_registration_service::admission::Admission::new(
+            state.access.registration(), state.audit_store.clone(),
+        ),
         channels: channels.clone(),
     });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(

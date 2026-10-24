@@ -625,7 +625,7 @@ impl Client {
             operation: crate::authorization::Permission::AuthorizationRead,
             scope: crate::authorization::Scope::Tenant,
         });
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
         let mut other_browser = crate::test_support::http::Browser::default();
@@ -633,7 +633,7 @@ impl Client {
         ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
         let other_subject =
             crate::test_support::http::browser_subject(&other_browser, &self.router).await?;
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             &other_subject,
             crate::test_support::identity::device_grants(Some(&other), &["device_control"])?,

@@ -91,7 +91,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             .filter(|grant| grant.operation != permission)
             .cloned()
             .collect();
-        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, grants)
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants)
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "management_read");
@@ -107,7 +107,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             },
         )
         .await;
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             &fixture.author_id,
             fixture.grants.clone(),
@@ -132,13 +132,13 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .filter(|g| g.operation != crate::authorization::Permission::ResourceRead)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, without_resource).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &author_id, without_resource).await?;
     let denied=author.call(&router,Method::POST,&format!("/api/v1/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_task_scope())}}))).await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
         "publishing without ResourceRead: {denied:?}"
     );
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &author_id, grants.clone()).await?;
     let preview_before = pg(&format!(
         "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()

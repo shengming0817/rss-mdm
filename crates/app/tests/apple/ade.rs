@@ -540,7 +540,7 @@ impl Control {
         Ok(())
     }
     async fn prepared_directory(&mut self) -> Result<()> {
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::seed_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             serde_json::from_value(json!([
@@ -570,7 +570,7 @@ impl Control {
         Ok(())
     }
     async fn setup(&mut self) -> Result<()> {
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::seed_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             serde_json::from_value(json!([

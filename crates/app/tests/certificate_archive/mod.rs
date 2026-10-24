@@ -40,7 +40,7 @@ impl Fixture {
         let router = Self::routes(&authority, archive.clone())?;
         let admin = authority.browser("admin")?;
         let subject = browser_subject(&admin, &router).await?;
-        identity::set_grants(
+        identity::seed_grants(
             case_tenant(),
             &subject,
             [
@@ -296,7 +296,7 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
         )
         .await?;
     ensure!(denied.0 == StatusCode::FORBIDDEN);
-    identity::set_grants(
+    identity::change_grants(
         case_tenant(),
         &f.subject,
         vec![Grant {
@@ -353,7 +353,7 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
     );
     tx.rollback().await?;
     drop(connection);
-    identity::set_grants(
+    identity::change_grants(
         case_tenant(),
         &f.subject,
         [
@@ -393,7 +393,7 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
     f.initialize().await?;
     let mut other = f.authority.browser("other")?;
     let subject = browser_subject(&other, &f.router).await?;
-    identity::set_grants(
+    identity::seed_grants(
         case_tenant(),
         &subject,
         [

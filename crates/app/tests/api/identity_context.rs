@@ -12,8 +12,14 @@ pub(crate) async fn host_context_matrix(
         "/api/v1/identity-host/tenants/{TENANT}/context",
         TENANT = case_tenant()
     );
-    let (router, app_resources) = app(base).await?;
-    app_resources.finish(async {
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let router = authority.router(
+        rss_mdm_management_http::identity_context_routes(Arc::new(
+            crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
+        )).into_axum(),
+    )?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
     let rule_id = uuid::Uuid::new_v4();
     for permissions in [
         json!(["accounts"]),

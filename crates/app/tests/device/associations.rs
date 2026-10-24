@@ -11,7 +11,7 @@ pub(crate) async fn setup() -> anyhow::Result<(
     PgConnection,
 )> {
     let (access, _, admin, root) = fixture().await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_a(),
         admin.principal_id(),
         crate::test_support::identity::device_grants(
@@ -601,7 +601,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         assert!(page["nextCursor"].is_null());
         assert_eq!(page["checkpoint"], checkpoint);
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_a(),
         admin.principal_id(),
         crate::test_support::identity::device_grants(Some(mdm), &["inventory_read"])?,
@@ -636,7 +636,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     use rss_mdm_device_service::lifecycle::{self, Acceptance};
     use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef, SnapshotProgress};
     let (access, s, principal, mut c) = setup().await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_a(),
         principal.principal_id(),
         crate::test_support::identity::device_grants(

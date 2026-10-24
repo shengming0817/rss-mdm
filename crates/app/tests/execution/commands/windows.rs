@@ -54,7 +54,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     client.publish_operation(id).await?;
     let mut grants = fixture.grants.clone();
     grants.extend(identity::device_grants(None, &["operation_read"])?);
-    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+    identity::seed_grants(case_tenant(), &fixture.author_id, grants).await?;
     for descending in [false, true] {
         let sort = if descending { "-id,-kind" } else { "id,kind" };
         let mut path = format!("/api/v1/operations?limit=1&sort={sort}");
@@ -238,7 +238,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         oversized.0 == StatusCode::SERVICE_UNAVAILABLE,
         "budget overflow became conflict: {oversized:?}"
     );
-    identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let (status, page) = fixture
         .author
         .call(

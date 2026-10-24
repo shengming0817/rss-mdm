@@ -287,7 +287,7 @@ async fn s3_product_http_contract() -> Result<()> {
                 .await?;
             ensure!(enabled.0 == StatusCode::OK);
             let download = super::http::download_contract(&fixture, &user, &path, &bytes).await?;
-            crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![])
+            crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, vec![])
                 .await?;
             let cookie = user
                 .cookies

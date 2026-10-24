@@ -8,7 +8,7 @@ fn operation(revision: u64, groups: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"groups":groups}})
 }
 async fn grants(subject: &str, operations: &[Permission]) -> Result<()> {
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         subject,
         operations

@@ -29,7 +29,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &member, grants).await?;
+    identity::seed_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let resource = Uuid::new_v4();
     native_configuration_resource(

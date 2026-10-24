@@ -276,7 +276,7 @@ impl Fixture {
                 scope: crate::authorization::Scope::Tenant,
             });
         }
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let (_device, platform_name, architecture, credential) = match platform {
             Platform::MacOs => (
                 case_device(),

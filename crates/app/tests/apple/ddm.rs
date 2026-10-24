@@ -298,7 +298,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         stale.0 == StatusCode::CONFLICT,
         "old-generation cursor accepted: {stale:?}"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         crate::test_support::identity::device_grants(

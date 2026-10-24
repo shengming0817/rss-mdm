@@ -127,7 +127,7 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
             let mut other = Browser::default();
             ensure!(other.login(&router, "other").await? == StatusCode::OK);
             let subject = browser_subject(&other, &router).await?;
-            identity::set_grants(case_tenant(), &subject, vec![]).await?;
+            identity::seed_grants(case_tenant(), &subject, vec![]).await?;
             ensure!(other.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
             other.operation = Some(Uuid::new_v4());
             ensure!(

@@ -34,7 +34,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
             == StatusCode::OK
     );
     let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         crate::test_support::identity::device_grants(

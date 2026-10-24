@@ -152,7 +152,7 @@ impl Fixture {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let source = peer.as_ref().map_or_else(
             || case::name("private-fixture").to_owned(),
             |peer| peer.logical.clone(),

@@ -32,7 +32,7 @@ pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &subject, grants).await
+    identity::seed_grants(case_tenant(), &subject, grants).await
 }
 pub(crate) async fn publish(
     user: &mut Browser,

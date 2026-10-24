@@ -29,7 +29,7 @@ async fn history_boundaries(
     let mut other = Browser::default();
     ensure!(other.login(router, "other").await? == StatusCode::OK);
     let other_subject = browser_subject(&other, router).await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         &other_subject,
         crate::test_support::identity::device_grants(None, &["compliance_read"])?,
@@ -59,7 +59,7 @@ async fn history_boundaries(
                 &["compliance_read"],
             )?);
         }
-        crate::test_support::identity::set_grants(case_tenant(), subject, limited).await?;
+        crate::test_support::identity::change_grants(case_tenant(), subject, limited).await?;
         ensure!(b.call(router, Method::GET, rule_path, None).await?.0 == StatusCode::OK);
         ensure!(
             b.call(
@@ -95,7 +95,7 @@ async fn history_boundaries(
                 tenant,
                 &format!("INSERT INTO mdm_access.devices VALUES('{tenant}','compliance-a')"),
             )?;
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::seed_grants(
                 tenant,
                 case::context().admin_for(tenant),
                 crate::test_support::identity::device_grants(None, &["compliance_read"])?,
@@ -465,7 +465,7 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
     ))?)?;
     ensure!(!deleted);
 
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         &fixture.subject,
         vec![crate::authorization::Grant {

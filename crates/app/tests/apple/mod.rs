@@ -285,7 +285,6 @@ impl Fixture {
             config.webhooks, execution.runtime.clone(), identity.tenant,
             agent_audit.clone(), clock.clone(), execution.protection.clone(), binding,
         ).await?;
-        execution.webhooks.set(webhooks.clone()).map_err(|_| anyhow::anyhow!("webhook fixture already assembled"))?;
         resources.resource(crate::webhooks::Resource(webhooks.clone()));
         // This handler fixture owns its real transport outside production assembly.
         if let Some(agent) = &agent_pki {
@@ -463,7 +462,7 @@ impl Fixture {
         launch.stage_deferred_task_with_token(execution.service.registration(signals.execution()).critical());
         launch.finish();
         if !preserve_authorization {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::seed_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 crate::test_support::identity::device_grants(
@@ -530,7 +529,7 @@ impl Fixture {
             "operation_cancel",
         ];
         operations.extend_from_slice(extra);
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             crate::test_support::identity::device_grants(Some(case_device()), &operations)?,
@@ -547,7 +546,7 @@ impl Fixture {
         let password = crate::enrollment::random();
         let mut browser = if self_service {
             let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
-            crate::test_support::identity::set_grants(case_tenant(), proof.principal_id(), vec![])
+            crate::test_support::identity::seed_grants(case_tenant(), proof.principal_id(), vec![])
                 .await?;
             let secret = crate::test_support::identity::credential(&self.app.identity, "other")?;
             Browser {

@@ -443,7 +443,7 @@ async fn agent_handoff_completes_native_registration_and_token_update() -> Resul
         linked.trim() == "1",
         "native registration must follow its exact Agent task"
     );
-    crate::test_support::identity::set_grants(case_tenant(), &handoff.fixture.author_id, vec![])
+    crate::test_support::identity::change_grants(case_tenant(), &handoff.fixture.author_id, vec![])
         .await?;
     let request = Request::builder()
         .method(Method::POST)

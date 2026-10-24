@@ -511,7 +511,7 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &member, grants).await?;
+    identity::seed_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let group = Uuid::new_v4();
     let scope = Uuid::new_v4();

@@ -358,7 +358,7 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);f.access_authenticator=None;
         let operator=browser_subject(&f.author,&f.router).await?;
         let mut grants=f.grants.clone();grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&operator,grants).await?;ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
+        crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
         let offboarding=Uuid::new_v4();
         let denied=f.access_call(Method::PUT,&path,Some(json!({"operationId":offboarding,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::OK,"offboard {denied:?}");

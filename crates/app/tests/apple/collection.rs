@@ -37,7 +37,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             scope: Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,
@@ -339,7 +339,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
             .await?;
     match withdrawal {
         "grant" => {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 crate::test_support::identity::device_grants(

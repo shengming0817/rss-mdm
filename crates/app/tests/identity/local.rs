@@ -140,7 +140,7 @@ async fn native_accounts(
     // A business-tenant administrator is not the installation initializer.
     // Prove actual revocation using the independent member, leaving admin live
     // to exercise the remaining membership/password/session revocation matrix.
-    set_management_grants(principal, json!(["identity_accounts_manage"])).await?;
+    change_management_grants(principal, json!(["identity_accounts_manage"])).await?;
     ensure!(
         browser
             .call(product, Method::GET, &format!("{tenant}/accounts"), None)
@@ -148,7 +148,7 @@ async fn native_accounts(
             .0
             == StatusCode::OK
     );
-    set_management_grants(principal, json!([])).await?;
+    change_management_grants(principal, json!([])).await?;
     let target_state = || {
         pg(&format!(
             "SELECT jsonb_build_object('account',(SELECT to_jsonb(a) FROM identity_authority.accounts a WHERE tenant_id='{tenant}' AND principal_id='{target}'),'membership',(SELECT to_jsonb(m) FROM identity_authority.memberships m WHERE tenant_id='{tenant}' AND principal_id='{target}'),'sessions',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY session_id),'[]'::jsonb) FROM identity_authority.sessions s WHERE tenant_id='{tenant}' AND principal_id='{target}'))::text",

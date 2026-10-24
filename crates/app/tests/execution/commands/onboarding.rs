@@ -494,7 +494,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     ensure!(commands.shutdown().join().await?.is_clean());
     let subject = browser_subject(&client.browser, &client.router).await?;
-    identity::set_grants(case_tenant(), &subject, vec![]).await?;
+    identity::change_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(
         bootstrap::grant(&client.router, &bootstrap_peer, &duplicate)
@@ -1953,7 +1953,7 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &subject, grants).await?;
+    identity::seed_grants(case_tenant(), &subject, grants).await?;
     let exit = Uuid::new_v4();
     software::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{exit}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}})).await?;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
@@ -2073,7 +2073,7 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
 
 async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
     let subject = browser_subject(&client.browser, &client.router).await?;
-    identity::set_grants(
+    identity::seed_grants(
         case_tenant(),
         &subject,
         [

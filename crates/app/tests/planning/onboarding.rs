@@ -13,7 +13,7 @@ async fn fixture() -> Result<Fixture> {
     resources.extend(std::mem::take(&mut f.resources));
     f.grants
         .extend(identity::device_grants(None, &["enrollment"])?);
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
         .await?;
     let setup = start_automation(&f.base).await?;
@@ -170,7 +170,7 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
                 .filter(|g| g.operation != crate::authorization::Permission::Enrollment)
                 .cloned()
                 .collect();
-            identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            identity::change_grants(case_tenant(), &f.author_id, grants).await?;
             let response = task_event_request(
                 &f.router,
                 &task,
@@ -451,7 +451,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let denied = f.author.call(&f.router,Method::POST,&path,Some(input.clone())).await?;
         ensure!(denied.0==StatusCode::FORBIDDEN,"{denied:?}");
         f.grants.extend(identity::device_grants(None,&["device_unmanage","inventory_assign"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         post(&mut f.author,&f.router,&path,input).await?;
         let automation = start_automation(&f.base).await?;
         let workers = worker(&f.base).await?;
@@ -539,7 +539,7 @@ async fn retirement_delivery_deadline(started: bool) -> Result<()> {
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
         f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy=Uuid::new_v4();
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
@@ -581,7 +581,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
         f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         f.scope(case_empty_scope(),json!([])).await?;
         let a=Uuid::new_v4();let b=Uuid::new_v4();

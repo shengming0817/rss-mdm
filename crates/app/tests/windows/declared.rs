@@ -369,7 +369,7 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,

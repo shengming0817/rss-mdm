@@ -155,7 +155,7 @@ impl Fixture {
             "production APNs worker never delivered pending work"
         );
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
-        crate::test_support::http::set_management_grants(
+        crate::test_support::http::seed_management_grants(
             crate::test_support::case::admin(),
             json!(["runtime_diagnostics_read"]),
         )
@@ -405,7 +405,7 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
     } else {
         apple.materials = Default::default();
     }
-    crate::test_support::http::set_management_grants(
+    crate::test_support::http::seed_management_grants(
         crate::test_support::case::admin(),
         json!(["runtime_diagnostics_read"]),
     )

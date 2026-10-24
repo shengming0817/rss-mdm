@@ -12,7 +12,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
     resources.finish(async {
         f.grants.extend(crate::test_support::identity::device_grants(None,&["inventory_collect"])?);
         f.grants.push(crate::authorization::Grant { operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant });
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
         let registration=seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();

@@ -834,7 +834,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         "/api/v1/pki/agent/trust/devices/{}/observation",
         active.runtime.device_id
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_a(),
         &subject,
         crate::test_support::identity::device_grants(
@@ -848,7 +848,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         .await?;
     assert_eq!(status, 200, "management observation: {body}");
     assert_eq!(body["observation"], observation);
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_a(),
         &subject,
         crate::test_support::identity::device_grants(Some("another-device"), &["inventory_read"])?,
@@ -967,7 +967,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         body["code"], "credential_revoked",
         "same TLS connection must recheck revoked credentials"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_a(),
         &subject,
         crate::test_support::identity::device_grants(
@@ -1388,7 +1388,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         final_trust,
         "replay must not revert retirement"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_a(),
         p.principal_id(),
         crate::test_support::identity::device_grants(None, &["inventory_read"])?,
@@ -2102,7 +2102,7 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
         StatusCode::BAD_REQUEST
     );
     let reader = admin(case_a(), "other-a").await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_a(),
         reader.principal_id(),
         crate::test_support::identity::device_grants(None, &["inventory_read"])?,

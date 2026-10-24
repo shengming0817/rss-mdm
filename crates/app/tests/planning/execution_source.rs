@@ -22,7 +22,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     agent_execution::seed_scope(&planning, included, json!([{"kind":"device","id":device}]))
         .await?;
     let subject = crate::test_support::case::admin();
-    identity::set_grants(
+    identity::seed_grants(
         &tenant.to_string(),
         subject,
         identity::device_grants(None, &["inventory_read", "configuration_write"])?,

@@ -432,7 +432,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(auth.id.to_string()).execute(&mut pg).await?;
         }
         let current = if cause == "permission" {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 vec![],
@@ -452,7 +452,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         )
         .await;
         if cause == "permission" {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 crate::test_support::identity::device_grants(

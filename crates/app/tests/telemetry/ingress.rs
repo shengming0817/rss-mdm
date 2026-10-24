@@ -31,7 +31,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         for operation in [crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
         }
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.register_profile(if expected=="postgres" && projection==r::TelemetryProjection::Both {json!(["inventory.collect.v1","task.execute.v1","inventory.native.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
         ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0==StatusCode::OK);
         let (template,_,_)=f.resource().await?;
@@ -329,7 +329,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(interrupted)=&interrupted {
                 recovery::retention_finishes(&mut f.author,&router,interrupted,&query).await?;
             }
-            identity::set_grants(case_tenant(), &f.author_id, vec![]).await?;
+            identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
             ensure!(
                 f.author
                     .call(
@@ -343,7 +343,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                     == StatusCode::FORBIDDEN,
                 "continuation must recheck revoked read permission"
             );
-            identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
             // Query a genuine second device with durable samples, not a missing identifier.
             if let Some(other_device) = other_device {
                 let mut denied = query.clone();
@@ -357,7 +357,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                 .await?;
                 ensure!(permitted["rows"].as_array().is_some_and(|v| v.len() == 1));
                 let grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
-                identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+                identity::change_grants(case_tenant(), &f.author_id, grants).await?;
                 ensure!(
                     f.author
                         .call(
@@ -371,7 +371,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                         == StatusCode::FORBIDDEN
                 );
             } else {
-                identity::set_grants(
+                identity::change_grants(
                     case_tenant(),
                     &f.author_id,
                     identity::device_grants(Some(case_device_id()), &["inventory_read"])?,
@@ -403,7 +403,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(evidence)=&gap_evidence { gaps::withdrawn(&mut f,&router,evidence,&body["policy"]).await?; }
             let registration=pg(&format!("SELECT registration::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["batchId"].as_str().unwrap()))?;
             let registration:Uuid=registration.trim().parse()?;
-            identity::set_grants(case_tenant(),&f.author_id,identity::device_grants(Some(case_device_id()), &["credentials","inventory_read"])?).await?;
+            identity::change_grants(case_tenant(),&f.author_id,identity::device_grants(Some(case_device_id()), &["credentials","inventory_read"])?).await?;
             f.author.operation=Some(Uuid::new_v4());
             post(&mut f.author,&router,&format!("/api/v1/devices/{}/registrations/{registration}/revoke",case_device_id()),json!({})).await?;
             f.author.operation=None;
@@ -412,7 +412,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             for operation in [crate::authorization::Permission::PolicyRead, crate::authorization::Permission::ResourceRead] {
                 reader_grants.push(crate::authorization::Grant { operation, scope:crate::authorization::Scope::Tenant });
             }
-            identity::set_grants(case_tenant(), &f.author_id, reader_grants).await?;
+            identity::change_grants(case_tenant(), &f.author_id, reader_grants).await?;
             let (status, summary) = f.author.call(&router, Method::GET,
                 &format!("/api/v1/devices/{}/telemetry-configurations", case_device_id()), None).await?;
             ensure!(status == StatusCode::OK && summary["registration"].is_null()

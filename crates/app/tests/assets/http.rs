@@ -63,7 +63,7 @@ impl AssetHttp {
             None,
             &["inventory_read", "inventory_assign"],
         )?;
-        crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
+        crate::test_support::identity::seed_grants(case_tenant(), &author_id, grants.clone())
             .await?;
         Ok(Self {
             resources: authority.resources,
@@ -86,7 +86,7 @@ mod identity_read {
         fixture_resources.finish(async {
         let authorized = fixture.router;
         let mut browser = fixture.author;
-        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, vec![]).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, vec![]).await?;
         let query = &format!("/api/v1/devices/{}/inventory", case::name("device-1"));
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
@@ -672,7 +672,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         &fixture.author_id,
         fixture.grants.clone(),
@@ -704,7 +704,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
     let denied_refs = fixture.author.call(&fixture.router, Method::GET, &format!("{path}/references"), None).await?;
     ensure!(denied_refs.0 == StatusCode::FORBIDDEN, "resource references require ResourceRead");
     fixture.grants.push(Grant { operation: Permission::ResourceRead, scope: Scope::Tenant });
-    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let references = fixture
         .author
         .call(
@@ -768,7 +768,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     let device = case::name("asset-list");
     pg(&format!("INSERT INTO mdm_access.devices VALUES('{}','{device}')", case_tenant()))?;
     f.grants.push(Grant { operation: Permission::InventoryFieldsWrite, scope: Scope::Tenant });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let key = "custom.page_values";
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});

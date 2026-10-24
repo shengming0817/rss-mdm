@@ -27,7 +27,7 @@ use rss_mdm_registration_service::device;
 
 mod router;
 pub mod runtime_diagnostics;
-pub use router::{Services, router};
+pub use router::{Services, identity_context_routes, router};
 
 pub mod boundary;
 

@@ -499,7 +499,7 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(q.tenant_id,q.grant_id)=(g.tenant_id,g.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.self_service").bind(case_tenant()).bind(peer.receipt.enrollment_id).fetch_one(&mut *tx).await?;
     ensure!(device.starts_with("self:") && device != crate::test_support::case::name("tls-device"));
     tx.rollback().await?;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         crate::test_support::identity::device_grants(Some(&device), &["credentials"])?,

@@ -19,7 +19,7 @@ impl Handoff {
         let mut f = agent_execution::Fixture::from_config(base).await?;
         f.grants
             .extend(identity::device_grants(None, &["enrollment"])?);
-        identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
         let windows = platform == Platform::Windows;
         let context = software_execution::context(if windows {
             software_execution::Platform::Windows
