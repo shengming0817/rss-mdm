@@ -29,13 +29,6 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
             ),
         )
         .route(
-            "/device-access/recovery-uses",
-            post(access_recovery_use).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
             "/device-access/begin",
             post(access_begin).owned(
                 &contracts::PROTOCOL_AGENT_CHANNEL,
