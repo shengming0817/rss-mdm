@@ -943,7 +943,7 @@ APP_HELPER_CONSUMERS = {
     'support/software.rs': ('software.http',),
     'support/planning_http.rs': ('planning.http',),
     'support/inventory.rs': ('inventory.runtime',),
-    'support/audit.rs': ('audit.receipts', 'audit.integrity', 'audit.recovery', 'audit.budget'),
+    'support/audit.rs': ('agent.pki', 'api.diagnostics', 'apple.collection', 'apple.identity', 'apple.policy', 'apple.profile', 'assets.http', 'audit.budget', 'audit.integrity', 'audit.receipts', 'audit.recovery', 'authorization.capacity', 'authorization.initialization', 'authorization.programmatic', 'authorization.rules', 'compliance.group_input', 'compliance.http', 'compliance.recovery', 'content.http', 'device.recovery', 'device.revocation', 'diagnostics.http', 'enrollment.http', 'enrollment.quotas', 'execution.agent.content', 'execution.agent.history', 'execution.commands.admission', 'execution.commands.dispatch', 'execution.commands.onboarding', 'execution.commands.windows', 'planning.agent_policy', 'planning.assets', 'planning.group_scope', 'planning.recovery', 'planning.resource_archive', 'planning.scope', 'planning.self_service', 'settings.first_use', 'software.http', 'timeline.http', 'windows.enrollment', 'windows.issuance', 'windows.limits', 'windows.retention'),
     'support/gateway.rs': ('windows.management', 'apple.identity', 'agent.registration'),
     'support/tls.rs': ('windows.management', 'apple.identity', 'agent.registration'),
     'execution/support.rs': ('execution.commands.admission', 'execution.commands.configuration'),
@@ -1337,8 +1337,6 @@ consume(('crates/inventory-service/src/assets/runs.rs',), 'assets.http assets.so
 
 consume(("crates/execution-service/src/agent_collection_eligibility.rs", "crates/execution-service/src/actions/agent_collection.rs"), "planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries planning.group_scope compliance.evaluation")
 
-consume(("crates/resource/src/agent_collection.rs", "crates/resource/src/blueprints/agent_windows.rs",
-        "crates/resource/src/blueprints/agent_macos.rs", "crates/resource/src/blueprints/agent_system.rs", "crates/agent-wire/src/native_collection.rs", "crates/agent-wire/src/native_collection/*.rs"), "planning.http planning.agent_policy execution.agent.delivery execution.agent.history execution.agent.recovery assets.sources assets.queries")
 
 consume(("crates/examples/examples/fixture_snapshot.rs",), "examples.cli")
 
@@ -1723,8 +1721,6 @@ consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_g
 TOOL_INPUTS['crates/app/tests/support/mod.rs'] = ('test_t2_modules',)
 TOOL_INPUTS['crates/app/tests/support/preparation.rs'] = ('test_t2_fixtures',)
 TOOL_INPUTS['crates/app/tests/support/pki.rs'] = ('test_t2_modules',)
-consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
-        'telemetry.ingress.postgres')
 
 consume(('crates/telemetry-service/src/schema.sql',), 'installation.migration catalog.contract')
 consume(('crates/telemetry-service/src/catalog.json','crates/telemetry-service/src/admission.sql'), 'catalog.contract')
@@ -1885,8 +1881,6 @@ for name, selector in (
     policy = replace(previous, fixtures=tuple(dict.fromkeys((*fixtures, 'content'))))
     MODULES[name] = replace(module, policies=(*[p for p in module.policies if p.selector != selector], policy))
 
-# Shared projection declarations and pure semantics moved from Resource to agent-wire (#2914).
-consume(('crates/agent-wire/src/mapping.rs',), 'planning.http planning.agent_policy execution.agent.delivery assets.http telemetry.ingress.postgres windows.management apple.collection')
 
 T1_INPUTS += ('crates/inventory-service/src/operation.rs',
               'crates/management-http/src/resource_catalog/mod.rs',

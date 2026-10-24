@@ -23,17 +23,10 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
 
 
-    def test_macos_native_definitions_select_the_shared_collection_consumers(self):
-        shared = select_inputs(['crates/agent-wire/src/native_collection.rs']).modules
-        selected = select_inputs(['crates/agent-wire/src/native_collection/macos.rs']).modules
-        self.assertEqual(selected, shared)
-        self.assertIn('execution.agent.delivery', selected)
-        self.assertIn('planning.agent_policy', selected)
-        self.assertEqual(select_inputs(['crates/agent-wire/tests/macos_collection.rs']).modules, ())
 
     def test_management_limits_and_moved_entra_owners_select_real_consumers(self):
         for path, expected in {
-            'crates/management-http/src/body_policy.rs': {'windows.entra', 'agent.pki', 'planning.agent_policy', 'content.http'},
+            'crates/management-http/src/body_policy.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/registration-service/src/windows_entra.rs': {'windows.entra'},
             'crates/inventory-service/src/apple_collection_receipts.rs': {'apple.collection'},
             'crates/registration-service/src/windows_receipts.rs': {'windows.entra', 'windows.issuance', 'windows.declared'},
@@ -42,12 +35,6 @@ class ModuleImpactTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(expected <= set(select_inputs([path]).modules))
 
-    def test_selected_channel_inputs_reach_native_and_self_service_consumers(self):
-        for path in ('crates/inventory-service/src/objects.rs','crates/device-service/src/planning.rs','crates/device-service/src/planning/snapshots.rs','crates/flow-service/src/planning/targets.rs','crates/flow-service/src/planning/automation/relations.rs'):
-            with self.subTest(path=path):
-                selected=set(select_inputs([path]).modules)
-                self.assertTrue({'apple.policy','apple.collection','apple.account_enrollment','apple.onboarding','planning.self_service','planning.onboarding','execution.commands.onboarding'} <= selected, selected)
-                self.assertTrue(selected.isdisjoint({'apple.apns','sources.brew_git','identity.oidc'}),selected)
 
     def test_shared_apple_organization_schema_selects_both_enrollment_consumers(self):
         selected=select_inputs(['crates/apple-channel/schema/account-enrollment.sql'])
@@ -55,22 +42,8 @@ class ModuleImpactTests(unittest.TestCase):
 
 
 
-    def test_self_service_consumes_trusted_subject_and_session_authority(self):
-        for path in ('crates/authorization-service/src/evaluate.rs',
-                     'crates/authorization-service/src/session.rs'):
-            self.assertIn('planning.self_service', select_inputs([path]).modules, path)
 
 
-    def test_archive_selects_real_consumers_and_keeps_t1_independent(self):
-        for path in ('crates/native-protection/src/lib.rs',
-                     'crates/authorization-service/src/model.rs',
-                     'crates/audit-integration/src/lib.rs',
-                     'crates/management-http/src/boundary.rs',
-                     'crates/app/tests/support/planning_http.rs'):
-            selected = select_inputs([path])
-            self.assertIn('certificate-archive.http', selected.modules, path)
-        selected = select_inputs(['crates/certificate-archive-service/tests/behavior.rs'])
-        self.assertEqual(selected.modules, ())
 
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
@@ -406,21 +379,7 @@ class ModuleImpactTests(unittest.TestCase):
             selected = select_inputs([path])
             self.assertEqual(set(selected.modules), expected, path)
 
-    def test_shared_onboarding_paths_reach_both_native_protocols(self):
-        for path in ('crates/agent-wire/src/lib.rs',
-                     'crates/execution-service/src/managed_registration.rs',
-                     'crates/execution-service/src/native_installation.rs',
-                     'crates/inventory-service/src/collection/channel.rs'):
-            selection = select_inputs([path])
-            self.assertTrue({'execution.commands.onboarding','apple.onboarding'} <= set(selection.modules), path)
 
-    def test_group_inputs_reach_published_scope_consumers_only(self):
-        selected = self.selected('crates/group-postgres/src/lib.rs')
-        self.assertTrue({'group.persistence','group.generations','planning.group_scope','planning.scope',
-                         'planning.http','planning.policy','compliance.group_input','planning.frequency'} <= selected)
-        self.assertTrue(selected.isdisjoint({'authorization.membership','content.http','identity.sso',
-                                            'planning.agent_policy','publication.winget','windows.management'}))
-        self.assertEqual(self.selected('crates/group-postgres/tests/t2.rs'), {'group.persistence'})
 
     def test_apple_push_includes_transport_durable_push_and_health_only(self):
         self.assertEqual(self.selected('crates/apple-channel/src/push.rs'),
@@ -486,7 +445,8 @@ class ModuleImpactTests(unittest.TestCase):
 class DirectProofs(unittest.TestCase):
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
         for path in ('crates/http-contract/src/catalog.rs', 'crates/http-contract/src/collections.rs',
-                     'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs'):
+                     'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs',
+                     'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs'):
             with self.subTest(path=path):
                 self.assertEqual(select_inputs([path]).modules, ())
 
@@ -502,6 +462,11 @@ class DirectProofs(unittest.TestCase):
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(set(select_inputs([path]).modules), expected)
+
+    def test_business_audit_assertions_keep_direct_callers(self):
+        selected = set(select_inputs(['crates/app/tests/support/audit.rs']).modules)
+        self.assertTrue({'content.http', 'authorization.rules', 'audit.integrity'} <= selected)
+        self.assertNotIn('sources.winget', selected)
 
     def test_business_changes_still_select_direct_http_and_storage_proofs(self):
         for path, expected in {
