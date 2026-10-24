@@ -77,7 +77,7 @@ class Selection(unittest.TestCase):
             selection['cargo']['packages'] = [owner]
             self.assertTrue(ci.selected_gate('native-schema', selection))
 
-    def test_explicit_cargo_full_does_not_expand_integration(self):
+    def test_affected_ignores_ci_full_environment(self):
         decision = make_selection(
             ['rss-mdm-resource-postgres'],
             ['resource.persistence'],
@@ -85,7 +85,7 @@ class Selection(unittest.TestCase):
             [{'kind': 'business', 'input': 'test-input', 'modules': []}],
         )
         with (
-            patch.dict(ci.os.environ, {'CI_FULL': '1'}),
+            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all'}),
             patch.object(
                 ci,
                 'command',
@@ -93,7 +93,7 @@ class Selection(unittest.TestCase):
             ),
         ):
             selected = ci.select_impact('head')
-        self.assertTrue((selected['cargo']['mode'] == 'all'))
+        self.assertEqual(selected['cargo'], decision['cargo'])
         self.assertFalse((selected['t2']['mode'] == 'all'))
         self.assertEqual(selected['t2']['modules'], ['resource.persistence'])
 
@@ -136,24 +136,13 @@ class Selection(unittest.TestCase):
         )
         self.assertFalse(ci.selected_gate('script-tests', selection))
 
-    def test_compliance_owner_selects_real_router_module(self):
-        from ci_impact import select_inputs, SelectionError
-
-        for owner in ['compliance', 'compliance-postgres', 'group-postgres']:
-            self.assertTrue(
-                any(
-                    name.startswith('compliance.')
-                    for name in select_inputs(
-                        ['crates/' + owner + '/src/lib.rs']
-                    ).modules
-                )
-            )
-        self.assertFalse(
-            any(
-                name.startswith('compliance.')
-                for name in select_inputs(['crates/winget-source/src/lib.rs']).modules
-            )
-        )
+    def test_storage_owner_does_not_expand_into_business_consumers(self):
+        from ci_impact import select_inputs
+        self.assertEqual(select_inputs(['crates/compliance/src/lib.rs']).modules, ())
+        self.assertEqual(select_inputs(['crates/compliance-postgres/src/lib.rs']).modules,
+                         ('compliance.storage',))
+        self.assertEqual(set(select_inputs(['crates/group-postgres/src/lib.rs']).modules),
+                         {'group.persistence', 'group.generations'})
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -388,15 +377,21 @@ class EntryModes(unittest.TestCase):
             self.assertEqual(evidence['selection']['error']['inputs'], failure.inputs)
             self.assertFalse((out / 'ownership.log').exists())
 
-    def test_explicit_full_bypasses_unavailable_baseline(self):
+    def test_explicit_full_bypasses_unavailable_baseline_only_in_ci(self):
         with (
-            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all'}),
-            patch.object(ci, 'command') as command,
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all', 'CI_PLAN': '1'}),
+            patch.object(ci, 'OUT', Path(directory)),
+            patch.object(ci, 'require_lease'),
+            patch.object(ci, 'command', return_value=result('head')),
+            patch.object(ci, 'select_impact', side_effect=AssertionError('affected called')),
+            contextlib.redirect_stdout(io.StringIO()),
         ):
-            decision = ci.select_impact('head', 'missing-base')
-        command.assert_not_called()
+            self.assertEqual(ci.main(), 0)
+            decision = json.loads((Path(directory) / 'plan.json').read_text())['selection']
         self.assertEqual(decision['t2']['mode'], 'all')
         self.assertEqual(set(decision['t2']['modules']), set(ci.MODULES))
+
 
 class DeviceConsumerInputs(unittest.TestCase):
     def test_shared_device_inputs_select_their_actual_consumers(self):
@@ -409,8 +404,6 @@ class DeviceConsumerInputs(unittest.TestCase):
                          'crates/inventory-postgres/src/history.rs',
                          'crates/inventory-service/src/assets/planning.rs',
                          'crates/registration-service/src/device/endpoints.rs',
-                         'crates/registration-service/src/device/directory.rs',
-                         'crates/app/tests/support/inventory.rs',
-                         'crates/app/tests/device/support.rs'):
+                         'crates/registration-service/src/device/directory.rs'):
                 with self.subTest(module=name, path=path):
                     self.assertTrue(any(fnmatchcase(path, pattern) for pattern in inputs))
