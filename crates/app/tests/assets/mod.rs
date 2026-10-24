@@ -47,7 +47,7 @@ impl Fixture {
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let automation = start_automation(&base).await?;
         let (router, resources) = app(&base).await?;
-        let browser = authority::Authority::prepared_browser("admin").await?;
+        let browser = authority::Authority::prepared_browser("admin")?;
         let subject = browser_subject(&browser, &router).await?;
         permissions(&subject, None, true).await?;
         pg(&format!(

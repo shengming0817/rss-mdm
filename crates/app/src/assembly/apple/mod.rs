@@ -140,3 +140,24 @@ pub(crate) mod push;
 #[cfg(test)]
 #[path = "../../../tests/apple/mod.rs"]
 mod tests;
+
+/// Product composition retains platform-session rechecks even when enrollment is disabled.
+pub(crate) async fn identity_platform(
+    config: &crate::config::Config,
+) -> Result<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>, Error> {
+    use sqlx::Connection;
+    let invalid = || Error::Configuration(ConfigIssue::IdentityConfiguration);
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut connection = sqlx::PgConnection::connect_with(&config.identity.database.options()?)
+            .await
+            .map_err(|_| invalid())?;
+        let result = rss_mdm_apple_channel::platform_sso::verify_runtime(&mut connection).await;
+        connection.close().await.map_err(|_| invalid())?;
+        result.map_err(|_| invalid())
+    })
+    .await
+    .map_err(|_| invalid())??;
+    Ok(Arc::new(
+        rss_mdm_apple_channel::platform_sso::bridge::Verifier::new(&config.product_origin),
+    ))
+}

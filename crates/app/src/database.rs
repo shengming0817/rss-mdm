@@ -270,3 +270,23 @@ impl Database {
         rss_mdm_agent_channel::Store::from_pool(self.pool.clone())
     }
 }
+
+/// Full installed-product drift belongs to composition, not capability constructors.
+/// Each borrower still verifies its own role and transaction contract separately.
+pub(crate) async fn verify_product_storage(
+    connection: &mut sqlx::PgConnection,
+) -> Result<(), sqlx::Error> {
+    let actual: String = sqlx::query_scalar(include_str!("product-storage.sql"))
+        .fetch_one(connection)
+        .await?;
+    let actual: serde_json::Value = serde_json::from_str(&actual)
+        .map_err(|_| sqlx::Error::Protocol("product storage catalog".into()))?;
+    let expected: serde_json::Value = serde_json::from_str(include_str!("product-storage.json"))
+        .expect("installed product catalog");
+    if actual != expected {
+        return Err(sqlx::Error::Protocol(
+            "installed product storage drift".into(),
+        ));
+    }
+    Ok(())
+}

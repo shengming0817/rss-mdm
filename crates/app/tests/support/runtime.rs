@@ -329,3 +329,24 @@ async fn fixture_resources_preserve_failures_and_close_during_initialization() {
     .await
     .expect("RSS drop drain closes the abandoned fixture");
 }
+
+pub(crate) struct PoolResource(pub sqlx::PgPool);
+impl rss_runtime::ManagedResource for PoolResource {
+    fn name(&self) -> &str {
+        "capability-pool"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}
+pub(crate) struct SourceResource(pub Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl rss_runtime::ManagedResource for SourceResource {
+    fn name(&self) -> &str {
+        "capability-source"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}

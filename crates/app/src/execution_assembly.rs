@@ -119,6 +119,8 @@ pub(crate) async fn open(
         let store = runtime
             .local_tx(tenant, deadline(), move |tx| {
                 Box::pin(async move {
+                    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
+                        .await?;
                     storage::admit(tx).await.map_err(|_| {
                         PgError::from(sqlx::Error::Protocol("command admission".into()))
                     })?;

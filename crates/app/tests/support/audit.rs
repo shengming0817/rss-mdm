@@ -1,51 +1,50 @@
 pub(crate) use crate::publication_support::pg::projection;
 // Test assertions decode the component's canonical records, including their source identity.
-use rss_audit_core::DecodedAuditV1;
+use rss_audit_core::AuditEventV1;
 use serde_json::Value;
 
 pub(crate) struct Record {
-    pub decoded: DecodedAuditV1,
+    pub event: AuditEventV1,
     pub payload: Value,
 }
 impl Record {
     fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
         let decoded = rss_audit_core::decode_untrusted(bytes)?;
-        let payload = serde_json::from_slice(decoded.event().context().payload().as_bytes())?;
-        Ok(Self { decoded, payload })
+        Self::from_event(decoded.event().clone())
+    }
+    fn from_source(bytes: &[u8]) -> anyhow::Result<Self> {
+        Self::from_event(rss_mdm_audit_integration::decode_source_event(bytes)?)
+    }
+    fn from_event(event: AuditEventV1) -> anyhow::Result<Self> {
+        let payload = serde_json::from_slice(event.context().payload().as_bytes())?;
+        Ok(Self { event, payload })
     }
     pub fn action(&self) -> &str {
-        self.decoded.event().facts().action().as_str()
+        self.event.facts().action().as_str()
     }
     pub fn target(&self) -> &str {
-        self.decoded.event().facts().resource().id().as_str()
+        self.event.facts().resource().id().as_str()
     }
     pub fn actor(&self) -> Option<&str> {
-        (self.decoded.event().facts().actor().kind().as_str() != "unidentified")
-            .then(|| self.decoded.event().facts().actor().id().as_str())
+        (self.event.facts().actor().kind().as_str() != "unidentified")
+            .then(|| self.event.facts().actor().id().as_str())
     }
     pub fn operation(&self) -> Option<&str> {
-        self.decoded
-            .event()
+        self.event
             .context()
             .coordinates()
             .operation_id()
             .map(|v| v.as_str())
     }
     pub fn request(&self) -> Option<&str> {
-        self.decoded
-            .event()
+        self.event
             .context()
             .coordinates()
             .request_id()
             .map(|v| v.as_str())
     }
     pub fn source(&self) -> &str {
-        self.decoded
-            .event()
-            .identity()
-            .source()
-            .source_id()
-            .as_str()
+        self.event.identity().source().source_id().as_str()
     }
     pub fn result(&self) -> &str {
         self.payload["result"].as_str().expect("product result")
@@ -56,12 +55,12 @@ impl Record {
     }
 }
 pub(crate) async fn read(connection: &mut sqlx::PgConnection) -> anyhow::Result<Vec<Record>> {
-    project_case().await?;
-    let rows: Vec<Vec<u8>> =
-        sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY tenant_id,position")
-            .fetch_all(connection)
-            .await?;
-    rows.iter().map(|row| Record::decode(row)).collect()
+    let rows: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT source_bytes FROM mdm_audit.receipts ORDER BY tenant_id,source_id",
+    )
+    .fetch_all(connection)
+    .await?;
+    rows.iter().map(|row| Record::from_source(row)).collect()
 }
 pub(crate) fn decode_hex(lines: &str) -> anyhow::Result<Vec<Record>> {
     lines
@@ -118,28 +117,16 @@ pub(crate) async fn request_store() -> anyhow::Result<(
     Ok((pool, runtime, std::sync::Arc::new(store)))
 }
 
-async fn project_case() -> anyhow::Result<()> {
-    let mode = match std::env::var("MDM_TEST_CONFIG") {
-        Ok(path) => {
-            let config: Value = serde_json::from_slice(&std::fs::read(path)?)?;
-            serde_json::from_value::<crate::config::AuditConfig>(config["audit"].clone())?
-                .integrity()?
-        }
-        Err(_) => rss_audit_postgres::Integrity::Plain,
-    };
-    projection::drain(
-        rss_request_context::TenantId::parse(crate::test_support::runtime::case_tenant())?,
-        mode,
-    )
-    .await
-}
-
-pub(crate) async fn audit_records() -> anyhow::Result<Vec<crate::audit_test_support::Record>> {
-    project_case().await?;
-    crate::audit_test_support::decode_hex(&crate::test_support::process::pg(&format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY position",
+pub(crate) async fn audit_records() -> anyhow::Result<Vec<Record>> {
+    let lines = crate::test_support::process::pg(&format!(
+        "SELECT convert_from(source_bytes,'UTF8') FROM mdm_audit.receipts WHERE tenant_id='{TENANT}' ORDER BY source_id,event_id",
         TENANT = crate::test_support::runtime::case_tenant()
-    ))?)
+    ))?;
+    lines
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| Record::from_source(line.as_bytes()))
+        .collect()
 }
 
 pub(crate) async fn audit_count(

@@ -569,12 +569,13 @@ pub(crate) async fn inventory_runtime(
     tenant: TenantId,
 ) -> Arc<crate::inventory_runtime::InventoryRuntime> {
     let options = crate::device::test_support::options;
-    let access = crate::Database::connect(options("mdm_access").unwrap())
-        .await
-        .unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_lazy_with(options("mdm_access").unwrap());
+    let access = Arc::new(rss_mdm_inventory_service::Store::from_pool(pool));
     crate::inventory_runtime::InventoryRuntime::fixture(
         options("mdm_runtime").unwrap(),
-        access.inventory(),
+        access,
         tenant,
         crate::test_support::runtime::monotonic(),
         audit_store_with_integrity(rss_audit_postgres::Integrity::Plain).await,

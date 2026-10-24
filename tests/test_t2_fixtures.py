@@ -264,7 +264,7 @@ class PreparationTests(unittest.TestCase):
             def helper(root, manifest, output, database):
                 stages.append(manifest['stage'])
                 (root / 'source-session').write_text(str(len(stages)))
-            fixture.identity_helper = helper
+            fixture.preparation_helper = helper
             def parallel():
                 barrier = threading.Barrier(4)
                 def call(_):
@@ -401,7 +401,7 @@ class PreparationBatchTests(unittest.TestCase):
                         private(path.parent / f"credential-{actor['tenant']}-{actor['role']}", 'real-issued-test-double')
                         private(path.parent / f"credential-meta-{actor['tenant']}-{actor['role']}", time.time() + 300)
                     private(path, context)
-            fixture.identity_helper = helper
+            fixture.preparation_helper = helper
             gate = threading.Barrier(2)
             def prepare(job):
                 gate.wait(timeout=3)
@@ -458,3 +458,52 @@ class PreparationBatchTests(unittest.TestCase):
                         with self.assertRaises(RuntimeError):
                             result.result(timeout=3)
                 self.assertEqual(host.call_count, 1)
+
+
+class HostOwnershipTests(unittest.TestCase):
+    def test_different_tenants_and_configs_never_overlap_full_hosts(self):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from types import SimpleNamespace
+        from t2_execution import Processes
+        with tempfile.TemporaryDirectory() as tmp:
+            processes = Processes()
+            fixture = RunFixtures(SimpleNamespace(processes=processes), Path(tmp), 2)
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = MODULES['execution.agent.content']
+            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(2)]
+            fixture.prepare(jobs)
+            fixture.case_contexts[jobs[1].key]['tenant'] = 'other-tenant'
+            held, release, second = threading.Event(), threading.Event(), threading.Event()
+            live = []
+            class Worker:
+                def __init__(self, builds, config, output):
+                    if live:
+                        raise AssertionError('overlapping physical database owner')
+                    live.append(self)
+                    self.failed = threading.Event()
+                    self.address, self.log_path = config, output / 'host.log'
+                def check(self):
+                    pass
+                def close(self):
+                    live.remove(self)
+            def run(index):
+                with fixture.workers(jobs[index], 'db', str(index)):
+                    if index == 0:
+                        held.set()
+                        if not release.wait(3):
+                            raise TimeoutError('first borrow not released')
+                    else:
+                        second.set()
+            with patch('t2_fixtures.compatibility', side_effect=lambda value: value), patch('t2_fixtures.Host', Worker):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    first = executor.submit(run, 0)
+                    self.assertTrue(held.wait(3))
+                    next_case = executor.submit(run, 1)
+                    self.assertFalse(second.wait(.1))
+                    release.set()
+                    first.result(timeout=3)
+                    next_case.result(timeout=3)
+                self.assertTrue(second.is_set())
+                for host in fixture.hosts.values():
+                    host.close()

@@ -29,7 +29,7 @@ impl Fixture {
                         config,
                         Arc::new(crate::clock::SystemClock),
                         monotonic(),
-                        authority.access.clone(),
+                        database(&authority.base).await?,
                         None,
                         authority.audit.clone(),
                     )
@@ -37,9 +37,12 @@ impl Fixture {
                 resources.extend(application_resources);
                 let tenant = TenantId::parse(case_tenant())?;
                 let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
-                let timeline = authority
-                    .access
-                    .timeline(authority.audit.clone(), tenant, &key)?;
+                let timeline = Arc::new(Timeline::new(
+                    authority.pool.clone(),
+                    authority.audit.clone(),
+                    tenant,
+                    &key,
+                )?);
                 timeline.initialize().await?;
                 let admin = authority.browser("admin")?;
                 let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -233,7 +236,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     );
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
     let service = crate::device::DeviceService::new(
-        f.authority.access.registration(),
+        f.authority.registration.clone(),
         case_tenant().into(),
         f.authority.audit.clone(),
     );
@@ -314,7 +317,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         ensure!(
             stored
                 .iter()
-                .any(|r| r.decoded.event().identity().event_id().as_str()
+                .any(|r| r.event.identity().event_id().as_str()
                     == item["eventId"].as_str().unwrap())
         );
         ensure!(item["effect"] == "unknown");
@@ -420,7 +423,8 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
             let peer_operation = Uuid::new_v4();
             let own_ids = f.append(&own_proof, own_operation, 0..1, 1, 1).await?;
             let peer_ids = f.append(&peer_proof, peer_operation, 0..1, 1, 1).await?;
-            let peer = f.authority.access.timeline(
+            let peer = Timeline::new(
+                f.authority.pool.clone(),
                 f.authority.audit.clone(),
                 TenantId::parse(case::peer())?,
                 &f.key,
@@ -682,7 +686,8 @@ async fn on_demand_projection_is_bounded_idle_and_resumes_from_durable_checkpoin
                 }
             }
             ensure!(complete, "small bounded backlog did not converge");
-            let restarted = f.authority.access.timeline(
+            let restarted = Timeline::new(
+                f.authority.pool.clone(),
                 f.authority.audit.clone(),
                 TenantId::parse(case_tenant())?,
                 &f.key,

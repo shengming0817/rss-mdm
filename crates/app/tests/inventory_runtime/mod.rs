@@ -69,7 +69,15 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let admin = admin(case_a(), "admin-a").await?;
     let credential = proof(case_a(), Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
-    let first = report(&service, &access, &credential, [Some("First"), Some("10")]).await?;
+    let first = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &credential,
+        [Some("First"), Some("10")],
+    )
+    .await?;
     // Simulate a corrupt relational coordinate while retaining a valid sealed blob/digest.
     let mut corrupt_root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
@@ -272,9 +280,33 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     // Fresh epoch: confirmed partial fields project; failed fields retain trusted values.
     let newer = proof(case_a(), Channel::Mdm, 122);
     let (_, registration) = bind(&service, &admin, &newer, "collection-recovery", 1).await?;
-    let full = report(&service, &access, &newer, [Some("New"), Some("11")]).await?;
-    let partial = report(&service, &access, &newer, [Some("Unconfirmed"), None]).await?;
-    let failed = report(&service, &access, &newer, [None, None]).await?;
+    let full = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &newer,
+        [Some("New"), Some("11")],
+    )
+    .await?;
+    let partial = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &newer,
+        [Some("Unconfirmed"), None],
+    )
+    .await?;
+    let failed = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &newer,
+        [None, None],
+    )
+    .await?;
     ensure!(
         matches!(partial.batch().unwrap().body(), Body::Snapshot(_))
             && matches!(failed.batch().unwrap().body(), Body::Snapshot(_))
@@ -315,7 +347,15 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         std::slice::from_ref(&full.scope),
     )
     .await?;
-    let newer_run = report(&service, &access, &newer, [Some("Newer"), Some("12")]).await?;
+    let newer_run = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &newer,
+        [Some("Newer"), Some("12")],
+    )
+    .await?;
     wait_ready_projection(&runtime, &newer_run).await?;
     ensure!(
         before
@@ -360,7 +400,9 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     // Stop after Inventory writes but before its projection transaction commits. Restart replays.
     let broken = report(
         &service,
-        &access,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         &newer,
         [Some("After-failure"), Some("12")],
     )
@@ -420,9 +462,16 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     // Source sequence exhaustion fails without allocating a new run or wrapping its ordering.
     sqlx::query("UPDATE mdm_access.report_sources SET next_sequence=9223372036854775807 WHERE tenant_id=$1::uuid AND registration=$2::uuid AND source='mdm.windows'").bind(case_a()).bind(registration.registration.to_string()).execute(&mut root).await?;
     ensure!(
-        report(&service, &access, &newer, [Some("wrap"), Some("13")])
-            .await
-            .is_err()
+        report(
+            &service,
+            &access
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
+                .await?,
+            &newer,
+            [Some("wrap"), Some("13")]
+        )
+        .await
+        .is_err()
     );
     let after_exhaustion: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid",

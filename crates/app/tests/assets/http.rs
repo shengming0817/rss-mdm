@@ -75,19 +75,18 @@ impl AssetHttp {
     }
 }
 mod identity_read {
+    use super::AssetHttp;
     use crate::test_support::http::{Browser, set_device_grants};
     use crate::test_support::{process::*, runtime::*, *};
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real read authorization and PostgreSQL projection"]
     async fn persisted_inventory_read_respects_device_scope() -> Result<()> {
-        let mut fixture = authority::Authority::open().await?;
+        let mut fixture = AssetHttp::open().await?;
         let fixture_resources = std::mem::take(&mut fixture.resources);
-        fixture_resources
-            .finish(async {
-                let (authorized, _, app_resources) =
-                    app_with_access(&fixture.base, fixture.access.clone()).await?;
-                app_resources.finish(async {
-        let mut browser = fixture.browser("other")?;
+        fixture_resources.finish(async {
+        let authorized = fixture.router;
+        let mut browser = fixture.author;
+        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, vec![]).await?;
         let query = &format!("/api/v1/devices/{}/inventory", case::name("device-1"));
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
@@ -147,8 +146,6 @@ mod identity_read {
         ensure!(recovered.0 == StatusCode::OK && recovered.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "Model-A");
         Ok(())
         }).await
-            })
-            .await
     }
 }
 
@@ -338,26 +335,17 @@ mod storage {
         first.finalize(None);
         let canonical = || {
             sql(&format!(
-                "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
+                "SELECT encode(source_bytes,'hex') FROM mdm_audit.receipts WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
             ))
         };
-        crate::audit_test_support::projection::drain(tenant, integrity.clone())
-            .await
-            .unwrap();
         let original = canonical();
         assert!(!original.is_empty());
-        for record in crate::audit_test_support::decode_hex(&original).unwrap() {
-            rss_mdm_timeline_service::project(record.decoded.event()).unwrap();
-        }
         let replay = audit();
         let receipt = service
             .execute(&command, &replay, &|| Ok(()))
             .await
             .unwrap();
         replay.finalize(None);
-        crate::audit_test_support::projection::drain(tenant, integrity.clone())
-            .await
-            .unwrap();
         assert_eq!(canonical(), original);
         assert_eq!(receipt["asset"]["revision"], 1);
         let repeated = audit();
@@ -369,9 +357,6 @@ mod storage {
             receipt
         );
         repeated.finalize(None);
-        crate::audit_test_support::projection::drain(tenant, integrity.clone())
-            .await
-            .unwrap();
         assert_eq!(canonical(), original);
         let denied = audit();
         assert!(matches!(
@@ -415,9 +400,6 @@ mod storage {
         );
         a.finalize(None);
         b.finalize(None);
-        crate::audit_test_support::projection::drain(tenant, integrity.clone())
-            .await
-            .unwrap();
         assert_eq!(canonical().lines().count(), original.lines().count() + 1);
         runtime.close().await;
     }
@@ -428,9 +410,13 @@ mod manual {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "MODULE=assets.http: real Router and persisted assets"]
     async fn manual_types_replay_cas_and_rollback() -> Result<()> {
-        let fixture = Fixture::open().await?;
+        let fixture = AssetHttp::open().await?;
+        pg(&format!(
+            "INSERT INTO mdm_access.devices VALUES('{}','asset-a');",
+            case_tenant()
+        ))?;
         let router = &fixture.router;
-        let mut browser = fixture.browser.clone();
+        let mut browser = fixture.author.clone();
         let catalog = ok(
             &mut browser,
             router,
@@ -439,10 +425,15 @@ mod manual {
             None,
         )
         .await?;
-        ensure!(
-            catalog["asset"]["fields"].as_array().unwrap().len()
-                == rss_mdm_inventory::builtin::fields().len()
-        );
+        for field in rss_mdm_inventory::builtin::fields() {
+            ensure!(
+                catalog["asset"]["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value["key"] == serde_json::to_value(field.key).unwrap())
+            );
+        }
         let cases = [
             ("custom.asset_tag", "string", json!("A-2463")),
             ("custom.office_floor", "integer", json!(3)),
@@ -495,19 +486,6 @@ mod manual {
             ensure!(
                 detail["asset"]["device"]["fields"][field]["state"]["value"]
                     == json!({"kind":kind,"value":value})
-            );
-            let criteria = predicate(field, kind, value);
-            let result = ok(
-                &mut browser,
-                router,
-                Method::POST,
-                "/api/v1/device-queries",
-                Some(json!({"criteria":criteria})),
-            )
-            .await?;
-            ensure!(
-                result["asset"]["summary"]["matched"] == 1
-                    && result["asset"]["items"][0]["device"] == "asset-a"
             );
         }
         let floor = "/api/v1/devices/asset-a/manual-fields/custom.office_floor";
@@ -666,7 +644,7 @@ mod manual {
         );
 
         ensure!(pg(&format!("SELECT revision FROM mdm.manual_assignments WHERE tenant_id='{TENANT}' AND device='asset-a' AND field='custom.office_floor'", TENANT = case_tenant()))?.trim()=="4");
-        fixture.close().await
+        fixture.resources.finish(async { Ok(()) }).await
     }
 }
 

@@ -263,6 +263,11 @@ pub async fn serve(
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
                             compiled.identity_management.clone(),
+                            Some(
+                                crate::apple::identity_platform(&compiled.config)
+                                    .await
+                                    .map_err(assembly_error)?,
+                            ),
                             |resource| startup.stage_resource(resource),
                         )
                         .await

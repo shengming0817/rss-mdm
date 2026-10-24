@@ -35,14 +35,30 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     )
     .await?;
     let owner = start(runtime.clone()).await?;
-    let full = report(&service, &access, &proof, [Some("Collected"), Some("11")]).await?;
+    let full = report(
+        &service,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
+        &proof,
+        [Some("Collected"), Some("11")],
+    )
+    .await?;
     wait_ready_projection(&runtime, &full).await?;
     let criteria = predicate("device.model", "string", json!("Unconfirmed"));
     for (values, result) in [
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        let incomplete = report(&service, &access, &proof, values).await?;
+        let incomplete = report(
+            &service,
+            &access
+                .audit_store_fixture(&crate::config::AuditConfig::Plain)
+                .await?,
+            &proof,
+            values,
+        )
+        .await?;
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 let delivery = runtime.inspect(&incomplete).await?;
@@ -99,7 +115,9 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     }
     let unsupported = crate::inventory_runtime::test_support::report_statuses(
         &service,
-        &access,
+        &access
+            .audit_store_fixture(&crate::config::AuditConfig::Plain)
+            .await?,
         &proof,
         [None, Some("11")],
         [501, 200],

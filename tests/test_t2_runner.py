@@ -69,6 +69,24 @@ class Execution(unittest.TestCase):
             fixtures.scenario.side_effect = scenario
             yield Path(directory), builds, fixtures_type, fixtures
 
+    def test_cleanup_failure_keeps_the_business_failure(self):
+        def fail(*args):
+            raise ValueError('business assertion')
+        with self.harness(execute=fail) as (root, _, _, fixtures):
+            @contextmanager
+            def scenario(job, output, receipt):
+                try:
+                    yield SimpleNamespace(env={})
+                finally:
+                    receipt['cleanupFailure'] = dict(reason='OSError', log='cleanup.log')
+            fixtures.scenario.side_effect = scenario
+            result = t2.run_modules(['sources.winget'], root)['sources.winget']
+            case = next(iter(result['cases'].values()))
+            self.assertEqual(case['status'], 'failed')
+            self.assertEqual(case['phase'], 'execution')
+            self.assertEqual(case['reason'], 'ValueError')
+            self.assertEqual(case['cleanupFailure']['reason'], 'OSError')
+
     def test_list_stops_before_runtime_preparation(self):
         with self.harness() as (root, builds, fixture_type, _):
             result = t2.run_modules(['agent.registration'], root, listing=True)

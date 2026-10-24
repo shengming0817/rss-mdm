@@ -22,7 +22,7 @@ from t2_model import ROOT, resolve_cases
 from ci_impact import selected, explicit_selection, SelectionError, failure
 from t2_execution import Builds, Processes, Invocation, CASE_TIMEOUT
 from t2_processes import diagnostic_phase, diagnostics
-from verification_result import result as stage_result, publish, require
+from verification_result import result as stage_result, publish, require, DependencyBlocked
 
 
 MAX_RETAINED_RUNS = 5
@@ -107,7 +107,7 @@ def dispatch(invocations, execute, processes, jobs):
                 running[executor.submit(copy_context().run, execute, job)] = job
             if not running:
                 for job in pending:
-                    yield job, stage_result('failed', reason='cancelled-before-start', policy=job.policy,
+                    yield job, stage_result('cancelled', reason='cancelled-before-start', policy=job.policy,
                                             caseId=job.id, invocationId=job.key, startedMonotonic=None,
                                             endedMonotonic=time.monotonic())
                 break
@@ -133,6 +133,8 @@ def reuse_phases(invocations, plan):
             and len({job.module.profile for job in selected}) == 1, 'reuse qualification requires one compatible profile')
     require(all(job.module.scope == 'objects' for job in selected[:2])
             and all(job.module.scope in ('tenant', 'pair') for job in selected[2:]), 'reuse observation scopes differ from plan')
+    require(not any('shared_worker' in job.module.fixtures for job in selected),
+            'parallel reuse proof requires capability cases, not exclusive full product hosts')
     a, b, c, d = selected
     phases, occurrences = [], {}
     for group in ([a], [b], [a], [b], [a], [b], [a, b], [c, d]):
@@ -166,25 +168,33 @@ def execute_case(job, builds, fixtures, case_dir, output, rendezvous=None):
                   startedMonotonic=begin, timeoutSeconds=CASE_TIMEOUT,
                   log=str((case_dir / 'test.log').relative_to(output)),
                   fixtureLog=str((case_dir / 'fixture.log').relative_to(output)))
+    phase = 'setup'
     try:
         require(not builds.processes.cancelled.is_set(), 'T2 cancelled')
         with fixtures.scenario(job, case_dir, receipt) as fixture:
             if rendezvous is not None:
                 fixture.env['MDM_CASE_RENDEZVOUS'] = str(rendezvous)
             with diagnostic_phase('execution'):
+                phase = 'execution'
                 common['executionStartedMonotonic'] = time.monotonic()
                 if job.case:
                     builds.execute(job.case, fixture.env, case_dir)
                 else:
                     builds.execute_python(job.module, fixture, case_dir)
                 common['executionEndedMonotonic'] = time.monotonic()
+                phase = 'cleanup'
         result = stage_result('passed', begin, **common)
     except BaseException as error:
         (case_dir / 'failure.log').write_text('Fixture diagnostics: fixture.log\n' + traceback.format_exc())
-        result = stage_result('failed', begin, **common,
+        status = 'cancelled' if builds.processes.cancelled.is_set() else 'blocked' if isinstance(error, DependencyBlocked) else 'failed'
+        result = stage_result(status, begin, **common, phase=phase, rootCause=getattr(error, 'root_cause', None),
                               reason=type(error).__name__,
                               failureLog=str((case_dir / 'failure.log').relative_to(output)))
         print(f'T2 failure output: {case_dir / "test.log"}; traceback: {case_dir / "failure.log"}', flush=True)
+    if 'cleanupFailure' in receipt:
+        result['cleanupFailure'] = receipt['cleanupFailure']
+        if result['status'] == 'passed':
+            result.update(status='failed', phase='cleanup', reason='cleanup_incomplete')
     end = time.monotonic()
     cleaned = receipt.get('cleaned', end)
     cleanup = receipt.get('cleanupStarted', cleaned)
@@ -316,7 +326,7 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
                                                   database=anchor[2], pg=anchor[0], pgGeneration=anchor[1], status='passed'))
                         publish(directory / 'reuse.json', dict(status='running', plan=reuse_plan, phases=qualification))
                 for name, cases in completed.items():
-                    outcome = stage_result('failed' if any(r['status'] == 'failed' for r in cases.values()) else 'passed',
+                    outcome = stage_result('failed' if any(r['status'] != 'passed' for r in cases.values()) else 'passed',
                                            started, cases=cases, runId=run_id)
                     publish(directory / name / 'result.json', outcome)
                     results[name] = outcome
@@ -341,8 +351,10 @@ def run_modules(names, output, *, jobs=2, selected_case='', listing=False, reuse
         try:
             processes.close()
         except Exception as error:
-            publish(directory / 'result.json', dict(runId=run_id, status='failed',
-                reason='cleanup_incomplete', cleanup=processes.cleanup_receipt()))
+            path = directory / 'result.json'
+            evidence = json.loads(path.read_text()) if path.exists() else dict(runId=run_id)
+            evidence.update(status='failed', cleanupFailure=processes.cleanup_receipt())
+            publish(path, evidence)
             raise
         finally:
             publish(directory / 'cleanup.json', processes.cleanup_receipt())

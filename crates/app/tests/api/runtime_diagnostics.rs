@@ -108,7 +108,7 @@ impl Fixture {
         )
         .await?;
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
-            authority.access.archive_pool(),
+            authority.pool.clone(),
             authority.audit.clone(),
             vec![],
             execution.providers.clone(),
@@ -127,8 +127,12 @@ impl Fixture {
                 pki: pki.clone(),
                 clock: Arc::new(crate::clock::SystemClock),
             }),
-            apple_store: authority.access.apple_store(),
-            access: authority.access.archive_pool(),
+            apple_store: Arc::new(rss_mdm_apple_channel::Store::from_pool(
+                authority.pool.clone(),
+                authority.registration.clone(),
+                authority.authorization.clone(),
+            )),
+            access: authority.pool.clone(),
             telemetry: None,
             execution: execution.service,
             inventory,
@@ -573,7 +577,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     use rss_runtime::ManagedResource;
     let fixture = Fixture::open().await?;
     let service = DeviceService::new(
-        fixture.authority.access.registration(),
+        fixture.authority.registration.clone(),
         case_tenant().into(),
         fixture.authority.audit.clone(),
     );
@@ -582,7 +586,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     bind(&service, &operator, &credential, "diagnostic-device", 0).await?;
     let report = crate::inventory_runtime::test_support::report(
         &service,
-        &fixture.authority.access,
+        &fixture.authority.audit,
         &credential,
         [Some("safe-name"), Some("10")],
     )
@@ -591,7 +595,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     ensure!(component(&before, "inventory")["queues"][0]["count"] == 1);
     ensure!(component(&before, "inventory")["progress"]["state"] == "unobserved");
     let reports = crate::collection::store::Delivery::new(
-        fixture.authority.access.inventory(),
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(
+            fixture.authority.pool.clone(),
+        )),
         fixture.authority.audit.clone(),
     )
     .pending_reports(case_tenant())
@@ -756,7 +762,7 @@ async fn management_audit_capacity_is_visible_without_cross_tenant_counts() -> R
     let mut fixture = Fixture::open().await?;
     let own = fixture.authority.identity.tenant;
     let management = TenantId::parse(crate::test_support::case::peer())?;
-    let pool = fixture.authority.access.archive_pool();
+    let pool = fixture.authority.pool.clone();
     let runtime = crate::audit_test_support::source_runtime(&pool, own).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(20));
     let store = Arc::new(

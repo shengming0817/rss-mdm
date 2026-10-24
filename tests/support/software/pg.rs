@@ -149,22 +149,13 @@ pub fn cutoff() -> Deadline {
 
 #[path = "../audit_projection.rs"]
 pub(crate) mod projection;
-pub async fn audit_records() -> Vec<rss_audit_core::DecodedAuditV1> {
-    projection::drain(tenant(), rss_audit_postgres::Integrity::Plain)
-        .await
-        .unwrap();
-    sql(&format!("SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{}' ORDER BY position", tenant()))
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let bytes = (0..line.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&line[i..i + 2], 16).unwrap())
-                .collect::<Vec<_>>();
-            rss_audit_core::decode_untrusted(&bytes).unwrap()
-        })
+pub async fn audit_records() -> Vec<rss_audit_core::AuditEventV1> {
+    sql(&format!("SELECT convert_from(source_bytes,'UTF8') FROM mdm_audit.receipts WHERE tenant_id='{}' ORDER BY source_id,event_id", tenant()))
+        .lines().filter(|line| !line.is_empty())
+        .map(|line| rss_mdm_audit_integration::decode_source_event(line.as_bytes()).unwrap())
         .collect()
 }
-pub fn audit_payload(record: &rss_audit_core::DecodedAuditV1) -> serde_json::Value {
-    serde_json::from_slice(record.event().context().payload().as_bytes()).unwrap()
+
+pub fn audit_payload(record: &rss_audit_core::AuditEventV1) -> serde_json::Value {
+    serde_json::from_slice(record.context().payload().as_bytes()).unwrap()
 }

@@ -411,6 +411,8 @@ async fn admit_storage_in(
     if !valid {
         return Err(sqlx::Error::Protocol("host capability admission".into()).into());
     }
+    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
+        .await?;
     let contracts = [
         (
             "telemetry",
@@ -434,12 +436,6 @@ async fn admit_storage_in(
             "execution handoff",
             rss_mdm_execution_service::CATALOG_SQL,
             rss_mdm_execution_service::CATALOG_JSON,
-            include_str!("flow/handoff-admission.sql"),
-        ),
-        (
-            "authorization and execution dependencies",
-            rss_mdm_execution_service::DEPENDENCIES_SQL,
-            rss_mdm_execution_service::DEPENDENCIES_JSON,
             include_str!("flow/handoff-admission.sql"),
         ),
         (

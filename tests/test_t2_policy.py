@@ -28,6 +28,23 @@ class Policies(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 resolve_cases(value, ['fault::one'])
 
+    def test_asset_storage_has_no_identity_or_signing_preparation(self):
+        module = MODULES['assets.http']
+        names = [p.selector + ('case' if p.selector.endswith('::') else '') for p in module.policies]
+        values = dict(zip(names, resolve_cases(module, names)))
+        storage = {name: value for name, value in values.items() if '::storage::' in name}
+        self.assertEqual(len(storage), 3)
+        for name, value in storage.items():
+            with self.subTest(case=name):
+                self.assertEqual(value.fixtures, ('runtime_config',))
+                self.assertEqual(value.actors, ())
+        self.assertNotIn('agent_pki', module.fixtures)
+        planning = MODULES['planning.http']
+        self.assertNotIn('agent_pki', planning.fixtures)
+        signer = next(p for p in planning.policies if p.selector.endswith('console_script_support_requires_signer_and_content'))
+        self.assertIn('agent_pki', signer.fixtures)
+        self.assertIn('task_signing', signer.fixtures)
+
     def test_no_pg_has_no_database_mode_or_scope(self):
         module = MODULES['sources.winget']
         resolved, = resolve_cases(module, ['new_test'])

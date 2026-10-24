@@ -145,7 +145,7 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = authority::Authority::prepared_browser("admin").await?;
+        let browser = authority::Authority::prepared_browser("admin")?;
         let subject = browser_subject(&browser, &router).await?;
         grants(&subject, None).await?;
         pg(&format!(

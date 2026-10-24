@@ -301,7 +301,7 @@ impl Host {
             )?,
         );
         let identity =
-            crate::identity::Identity::connect(&config, identity_management.clone(), |resource| {
+            crate::identity::Identity::connect(&config, identity_management.clone(), Some(crate::apple::identity_platform(&config).await?), |resource| {
                 resources.acquire(resource)
             })
             .await?;

@@ -168,6 +168,7 @@ impl Fixture {
         let identity = crate::identity::Identity::connect(
             config,
             compiled.identity_management.clone(),
+            Some(crate::apple::identity_platform(config).await?),
             |resource| resources.acquire(resource),
         )
         .await?;
@@ -464,7 +465,7 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = crate::test_support::authority::Authority::prepared_browser("admin").await?;
+        let browser = crate::test_support::authority::Authority::prepared_browser("admin")?;
         Ok(Self {
             resources: Default::default(),
             app,
