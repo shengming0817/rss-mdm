@@ -2204,6 +2204,7 @@ consume(('crates/authorization-service/schema/authority.sql','crates/device-serv
 # Resource query execution and common ingress composition have distinct proof owners.
 consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries compliance.http settings.user_profiles software.http software.catalog agent.configurations')
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
+consume(('crates/flow-service/src/action_admission.rs',), 'planning.http planning.policy')
 consume(('crates/http-contract/src/*',),
         ' '.join(name for name, module in MODULES.items()
                  if module.build == APP and 'identity' in module.fixtures)
