@@ -347,8 +347,6 @@ CARGO_GATES = {"check", "clippy", "t1", "api-boundary"}
 
 def select_impact(head, base=None):
     base = base or os.environ.get('CI_BASE', 'origin/develop')
-    if os.environ.get('CI_FULL', '0') != '0' and os.environ.get('CI_T2', 'none') == 'all':
-        return {**explicit_selection(LOCAL_PACKAGES, MODULES, all_tools()), 'head': head}
     merge = command(['/usr/bin/git', 'merge-base', base, head])
     if merge.returncode != 0 or not merge.stdout.strip():
         raise SelectionError('base-unavailable', base)
@@ -362,12 +360,6 @@ def select_impact(head, base=None):
     validate_selection(decision, LOCAL_PACKAGES, MODULES, all_tools())
     if result.returncode:
         raise SelectionError('selector-failed')
-    if os.environ.get('CI_FULL', '0') != '0':
-        decision['cargo'] = {'mode': 'all', 'packages': sorted(LOCAL_PACKAGES)}
-        decision['reasons'].append({'kind': 'explicit-full', 'input': 'CI_FULL', 'packages': sorted(LOCAL_PACKAGES), 'modules': []})
-    if os.environ.get('CI_T2', 'none') == 'all':
-        decision['t2'] = {'mode': 'all', 'modules': sorted(MODULES)}
-        decision['reasons'].append({'kind': 'explicit-full', 'input': 'CI_T2', 'packages': [], 'modules': sorted(MODULES)})
     decision.update(base=base, head=head, mergeBase=merge.stdout.strip())
     if result.stderr.strip():
         decision['diagnostic'] = result.stderr.strip()
@@ -477,7 +469,16 @@ def execute_ci():
     start_head = head.stdout.strip()
     gates=fast_gates()
     source_state = working_source_state()
-    selection = select_impact(start_head)
+    if os.environ.get('CI_FULL', '0') != '0' and t2_mode == 'all':
+        selection = {**explicit_selection(LOCAL_PACKAGES, MODULES, all_tools()), 'head': start_head}
+    else:
+        selection = select_impact(start_head)
+    if os.environ.get('CI_FULL', '0') != '0':
+        selection['cargo'] = {'mode': 'all', 'packages': sorted(LOCAL_PACKAGES)}
+        selection['reasons'].append({'kind': 'explicit-full', 'input': 'CI_FULL', 'packages': sorted(LOCAL_PACKAGES), 'modules': []})
+    if os.environ.get('CI_T2', 'none') == 'all':
+        selection['t2'] = {'mode': 'all', 'modules': sorted(MODULES)}
+        selection['reasons'].append({'kind': 'explicit-full', 'input': 'CI_T2', 'packages': [], 'modules': sorted(MODULES)})
     plan = {"selection": selection, "gates": {
         name: {"selected": selected_gate(name, selection), "command": gate_command(name, args, selection)}
         for name, args in gates

@@ -77,7 +77,7 @@ class Selection(unittest.TestCase):
             selection['cargo']['packages'] = [owner]
             self.assertTrue(ci.selected_gate('native-schema', selection))
 
-    def test_explicit_cargo_full_does_not_expand_integration(self):
+    def test_affected_ignores_ci_full_environment(self):
         decision = make_selection(
             ['rss-mdm-resource-postgres'],
             ['resource.persistence'],
@@ -85,7 +85,7 @@ class Selection(unittest.TestCase):
             [{'kind': 'business', 'input': 'test-input', 'modules': []}],
         )
         with (
-            patch.dict(ci.os.environ, {'CI_FULL': '1'}),
+            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all'}),
             patch.object(
                 ci,
                 'command',
@@ -93,7 +93,7 @@ class Selection(unittest.TestCase):
             ),
         ):
             selected = ci.select_impact('head')
-        self.assertTrue((selected['cargo']['mode'] == 'all'))
+        self.assertEqual(selected['cargo'], decision['cargo'])
         self.assertFalse((selected['t2']['mode'] == 'all'))
         self.assertEqual(selected['t2']['modules'], ['resource.persistence'])
 
@@ -388,15 +388,20 @@ class EntryModes(unittest.TestCase):
             self.assertEqual(evidence['selection']['error']['inputs'], failure.inputs)
             self.assertFalse((out / 'ownership.log').exists())
 
-    def test_explicit_full_bypasses_unavailable_baseline(self):
-        with (
-            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all'}),
-            patch.object(ci, 'command') as command,
+    def test_explicit_full_bypasses_unavailable_baseline_only_in_ci(self):
+        with tempfile.TemporaryDirectory() as directory, (
+            patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all', 'CI_PLAN': '1'}),
+            patch.object(ci, 'OUT', Path(directory)),
+            patch.object(ci, 'require_lease'),
+            patch.object(ci, 'command', return_value=result('head')),
+            patch.object(ci, 'select_impact', side_effect=AssertionError('affected called')),
+            contextlib.redirect_stdout(io.StringIO()),
         ):
-            decision = ci.select_impact('head', 'missing-base')
-        command.assert_not_called()
+            self.assertEqual(ci.main(), 0)
+            decision = json.loads((Path(directory) / 'plan.json').read_text())['selection']
         self.assertEqual(decision['t2']['mode'], 'all')
         self.assertEqual(set(decision['t2']['modules']), set(ci.MODULES))
+
 
 class DeviceConsumerInputs(unittest.TestCase):
     def test_shared_device_inputs_select_their_actual_consumers(self):
