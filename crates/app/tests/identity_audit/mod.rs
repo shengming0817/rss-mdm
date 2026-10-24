@@ -109,6 +109,7 @@ async fn exercise(ledger: bool) -> Result<()> {
                 crate::test_support::identity::INSTANCE,
             )?,
         ),
+        None,
         |r| identity_resources.push(r),
     )
     .await?;
@@ -127,18 +128,7 @@ async fn exercise(ledger: bool) -> Result<()> {
     sqlx::raw_sql("SET LOCAL ROLE mdm_command_runtime; SET LOCAL search_path=pg_catalog")
         .execute(&mut *transaction)
         .await?;
-    let actual: String = sqlx::query_scalar(include_str!(
-        "../../../execution-service/src/dependencies.sql"
-    ))
-    .fetch_one(&mut *transaction)
-    .await?;
-    ensure!(
-        serde_json::from_str::<serde_json::Value>(&actual)?
-            == serde_json::from_str::<serde_json::Value>(include_str!(
-                "../../../execution-service/src/dependencies.json"
-            ))?,
-        "command dependency admission must support both audit modes"
-    );
+    crate::database::verify_product_storage(&mut transaction).await?;
     transaction.rollback().await?;
 
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records")

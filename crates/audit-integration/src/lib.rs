@@ -48,3 +48,8 @@ pub fn source_partition(
     rss_audit_core::ResourceId::parse(resource).map_err(|_| Error::Fact(InvalidFact::Resource))?;
     source::partition(tenant, kind, resource)
 }
+
+/// Decode an authored source fact without projecting it or inventing a sink timestamp.
+pub fn decode_source_event(bytes: &[u8]) -> Result<rss_audit_core::AuditEventV1, Error> {
+    source::FrozenFact::decode(bytes)?.event()
+}

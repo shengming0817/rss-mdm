@@ -637,7 +637,7 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         Some(json!({"operationId":Uuid::new_v4()})),
     )
     .await?;
-    let live:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND channel='agent' AND state='active'").bind(case_tenant()).fetch_one(&mut *authority.access.begin(case_tenant()).await?).await?;
+    let live:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND channel='agent' AND state='active'").bind(case_tenant()).fetch_one(&mut *{let mut tx = authority.pool.begin().await?; crate::Database::configure_transaction(&mut tx, case_tenant()).await?; tx}).await?;
     ensure!(
         live == 4,
         "configuration revoke deactivated existing devices"
@@ -654,7 +654,7 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let mut user = f.user.clone();
     let package = publish(&f, &mut user, false).await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
-    let mut other = authority::Authority::prepared_browser("other").await?;
+    let mut other = authority::Authority::prepared_browser("other")?;
     ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}]}))).await?.0==StatusCode::FORBIDDEN);
     for quantity in [
         json!({"kind":"finite","count":0}),
@@ -1117,7 +1117,7 @@ async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> 
             && found.1["remaining"] == 2
     );
     ensure!(found.1.get("secret").is_none() && found.1.get("signature").is_none());
-    let mut other = authority::Authority::prepared_browser("other").await?;
+    let mut other = authority::Authority::prepared_browser("other")?;
     ensure!(other.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
     ensure!(
         user.call(
@@ -1871,7 +1871,7 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         ensure!(converged.1["convergence"]["activeDevices"]==2 && converged.1["convergence"]["confirmedDevices"]==2,"actual convergence {converged:?}");
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
-        let mut inventory_user=authority::Authority::prepared_browser("other").await?;
+        let mut inventory_user=authority::Authority::prepared_browser("other")?;
         let subject=browser_subject(&inventory_user, &f.router).await?;
         identity::set_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
         let observed=inventory_user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;

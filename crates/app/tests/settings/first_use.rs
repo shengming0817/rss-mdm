@@ -194,7 +194,7 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
                 .inspect_session(fixture.identity.tenant, secret, crate::identity::deadline())
                 .await?;
             let proof = AuthorizedPrincipal::new(session)?
-                .load_authorization(&fixture.access.authorization_store())
+                .load_authorization(&fixture.authorization.clone())
                 .await?;
             let id = Uuid::new_v4();
             let audit = RequestAudit::new(case_tenant().into(), "first_use_update");
@@ -228,7 +228,7 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
         peer_resources.finish(async {
             let peer_secret=identity::credential_for(case::peer(),"admin")?;
             let peer_session=peer_identity.authority.inspect_session(peer_identity.tenant,peer_secret,crate::identity::deadline()).await?;
-            let peer_proof=AuthorizedPrincipal::new(peer_session)?.load_authorization(&fixture.access.authorization_store()).await?;
+            let peer_proof=AuthorizedPrincipal::new(peer_session)?.load_authorization(&fixture.authorization.clone()).await?;
             let peer_audit=RequestAudit::new(case::peer().into(),"first_use_update");
             peer_proof.bind_audit(&peer_audit)?;peer_audit.operation(id,"first_use_update");
             ensure!(store::read(&fixture.audit,&peer_proof,&peer_audit).await?.revision==0);

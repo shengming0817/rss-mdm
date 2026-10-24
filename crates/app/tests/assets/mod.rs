@@ -35,19 +35,43 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
 
 struct Fixture {
     resources: crate::test_support::runtime::Resources,
-    base: Value,
-    automation: Option<rss_runtime::ShutdownStack>,
+    authority: authority::Authority,
+    automation: crate::planning::test_support::RunningAutomation,
     router: Router,
     browser: Browser,
     subject: String,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
-        let base: Value =
-            serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        let automation = start_automation(&base).await?;
-        let (router, resources) = app(&base).await?;
-        let browser = authority::Authority::prepared_browser("admin").await?;
+        let mut authority = authority::Authority::open().await?;
+        let mut resources = std::mem::take(&mut authority.resources);
+        let planning = Arc::new(
+            crate::planning::test_support::planning(rss_request_context::TenantId::parse(
+                case_tenant(),
+            )?)
+            .await,
+        );
+        resources.resource(SourceResource(planning.runtime.clone()));
+        let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+        let automation =
+            crate::planning::test_support::RunningAutomation::start(planning.clone()).await;
+        let routes = Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::assets::routes()
+                .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                    assets: automation.assets.clone(),
+                }))
+                .into_axum()
+                .merge(
+                    rss_mdm_management_http::planning::http::routes()
+                        .with_state(Arc::new(
+                            rss_mdm_management_http::planning::http::HttpState { planning, groups },
+                        ))
+                        .into_axum(),
+                ),
+        );
+        let router = authority.router(routes.merge(authority.authorization()))?;
+        let browser = authority::Authority::prepared_browser("admin")?;
         let subject = browser_subject(&browser, &router).await?;
         permissions(&subject, None, true).await?;
         pg(&format!(
@@ -64,7 +88,7 @@ impl Fixture {
         )?;
         Ok(Self {
             resources,
-            base,
+            authority,
             automation,
             router,
             browser,
@@ -72,7 +96,7 @@ impl Fixture {
         })
     }
     async fn close(self) -> Result<()> {
-        crate::test_support::runtime::stop_worker(self.automation).await?;
+        self.automation.stop().await;
         self.resources.finish(async { Ok(()) }).await?;
         Ok(())
     }

@@ -21,11 +21,11 @@ from t2_context import contexts, installation, registration_tenants, validate
 from t2_database import Costs, DatabasePool, measure
 from t2_hosts import Host, compatibility
 from t2_environment import Environment, private, run
-from t2_registry import IDENTITY_SETUP
+from t2_registry import PREPARATION
 from s3_fixtures import S3Environment
 from t2_model import ROOT
 from t2_processes import diagnostic_phase, owned_by, subprocess
-from verification_result import require
+from verification_result import require, DependencyBlocked
 
 
 class RunFixtures:
@@ -177,16 +177,20 @@ class RunFixtures:
                     recipients=[dict(certificate_file=str(certificate), private_key_file=str(recipient_key))])
             return self.recovery_material
 
-    def identity_helper(self, root, manifest, output, database):
+    def preparation_helper(self, root, manifest, output, database):
         env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
                    MDM_TEST_CONFIG=str(root / 'runtime.json'),
-                   MDM_IDENTITY_SETUP=str(private(root / 'identity-setup.json', manifest)))
-        cases = self.builds.discover(IDENTITY_SETUP)
+                   MDM_PREPARATION=str(private(root / 'preparation.json', manifest)))
+        cases = self.builds.discover(PREPARATION)
         require(len(cases) == 1, 'identity setup target is ambiguous')
-        with measure(self.costs, 'identity-' + manifest['stage'], database=database):
-            self.builds.execute(cases[0], env, output)
+        try:
+            with measure(self.costs, manifest['stage'], database=database):
+                self.builds.execute(cases[0], env, output)
+        except BaseException as error:
+            error.root_cause = str(output / 'test.log')
+            raise
         self.costs.increment('identityHelpers', 1)
-        for event in json.loads((root / 'identity-costs.json').read_text()):
+        for event in json.loads((root / 'preparation-costs.json').read_text()):
             self.costs.append(dict(event, database=database))
             self.costs.increment(event['phase'], event['count'])
 
@@ -200,7 +204,7 @@ class RunFixtures:
             self.builds.processes.check()
             state = self.identities.get(key)
             if isinstance(state, BaseException):
-                raise RuntimeError('identity environment preparation previously failed') from state
+                raise DependencyBlocked('identity environment preparation previously failed', state) from state
             root = self.root / database
             try:
                 if state is None:
@@ -218,15 +222,17 @@ class RunFixtures:
                         run([self.builds.executables['rss-mdm'], 'initialize', '--config', path],
                             cwd=ROOT, capture_output=True, timeout=30)
                     self.costs.increment('identityInitializations', 1)
-                    self.identity_helper(root, dict(stage='environment'), output / 'environment', database)
+                    self.preparation_helper(root, dict(stage='environment'), output / 'environment', database)
                     state = dict(management=management, refreshed=time.monotonic())
                 elif time.monotonic() - state['refreshed'] >= 180:
-                    self.identity_helper(root, dict(stage='refresh'), output / 'refresh', database)
+                    self.preparation_helper(root, dict(stage='refresh'), output / 'refresh', database)
                     state['refreshed'] = time.monotonic()
                 self.identities[key] = state
                 # The caller owns a credential snapshot; a later refresh cannot overwrite it.
                 return root, state['management'], (root / 'source-session').read_text()
             except BaseException as error:
+                if not getattr(error, 'root_cause', None):
+                    error.root_cause = str(output.parent / 'fixture.log')
                 self.identities[key] = error
                 raise
 
@@ -236,9 +242,6 @@ class RunFixtures:
         context = self.case_contexts[job.key]
         config = self.runtime_config(pool, root, database, context['tenant'],
             native_key=self.native_key, recovery_credentials=self.recovery_config())
-        config['content'] = json.loads((shared / 'content.json').read_text())
-        config['task_signing'] = {'revision':1}
-        private(root / 'task-signing-fixture.json', json.loads((shared / 'task-signing.json').read_text()))
         private(root / 'runtime.json', config)
         private(root / 'account-password', (shared / 'account-password').read_text())
         pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
@@ -249,7 +252,7 @@ class RunFixtures:
         with self.lock:
             state = self.actor_batches.setdefault(key, dict(pending=[], busy=False, error=None))
             if state['error'] is not None:
-                raise RuntimeError('actor preparation previously failed') from state['error']
+                raise DependencyBlocked('actor preparation previously failed', state['error']) from state['error']
             state['pending'].append(item)
         while not item['done'].is_set():
             self.builds.processes.check()
@@ -285,7 +288,7 @@ class RunFixtures:
                     provisioning_database=pool.database_config(root, database, 'mdm_identity_provisioning', 'identity-provisioning-fixture'))
                 if any(actor['principal'] is None or not (Path(path).parent / f"credential-{actor['tenant']}-{actor['role']}").exists()
                        for path in paths for actor in json.loads(Path(path).read_text())['actors']):
-                    self.identity_helper(root, manifest, output / 'actors', database)
+                    self.preparation_helper(root, manifest, output / 'actors', database)
                 for member, path in zip(batch, paths):
                     root = Path(path).parent
                     context = validate(json.loads(Path(path).read_text()), ready=True)
@@ -295,7 +298,10 @@ class RunFixtures:
                             secret=(root / f"credential-{actor['tenant']}-{actor['role']}").read_text(),
                             until=json.loads((root / f"credential-meta-{actor['tenant']}-{actor['role']}").read_text()))
             except BaseException as error:
+                if not getattr(error, 'root_cause', None):
+                    error.root_cause = str(output.parent / 'fixture.log')
                 with self.lock:
+                    state['origin'] = job.key
                     state['error'] = error
                     batch += state['pending']
                     state['pending'] = []
@@ -307,7 +313,9 @@ class RunFixtures:
                     for member in batch:
                         member['done'].set()
         if item['error'] is not None:
-            raise RuntimeError('actor batch preparation failed') from item['error']
+            if state['origin'] == job.key:
+                raise item['error']
+            raise DependencyBlocked('actor batch preparation failed', item['error']) from item['error']
 
     def prepare_materials(self, kind, root, materials=()):
         inputs = {name: (root / name).read_bytes() for name in ('ca.crt', 'server.crt', 'server.key')}
@@ -373,7 +381,10 @@ class RunFixtures:
     def workers(self, job, database, config):
         pool = self.fault if job.module.db_mode == 'instance' else self.normal
         tenant = self.case_contexts[job.key]['tenant']
-        key = (pool.owner.project, pool.generation, database, tenant, compatibility(config))
+        # Full serve also owns the installation's management-tenant projector.
+        # A physical database has one full host, irrespective of the business tenant.
+        key = (pool.owner.project, pool.generation, database)
+        signature = compatibility(config)
         with self.lock:
             lock = self.host_locks.setdefault(key, threading.Lock())
         with measure(self.costs, 'host-wait', database=database, tenant=tenant):
@@ -383,31 +394,44 @@ class RunFixtures:
             self.builds.processes.check()
             host = self.hosts.get(key)
             if isinstance(host, BaseException):
-                raise RuntimeError('host preparation previously failed') from host
-            if host is None:
-                try:
-                    with measure(self.costs, 'host-start', database=database, tenant=tenant):
-                        host = Host(self.builds, config, self.output / 'hosts' / database / tenant / key[-1])
-                    with self.lock:
+                raise DependencyBlocked('host preparation previously failed', host) from host
+            try:
+                if host is not None:
+                    host.check()
+                if host is not None and host.signature != signature:
+                    # Keep ownership if shutdown fails; never publish a second owner.
+                    host.close()
+                    del self.hosts[key]
+                    host = None
+                if host is None:
+                    output = self.output / 'hosts' / database / tenant / job.key
+                    try:
+                        with measure(self.costs, 'host-start', database=database, tenant=tenant):
+                            host = Host(self.builds, config, output)
+                        host.signature = signature
                         self.hosts[key] = host
-                    self.costs.increment('hostStarts', 1)
-                except BaseException as error:
-                    with self.lock:
+                        self.costs.increment('hostStarts', 1)
+                    except BaseException as error:
+                        error.root_cause = str(output / 'host.log')
                         self.hosts[key] = error
-                    raise
+                        raise
+                with self.builds.processes.depending_on(host.check):
+                    yield host
+            except BaseException as error:
+                if host is not None and host.failed.is_set():
+                    error.root_cause = str(host.log_path.with_name('failure.json'))
+                    self.hosts[key] = error
+                    with self.builds.processes.cleanup():
+                        host.close()
+                raise
+            finally:
+                if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
+                    if self.hosts.get(key) is host:
+                        with self.builds.processes.cleanup():
+                            host.close()
+                        del self.hosts[key]
         finally:
             lock.release()
-        host.check()
-        try:
-            yield host
-            host.check()
-        finally:
-            if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
-                with self.lock:
-                    owned = self.hosts.pop(key, None)
-                if owned is not None:
-                    with measure(self.costs, 'host-stop', database=database, tenant=tenant, host=host.address):
-                        owned.close()
 
     def source_tls(self, root):
         with self.lock:
@@ -544,6 +568,21 @@ class RunFixtures:
                     from bootstrap_fixtures import configure
                     configure(root, value, env)
                 private(Path(env['MDM_TEST_CONFIG']),value)
+            if 'content' in module.fixtures:
+                directory = self.root / database / 'content'
+                directory.mkdir(parents=True, exist_ok=True)
+                value = json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
+                value['content'] = dict(storage=dict(kind='volume', directory=str(directory)), imports={},
+                    max_artifact_bytes=33554432, max_temporary_bytes=67108864, max_uploads=4,
+                    transfer_seconds=60, retention_seconds=3600, max_bundle_entries=4096, max_expansion_ratio=100)
+                private(Path(env['MDM_TEST_CONFIG']), value)
+            if 'task_signing' in module.fixtures:
+                value = json.loads(Path(env['MDM_TEST_CONFIG']).read_text())
+                value['task_signing'] = dict(revision=1)
+                private(Path(env['MDM_TEST_CONFIG']), value)
+                with self.lock:
+                    self.preparation_helper(root, dict(stage='task_signing', directory=str(self.root / 'signing')),
+                                            output / 'signing-setup', database)
             # Runtime authority revisions must exist before a real host consumes them.
             if 'identity' in module.fixtures:
                 self.prepare_identity(pool, database, job, output / 'identity-setup')
@@ -572,13 +611,19 @@ class RunFixtures:
                                   migration_config=migration_config, owner=owner,
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
+            original = sys.exc_info()
             receipt['cleanupStarted'] = time.monotonic()
             try:
                 with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
                     try:
-                        stack.close()
+                        stack.__exit__(*original)
                     finally:
                         if module.python == 'gateway' and self.gateway_owner.root.exists():
                             self.gateway_owner.reset()
+            except BaseException as error:
+                import traceback
+                path = output / 'cleanup-failure.log'
+                path.write_text(traceback.format_exc())
+                receipt['cleanupFailure'] = dict(reason=type(error).__name__, log=str(path.relative_to(self.output)))
             finally:
                 receipt['cleaned'] = time.monotonic()

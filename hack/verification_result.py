@@ -27,3 +27,10 @@ def publish(path, payload):
     try:os.replace(temporary,path)
     finally:
         if os.path.exists(temporary):os.unlink(temporary)
+
+
+class DependencyBlocked(RuntimeError):
+    """A previously recorded preparation failure, not another business failure."""
+    def __init__(self, message, cause):
+        super().__init__(message)
+        self.root_cause = getattr(cause, 'root_cause', None)

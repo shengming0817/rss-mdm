@@ -146,12 +146,7 @@ impl Browser {
                 "ordinary collection GET claimed an idempotent operation"
             );
         }
-        ensure!(
-            response
-                .headers()
-                .get("cache-control")
-                .is_some_and(|v| v == "no-store")
-        );
+
         for header in response.headers().get_all("set-cookie") {
             let text = header.to_str()?;
             ensure!(

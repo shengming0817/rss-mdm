@@ -242,9 +242,8 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
     let operation = register();
     let tenant = pg::tenant();
     let audit_sql = format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY position"
+        "SELECT encode(source_bytes,'hex') FROM mdm_audit.receipts WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
     );
-    pg::audit_records().await;
     let audit_before = pg::sql(&audit_sql);
     let outbox = || {
         pg::sql(&format!(
@@ -307,12 +306,10 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
         operation.operation_id
     )))?;
     ensure!(outbox() == "1");
-    pg::audit_records().await;
     let first_audit = pg::sql(&audit_sql);
     ensure!(first_audit.lines().count() == audit_before.lines().count() + 1);
     let replayed = fixture.source(&operation, false).await?;
     ensure!(replayed == original);
-    pg::audit_records().await;
     ensure!(pg::sql(&audit_sql) == first_audit);
     let snapshot: r::SoftwareSource = serde_json::from_value(replayed["snapshot"].clone())?;
     fixture.source_allowed(snapshot.clone()).await?;

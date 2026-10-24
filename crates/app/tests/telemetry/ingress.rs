@@ -746,9 +746,7 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
             .await?;
             tx.commit().await?;
             c.close().await?;
-            let proof = authority
-                .principal(&identity.access.authorization_store())
-                .await?;
+            let proof = authority.principal(&identity.authorization.clone()).await?;
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
                 "baseline_initialize",
@@ -772,7 +770,7 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
                     identity.identity.authority.clone(),
                     identity.identity.tenant,
                 ),
-                authorization: identity.access.authorization_store(),
+                authorization: identity.authorization.clone(),
                 runtime: f.plan_runtime.clone(),
                 audit_store: content_audit,
                 tenant: identity.identity.tenant,

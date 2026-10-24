@@ -221,9 +221,9 @@ impl FrozenFact {
             checked(EventId::parse(&self.source.event))?,
         ))
     }
-    pub(crate) fn prepare(&self, recorded_at: Timepoint) -> Result<PreparedAuditV1, Error> {
+    pub(crate) fn event(&self) -> Result<AuditEventV1, Error> {
         let s = &self.source;
-        let event = AuditEventV1::new(
+        Ok(AuditEventV1::new(
             self.identity()?,
             EventFacts::new(
                 ActorRef::new(
@@ -251,8 +251,11 @@ impl FrozenFact {
                 ),
                 checked(AuditPayload::new(s.payload.as_bytes().to_vec()))?,
             ),
-        );
-        rss_audit_core::prepare(event, recorded_at).map_err(|error| Error::Audit(error.into()))
+        ))
+    }
+    pub(crate) fn prepare(&self, recorded_at: Timepoint) -> Result<PreparedAuditV1, Error> {
+        rss_audit_core::prepare(self.event()?, recorded_at)
+            .map_err(|error| Error::Audit(error.into()))
     }
     pub(crate) fn same_facts(&self, candidate: &Self) -> bool {
         let mut candidate = candidate.source.clone();

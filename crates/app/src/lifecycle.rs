@@ -263,6 +263,11 @@ pub async fn serve(
                         let identity = crate::identity::Identity::connect(
                             &compiled.config,
                             compiled.identity_management.clone(),
+                            Some(
+                                crate::apple::identity_platform(&compiled.config)
+                                    .await
+                                    .map_err(assembly_error)?,
+                            ),
                             |resource| startup.stage_resource(resource),
                         )
                         .await
@@ -315,22 +320,25 @@ pub async fn serve(
                             }
                             None => None,
                         };
-                        let automation = crate::automation::Automation::connect(
-                            planning.planning.clone(),
-                            planning.assets.clone(),
-                            planning.compliance.clone(),
-                            compiled
-                                .config
-                                .flow
-                                .storage
-                                .database
-                                .options()
-                                .map_err(|e| ProcessError::at("startup.asset_automation", e))?,
-                        )
-                        .await
-                        .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
+                        let automation =
+                            crate::automation::Automation::connect(
+                                crate::automation::PlanningWork::connect(
+                                    planning.planning.clone(),
+                                    compiled.config.flow.storage.database.options().map_err(
+                                        |e| ProcessError::at("startup.asset_automation", e),
+                                    )?,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    ProcessError::at("startup.asset_automation", e.into())
+                                })?,
+                                planning.assets.clone(),
+                                planning.compliance.clone(),
+                            )
+                            .await
+                            .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
                         startup.stage_resource(DynManagedResource::new_box(
-                            crate::automation::Resource(automation.clone()),
+                            crate::automation::Resource(automation.work.clone()),
                         ));
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();

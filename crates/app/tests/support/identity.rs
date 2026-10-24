@@ -35,7 +35,10 @@ async fn identity_with(
     let policy = Arc::new(
         crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
     );
-    Ok(Identity::connect(&config, policy, |resource| resources.acquire(resource)).await?)
+    Ok(Identity::connect(&config, policy, None, |resource| {
+        resources.acquire(resource)
+    })
+    .await?)
 }
 pub(crate) async fn login(identity: &Identity, login: &str) -> Result<SessionSecret> {
     login_named(identity, super::case::login(login)).await
@@ -96,80 +99,12 @@ fn save(root: &std::path::Path, tenant: &str, login: &str, secret: &SessionSecre
         secret.expose().as_bytes(),
     )
 }
-#[derive(serde::Deserialize)]
-#[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
-enum Setup {
-    Environment,
-    Refresh,
-    Actors {
-        cases: Vec<std::path::PathBuf>,
-        management: String,
-        source_secret: std::path::PathBuf,
-        provisioning_database: crate::config::Database,
-    },
-}
-
-#[tokio::test]
-#[ignore = "make t2: prepare only admitted case actors through the public authority"]
-async fn prepare_identity() -> Result<()> {
-    let manifest: Setup =
-        serde_json::from_slice(&std::fs::read(std::env::var("MDM_IDENTITY_SETUP")?)?)?;
-    let config_path = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
-    let root = config_path.parent().unwrap();
-    let costs = match manifest {
-        Setup::Environment => {
-            prepare_environment(root).await?;
-            Vec::new()
-        }
-        Setup::Refresh => {
-            refresh_management(root).await?;
-            Vec::new()
-        }
-        Setup::Actors {
-            cases,
-            management,
-            source_secret,
-            provisioning_database,
-        } => {
-            let mut costs =
-                prepare_accounts(&cases, &management, &source_secret, &provisioning_database)
-                    .await?;
-            costs.extend(prepare_sessions(&cases).await?);
-            costs
-        }
-    };
-    write(
-        &root.join("identity-costs.json"),
-        &serde_json::to_vec(&costs)?,
-    )
-}
-
-async fn prepare_environment(root: &std::path::Path) -> Result<()> {
-    use base64::Engine;
-    use ring::signature::KeyPair;
-    use serde_json::json;
-    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-        .map_err(|_| anyhow::anyhow!("fixture signing key generation"))?;
-    let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
-        .map_err(|_| anyhow::anyhow!("fixture signing key"))?;
-    let keyfile = root.join("task-signing.pk8");
-    write(&keyfile, pkcs8.as_ref())?;
-    write(
-        &root.join("task-signing.json"),
-        &serde_json::to_vec(&json!({
-            "private_key_file":keyfile,"key_id":"t2","trusted_keys":{"t2":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}
-        }))?,
-    )?;
-    let content = root.join("content");
-    std::fs::create_dir(&content)?;
-    write(
-        &root.join("content.json"),
-        &serde_json::to_vec(&json!({
-            "storage":{"kind":"volume","directory":content},"imports":{},"max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,"retention_seconds":3600,"max_bundle_entries":4096,"max_expansion_ratio":100
-        }))?,
-    )?;
+pub(super) async fn prepare_environment(root: &std::path::Path) -> Result<()> {
     let value: Config = serde_json::from_slice(&std::fs::read(root.join("runtime.json"))?)?;
-    let access = crate::Database::connect(value.access_options()?).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(value.access_options()?)
+        .await?;
     let tenant = rss_request_context::TenantId::parse(&value.identity.tenant_id)?;
     let source_runtime = crate::identity::open_runtime(
         &value.access_database,
@@ -178,14 +113,17 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
         &[(tenant, value.flow.storage.epoch)],
     )
     .await?;
-    let audit = access
-        .audit_store(
-            &value.audit,
-            source_runtime.clone(),
-            tenant,
-            Default::default(),
-        )
-        .await?;
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+    let audit = rss_mdm_audit_integration::AuditStore::new(
+        pool.clone(),
+        value.audit.integrity()?,
+        source_runtime.clone(),
+        tenant,
+        Default::default(),
+        &budget.control(),
+    )
+    .await?;
     let result = crate::authorization::store::initialize_authorization(
         &audit,
         user(&value.identity.tenant_id, BOOTSTRAP),
@@ -193,12 +131,12 @@ async fn prepare_environment(root: &std::path::Path) -> Result<()> {
     )
     .await;
     source_runtime.close().await;
-    access.close().await;
+    pool.close().await;
     result?;
     refresh_management(root).await
 }
 
-async fn refresh_management(root: &std::path::Path) -> Result<()> {
+pub(super) async fn refresh_management(root: &std::path::Path) -> Result<()> {
     let root = root.to_path_buf();
     let (resources, ()) = super::runtime::Resources::build(move |resources| {
         Box::pin(async move {
@@ -213,7 +151,7 @@ async fn refresh_management(root: &std::path::Path) -> Result<()> {
     resources.finish(async { Ok(()) }).await
 }
 
-async fn prepare_accounts(
+pub(super) async fn prepare_accounts(
     paths: &[std::path::PathBuf],
     management: &str,
     source_secret: &std::path::Path,
@@ -283,7 +221,6 @@ async fn prepare_accounts(
             crate::identity::deadline()).await?;
         let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
         for (tenant, coordinates) in members {
-            super::task_signing::seed(&tenant,&config).await?;
             let timer = super::runtime::monotonic();
             let started = timer.now();
             let mut prepared = Vec::new();
@@ -428,7 +365,9 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
     Ok(())
 }
 
-async fn prepare_sessions(paths: &[std::path::PathBuf]) -> Result<Vec<serde_json::Value>> {
+pub(super) async fn prepare_sessions(
+    paths: &[std::path::PathBuf],
+) -> Result<Vec<serde_json::Value>> {
     use super::case::{CaseContext, Phase};
     use std::collections::BTreeMap;
     let paths = paths.to_vec();
@@ -550,7 +489,32 @@ async fn set_grants_in(
     let (identity, identity_resources) = identity(tenant).await?;
     identity_resources
         .finish(async {
-            let access = crate::Database::connect(config(tenant)?.access_options()?).await?;
+            let config = config(tenant)?;
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect_with(config.access_options()?)
+                .await?;
+            let access = rss_mdm_authorization_service::Store::from_pool(
+                pool.clone(),
+                Arc::new(crate::lifecycle::RuntimeTimer),
+            );
+            let source = crate::audit_test_support::source_runtime(
+                &pool,
+                rss_request_context::TenantId::parse(tenant)?,
+            )
+            .await?;
+            let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
+                std::time::Duration::from_secs(5),
+            );
+            let audit = rss_mdm_audit_integration::AuditStore::new(
+                pool.clone(),
+                config.audit.integrity()?,
+                source.clone(),
+                rss_request_context::TenantId::parse(tenant)?,
+                Default::default(),
+                &budget.control(),
+            )
+            .await?;
             let principal = crate::authorization::context::AuthorizedPrincipal::new(
                 identity
                     .authority
@@ -561,21 +525,11 @@ async fn set_grants_in(
                     )
                     .await?,
             )?
-            .load_authorization(access.authorization())
+            .load_authorization(&access)
             .await?;
-            grant(
-                access
-                    .audit_store_fixture(&config(tenant)?.audit)
-                    .await?
-                    .as_ref(),
-                &principal,
-                tenant,
-                subject,
-                grants,
-                preserve_read,
-            )
-            .await?;
-            access.close().await;
+            grant(&audit, &principal, tenant, subject, grants, preserve_read).await?;
+            source.close().await;
+            pool.close().await;
             Ok(())
         })
         .await

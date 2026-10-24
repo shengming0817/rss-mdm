@@ -33,7 +33,7 @@ impl Fixture {
             elapsed: AtomicU64::new(0),
         });
         let archive = Arc::new(Archive::new(
-            authority.access.archive_pool(),
+            authority.pool.clone(),
             authority.audit.clone(),
             clock.clone(),
         ));
@@ -239,7 +239,7 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
     );
     f.admin.network = None;
     let restarted = Arc::new(Archive::new(
-        f.authority.access.archive_pool(),
+        f.authority.pool.clone(),
         f.authority.audit.clone(),
         f.clock.clone(),
     ));
@@ -314,7 +314,7 @@ async fn permissions_rls_immutable_versions_and_tampering_are_enforced() -> Resu
         .await?
         .0 == StatusCode::FORBIDDEN
     );
-    let mut connection = f.authority.access.archive_pool().acquire().await?;
+    let mut connection = f.authority.pool.clone().acquire().await?;
     let mut own = connection.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *own).await?;
     let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_certificate_archive.versions").fetch_one(&mut *own).await?;
@@ -568,7 +568,7 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     .await?;
     ensure!(owner.shutdown().join().await?.is_clean());
     let restarted = Arc::new(Archive::new(
-        f.authority.access.archive_pool(),
+        f.authority.pool.clone(),
         f.authority.audit.clone(),
         f.clock.clone(),
     ));
@@ -648,7 +648,7 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
     peer_browser.operation = Some(Uuid::new_v4());
     // Queue the password writer first at the tenant lock. It holds the authorization
     // lock, so the old-instance export prepares plaintext then waits behind it.
-    let mut blocker = f.authority.access.archive_pool().begin().await?;
+    let mut blocker = f.authority.pool.clone().begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2641))")
         .bind(case_tenant())
         .execute(&mut *blocker)

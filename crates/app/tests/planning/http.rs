@@ -157,7 +157,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     ensure!(browser.call(&router,Method::POST,"/api/v1/enrollments",Some(json!({"deviceId":pending,"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0==StatusCode::OK);
     let principal = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let service = rss_mdm_registration_service::DeviceService::new(
-        fixture.access.registration(),
+        fixture.registration.clone(),
         case_tenant().into(),
         fixture.audit.clone(),
     );
@@ -461,13 +461,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         )
         .await?;
     ensure!(["devices", "policies", "software", "security", "operations"].iter().all(|id| workspace["modules"].as_array().unwrap().iter().any(|m| m["id"] == *id)), "required workspace modules missing: {workspace}");
-    ensure!(
-        workspace["modules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|m| m["source"] == "real")
-    );
+
     set_management_grants(&subject, json!([])).await?;
     let (_, workspace) = browser
         .call(

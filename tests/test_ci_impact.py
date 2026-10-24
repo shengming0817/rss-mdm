@@ -429,7 +429,7 @@ class CiImpactContract(unittest.TestCase):
     def test_test_input_selects_owner_and_assertion_changes(self):
         self.repo.change('crates/leaf/tests/behavior.rs', 'assert!(false);')
         self.assert_selected(
-            self.repo.select()[1], ['leaf', 'leaf-integration'], ['leaf']
+            self.repo.select()[1], ['leaf'], ['leaf']
         )
 
     def test_member_manifest_nonsemantic_and_dependency_changes(self):
@@ -595,7 +595,7 @@ class CiImpactContract(unittest.TestCase):
         self.repo.commit('declare helper and T1')
         self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
         self.repo.change('tests/support/helper.rs')
-        self.assert_selected(self.repo.select()[1], [], ['leaf'])
+        self.assert_selected(self.repo.select()[1], ['leaf'], ['leaf'])
         self.repo.git('reset', '--hard', self.repo.base)
         # A declaration-only entry compiles/discovers its target, including when
         # the baseline used to map that entry to all of its business tests.
@@ -603,7 +603,7 @@ class CiImpactContract(unittest.TestCase):
         registry.write_text(registry.read_text() + "\nTOOL_INPUTS['crates/leaf/tests/mod.rs'] = ('test_registry',)\nTOOL_ONLY_INPUTS = ('crates/leaf/tests/mod.rs',)\n")
         self.repo.change('crates/leaf/tests/mod.rs', 'mod helper;\n')
         decision = self.repo.select()[1]
-        self.assert_selected(decision, ['leaf', 'leaf-integration'], [])
+        self.assert_selected(decision, ['leaf'], [])
         self.assertEqual([b['package'] for b in decision['ownershipChecks']], ['leaf'])
         self.repo.git('reset', '--hard', self.repo.base)
         # Remove T2 ownership for the T1 file, as declared by the real source owner.
@@ -615,18 +615,26 @@ class CiImpactContract(unittest.TestCase):
         self.repo.commit('separate unit carrier')
         self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
         self.repo.change('crates/core/tests/unit.rs')
-        self.assert_selected(
-            self.repo.select()[1],
-            [
-                'core',
-                'leaf',
-                'dev-consumer',
-                'build-consumer',
-                'optional-consumer',
-                'leaf-integration',
-            ],
-            [],
-        )
+        self.assert_selected(self.repo.select()[1], ['core'], [])
+
+    def test_dev_consumption_is_terminal_for_sources_and_manifest_changes(self):
+        manifest = self.repo.root / 'crates/other/Cargo.toml'
+        manifest.write_text(manifest.read_text() + '\n[dependencies]\ndev-consumer={path="../dev-consumer"}\n')
+        subprocess.run(['cargo', 'metadata', '--format-version', '1'], cwd=self.repo.root,
+                       check=True, capture_output=True)
+        self.repo.commit('production consumer of a test consumer')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        self.repo.change('crates/core/src/lib.rs')
+        decision = self.repo.select()[1]
+        self.assertIn('dev-consumer', decision['cargo']['packages'])
+        self.assertNotIn('other', decision['cargo']['packages'])
+        self.assertNotIn('other-integration', decision['cargo']['packages'])
+        self.repo.git('reset', '--hard', self.repo.base)
+        manifest = self.repo.root / 'crates/dev-consumer/Cargo.toml'
+        manifest.write_text(manifest.read_text().replace('path = "../core"', 'path = "../leaf", package="leaf"'))
+        subprocess.run(['cargo', 'metadata', '--format-version', '1'], cwd=self.repo.root,
+                       check=True, capture_output=True)
+        self.assert_selected(self.repo.select()[1], ['dev-consumer'], [])
 
     def test_crate_readme_contributes_cargo_but_no_t2(self):
         self.repo.change('crates/leaf/README.md', 'docs')

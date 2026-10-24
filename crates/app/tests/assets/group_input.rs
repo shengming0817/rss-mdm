@@ -3,7 +3,11 @@
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
 use super::*;
-async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value) -> Result<()> {
+async fn collection_matrix(
+    browser: &mut Browser,
+    router: &Router,
+    authority: &authority::Authority,
+) -> Result<()> {
     use crate::inventory_runtime::test_support::{report, start, wait_ready_projection};
     let (registration, _) = seed_source("tie-a", "mdm", "mdm.windows", "seed")?;
     let locator = crate::test_support::runtime::secret("channel-proof-121")
@@ -13,36 +17,47 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     pg(&format!(
         "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
     ))?;
-    let access = database(base).await?;
     let service = crate::device::DeviceService::new(
-        access.registration(),
+        authority.registration.clone(),
         case_tenant().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     );
     let proof =
         crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 121);
-    let config: Config = serde_json::from_value(base.clone())?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.inventory(),
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(
+            authority.pool.clone(),
+        )),
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     )
     .await?;
     let owner = start(runtime.clone()).await?;
-    let full = report(&service, &access, &proof, [Some("Collected"), Some("11")]).await?;
+    let full = report(
+        &service,
+        &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+        &authority.audit,
+        &proof,
+        [Some("Collected"), Some("11")],
+    )
+    .await?;
     wait_ready_projection(&runtime, &full).await?;
     let criteria = predicate("device.model", "string", json!("Unconfirmed"));
     for (values, result) in [
         ([Some("Unconfirmed"), None], "partial"),
         ([None, None], "failed"),
     ] {
-        let incomplete = report(&service, &access, &proof, values).await?;
+        let incomplete = report(
+            &service,
+            &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+            &authority.audit,
+            &proof,
+            values,
+        )
+        .await?;
         tokio::time::timeout(Duration::from_secs(8), async {
             loop {
                 let delivery = runtime.inspect(&incomplete).await?;
@@ -99,7 +114,8 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     }
     let unsupported = crate::inventory_runtime::test_support::report_statuses(
         &service,
-        &access,
+        &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
+        &authority.audit,
         &proof,
         [None, Some("11")],
         [501, 200],
@@ -143,7 +159,6 @@ async fn collection_matrix(browser: &mut Browser, router: &Router, base: &Value)
     ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 0);
     crate::test_support::runtime::stop_worker(owner).await?;
     runtime.close_fixture().await?;
-    access.close().await;
     Ok(())
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -190,7 +205,7 @@ async fn typed_and_collected_facts_become_group_input() -> Result<()> {
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-a')",
         TENANT = case_tenant()
     ))?;
-    collection_matrix(&mut browser, router, &fixture.base).await?;
+    collection_matrix(&mut browser, router, &fixture.authority).await?;
     fixture.close().await
 }
 

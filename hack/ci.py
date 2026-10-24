@@ -247,6 +247,39 @@ def verify_agent_wire(data):
                 pending.append(edge['pkg'])
 
 
+def verify_capability_boundaries(data):
+    """Cargo owns package identities and target/optional/build dependency declarations."""
+    packages = {p['name']: p for p in data['packages'] if p['id'] in data['workspace_members']}
+    ingress = {'rss-mdm-' + p for p in ('management-http', 'agent-channel', 'windows-channel', 'apple-channel')}
+    forbidden = {
+        'certificate': {'sqlx', 'axum', 'reqwest', 'rss-runtime'},
+        'apple-mdm': {'sqlx', 'axum', 'reqwest', 'tokio', 'tokio-rustls'},
+        'query': {'axum', 'sqlx', 'tokio'},
+        'http-contract': {'sqlx', 'rss-runtime'},
+        'resource': {'rss-mdm-http-contract'},
+        'resource-postgres': {'rss-mdm-http-contract'},
+        'inventory-service': {'rss-mdm-windows-mdm', 'rss-mdm-apple-mdm', 'plist'},
+        'software-service': {'rss-mdm-app', 'rss-mdm-flow-service', 'rss-mdm-content-service', 'rss-mdm-management-http'},
+    }
+    for owner in ('authorization-service', 'registration-service', 'inventory-service',
+                  'flow-service', 'execution-service', 'content-service'):
+        forbidden.setdefault(owner, set()).update(ingress | {'rss-mdm-app', 'axum', 'rss-mdm-http-contract'})
+    for owner in ingress:
+        forbidden.setdefault(owner.removeprefix('rss-mdm-'), set()).update(ingress | {'rss-mdm-app'})
+    for owner in ('agent-channel', 'windows-channel', 'apple-channel', 'execution-service', 'content-service'):
+        forbidden[owner].add('rss-mdm-flow-service')
+    for owner, denied in forbidden.items():
+        package = packages.get('rss-mdm-' + owner)
+        require(package is not None, 'missing capability owner: ' + owner)
+        dependencies = {d['name'] for d in package['dependencies'] if d['kind'] != 'dev'}
+        invalid = dependencies & denied
+        if owner in {'certificate', 'apple-mdm'}:
+            invalid |= {name for name in dependencies if name.startswith('rss-mdm-')}
+        if owner in {'query', 'http-contract'}:
+            invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-'))}
+        require(not invalid, f'{owner}: forbidden production dependencies: {sorted(invalid)}')
+
+
 def verify_metadata(data, root, mode, pin):
     url, rev = pin
     expected = f"git+{url}?rev={rev}#{rev}"
@@ -275,6 +308,7 @@ def verify_metadata(data, root, mode, pin):
     verify_backend_support(data)
     verify_audit_integration(data)
     verify_agent_wire(data)
+    verify_capability_boundaries(data)
     app_id = next(p['id'] for p in data['packages'] if p['name'] == 'rss-mdm-app')
     visited, todo = set(), [app_id]
     while todo:

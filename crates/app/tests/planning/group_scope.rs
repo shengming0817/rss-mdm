@@ -22,10 +22,11 @@ async fn durable_asset_group_scope_pipeline() {
         service.tenant,
     );
     let automation = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options)
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options,
     )
     .await
     .unwrap();
@@ -310,7 +311,7 @@ async fn durable_asset_group_scope_pipeline() {
         assert!(wire::Response::decode(page).is_ok());
     }
     assert!(stack.shutdown().join().await.unwrap().is_clean());
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(automation))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(automation.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;
@@ -711,10 +712,11 @@ async fn ingress_batches_reuse_published_group_coverage() {
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -865,7 +867,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
         .finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;
@@ -1083,10 +1085,11 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     use rss_reconcile::{DurableStore, Reconciler};
     let first = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        first.clone(),
+        crate::automation::PlanningWork::connect(first.clone(), options())
+            .await
+            .unwrap(),
         assets(&first).await,
         compliance(&first).await,
-        options(),
     )
     .await
     .unwrap();
@@ -1245,7 +1248,7 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
         )
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.clone()))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     sql(&format!(
@@ -1254,10 +1257,11 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     ));
     let second = Arc::new(planning(tenant()).await);
     let resumed = crate::automation::Automation::connect(
-        second.clone(),
+        crate::automation::PlanningWork::connect(second.clone(), options())
+            .await
+            .unwrap(),
         assets(&second).await,
         compliance(&second).await,
-        options(),
     )
     .await
     .unwrap();
@@ -1312,7 +1316,7 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
         .finish(&current, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed.work.clone()))
         .await
         .unwrap();
     first.runtime.close().await;
@@ -1455,10 +1459,11 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
             |e| panic!("{e:?}"),
         );
     let worker = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -1564,7 +1569,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         .finish(&claim, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;
@@ -1637,10 +1642,11 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     );
     let service = Arc::new(planning(t).await);
     let automation = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options.clone())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options.clone(),
     )
     .await
     .unwrap();

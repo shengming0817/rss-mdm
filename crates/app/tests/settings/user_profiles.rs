@@ -398,7 +398,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
             )
             .await?;
             let p = AuthorizedPrincipal::new(session)?
-                .load_authorization(&f.access.authorization_store())
+                .load_authorization(&f.authorization.clone())
                 .await?;
             let id = Uuid::new_v4();
             let input: Change = serde_json::from_value(
@@ -544,7 +544,7 @@ async fn enabled_capacity_and_cross_tenant_storage_are_enforced() -> Result<()> 
         let seed=definition().to_string().replace('\'',"''");
         process::pg(&format!("INSERT INTO mdm_user_profiles.definitions(tenant_id,field_id,revision,collected_after_micros,value) SELECT '{}'::uuid,gen_random_uuid(),1,0,jsonb_set('{}'::jsonb,'{{key}}',to_jsonb('field'||i::text)) FROM generate_series(1,128) i",case_tenant(),seed))?;
         let session=f.identity.authority.inspect_session(f.identity.tenant,identity::credential(&f.identity,"admin")?,crate::identity::deadline()).await?;
-        let p=AuthorizedPrincipal::new(session)?.load_authorization(&f.access.authorization_store()).await?;
+        let p=AuthorizedPrincipal::new(session)?.load_authorization(&f.authorization.clone()).await?;
         let audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&audit)?;
         let input:Change=serde_json::from_value(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":definition()}))?;
         audit.operation(input.operation_id,"user_attribute_definition_change");

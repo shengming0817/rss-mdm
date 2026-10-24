@@ -103,14 +103,17 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         )
         .await?;
     let automation = crate::automation::Automation::connect(
-        service.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            service.planning.clone(),
+            config.flow.storage.database.options()?,
+        )
+        .await?,
         service.assets.clone(),
         service.compliance.clone(),
-        config.flow.storage.database.options()?,
     )
     .await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_options()?,
@@ -328,4 +331,25 @@ async fn fixture_resources_preserve_failures_and_close_during_initialization() {
     })
     .await
     .expect("RSS drop drain closes the abandoned fixture");
+}
+
+pub(crate) struct PoolResource(pub sqlx::PgPool);
+impl rss_runtime::ManagedResource for PoolResource {
+    fn name(&self) -> &str {
+        "capability-pool"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}
+pub(crate) struct SourceResource(pub Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl rss_runtime::ManagedResource for SourceResource {
+    fn name(&self) -> &str {
+        "capability-source"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
 }

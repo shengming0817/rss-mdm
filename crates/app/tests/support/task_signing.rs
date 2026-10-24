@@ -1,6 +1,37 @@
 //! Explicit durable signing fixtures; production loads no fixture files.
 use super::*;
 use sqlx::Connection;
+pub(crate) async fn prepare(root: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(root)?;
+    if !root.join("task-signing.json").exists() {
+        use base64::Engine;
+        use ring::signature::KeyPair;
+        use serde_json::json;
+        let pkcs8 =
+            ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .map_err(|_| anyhow::anyhow!("fixture signing key generation"))?;
+        let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+            .map_err(|_| anyhow::anyhow!("fixture signing key"))?;
+        let keyfile = root.join("task-signing.pk8");
+        std::fs::write(&keyfile, pkcs8.as_ref())?;
+        std::fs::write(
+            root.join("task-signing.json"),
+            &serde_json::to_vec(&json!({
+                "private_key_file":keyfile,"key_id":"t2","trusted_keys":{"t2":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.public_key().as_ref())}
+            }))?,
+        )?;
+        std::fs::set_permissions(&keyfile, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let path = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
+    std::fs::copy(
+        root.join("task-signing.json"),
+        path.parent().unwrap().join("task-signing-fixture.json"),
+    )?;
+    let config: Config = serde_json::from_slice(&std::fs::read(path)?)?;
+    seed(&config.identity.tenant_id, &config).await
+}
+
 pub(crate) async fn seed(tenant: &str, config: &crate::config::Config) -> Result<()> {
     let input = super::agent::fixture_signing_input()?;
     let private = crate::config::read(

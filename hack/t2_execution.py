@@ -18,7 +18,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from build_run import lease_fds, require_lease
-from t2_registry import APP, MODULES, IDENTITY_SETUP
+from t2_registry import APP, MODULES, PREPARATION
 from t2_model import ROOT, Build, Module
 from verification_result import require
 
@@ -178,7 +178,22 @@ class Processes:
         self.local = threading.local()
 
     def check(self):
-        require(not self.cancelled.is_set() or getattr(self.local, 'cleanup', False), 'T2 cancelled')
+        if getattr(self.local, 'cleanup', False):
+            return
+        require(not self.cancelled.is_set(), 'T2 cancelled')
+        check = getattr(self.local, 'dependency', None)
+        if check is not None:
+            check()
+
+    @contextmanager
+    def depending_on(self, check):
+        previous = getattr(self.local, 'dependency', None)
+        self.local.dependency = check
+        try:
+            self.check()
+            yield
+        finally:
+            self.local.dependency = previous
 
     @contextmanager
     def cleanup(self):
@@ -256,6 +271,7 @@ class Processes:
             self.started += 1
         try:
             while True:
+                self.check()
                 try:
                     stdout, stderr = child.communicate(timeout=.2)
                     return subprocess.CompletedProcess(args, child.returncode, stdout or '', stderr or '')
@@ -362,7 +378,7 @@ class Builds:
         self.metadata.write_text(metadata.stdout)
         checks = {Build(value['package'], value['kind'], value['target'], tuple(value['features']))
                   for value in ownership_checks}
-        owners = {module.build for module in [*MODULES.values(), IDENTITY_SETUP] if module.build
+        owners = {module.build for module in [*MODULES.values(), PREPARATION] if module.build
                   and any(same_target(module.build, check) for check in checks)}
         self.prepare_targets({module.build for module in modules if module.build} | checks | owners,
                              ownership_checks=checks)
@@ -400,13 +416,13 @@ class Builds:
             self.verify_binary(build)
             (directory / 'tests.json').write_text(listing.stdout)
         for build in builds:
-            validate_ownership(self.listings[build], build, [*MODULES.values(), IDENTITY_SETUP],
+            validate_ownership(self.listings[build], build, [*MODULES.values(), PREPARATION],
                                self.listings if build in ownership_checks else None)
 
     def prepare_runtime(self, modules):
         require_lease(ROOT)
         start = time.monotonic()
-        if any('identity' in module.fixtures for module in modules):
+        if any(set(module.fixtures) & {'identity', 'task_signing'} for module in modules):
             self.prepare_targets({APP})
         binaries = set()
         if any(module.postgres for module in modules):

@@ -106,7 +106,7 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
         let managed = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(managed.0 == StatusCode::OK && managed.1["asset"]["editable"] == true);
         ensure!(managed.1["asset"]["groups"][0]["fields"] == groups[0]["fields"] && managed.1["asset"]["groups"][0]["name"] == "采购");
-        let mut reader = authority::Authority::prepared_browser("admin").await?;
+        let mut reader = authority::Authority::prepared_browser("admin")?;
         let reader_id = browser_subject(&reader, &fixture.router).await?;
         grants(&reader_id, &[Permission::InventoryRead]).await?;
         let projected = reader.call(&fixture.router, Method::GET, PATH, None).await?;

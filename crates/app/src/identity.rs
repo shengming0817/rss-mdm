@@ -56,7 +56,7 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
     }
 }
 pub(crate) struct Identity {
-    pub(crate) platform: Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>,
+    pub(crate) platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
     pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
     pub(crate) tenant: TenantId,
@@ -86,11 +86,13 @@ impl Identity {
     pub(crate) async fn connect(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
+        platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
         acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
     ) -> Result<Self, Error> {
         Self::connect_using(
             config,
             policy,
+            platform,
             acquire,
             |authority| authority,
             OidcConfig::federation,
@@ -100,6 +102,7 @@ impl Identity {
     async fn connect_using(
         config: &Config,
         policy: Arc<IdentityManagementPolicy>,
+        platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
         mut acquire: impl FnMut(Box<rss_runtime::DynManagedResource<'static>>),
         configure_authority: impl FnOnce(Authority) -> Authority,
         federation: impl FnOnce(
@@ -130,41 +133,21 @@ impl Identity {
         acquire(rss_runtime::DynManagedResource::new_box(RuntimeResource(
             runtime.clone(),
         )));
-        {
-            use sqlx::Connection;
-            let admission = async {
-                let mut c = sqlx::PgConnection::connect_with(&config.identity.database.options()?)
-                    .await
-                    .map_err(|_| invalid())?;
-                rss_mdm_apple_channel::platform_sso::verify_runtime(&mut c)
-                    .await
-                    .map_err(|_| invalid())?;
-                c.close().await.map_err(|_| invalid())
-            };
-            tokio::time::timeout(Duration::from_secs(10), admission)
-                .await
-                .map_err(|_| invalid())??;
-        }
         let kdf = Arc::new(PasswordKdf::new());
         acquire(rss_runtime::DynManagedResource::new_box(KdfResource(
             kdf.clone(),
         )));
-        let platform = Arc::new(rss_mdm_apple_channel::platform_sso::bridge::Verifier::new(
-            &config.product_origin,
-        ));
-        let authority = Authority::connect_runtime(
-            runtime,
-            kdf.clone(),
-            authority_config(
-                instance,
-                tenants.iter().map(|(tenant, _)| *tenant).collect(),
-            )?
-            .with_platform(platform.clone()),
-            policy.clone(),
-            deadline(),
-        )
-        .await
-        .map_err(failure)?;
+        let mut options = authority_config(
+            instance,
+            tenants.iter().map(|(tenant, _)| *tenant).collect(),
+        )?;
+        if let Some(platform) = &platform {
+            options = options.with_platform(platform.clone());
+        }
+        let authority =
+            Authority::connect_runtime(runtime, kdf.clone(), options, policy.clone(), deadline())
+                .await
+                .map_err(failure)?;
         let authority = configure_authority(authority);
         let tenant_administration =
             crate::tenant_registry::http::Service::connect(config, management_tenant, kdf, policy)
@@ -228,6 +211,7 @@ impl Identity {
         Self::connect_using(
             config,
             policy,
+            None,
             acquire,
             |authority| authority.with_fact_time(fact_time),
             |config, authority, origin, instance, _tenant| {

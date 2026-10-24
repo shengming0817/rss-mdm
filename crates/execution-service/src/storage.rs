@@ -270,7 +270,7 @@ pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
         })
     })
     .await?;
-    let (allowed, raw, dependencies) = tx
+    let (allowed, raw) = tx
         .with_connection(|c| {
             Box::pin(async move {
                 let allowed = sqlx::query_scalar::<_, bool>(include_str!("admission.sql"))
@@ -279,24 +279,17 @@ pub async fn admit(tx: &mut PgTransaction<'_>) -> Result<()> {
                 let raw = sqlx::query_scalar::<_, String>(include_str!("catalog.sql"))
                     .fetch_one(&mut *c)
                     .await?;
-                let dependencies =
-                    sqlx::query_scalar::<_, String>(include_str!("dependencies.sql"))
-                        .fetch_one(c)
-                        .await?;
-                Ok((allowed, raw, dependencies))
+                Ok((allowed, raw))
             })
         })
         .await?;
     let actual: serde_json::Value = stored(serde_json::from_str(&raw))?;
     let expected: serde_json::Value =
         serde_json::from_str(include_str!("catalog.json")).expect("canonical catalog");
-    let dependencies: serde_json::Value = stored(serde_json::from_str(&dependencies))?;
-    let expected_dependencies: serde_json::Value =
-        serde_json::from_str(include_str!("dependencies.json")).expect("canonical dependencies");
-    if !allowed || actual != expected || dependencies != expected_dependencies {
+    if !allowed || actual != expected {
         eprintln!(
             "{}",
-            serde_json::json!({"event":"command_admission_rejected","authority":allowed,"catalog":actual==expected,"dependencies":dependencies==expected_dependencies})
+            serde_json::json!({"event":"command_admission_rejected","authority":allowed,"catalog":actual==expected})
         );
         return Err(Error::Unavailable(Failure::CommandInvariant).into());
     }

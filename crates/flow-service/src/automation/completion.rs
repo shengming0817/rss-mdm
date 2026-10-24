@@ -5,7 +5,7 @@ use rss_reconcile::{
     Completion, Control, DurableStore, Error as ReconcileError, ErrorKind, Scope, Target, Timer,
 };
 use rss_reconcile_postgres::PgClaim;
-impl DurableStore for Automation {
+impl DurableStore for PlanningWork {
     type Claim = PgClaim;
     async fn wake<T: Timer>(
         &self,

@@ -171,7 +171,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let agent = crate::test_support::agent::register(&router, &mut browser).await?;
     let quota_user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
-        fixture.access.registration(),
+        fixture.registration.clone(),
         fixture.audit.clone(),
     );
     let initial_usage = quotas.usage(&quota_user, None).await?;
@@ -275,7 +275,8 @@ async fn browser_authorization_quota_expiry_and_restart_are_durable() -> Result<
     fixture_resources.finish(async {
     let service = crate::test_support::agent::service(&fixture).await?;
     let user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
-    let mut quota_tx = fixture.access.begin(case_tenant()).await?;
+    let mut quota_tx = fixture.pool.begin().await?;
+    crate::Database::configure_transaction(&mut quota_tx, case_tenant()).await?;
     sqlx::query("INSERT INTO mdm_access.registration_quota_settings(tenant_id,subject,revision,agent) VALUES($1::uuid,$2,1,1)")
         .bind(case_tenant()).bind(format!("user:{}:{}",user.instance_id(),user.principal_id())).execute(&mut *quota_tx).await?;
     quota_tx.commit().await?;

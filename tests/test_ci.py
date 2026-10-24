@@ -49,7 +49,7 @@ class DependencyPolicy(unittest.TestCase):
         url, rev = pin
         source = f"git+{url}?rev={rev}#{rev}"
         data = {"packages": [
-            *[{"id":name,"name":name,"manifest_path":str(root/path/"Cargo.toml"),"source":None} for name,path in ci.LOCAL_PACKAGES.items()],
+            *[{"id":name,"name":name,"manifest_path":str(root/path/"Cargo.toml"),"source":None,"dependencies":[]} for name,path in ci.LOCAL_PACKAGES.items()],
             {"id":"obs","name":"rss-observation-postgres","source":source},
             {"id":"proj","name":"rss-projection-postgres","source":source}],
             "workspace_members":list(ci.LOCAL_PACKAGES), "resolve":{"nodes":[

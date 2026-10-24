@@ -64,12 +64,12 @@ server.serve_forever()
         host.thread = None
         return host
 
-    def test_unexpected_exit_cancels_run(self):
+    def test_unexpected_exit_does_not_cancel_independent_cases(self):
         host = self.host()
         host.child.poll.return_value = 1
         host.monitor()
         self.assertTrue(host.failed.is_set())
-        host.processes.cancel.assert_called_once()
+        host.processes.cancel.assert_not_called()
         with self.assertRaisesRegex(RuntimeError, 'host died'):
             host.check()
 
@@ -101,7 +101,7 @@ server.serve_forever()
             host.monitor()
             record = json.loads(host.log_path.with_name('failure.json').read_text())
             self.assertEqual(record, dict(event='unexpected-host-exit', exitCode=7, log='host.log'))
-            host.processes.cancel.assert_called_once()
+            host.processes.cancel.assert_not_called()
 
     def test_close_wins_monitor_race_without_reporting_failure(self):
         from unittest.mock import patch

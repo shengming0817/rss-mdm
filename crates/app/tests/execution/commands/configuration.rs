@@ -264,15 +264,18 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::automation::Automation::connect(
-        client.app.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            client.app.flow.planning.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
         client.app.flow.assets.clone(),
         client.app.flow.compliance.clone(),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = automation_owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(

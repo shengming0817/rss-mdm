@@ -34,7 +34,20 @@ impl Client {
                 rss_request_context::TenantId::parse(case_tenant())?,
                 rss_mdm_execution_service::deadline(),
                 |tx| {
-                    Box::pin(async move { Ok(rss_mdm_execution_service::storage::admit(tx).await) })
+                    Box::pin(async move {
+                        if tx
+                            .with_connection(|c| {
+                                Box::pin(crate::database::verify_product_storage(c))
+                            })
+                            .await
+                            .is_err()
+                        {
+                            return Ok(Err(Fault::Request(Error::Unavailable(
+                                Failure::CommandInvariant,
+                            ))));
+                        }
+                        Ok(rss_mdm_execution_service::storage::admit(tx).await)
+                    })
                 },
             )
             .await
