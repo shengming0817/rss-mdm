@@ -175,3 +175,39 @@ fn compatible_business_versions_widen_bounds_without_changing_scalar_kind() {
     assert!(new.extends(&old));
     assert!(!old.extends(&new));
 }
+
+#[test]
+fn object_can_widen_to_optional_record_without_losing_old_values() {
+    let old = ValueType::Object {
+        properties: [("provisioned".into(), ValueType::Boolean)].into(),
+    };
+    let mut properties: std::collections::BTreeMap<String, Property> = [
+        (
+            "provisioned".into(),
+            Property {
+                value_type: ValueType::Boolean,
+                required: false,
+            },
+        ),
+        (
+            "native".into(),
+            Property {
+                value_type: ValueType::Integer,
+                required: false,
+            },
+        ),
+    ]
+    .into();
+    let new = ValueType::Record {
+        properties: properties.clone(),
+    };
+    assert!(new.extends(&old));
+    assert!(
+        new.decode_json(&serde_json::json!({"provisioned":true}))
+            .is_ok()
+    );
+    assert!(new.decode_json(&serde_json::json!({"native":2})).is_ok());
+    properties.get_mut("native").unwrap().required = true;
+    assert!(!ValueType::Record { properties }.extends(&old));
+    assert!(!old.extends(&new));
+}

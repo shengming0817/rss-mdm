@@ -137,7 +137,7 @@ Windows 标准蓝图版本为 `2`，通过普通 Resource 实例化并绑定 `na
 
 每个包最多输出 1 MiB、300 秒；另受会话 128 条消息、32768 命令和协商消息大小限制。无法在预算内完成时保持失败/部分质量。软件、网络、注册字段含敏感资产信息，沿用 Inventory 授权和来源隔离。原始完整 URI 同时绑定设备注册与 run；当前 provider 外的注册对象不可通过标量绕过读取。
 
-`device.software.windows.win32/store/non_store/system` 分开保存，不写入 Agent 的 `device.software.installations`。Win32 的 `Source` 为发现来源，不能据此推断 machine/user 安装范围，因此 `installation_scope=unknown`。包应用保留 `is_provisioned`、`package_status` 以及 CSP `Users` 原文 `registered_users_native`，不把用户注册数据提升为独立 User 范围，也不推断安装者。完整空清单只替换该原生字段。
+`device.software.windows.win32/store/non_store/system` 分开保存，不写入 Agent 的 `device.software.installations`。Win32 的 `Source` 为发现来源，不能据此推断 machine/user 安装范围，因此 `installation_scope=unknown`。包应用保留整数原值 `is_provisioned_native`；仅原值 0/1 派生可选布尔 `is_provisioned`。Windows 实机对 System 应用返回的 2 保留为原始观察值，布尔字段缺省，不推断为 true/false，也不丢弃整条应用。System 分类由 CSP 命名空间决定。新采集包业务版本为 2，已有字段目录通过正常字段版本写入扩展后，再发布并绑定新版资源。包应用还保留 `package_status` 以及 CSP `Users` 原文 `registered_users_native`，不把用户注册数据提升为独立 User 范围，也不推断安装者。完整空清单只替换该原生字段。
 
 安全字段保留原生语义：Firewall 0 表示 enabled；Antivirus SignatureStatus 0 表示过期或缺失；DeviceGuard 的 0 表示运行，不能按普通布尔值转换。BitLocker 字段是 `DeviceEncryptionStatus` 合规错误位数组，0 为空错误集，不代表每个卷已经加密；未知位拒绝。TotalRAM 按文档的可用 MB 转为 `available_memory_bytes`，不冒充物理内存容量。Update 清单只读 UpdateID、RevisionNumber 及原生状态，没有 KB 补丁推断、扫描触发、批准或安装动作，不采集恢复密钥。
 

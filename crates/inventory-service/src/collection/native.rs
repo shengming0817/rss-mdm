@@ -103,6 +103,76 @@ pub fn validate_mapping(
         .validate_type(&super::wire::to_wire_field(field)?.value_type)
         .map_err(|_| Error::Malformed)
 }
+// Only absence of an optional property may be omitted. Present malformed values still fail.
+fn project(
+    mapping: &rss_mdm_agent_wire::runtime::ValueMapping,
+    raw: &serde_json::Value,
+    ty: &ValueType,
+) -> Result<serde_json::Value, rss_mdm_inventory::Invalid> {
+    use rss_mdm_inventory::Invalid;
+    if mapping.columns.is_empty() {
+        return mapping.project_selected(raw).map_err(|_| Invalid::Value);
+    }
+    mapping.validate().map_err(|_| Invalid::Value)?;
+    if !raw.is_object() {
+        return Err(Invalid::Value);
+    }
+    let properties: std::collections::BTreeMap<_, _> = ty
+        .properties()
+        .map(|(k, ty, required)| (k, (ty, required)))
+        .collect();
+    let mut result = serde_json::Map::new();
+    for (name, column) in &mapping.columns {
+        let (ty, required) = properties.get(name.as_str()).ok_or(Invalid::Value)?;
+        match raw.pointer(&column.pointer) {
+            Some(value) => {
+                result.insert(name.clone(), project(column, value, ty)?);
+            }
+            None if !required => (),
+            None => return Err(Invalid::Value),
+        }
+    }
+    Ok(serde_json::Value::Object(result))
+}
+#[test]
+fn optional_projection_omits_absent_values_but_rejects_malformed_values() {
+    use rss_mdm_agent_wire::runtime::ValueMapping;
+    use rss_mdm_inventory::Property;
+    let ty = ValueType::Record {
+        properties: [
+            (
+                "raw".into(),
+                Property {
+                    value_type: ValueType::Integer,
+                    required: true,
+                },
+            ),
+            (
+                "known".into(),
+                Property {
+                    value_type: ValueType::Boolean,
+                    required: false,
+                },
+            ),
+        ]
+        .into(),
+    };
+    let mapping = ValueMapping {
+        pointer: "".into(),
+        conversion: rss_mdm_agent_wire::runtime::Conversion::Identity,
+        columns: [
+            ("raw".into(), ValueMapping::identity("/raw")),
+            ("known".into(), ValueMapping::identity("/known")),
+        ]
+        .into(),
+    };
+    let value = project(&mapping, &serde_json::json!({"raw":2}), &ty).unwrap();
+    assert_eq!(value, serde_json::json!({"raw":2}));
+    assert!(ty.decode_json(&value).is_ok());
+    assert!(project(&mapping, &serde_json::json!({"known":true}), &ty).is_err());
+    let value = project(&mapping, &serde_json::json!({"raw":2,"known":"2"}), &ty).unwrap();
+    assert!(ty.decode_json(&value).is_err());
+}
 /// Shared mapping boundary for native, SQL and script output. Missing data is never a tombstone.
 pub fn mapped_value(
     field: &rss_mdm_inventory::FieldDefinition,
@@ -123,16 +193,14 @@ pub fn mapped_value(
             field,
             rows.iter()
                 .map(|row| {
-                    let value = mapping
-                        .project_selected(row)
-                        .map_err(|_| rss_mdm_inventory::Invalid::Value)?;
+                    let value = project(mapping, row, items)?;
                     items.decode_json(&value)
                 })
                 .collect(),
         )
         .unwrap_or(NativeValue::Invalid);
     }
-    let Ok(projected) = mapping.project_selected(raw) else {
+    let Ok(projected) = project(mapping, raw, &field.value_type) else {
         return NativeValue::Invalid;
     };
     if projected.is_null() && field.nullable {

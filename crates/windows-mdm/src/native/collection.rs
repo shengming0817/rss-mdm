@@ -529,6 +529,17 @@ impl State {
                     serde_json::Value::Array(
                         rows.into_iter()
                             .map(|(id, mut row)| {
+                                // The CSP declares an integer; Windows also returns 2.
+                                // Preserve the raw leaf, deriving only documented 0/1.
+                                match row.get("IsProvisioned").and_then(|v| v.as_str()) {
+                                    Some("0") => {
+                                        row.insert("IsProvisionedBoolean".into(), false.into());
+                                    }
+                                    Some("1") => {
+                                        row.insert("IsProvisionedBoolean".into(), true.into());
+                                    }
+                                    _ => (),
+                                }
                                 row.insert("id".into(), id.into());
                                 row.insert("origin".into(), inventory.root().into());
                                 row.insert("collection_scope".into(), "device".into());
