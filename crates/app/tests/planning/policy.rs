@@ -1,5 +1,6 @@
 use crate::test_support::planning_http::*;
 use crate::test_support::{http::*, process::*, runtime::*, *};
+use anyhow::Context;
 #[tokio::test]
 #[ignore = "make t2 MODULE=planning.policy"]
 async fn assignment_pagination_uses_published_scope_without_eager_execution() -> Result<()> {
@@ -100,7 +101,33 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     // bounded read/CAS checks, which do not measure background reconciliation throughput.
     crate::test_support::runtime::stop_worker(automation).await?;
     let membership_path=format!("/api/v1/devices/{}-1/groups?limit=1",prefix);
-    let (status,memberships)=browser.call(router,Method::GET,&membership_path,None).await?;
+    let (status,memberships)={
+        use sqlx::Connection;
+        let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut hold = observer.begin().await?;
+        crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, rss_request_context::TenantId::parse(case_tenant())?).await?;
+        let release = async {
+            let observed = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                    if waiting { break; }
+                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                    tokio::task::yield_now().await;
+                }
+                let free: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2363))").bind(format!("{}:{}",case_tenant(),INSTANCE)).fetch_one(&mut *hold).await?;
+                ensure!(free,"nonempty reverse membership acquired authorization before publication");
+                Ok::<_,anyhow::Error>(())
+            }).await;
+            hold.rollback().await?;
+            observed.context("nonempty reverse membership must actually wait for publication")??;
+            Ok::<_,anyhow::Error>(())
+        };
+        let (response, released) = tokio::join!(browser.call(router,Method::GET,&membership_path,None), release);
+        released?;
+        observer.close().await?;
+        response?
+    };
     ensure!(status==StatusCode::OK && memberships["items"].as_array().is_some_and(|items|items.iter().any(|item|item["id"]==group.to_string())),"reverse memberships: {status} {memberships}");
     let deletion=json!({"operationId":Uuid::new_v4(),"expectedRevision":1});
     let rejected=settled_delete(browser,router,policy,deletion).await?;
