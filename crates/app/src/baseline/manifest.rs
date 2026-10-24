@@ -656,33 +656,36 @@ mod tests {
         );
         assert_current_resources(&a);
     }
+    fn assert_collection_cadence(definition: &rss_mdm_policy::Definition) {
+        match &definition.action {
+            rss_mdm_policy::Action::AgentCollection {
+                schedule,
+                frequency,
+                ..
+            }
+            | rss_mdm_policy::Action::NativeCollection {
+                schedule,
+                frequency,
+                ..
+            } => {
+                assert!(matches!(frequency, rss_mdm_policy::Frequency::EveryTrigger));
+                assert!(matches!(
+                    schedule.trigger,
+                    rss_mdm_policy::schedule::Trigger::Interval {
+                        anchor: 0,
+                        seconds: 3600
+                    }
+                ));
+            }
+            _ => (),
+        }
+    }
     fn assert_current_resources(a: &Manifest) {
         let mut profiles = 0;
         let mut blueprints = 0;
         for step in &a.steps {
             match &step.action {
-                Action::Policy { definition } => match &definition.action {
-                    rss_mdm_policy::Action::AgentCollection {
-                        schedule,
-                        frequency,
-                        ..
-                    }
-                    | rss_mdm_policy::Action::NativeCollection {
-                        schedule,
-                        frequency,
-                        ..
-                    } => {
-                        assert!(matches!(frequency, rss_mdm_policy::Frequency::EveryTrigger));
-                        assert!(matches!(
-                            schedule.trigger,
-                            rss_mdm_policy::schedule::Trigger::Interval {
-                                anchor: 0,
-                                seconds: 3600
-                            }
-                        ));
-                    }
-                    _ => (),
-                },
+                Action::Policy { definition } => assert_collection_cadence(definition),
                 Action::Resource { input, .. } => {
                     let _: rss_mdm_flow_service::resource_catalog::Change =
                         serde_json::from_value(input.clone()).expect("ordinary Resource contract");
