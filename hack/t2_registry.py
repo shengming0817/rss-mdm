@@ -1929,3 +1929,7 @@ consume(('hack/enterprise_idp.py',), 'identity.sso')
 consume(('crates/app/schema/flow-roles.sql', 'crates/app/schema/software-publication-roles.sql'),
         'installation.migration catalog.contract')
 consume(('crates/inventory-service/schema/group-selections.sql',), 'planning.group_scope')
+
+consume(('crates/execution-service/src/dispatch-v1.json',), 'execution.commands.dispatch')
+consume(('crates/execution-service/src/queries/records.rs',), 'execution.agent.history execution.commands.windows')
+consume(('crates/flow-service/src/automation/jobs.rs',), 'planning.recovery')

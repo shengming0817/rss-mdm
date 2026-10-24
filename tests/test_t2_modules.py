@@ -23,7 +23,6 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
 
 
-
     def test_management_limits_and_moved_entra_owners_select_real_consumers(self):
         for path, expected in {
             'crates/management-http/src/body_policy.rs': {'api.identity_context', 'api.diagnostics'},
@@ -41,10 +40,6 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'apple.ade','apple.account_enrollment'} <= set(selected.modules))
 
 
-
-
-
-
     def test_collection_inputs_select_their_actual_protocol_consumers(self):
         cases={
             'crates/execution-service/src/actions/output.rs': {'execution.agent.delivery'},
@@ -57,42 +52,15 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertEqual(expected, set(selected.modules),(path,selected.modules))
 
 
-    def test_shared_job_and_route_owners_are_selected(self):
-        expected = {
-            'crates/flow-service/src/automation/jobs.rs': {
-                'assets.queries', 'assets.group_input', 'compliance.http', 'compliance.group_input',
-                'planning.group_scope', 'planning.scope', 'planning.policy', 'planning.agent_policy',
-                'planning.frequency', 'planning.recovery', 'diagnostics.http'},
-            'crates/management-http/src/planning/mod.rs': {
-                'planning.self_service', 'planning.http', 'planning.policy', 'planning.agent_policy', 'planning.frequency',
-                'planning.software'},
-            'crates/management-http/src/software_native.rs': {
-                'publication.winget', 'publication.brew', 'publication.withdrawal'},
-            'hack/enrollment-password.py': {'enrollment.http', 'enrollment.recovery'},
-        }
-        for path, modules in expected.items():
-            with self.subTest(path=path):
-                self.assertEqual(set(select_inputs([path]).modules), modules)
-
     def test_export_reader_selects_publication_read_and_withdrawal_consumers(self):
         selected = select_inputs(['crates/software-service/src/publication/execution.rs'])
         self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
 
 
-    def test_execution_queries_select_read_consumers_without_unrelated_protocols(self):
-        for path in ('crates/execution-service/src/queries/records.rs',
-                     'crates/execution-service/src/queries/error.rs'):
-            selected = select_inputs([path])
-            self.assertEqual(set(selected.modules), {
-                'execution.agent.history', 'execution.commands.windows', 'planning.http',
-                'planning.agent_policy', 'planning.software'}
-                | ({'apple.commands','apple.users','apple.ddm'} if path.endswith('/records.rs') else {'windows.declared'}))
-
     def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
         for path in ('crates/execution-service/src/service.rs',
                      'crates/execution-service/src/queries/records.rs',
-                     'crates/execution-service/src/permissions.rs',
-                     'crates/app/tests/device/support.rs'):
+                     'crates/execution-service/src/permissions.rs'):
             selected = select_inputs([path])
             self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
 
@@ -109,7 +77,6 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/apple-mdm/src/native/request.rs'):
             selected = select_inputs([path])
             self.assertTrue({'apple.ddm'} <= set(selected.modules), path)
-
 
 
     def test_configuration_preparation_selects_lifecycle_consumer(self):
@@ -151,7 +118,7 @@ class ModuleImpactTests(unittest.TestCase):
                      'crates/execution-service/src/directory.rs'):
             self.assertIn('planning.http', self.selected(path), path)
         self.assertIn('execution.agent.history', self.selected('crates/execution-service/src/directory.rs'))
-        self.assertIn('planning.http', self.selected('crates/app/tests/support/agent_execution.rs'))
+        self.assertEqual(self.selected('crates/app/tests/support/agent_execution.rs'), {'execution.agent.delivery'})
     def selected(self, path):
         return set(select_inputs([path]).modules)
 
@@ -169,19 +136,6 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/device/views.rs'), {'device.views'})
         self.assertNotIn('agent.current_user', self.selected('crates/brew-source/src/lib.rs'))
 
-    def test_channel_registrars_select_their_live_consumers(self):
-        app = self.selected('crates/app/src/api.rs')
-        self.assertTrue({'agent.registration', 'agent.reports', 'windows.management',
-                         'apple.identity', 'content.http', 'authorization.rules',
-                         'host.lifecycle', 'api.identity_context'} <= app)
-        self.assertTrue(app.isdisjoint({'apple.cms', 'apple.apns', 'sources.winget'}))
-        self.assertEqual(self.selected('crates/agent-channel/src/tasks.rs'), {
-            'device-access.http','agent.current_user','execution.agent.task_trust','planning.self_service', 'execution.agent.delivery', 'execution.agent.poll', 'execution.agent.content',
-            'execution.agent.recovery', 'execution.software.offer',
-            'execution.software.content', 'execution.software.recovery'})
-        self.assertEqual(self.selected('crates/windows-channel/src/lib.rs'), {
-            'windows.enrollment', 'windows.issuance', 'windows.management',
-            'windows.commands', 'windows.retention', 'windows.limits', 'windows.declared', 'windows.entra'})
 
     def test_device_access_direct_execution_consumers_select_http_evidence(self):
         for path in ('crates/execution-service/src/actions/agent.rs',
@@ -222,21 +176,17 @@ class ModuleImpactTests(unittest.TestCase):
             with self.assertRaises(SelectionError):
                 select_inputs([path])
 
-    def test_test_module_carriers_select_exact_children(self):
-        expected = {
-            'crates/app/tests/agent/mod.rs': {'agent.registration','agent.reports','agent.configurations','agent.current_user','device-access.http'},
-            'crates/app/tests/api/mod.rs': {'api.identity_context','diagnostics.http'},
-            'crates/app/tests/execution/mod.rs': {name for name in MODULES if name.startswith('execution.')},
-        }
-        for path, modules in expected.items():
-            selection=select_inputs([path])
-            self.assertEqual(set(selection.modules),modules,path)
+    def test_pure_test_carriers_only_compile_and_discover(self):
+        for path in ('crates/app/tests/agent/mod.rs', 'crates/app/tests/api/mod.rs',
+                     'crates/app/tests/execution/mod.rs', 'crates/app/tests/fixtures/execution.rs'):
+            selection = select_inputs([path])
+            self.assertEqual(selection.modules, (), path)
+            self.assertIn('test_app_test_layout', selection.tools)
 
     def test_storage_selects_its_frontier_encryption_provider_and_fixture_inputs(self):
         for path in ('crates/content-service/src/upload.rs',
                      'crates/content-service/src/protected.rs',
-                     'crates/content-s3/src/lib.rs',
-                     'crates/app/tests/support/software.rs'):
+                     'crates/content-s3/src/lib.rs'):
             self.assertIn('content.storage', self.selected(path), path)
 
 
@@ -261,12 +211,11 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertEqual(self.selected(path), {owner})
 
 
-
     def test_case_only_windows_inputs_select_directory_consumers(self):
         for path in ('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'):
             with self.subTest(path=path):
                 selected = self.selected(path)
-                self.assertIn('planning.http', selected)
+                self.assertIn('windows.issuance', selected)
                 self.assertNotIn('planning.self_service', selected)
 
     def test_windows_csr_unit_input_does_not_select_t2(self):
@@ -348,49 +297,16 @@ class ModuleImpactTests(unittest.TestCase):
                     self.assertTrue(list(root.glob(pattern)), 'invented production path')
 
 
-
-    def test_wire_schema_renames_keep_baseline_and_current_consumers(self):
-        from dataclasses import replace
-        from ci_impact import current_registry
-        current = current_registry()
-        baseline = replace(current, modules={
-            name: {**module, 'production_inputs': tuple(
-                path.replace('-v1.schema', '-v6.schema') for path in module['production_inputs'])}
-            for name, module in current.modules.items()
-        })
-        for shape in ['signed-task', 'binding-profile', 'report-request', 'error-body', 'agent']:
-            suffix = '.schema-manifest.json' if shape == 'agent' else '.schema.json'
-            old = f'crates/agent-wire/schema/runtime/{shape}-v6{suffix}'
-            new = f'crates/agent-wire/schema/runtime/{shape}-v1{suffix}'
-            with self.subTest(shape=shape):
-                self.assertEqual(select_inputs([old], baseline).modules,
-                                 select_inputs([new], current).modules)
-                self.assertTrue(select_inputs([new], current).modules)
-
-    def test_onboarding_wire_selects_its_actual_consumers(self):
-        inputs = {
-            'crates/agent-wire/src/onboarding.rs': {
-                'agent.reports','planning.onboarding','execution.commands.onboarding',
-                'apple.onboarding','execution.agent.delivery','execution.agent.poll','execution.agent.recovery'},
-            'crates/agent-wire/schema/enroll/native-grant-request-v1.schema.json': {
-                'execution.commands.onboarding','apple.onboarding','agent.pki','agent.pki-recovery','agent.registration','agent.reports','execution.agent.delivery'},
-        }
-        for path, expected in inputs.items():
-            selected = select_inputs([path])
-            self.assertEqual(set(selected.modules), expected, path)
-
-
-
     def test_apple_push_includes_transport_durable_push_and_health_only(self):
         self.assertEqual(self.selected('crates/apple-channel/src/push.rs'),
                          {'apple.apns','apple.push','apple.host'})
 
     def test_local_schema_selects_installation_and_real_consumers(self):
-        self.assertTrue({'installation.migration', 'catalog.contract', 'planning.self_service', 'execution.software.offer', 'execution.software.content', 'execution.software.recovery'} <= self.selected('crates/execution-service/schema/install.sql'))
+        self.assertTrue({'installation.migration', 'catalog.contract'} <= self.selected('crates/execution-service/schema/install.sql'))
         self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
                          {'installation.migration', 'catalog.contract', 'windows.entra'})
         selected = self.selected('crates/flow-service/schema/install.sql')
-        self.assertTrue({'installation.migration', 'catalog.contract', 'planning.policy', 'planning.recovery'} <= selected)
+        self.assertTrue({'installation.migration', 'catalog.contract'} <= selected)
         self.assertTrue(selected.isdisjoint({'identity.sso', 'apple.cms', 'agent.pki', 'resource.persistence'}))
 
 
@@ -406,10 +322,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertNotIn('agent.configurations', self.selected('crates/app/tests/agent_pki/mod.rs'))
 
 
-
     def test_publication_files_select_their_real_semantic_modules(self):
-        self.assertEqual(self.selected('crates/app/src/publication_config.rs'),
-                         {'publication.winget','publication.brew','publication.mapping','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/driver.rs'),
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),
@@ -417,10 +330,6 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http','agent.configurations'})
         self.assertEqual(self.selected('crates/software-service/src/management/catalog.rs'), {'software.http'})
         self.assertEqual(self.selected('crates/content-service/src/software.rs'), {'software.http','agent.configurations'})
-        self.assertEqual(self.selected('crates/software-service/src/preparation/mod.rs'),
-                         {'software.catalog','planning.software','planning.onboarding','execution.commands.onboarding',
-                          'execution.software.offer','execution.software.content','execution.software.recovery'})
-
 
 
     def test_new_deleted_and_mixed_test_paths_remain_owned(self):

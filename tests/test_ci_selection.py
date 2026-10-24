@@ -414,7 +414,6 @@ class DeviceConsumerInputs(unittest.TestCase):
                          'crates/inventory-postgres/src/history.rs',
                          'crates/inventory-service/src/assets/planning.rs',
                          'crates/registration-service/src/device/endpoints.rs',
-                         'crates/registration-service/src/device/directory.rs',
                          'crates/registration-service/src/device/directory.rs'):
                 with self.subTest(module=name, path=path):
                     self.assertTrue(any(fnmatchcase(path, pattern) for pattern in inputs))
