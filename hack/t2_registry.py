@@ -360,7 +360,7 @@ for name in ('execution.commands.admission','execution.commands.dispatch','execu
 app_family('execution.software',
            namespace='execution::t2::software', fixtures=('content',))
 add('software.catalog', build=Build('rss-mdm-software-service', 'test', 'catalog_t2'), selectors=('',),
-    sources=('crates/software-service/src/catalog/*',),
+    sources=('crates/software-service/src/catalog/*', 'crates/software-service/src/preparation/*'),
     tests=('crates/software-service/tests/catalog_t2.rs', 'crates/software-service/tests/catalog/*'),
     support=())
 app_family('software', namespace='software_catalog::t2', fixtures=('content',))
@@ -933,7 +933,9 @@ MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], support_i
 APP_HELPER_CONSUMERS = {
     'support/process.rs': ('api.identity_context',),
     'support/runtime.rs': ('api.identity_context',),
-    'support/http.rs': ('api.identity_context',),
+    # Cookie, collection GET and asynchronous-query assertions are exercised here.
+    'support/http.rs': ('api.identity_context', 'identity.local', 'identity.sso',
+                        'apple.collection', 'windows.management', 'assets.queries'),
     'support/identity.rs': ('identity.local', 'identity.sso'),
     'support/authority.rs': ('authorization.rules',),
     'device/support.rs': ('device.binding',),
@@ -1845,6 +1847,9 @@ consume(('crates/inventory-service/schema/collection-metadata.sql',), 'assets.qu
 consume(('crates/apple-channel/schema/platform-qualifications.sql','crates/apple-channel/schema/profile-qualifications.sql','crates/apple-channel/src/profiles.rs','crates/apple-channel/src/rewrap.rs'), 'apple.platform_sso apple.profile')
 consume(('crates/authorization-service/schema/authority.sql','crates/device-service/schema/object-qualification.sql','crates/flow-service/schema/qualification.sql','crates/execution-service/schema/device-access-qualification.sql'), 'apple.platform_sso device.views planning.group_scope planning.policy device-access.http authorization.programmatic')
 
+
+# Generated SQL needs an existing real PostgreSQL query proof; pure parsing stays in T1.
+consume(('crates/query-postgres/src/lib.rs',), 'planning.http')
 
 # Resource query execution and common ingress composition have distinct proof owners.
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')

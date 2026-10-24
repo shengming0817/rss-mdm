@@ -351,7 +351,8 @@ class DirectProofs(unittest.TestCase):
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
         for path in ('crates/http-contract/src/catalog.rs', 'crates/http-contract/src/collections.rs',
                      'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs',
-                     'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs'):
+                     'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs',
+                     'crates/query/src/lib.rs'):
             with self.subTest(path=path):
                 self.assertEqual(select_inputs([path]).modules, ())
 
@@ -360,6 +361,8 @@ class DirectProofs(unittest.TestCase):
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},
             'crates/app/tests/support/authority.rs': {'authorization.rules'},
+            'crates/app/tests/support/http.rs': {'api.identity_context', 'identity.local', 'identity.sso',
+                                                 'apple.collection', 'windows.management', 'assets.queries'},
             'crates/app/tests/support/runtime.rs': {'api.identity_context'},
             'crates/app/tests/support/tls.rs': {'windows.management', 'apple.identity', 'agent.registration'},
             'tests/support/context.rs': {'group.persistence'},
@@ -379,6 +382,9 @@ class DirectProofs(unittest.TestCase):
             'crates/management-http/src/recovery_credentials.rs': {'recovery-credentials.http'},
             'crates/authorization-service/src/api_key.rs': {'authorization.programmatic'},
             'crates/resource-postgres/src/lib.rs': {'resource.persistence', 'resource.recovery'},
+            'crates/query-postgres/src/lib.rs': {'planning.http'},
+            'crates/software-service/src/preparation/mod.rs': {'software.catalog'},
+            'crates/software-service/src/preparation/execution.rs': {'software.catalog'},
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(set(select_inputs([path]).modules), expected)
