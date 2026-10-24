@@ -117,7 +117,7 @@ pub async fn send(
                 .map_err(|_| corrupt())?
                 .command;
             response.commands.push(command);
-            if s::encode(response, limits).is_err() {
+            if s::encode_outbound(response, limits).is_err() {
                 response.commands.pop();
                 break;
             }

@@ -1,4 +1,4 @@
-use rss_mdm_agent_wire::runtime::{Conversion, ValueMapping};
+use rss_mdm_agent_wire::runtime::{Conversion, ValueMapping, ValueType};
 use serde_json::json;
 
 #[test]
@@ -70,15 +70,31 @@ fn list_columns_are_explicit_typed_and_bounded() {
         .into(),
     };
     mapping.validate().unwrap();
+    let ty = ValueType::Object {
+        properties: [
+            (
+                "id".into(),
+                ValueType::String {
+                    max_length: 64,
+                    allow_empty: false,
+                },
+            ),
+            ("size_bytes".into(), ValueType::Integer),
+        ]
+        .into(),
+    };
     assert_eq!(
         mapping
-            .project_selected(&json!({"device_id":"C:","size":"2048","secret":"hidden"}))
+            .project_selected(
+                &json!({"device_id":"C:","size":"2048","secret":"hidden"}),
+                &ty
+            )
             .unwrap(),
         json!({"id":"C:","size_bytes":2048})
     );
     assert!(
         mapping
-            .project_selected(&json!({"device_id":"C:"}))
+            .project_selected(&json!({"device_id":"C:"}), &ty)
             .is_err()
     );
     assert!(ValueMapping::identity("/bad~2escape").validate().is_err());

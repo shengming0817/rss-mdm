@@ -267,7 +267,7 @@ def verify_sni(context):
         backend=HTTPServer(('0.0.0.0',0),Backend)
         thread=threading.Thread(target=backend.serve_forever,daemon=True);thread.start()
         try:
-            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None,'https://device.example.test:8443':None},web=False,certificates='/run/probe')
+            config=render(ROOT/'deployment',public_port=8080,backend=f'host.docker.internal:{backend.server_address[1]}',targets={'https://device.example.test':None,'https://device.example.test:8443':None},web=False,certificates='/run/probe',bootstrap_origins=('https://mdm.example.test',))
             files={name:(root/name).read_text() for name in ['server.crt','server.key']}
             with context.gateway(config,files) as (name,port):
                 def request(host,identity=None,authority=None,forged=True):
@@ -291,6 +291,16 @@ def verify_sni(context):
                     except OSError:pass
                     if time.monotonic()>until:raise RuntimeError('HTTPS gateway startup deadline')
                     time.sleep(.1)
+                # HTTP 200 cannot detect the native Windows 12044 regression. Inspect
+                # real TLS 1.2 handshake messages while keeping root/hostname verification.
+                for hostname, requested in [('mdm.example.test',False),('device.example.test',True)]:
+                    handshake=subprocess.run(['openssl','s_client','-connect',f'127.0.0.1:{port}',
+                        '-servername',hostname,'-verify_hostname',hostname,'-CAfile',str(root/'ca.crt'),
+                        '-verify_return_error','-tls1_2','-msg','-ign_eof'],
+                        input=f'GET /api/probe HTTP/1.1\r\nHost: {hostname}\r\nConnection: close\r\n\r\n',
+                        capture_output=True,text=True,timeout=15,check=True)
+                    if ('CertificateRequest' in handshake.stdout+handshake.stderr) != requested:
+                        raise RuntimeError('wrong TLS client-certificate negotiation: '+hostname)
                 if b'421' not in request('mdm.example.test',authority='device.example.test').split(b'\r\n',1)[0]:raise RuntimeError('SNI/Host mismatch accepted')
                 if not request('device.example.test','client').endswith(b'verified-client'):raise RuntimeError('gateway certificate evidence was not the actual TLS leaf')
                 for host,identity in [('device.example.test',None),('device.example.test','server'),('unknown.example.test','client')]:

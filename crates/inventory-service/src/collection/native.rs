@@ -112,8 +112,16 @@ pub fn mapped_value(
     let Some(raw) = raw.pointer(&mapping.pointer) else {
         return NativeValue::Missing;
     };
-    if let (ValueType::Array { items, .. }, serde_json::Value::Array(rows)) =
-        (&field.value_type, raw)
+    let Ok(wire_field) = super::wire::to_wire_field(field) else {
+        return NativeValue::Invalid;
+    };
+    if let (
+        ValueType::Array { items, .. },
+        rss_mdm_agent_wire::runtime::ValueType::Array {
+            items: wire_items, ..
+        },
+        serde_json::Value::Array(rows),
+    ) = (&field.value_type, &wire_field.value_type, raw)
         && !matches!(
             mapping.conversion,
             rss_mdm_agent_wire::runtime::Conversion::Bitmask { .. }
@@ -124,7 +132,7 @@ pub fn mapped_value(
             rows.iter()
                 .map(|row| {
                     let value = mapping
-                        .project_selected(row)
+                        .project_selected(row, wire_items)
                         .map_err(|_| rss_mdm_inventory::Invalid::Value)?;
                     items.decode_json(&value)
                 })
@@ -132,7 +140,7 @@ pub fn mapped_value(
         )
         .unwrap_or(NativeValue::Invalid);
     }
-    let Ok(projected) = mapping.project_selected(raw) else {
+    let Ok(projected) = mapping.project_selected(raw, &wire_field.value_type) else {
         return NativeValue::Invalid;
     };
     if projected.is_null() && field.nullable {

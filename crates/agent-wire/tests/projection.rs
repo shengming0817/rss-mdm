@@ -70,7 +70,10 @@ fn custom_script_mapping_is_data_driven_and_none_is_explicit() {
         .unwrap();
     assert_eq!(
         mapping
-            .project_selected(json!({"reading":"42"}).pointer(&mapping.pointer).unwrap())
+            .project_selected(
+                json!({"reading":"42"}).pointer(&mapping.pointer).unwrap(),
+                &ValueType::Integer
+            )
             .unwrap(),
         json!(42)
     );
@@ -110,5 +113,151 @@ fn projection_budget_and_unknown_conversion_fail_before_interpretation() {
             json!({"pointer":"/x","conversion":{"kind":"shell"},"columns":{}})
         )
         .is_err()
+    );
+}
+
+#[test]
+fn optional_record_projection_uses_frozen_presence_and_never_defaults_unknown_codes() {
+    let ty = ValueType::Record {
+        properties: [
+            (
+                "raw".into(),
+                Property {
+                    value_type: ValueType::Integer,
+                    required: true,
+                },
+            ),
+            (
+                "known".into(),
+                Property {
+                    value_type: ValueType::Boolean,
+                    required: false,
+                },
+            ),
+        ]
+        .into(),
+    };
+    let mapping = ValueMapping {
+        pointer: "/rows".into(),
+        conversion: Conversion::Identity,
+        columns: [
+            (
+                "raw".into(),
+                ValueMapping {
+                    pointer: "/state".into(),
+                    conversion: Conversion::Integer,
+                    columns: Default::default(),
+                },
+            ),
+            (
+                "known".into(),
+                ValueMapping {
+                    pointer: "/known".into(),
+                    conversion: Conversion::Enum {
+                        values: [("0".into(), json!(false)), ("1".into(), json!(true))].into(),
+                    },
+                    columns: Default::default(),
+                },
+            ),
+        ]
+        .into(),
+    };
+    // Use exactly the metadata shape carried by frozen tasks and the management API.
+    let (mapping, ty): (ValueMapping, ValueType) =
+        serde_json::from_value(serde_json::to_value((&mapping, &ty)).unwrap()).unwrap();
+    let raw = json!({"rows":[{"state":"2"}]});
+    assert_eq!(
+        mapping.project_selected(&raw["rows"][0], &ty).unwrap(),
+        json!({"raw":2})
+    );
+    for (state, known) in [("0", false), ("1", true)] {
+        assert_eq!(
+            mapping
+                .project_selected(&json!({"state":state,"known":state}), &ty)
+                .unwrap(),
+            json!({"raw":state.parse::<i64>().unwrap(),"known":known})
+        );
+    }
+    for raw in [
+        json!({"known":"1"}),
+        json!({"state":"bad"}),
+        json!({"state":"2","known":"2"}),
+        json!({"state":"2","known":null}),
+    ] {
+        assert!(mapping.project_selected(&raw, &ty).is_err(), "{raw}");
+    }
+    let mut required = ty.clone();
+    if let ValueType::Record { properties } = &mut required {
+        properties.get_mut("known").unwrap().required = true;
+    }
+    assert!(
+        mapping
+            .project_selected(&json!({"state":"2"}), &required)
+            .is_err()
+    );
+    let mut undeclared = mapping.clone();
+    undeclared
+        .columns
+        .insert("extra".into(), ValueMapping::identity("/extra"));
+    assert!(
+        undeclared
+            .project_selected(&json!({"state":"2","extra":true}), &ty)
+            .is_err()
+    );
+}
+
+#[test]
+fn nested_records_keep_optional_absence_separate_from_explicit_null() {
+    let ty = ValueType::Record {
+        properties: [(
+            "item".into(),
+            Property {
+                required: true,
+                value_type: ValueType::Record {
+                    properties: [(
+                        "label".into(),
+                        Property {
+                            required: false,
+                            value_type: ValueType::String {
+                                max_length: 32,
+                                allow_empty: true,
+                            },
+                        },
+                    )]
+                    .into(),
+                },
+            },
+        )]
+        .into(),
+    };
+    let mapping = ValueMapping {
+        pointer: "".into(),
+        conversion: Conversion::Identity,
+        columns: [(
+            "item".into(),
+            ValueMapping {
+                pointer: "/package".into(),
+                conversion: Conversion::Identity,
+                columns: [("label".into(), ValueMapping::identity("/label"))].into(),
+            },
+        )]
+        .into(),
+    };
+    assert_eq!(
+        mapping
+            .project_selected(&json!({"package":{}}), &ty)
+            .unwrap(),
+        json!({"item":{}})
+    );
+    assert_eq!(
+        mapping
+            .project_selected(&json!({"package":{"label":null}}), &ty)
+            .unwrap(),
+        json!({"item":{"label":null}})
+    );
+    assert!(
+        mapping
+            .project_selected(&json!({"package":null}), &ty)
+            .is_err()
     );
 }

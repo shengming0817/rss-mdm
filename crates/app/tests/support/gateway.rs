@@ -84,7 +84,13 @@ pub(crate) async fn registration(
         _ => ("MDM_APPLE_FIXTURES", "apple-tls.pk8"),
     };
     let root = std::path::PathBuf::from(std::env::var(variable)?);
-    let tls = super::tls::server(&root, key, Some(Arc::new(super::tls::Possession)))?;
+    let verifier: Option<Arc<dyn tokio_rustls::rustls::server::danger::ClientCertVerifier>> =
+        if kind == WindowsEnrollment {
+            None
+        } else {
+            Some(Arc::new(super::tls::Possession))
+        };
+    let tls = super::tls::server(&root, key, verifier)?;
     let origin = channel
         .origins
         .first()

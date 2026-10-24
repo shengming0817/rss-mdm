@@ -320,6 +320,16 @@ impl<'a> Input<'a> {
         self.look = Some(t);
         Ok(yes)
     }
+    /// Peek a child name for explicitly extensible protocol containers.
+    pub fn element_name(&mut self) -> Result<Option<(String, String)>> {
+        let token = self.significant()?;
+        let name = match &token {
+            Token::Start(start) => Some((start.ns.clone(), start.name.clone())),
+            _ => None,
+        };
+        self.look = Some(token);
+        Ok(name)
+    }
     pub fn start(&mut self, ns: &str, name: &str) -> Result<Start> {
         match self.significant()? {
             Token::Start(s) if s.ns == ns && s.name == name => Ok(s),

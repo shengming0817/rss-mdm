@@ -6,6 +6,147 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{CodecLimits, Secret};
 use uuid::Uuid;
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=windows.management: native BASIC challenge and optional 212 nonce"]
+async fn native_initial_package_repeats_after_basic_challenge_without_nonce_rotation()
+-> anyhow::Result<()> {
+    native_challenge(false).await
+}
+#[cfg(feature = "integration")]
+#[tokio::test]
+#[ignore = "MODULE=windows.management: partial native initialization after size negotiation"]
+async fn native_initial_package_finishes_after_message_continuation() -> anyhow::Result<()> {
+    native_challenge(true).await
+}
+#[cfg(feature = "integration")]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "sequential native authentication, continuation, replay and nonce assertions share one real setup"
+)]
+async fn native_challenge(partial: bool) -> anyhow::Result<()> {
+    use crate::execution::test_support::native;
+    let mut host = Host::open().await?;
+    host.listen().await?;
+    let mut peer = host.peer().await?;
+    let Command::DevInfo { id, .. } = &mut peer.message.commands[1] else {
+        panic!("initial DevInfo required")
+    };
+    *id = 4;
+    peer.message.commands.insert(
+        1,
+        Command::Alert {
+            id: 3,
+            alert: syncml::Alert::LoginStatus {
+                status: syncml::LoginStatus::User,
+                explicit_format: false,
+            },
+        },
+    );
+    let mut hello = peer.message.clone();
+    hello.header.credential = None;
+    let challenge = native::post(&peer.mutual, &peer.url, &hello).await?;
+    ensure!(challenge.status() == StatusCode::OK);
+    let challenge = syncml::decode(&challenge.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        matches!(&challenge.commands[0], Command::Status(s) if s.code == 401 && s.challenge.as_ref().is_some_and(|c| c.media_type == "syncml:auth-basic"))
+    );
+
+    // Windows repeats the complete initial package after a credential challenge.
+    // A 212 accepts server authentication without requiring a fresh NextNonce.
+    peer.message.header.message_id = 2;
+    peer.message.final_message = !partial;
+    peer.message.commands.insert(
+        0,
+        Command::Status(syncml::Status {
+            credential: None,
+            id: 1,
+            message_ref: 1,
+            command_ref: 0,
+            command: CommandName::SyncHdr,
+            target_refs: vec![],
+            source_refs: vec![],
+            code: 212,
+            items: vec![],
+            challenge: None,
+        }),
+    );
+    let mut wrong = peer.message.clone();
+    wrong.header.credential.as_mut().unwrap().data = Secret(STANDARD.encode("wrong:credential"));
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &wrong)
+            .await?
+            .status()
+            == StatusCode::UNAUTHORIZED
+    );
+    let response = native::post(&peer.mutual, &peer.url, &peer.message).await?;
+    ensure!(response.status() == StatusCode::OK);
+    let response = response.bytes().await?;
+    let mut accepted = syncml::decode(&response, &CodecLimits::default())?;
+    ensure!(accepted.header.meta.is_none());
+    for reference in [2, 3, 4] {
+        ensure!(accepted.commands.iter().any(
+            |c| matches!(c, Command::Status(s) if s.command_ref == reference && s.code == 200)
+        ));
+    }
+    ensure!(
+        native::post(&peer.mutual, &peer.url, &peer.message)
+            .await?
+            .bytes()
+            .await?
+            == response
+    );
+    if partial {
+        ensure!(
+            !accepted
+                .commands
+                .iter()
+                .any(|c| matches!(c, Command::Get { .. }))
+        );
+        ensure!(accepted.commands.iter().any(|c| matches!(
+            c,
+            Command::Alert {
+                alert: syncml::Alert::MoreMessages,
+                ..
+            }
+        )));
+        let mut finish = peer.message.clone();
+        finish.header.message_id = 3;
+        finish.header.credential = None;
+        finish.final_message = true;
+        finish.commands.truncate(1);
+        let Command::Status(status) = &mut finish.commands[0] else {
+            panic!()
+        };
+        status.message_ref = 2;
+        let completed = native::post(&peer.mutual, &peer.url, &finish).await?;
+        ensure!(completed.status() == StatusCode::OK);
+        accepted = syncml::decode(&completed.bytes().await?, &CodecLimits::default())?;
+    }
+    for uri in ["./DevDetail/SwV", "./Vendor/MSFT/DeviceStatus/OS/Edition"] {
+        ensure!(accepted.commands.iter().any(|c| matches!(c, Command::Get { items, .. } if items.iter().any(|i| i.target.as_deref() == Some(uri)))));
+    }
+    let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    let authenticated: bool = sqlx::query_scalar("SELECT first_authenticated_at IS NOT NULL FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;
+    ensure!(authenticated);
+
+    // Omitting NextNonce retains the previously provisioned server nonce.
+    hello.header.session_id += 1;
+    let next = native::post(&peer.mutual, &peer.url, &hello).await?;
+    ensure!(next.status() == StatusCode::OK);
+    let next = syncml::decode(&next.bytes().await?, &CodecLimits::default())?;
+    ensure!(
+        next.header.credential.unwrap().data.0
+            == rss_mdm_windows_channel::test_support::digest(
+                "RSS-MDM",
+                &peer.secrets.server_password,
+                &peer.secrets.server_nonce,
+            )
+    );
+    pool.close().await;
+    host.close().await
+}
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.management"]
 async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {

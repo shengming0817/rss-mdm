@@ -424,7 +424,8 @@ pub async fn queue_run_in(
     result
 }
 
-/// Outstanding work and Unknown evidence remain a shared safety gate across registration changes.
+/// Unknown writes remain fenced across registration changes. Expired or confirmed
+/// cancelled read-only native collections can admit a fresh observation.
 pub async fn policy_pending_in(
     tx: &mut PgTransaction<'_>,
     owner: Uuid,
@@ -437,7 +438,7 @@ pub async fn policy_pending_in(
     let device = target.device.clone();
     let registration = target.registration.to_string();
     let value=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or(state->>'execution'='unknown' OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
+        sqlx::query_as::<_,(bool,Option<i64>)>("SELECT coalesce(bool_or((state->>'execution'='unknown' AND (v.frozen->>'kind'<>'native_collection' OR (deadline>$4 AND state->>'cancellation'<>'confirmed'))) OR ((state->>'execution'='running' OR (state->>'execution'='not_started' AND deadline>$4)) AND state->>'cancellation'<>'confirmed')),false),max(created_at) FILTER(WHERE policy_version=$6) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND (v.policy=$2::uuid OR ($7 AND v.frozen->>'kind'='mdm_enrollment')) AND device=$3 AND (registration=$5::uuid OR state->>'execution'='unknown')")
             .bind(tenant).bind(owner.to_string()).bind(device).bind(now).bind(registration).bind(version).bind(enrollment).fetch_one(c).await
     })).await?;
     Ok(value)

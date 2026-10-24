@@ -23,11 +23,56 @@ pub struct Policy {
 pub(super) fn read_request(p: &mut Input<'_>) -> Result<()> {
     p.open(XCEP, "GetPolicies")?;
     p.open(XCEP, "client")?;
-    nil(p, XCEP, "lastUpdate")?;
-    nil(p, XCEP, "preferredLanguage")?;
+    // MS-XCEP Client defines advisory dateTime/language values, not only nil.
+    // This profile always returns its complete fixed policy in the default language.
+    if p.is(XCEP, "lastUpdate")?
+        && let Some(value) = client_hint(p, "lastUpdate")?
+    {
+        use time::format_description::well_known::{Iso8601, Rfc3339};
+        if time::OffsetDateTime::parse(&value, &Rfc3339).is_err()
+            && time::PrimitiveDateTime::parse(&value, &Iso8601::DEFAULT).is_err()
+        {
+            return Err(E::InvalidValue);
+        }
+    }
+    if let Some(value) = client_hint(p, "preferredLanguage")? {
+        let mut parts = value.split('-');
+        let first = parts.next().ok_or(E::InvalidValue)?;
+        if !(1..=8).contains(&first.len())
+            || !first.bytes().all(|b| b.is_ascii_alphabetic())
+            || parts.any(|part| {
+                !(1..=8).contains(&part.len()) || !part.bytes().all(|b| b.is_ascii_alphanumeric())
+            })
+        {
+            return Err(E::InvalidValue);
+        }
+    }
+    // MS-XCEP Client's trailing xs:any includes Windows' TPMManufacturer and
+    // TPMFirmwareVersion. These hints are not attestation or identity evidence.
+    while let Some((namespace, name)) = p.element_name()? {
+        if namespace == XCEP && matches!(name.as_str(), "lastUpdate" | "preferredLanguage") {
+            return Err(E::Duplicate);
+        }
+        p.item()?;
+        p.skip(&namespace, &name)?;
+    }
     p.end(XCEP, "client")?;
     nil(p, XCEP, "requestFilter")?;
     p.end(XCEP, "GetPolicies")
+}
+fn client_hint(p: &mut Input<'_>, name: &str) -> Result<Option<String>> {
+    let start = p.start(XCEP, name)?;
+    start.attrs(&[(XSI, "nil")])?;
+    match start.attr(XSI, "nil") {
+        Some("true" | "1") => {
+            p.end(XCEP, name)?;
+            Ok(None)
+        }
+        None | Some("false" | "0") => Ok(Some(
+            xml_token(&p.content(XCEP, name, p.limits.identifier_bytes, false)?).to_owned(),
+        )),
+        _ => Err(E::InvalidValue),
+    }
 }
 pub(super) fn write_request(w: &mut Output<'_>) -> Result<()> {
     w.start("p:GetPolicies", &[])?;

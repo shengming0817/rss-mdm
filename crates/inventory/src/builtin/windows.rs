@@ -167,22 +167,45 @@ pub(super) fn fields() -> Vec<FieldDefinition> {
         true,
     ));
     for kind in ["store", "non_store", "system"] {
+        let mut ty = list(&[
+            ("id", text()),
+            ("origin", text()),
+            ("name", text()),
+            ("publisher", text()),
+            ("version", text()),
+            ("architecture", text()),
+            ("is_bundle", ValueType::Boolean),
+            ("is_framework", ValueType::Boolean),
+            ("is_provisioned", ValueType::Boolean),
+            ("is_provisioned_native", ValueType::Integer),
+            ("package_status", ValueType::Integer),
+            ("registered_users_native", text()),
+            ("collection_scope", text()),
+        ]);
+        if let ValueType::Array { items, .. } = &mut ty {
+            **items = ValueType::Record {
+                properties: items
+                    .properties()
+                    .map(|(key, value_type, _)| {
+                        (
+                            key.into(),
+                            Property {
+                                value_type: value_type.clone(),
+                                // Raw state is an additive observation. Unknown codes do not
+                                // assert a boolean or invalidate an otherwise valid package.
+                                required: !matches!(
+                                    key,
+                                    "is_provisioned" | "is_provisioned_native"
+                                ),
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+        }
         out.push(definition(
             &format!("device.software.windows.{kind}"),
-            list(&[
-                ("id", text()),
-                ("origin", text()),
-                ("name", text()),
-                ("publisher", text()),
-                ("version", text()),
-                ("architecture", text()),
-                ("is_bundle", ValueType::Boolean),
-                ("is_framework", ValueType::Boolean),
-                ("is_provisioned", ValueType::Boolean),
-                ("package_status", ValueType::Integer),
-                ("registered_users_native", text()),
-                ("collection_scope", text()),
-            ]),
+            ty,
             true,
         ));
     }

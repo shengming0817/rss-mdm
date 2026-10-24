@@ -10,7 +10,7 @@ mod correlation;
 mod fragment;
 pub use correlation::{
     Correlated, CorrelatedItem, CorrelatedStatus, Expected, Reference, SentMessage, correlate,
-    encode_request,
+    encode_outbound, encode_request,
 };
 pub use fragment::{Fragment, fragment};
 /// Exact namespace URI for the supported SyncML 1.2 XML profile.
@@ -1049,9 +1049,29 @@ pub(crate) fn validate_body(
                         ..
                     },
                     Command::DevInfo { .. }
+                ] | [
+                    Command::Alert {
+                        alert: Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::Alert {
+                        alert: Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ] | [
+                    Command::Alert {
+                        alert: Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::Alert {
+                        alert: Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::DevInfo { .. }
                 ]
             ))
-            || !final_message
+            || (unenrolling && !final_message)
         {
             return Err(E::Structure);
         }

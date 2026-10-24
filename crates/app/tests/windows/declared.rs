@@ -77,7 +77,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let w = &host.app.windows()?.channel;
     let discovery = format!(
         "{}/EnrollmentConfiguration?api-version=1.0",
-        w.enrollment_origin
+        w.management_origin
     );
     let value = host
         .client
@@ -754,7 +754,7 @@ async fn linked_peer(
     let mut issue = parent.issue.clone();
     issue.header.to = Some(format!(
         "{}/EnrollmentServer/LinkedEnrollment.svc",
-        w.enrollment_origin
+        w.management_origin
     ));
     issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let format_time = |at| {
@@ -914,6 +914,51 @@ struct Renewed {
     certificate: Vec<u8>,
     mutual: reqwest::Client,
 }
+async fn renewal_policy(host: &Host, client: &reqwest::Client, prefix: &str) -> anyhow::Result<()> {
+    for (fixture, operation, service) in [
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            soap::Operation::Discover,
+            "Discovery",
+        ),
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            soap::Operation::GetPolicies,
+            "Policy",
+        ),
+    ] {
+        let mut request = soap::decode(fixture, operation, &CodecLimits::default())?;
+        let path = format!(
+            "{}/EnrollmentServer/{prefix}{service}.svc",
+            host.app.windows()?.channel.management_origin
+        );
+        request.header.to = Some(path.clone());
+        request.header.security = None;
+        let reply = client
+            .post(path)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&request, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(
+            reply.status() == StatusCode::OK,
+            "certificate renewal {service} failed"
+        );
+        let decoded =
+            soap::decode_response(&request, &reply.bytes().await?, &CodecLimits::default())?;
+        if let Body::DiscoverResponse(discovery) = decoded.body {
+            ensure!(discovery.auth_policy == soap::AuthPolicy::Certificate);
+            ensure!(
+                discovery.enrollment_url
+                    == format!(
+                        "{}/EnrollmentServer/{prefix}Enrollment.svc",
+                        host.app.windows()?.channel.management_origin
+                    )
+            );
+        }
+    }
+    Ok(())
+}
 async fn renew(
     host: &Host,
     issue: &soap::Message,
@@ -921,6 +966,13 @@ async fn renew(
     certificate: &[u8],
     key: &std::path::Path,
 ) -> anyhow::Result<Renewed> {
+    let linked = issue
+        .header
+        .to
+        .as_deref()
+        .is_some_and(|value| value.ends_with("/LinkedEnrollment.svc"));
+    let prefix = if linked { "Linked" } else { "" };
+    renewal_policy(host, client, prefix).await?;
     let temporary = tempfile::tempdir()?;
     let new_key = temporary.path().join("new.key");
     let csr = temporary.path().join("new.csr");
@@ -974,6 +1026,20 @@ async fn renew(
     .await?;
     let mut request = issue.clone();
     request.header.security = None;
+    request.header.to = Some(format!(
+        "{}/EnrollmentServer/{}Enrollment.svc",
+        host.app.windows()?.channel.management_origin,
+        if issue
+            .header
+            .to
+            .as_deref()
+            .is_some_and(|v| v.ends_with("/LinkedEnrollment.svc"))
+        {
+            "Linked"
+        } else {
+            ""
+        }
+    ));
     request.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let Body::Issue(body) = &mut request.body else {
         unreachable!()

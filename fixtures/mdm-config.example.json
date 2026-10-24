@@ -49,7 +49,7 @@
   "native_protocols": {
     "windows": {
       "enrollment": {
-        "origin": "https://mdm.example.test"
+        "origin": "https://enroll.example.test"
       },
       "protocol_protection": {
         "active_file": "/run/mdm/protocol.key",

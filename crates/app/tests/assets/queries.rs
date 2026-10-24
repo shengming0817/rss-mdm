@@ -501,3 +501,217 @@ async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
     ensure!(browser.call(router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
     fixture.close().await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.queries: native record metadata, RSQL and frozen array reads"]
+async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    use rss_mdm_inventory::{FieldKey, Source, builtin};
+    let fixture = Fixture::open().await?;
+    let mut browser = fixture.browser.clone();
+    let router = &fixture.router;
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &["inventory_read", "inventory_assign"],
+    )?;
+    grants.push(Grant {
+        operation: Permission::InventoryFieldsWrite,
+        scope: Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants.clone())
+        .await?;
+    // Exercise query/storage through a normal writable field with the exact native Record type.
+    // The Windows protocol-to-Inventory seam is owned by windows.management.
+    let key = "custom.native_packages";
+    let mut field = builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.software.windows.system")
+        .unwrap();
+    field.key = FieldKey::parse(key)?;
+    field.manual = true;
+    field.sources = [(Source::Manual, 0)].into();
+    let definition = rss_mdm_inventory_service::collection::wire::to_wire_field(&field)?;
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &format!("/api/v1/asset-fields/{key}"),
+        Some(request(0, json!({"action":"put","definition":definition}))),
+    )
+    .await?;
+    let original = json!({
+        "id":"package", "origin":"./Device/Vendor/MSFT/EnterpriseModernAppManagement/AppManagement/System",
+        "name":"System package", "publisher":"CN=Vendor", "version":"1.0.0.0", "architecture":"arm64",
+        "is_bundle":false, "is_framework":false, "is_provisioned_native":2, "package_status":0,
+        "registered_users_native":"", "collection_scope":"device"
+    });
+    let mut first = original.clone();
+    first["id"] = json!("package-a");
+    let mut second = original.clone();
+    second["id"] = json!("package-b");
+    let unknown = field.value_type.decode_json(&json!([first, second]))?;
+    let mut known = original.clone();
+    known["id"] = json!("package-c");
+    known["is_provisioned_native"] = json!(1);
+    known["is_provisioned"] = json!(true);
+    let known = field.value_type.decode_json(&json!([known]))?;
+    for (device, value) in [("asset-a", unknown), ("asset-b", known)] {
+        ok(
+            &mut browser,
+            router,
+            Method::PUT,
+            &format!("/api/v1/devices/{device}/manual-fields/{key}"),
+            Some(request(0, json!({"action":"set","value":value}))),
+        )
+        .await?;
+    }
+    let query = json!({"filter":format!("{key}.is_provisioned_native=containsany=(2)"),"fields":[key],"sort":[]});
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::POST,
+                "/api/v1/device-queries",
+                Some(request(0, query.clone()))
+            )
+            .await?
+            .0
+            == StatusCode::FORBIDDEN,
+        "field metadata does not grant sensitive value access"
+    );
+    grants.push(Grant {
+        operation: Permission::InventorySensitiveRead,
+        scope: Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants.clone())
+        .await?;
+    let selected = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(query.clone()),
+    )
+    .await?;
+    ensure!(
+        selected["asset"]["summary"]["matched"] == 1
+            && selected["asset"]["items"][0]["device"] == "asset-a",
+        "raw integer predicate: {selected}"
+    );
+    ensure!(
+        selected["asset"]["items"][0]["lists"][key]["state"]["count"] == 2,
+        "record projection: {selected}"
+    );
+    let false_query =
+        json!({"filter":format!("{key}.is_provisioned=containsany=(false)"),"fields":[key]});
+    let absent = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(false_query),
+    )
+    .await?;
+    ensure!(
+        absent["asset"]["summary"]["matched"] == 0,
+        "unknown provisioning must not become false: {absent}"
+    );
+    let true_query =
+        json!({"filter":format!("{key}.is_provisioned=containsany=(true)"),"fields":[key]});
+    let present = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(true_query),
+    )
+    .await?;
+    ensure!(
+        present["asset"]["summary"]["matched"] == 1
+            && present["asset"]["items"][0]["device"] == "asset-b"
+    );
+    let list = format!("/api/v1/devices/asset-a/inventory-lists/{key}");
+    let first = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{list}?limit=1"),
+        None,
+    )
+    .await?;
+    let cursor = first["asset"]["nextCursor"].as_str().unwrap();
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &format!("/api/v1/devices/asset-a/manual-fields/{key}"),
+        Some(request(
+            1,
+            json!({"action":"set","value":{"kind":"array","value":[]}}),
+        )),
+    )
+    .await?;
+    let second = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{list}?limit=1&cursor={cursor}"),
+        None,
+    )
+    .await?;
+    ensure!(
+        second["asset"]["watermark"] == first["asset"]["watermark"]
+            && second["asset"]["total"] == 2
+            && second["asset"]["nextCursor"].is_null()
+    );
+    for page in [&first, &second] {
+        let properties = page["asset"]["items"][0]["value"].as_object().unwrap();
+        ensure!(
+            properties["is_provisioned_native"] == json!({"kind":"integer","value":2})
+                && !properties.contains_key("is_provisioned")
+        );
+    }
+    ensure!(
+        first["asset"]["items"][0]["value"]["id"] != second["asset"]["items"][0]["value"]["id"]
+    );
+    let current = ok(&mut browser, router, Method::GET, &list, None).await?;
+    ensure!(current["asset"]["total"] == 0);
+    let after = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(query.clone()),
+    )
+    .await?;
+    ensure!(after["asset"]["summary"]["matched"] == 0);
+    let denied_legacy = request(0, json!({"criteria":null,"select":[key]}));
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::POST,
+                "/api/v1/device-queries",
+                Some(denied_legacy)
+            )
+            .await?
+            .0
+            == StatusCode::BAD_REQUEST
+    );
+    grants.pop();
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+    ensure!(browser.call(router, Method::GET, &list, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::GET,
+                &format!("{list}?limit=1&cursor={cursor}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    fixture.close().await
+}

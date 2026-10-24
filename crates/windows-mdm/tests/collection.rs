@@ -65,6 +65,71 @@ fn all_fixed_recipes_resolve_and_bind_actual_platform() {
     }
 }
 #[test]
+fn modern_package_settings_are_not_software_instances() {
+    for inventory in [Inventory::Store, Inventory::NonStore, Inventory::System] {
+        let plan = plan(inventory);
+        let mut state = plan.start("RSS").unwrap();
+        round(&mut state, &plan, 1, |_| (200, "Example_publisher"));
+        let packages = "AppSettingPolicy/AppUpdateSettings/DoNotUpdate/MaintainProcessorArchitectureOnUpdate/NonRemovable/Example_1.0.0.0_arm64__publisher";
+        round(&mut state, &plan, 2, |_| (200, packages));
+        round(&mut state, &plan, 3, |uri| {
+            assert!(!uri.contains("/AppSettingPolicy/"));
+            assert!(!uri.contains("/AppUpdateSettings/"));
+            assert!(!uri.contains("/DoNotUpdate/"));
+            assert!(!uri.contains("/MaintainProcessorArchitectureOnUpdate/"));
+            assert!(!uri.contains("/NonRemovable/"));
+            (200, "value")
+        });
+        round(&mut state, &plan, 4, |uri| {
+            (
+                200,
+                if uri.ends_with("/Example_publisher") {
+                    packages
+                } else {
+                    "Example_publisher"
+                },
+            )
+        });
+        let Outcome::Value(value) = state.outcomes(&plan).unwrap().remove("field").unwrap() else {
+            panic!("settings container invalidated software inventory")
+        };
+        assert_eq!(value.as_array().unwrap().len(), 1);
+        assert_eq!(value[0]["Name"], "value");
+    }
+}
+#[test]
+fn provisioned_integer_keeps_unknown_states_without_inventing_a_boolean() {
+    for raw in ["0", "1", "2", "3", "-1"] {
+        let plan = plan(Inventory::System);
+        let mut state = plan.start("RSS").unwrap();
+        round(&mut state, &plan, 1, |_| (200, "family"));
+        round(&mut state, &plan, 2, |_| (200, "package"));
+        round(&mut state, &plan, 3, |_| (200, raw));
+        round(&mut state, &plan, 4, |uri| {
+            (
+                200,
+                if uri.ends_with("/family") {
+                    "package"
+                } else {
+                    "family"
+                },
+            )
+        });
+        let Outcome::Value(value) = state.outcomes(&plan).unwrap().remove("field").unwrap() else {
+            panic!("complete inventory")
+        };
+        assert_eq!(value[0]["IsProvisioned"], raw);
+        assert_eq!(
+            value[0].get("IsProvisionedBoolean"),
+            match raw {
+                "0" => Some(&serde_json::Value::Bool(false)),
+                "1" => Some(&serde_json::Value::Bool(true)),
+                _ => None,
+            }
+        );
+    }
+}
+#[test]
 fn inventory_is_not_complete_until_verified_and_survives_restart() {
     let plan = plan(Inventory::Win32);
     let mut state = plan.start("RSS").unwrap();

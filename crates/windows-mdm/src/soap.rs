@@ -117,7 +117,8 @@ pub enum Body {
     Discover(Discover),
     /// Explicit discovery authentication profile and endpoints and enrollment version.
     DiscoverResponse(DiscoverResponse),
-    /// Fixed XCEP request with nil last-update, preferred-language and filter fields.
+    /// XCEP request with advisory client state/language and a nil filter.
+    /// The fixed policy ignores these hints; encoding emits nil client hints.
     GetPolicies,
     /// The supported single-policy response.
     GetPoliciesResponse(Policy),
@@ -188,7 +189,15 @@ fn understood(s: &crate::xml::Start) -> Result<()> {
 fn header_value(p: &mut Input<'_>, name: &str) -> Result<String> {
     let s = p.start(ADDRESS, name)?;
     understood(&s)?;
-    p.content(ADDRESS, name, p.limits.uri_bytes, false)
+    Ok(xml_token(&p.content(ADDRESS, name, p.limits.uri_bytes, false)?).to_owned())
+}
+// URI and schema-token values permit surrounding XML whitespace. Apply this
+// only to typed fields; credential and signed-document bytes stay untouched.
+fn xml_token(value: &str) -> &str {
+    value.trim_matches([' ', '\t', '\r', '\n'])
+}
+fn uri(p: &mut Input<'_>, ns: &str, name: &str) -> Result<String> {
+    Ok(xml_token(&p.scalar(ns, name, p.limits.uri_bytes, false)?).to_owned())
 }
 fn parse_header(
     p: &mut Input<'_>,
@@ -230,7 +239,7 @@ fn parse_header(
                 return Err(E::Duplicate);
             }
             p.open(ADDRESS, "ReplyTo")?;
-            if p.scalar(ADDRESS, "Address", p.limits.uri_bytes, false)? != ANONYMOUS {
+            if uri(p, ADDRESS, "Address")? != ANONYMOUS {
                 return Err(E::Unsupported);
             }
             p.end(ADDRESS, "ReplyTo")?;
@@ -266,13 +275,8 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     } else if h.message_id.is_none() || h.to.is_none() || h.relates_to.is_some() {
         return Err(E::Structure);
     }
-    if op == Operation::GetPolicies
-        && h.security
-            .as_ref()
-            .is_none_or(|s| s.username.is_none() && s.binary_token.is_none())
-    {
-        return Err(E::Structure);
-    }
+    // Certificate-based XCEP authenticates the completed TLS transport. A SOAP
+    // token is optional on the wire; each channel must still authorize the request.
     if op == Operation::IssueResponse
         && h.security
             .as_ref()
@@ -502,15 +506,7 @@ fn read_fault(p: &mut Input<'_>) -> Result<FaultKind> {
         "EnrollmentServer" => FaultKind::EnrollmentServer,
         _ => return Err(E::Unsupported),
     };
-    if sub.0 != ENROLL
-        || code.0 != NS
-        || code.1
-            != if kind == FaultKind::EnrollmentServer {
-                "Receiver"
-            } else {
-                "Sender"
-            }
-    {
+    if sub.0 != NS || code.0 != NS || !matches!(code.1.as_str(), "Sender" | "Receiver") {
         return Err(E::InvalidValue);
     }
     p.open(NS, "Reason")?;
@@ -540,7 +536,7 @@ fn write_fault(w: &mut Output<'_>, kind: FaultKind, l: &CodecLimits) -> Result<(
     w.start("s:Subcode", &[])?;
     w.scalar(
         "s:Value",
-        &format!("e:{}", kind.subcode()),
+        &format!("s:{}", kind.subcode()),
         l.identifier_bytes,
         false,
     )?;

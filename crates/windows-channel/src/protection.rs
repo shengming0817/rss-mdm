@@ -128,6 +128,7 @@ mod tests {
             identity(&first),
             enrollment::digest(&(
                 "mdm.windows.profile.v1",
+                "separate-bootstrap-and-certificate-enrollment",
                 &poll,
                 "https://enroll.example",
                 "https://manage.example",

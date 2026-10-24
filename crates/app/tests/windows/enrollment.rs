@@ -69,12 +69,19 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         csrf: Some(host.secret.csrf()),
         ..Default::default()
     };
+    // Issuance commits a durable Outbox fact. Drive the existing real consumer
+    // before asserting its audit read model, rather than racing the shared worker.
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let (status, timeline) = admin
         .call(
             &host.browser,
             axum::http::Method::GET,
             &format!(
-                "/api/v1/devices/{}/timeline",
+                "/api/v1/devices/{}/timeline?action=enrollment_issue",
                 crate::test_support::case::name("tls-device")
             ),
             None,
@@ -82,13 +89,106 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         .await?;
     ensure!(status == StatusCode::OK);
     ensure!(
-        timeline["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v["source"] == "mdm.business"
+        timeline["items"].as_array().unwrap().iter().any(|v| {
+            v["source"] == "mdm.business"
                 && v["action"] == "enrollment_issue"
-                && !v["registrationId"].is_null())
+                && v["registrationId"] == peer.intent.registration.to_string()
+        }),
+        "missing registration-linked issuance fact: {timeline}"
+    );
+    // Certificate renewal discovery/XCEP have a distinct origin and require possession.
+    let renewal = app
+        .windows()?
+        .channel
+        .renewal_discovery_url(rss_mdm_registration_service::Purpose::Primary);
+    for (fixture, operation, path) in [
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            Operation::Discover,
+            renewal,
+        ),
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            Operation::GetPolicies,
+            format!(
+                "{}/EnrollmentServer/Policy.svc",
+                app.windows()?.channel.management_origin
+            ),
+        ),
+    ] {
+        let mut request = soap::decode(fixture, operation, &CodecLimits::default())?;
+        request.header.to = Some(path.clone());
+        request.header.security = None;
+        let wire = soap::encode(&request, &CodecLimits::default())?;
+        let response = peer
+            .mutual
+            .post(&path)
+            .header("content-type", "application/soap+xml")
+            .body(wire.clone())
+            .send()
+            .await?;
+        ensure!(response.status() == StatusCode::OK);
+        let response =
+            soap::decode_response(&request, &response.bytes().await?, &CodecLimits::default())?;
+        if let Body::DiscoverResponse(discovery) = response.body {
+            ensure!(discovery.auth_policy == soap::AuthPolicy::Certificate);
+            ensure!(
+                discovery.enrollment_url
+                    == format!(
+                        "{}/EnrollmentServer/Enrollment.svc",
+                        app.windows()?.channel.management_origin
+                    )
+            );
+        }
+        ensure!(
+            client
+                .post(path)
+                .header("content-type", "application/soap+xml")
+                .body(wire)
+                .send()
+                .await?
+                .status()
+                != StatusCode::OK
+        );
+    }
+    let mut anonymous_policy = soap::decode(
+        include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml"),
+        Operation::GetPolicies,
+        &CodecLimits::default(),
+    )?;
+    let bootstrap_policy = format!(
+        "{}/EnrollmentServer/Policy.svc",
+        app.windows()?.channel.enrollment_origin
+    );
+    anonymous_policy.header.to = Some(bootstrap_policy.clone());
+    anonymous_policy.header.security = None;
+    ensure!(
+        client
+            .post(bootstrap_policy)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&anonymous_policy, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            != StatusCode::OK,
+        "bootstrap Policy admitted a request without credentials"
+    );
+    let mut wrong_origin = peer.issue.clone();
+    let management_issue = format!(
+        "{}/EnrollmentServer/Enrollment.svc",
+        app.windows()?.channel.management_origin
+    );
+    wrong_origin.header.to = Some(management_issue.clone());
+    ensure!(
+        peer.mutual
+            .post(management_issue)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&wrong_origin, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            != StatusCode::OK,
+        "bootstrap PKCS10 was accepted on certificate enrollment"
     );
     let root = &host.root;
     let root_cert = &host.root_cert;
@@ -158,7 +258,7 @@ async fn discover_and_policy(
 ) -> anyhow::Result<()> {
     let origin = &app.windows()?.config.enrollment.origin;
     let mut discovery = soap::decode(
-        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
+        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-native-windows11.xml"),
         Operation::Discover,
         &CodecLimits::default(),
     )?;
@@ -203,10 +303,28 @@ async fn discover_and_policy(
         .unwrap();
     token.username = Secret(app.windows()?.channel.enrollment_username(enrollment)?);
     token.password = Secret(password.to_owned());
+    let policy_wire = String::from_utf8(soap::encode(&policy, &CodecLimits::default())?)?
+        .replace("<o:Password Type=", "<o:Password o:Type=")
+        .replace(
+            "<p:lastUpdate xsi:nil=\"true\"/>",
+            "<p:lastUpdate>0001-01-01T00:00:00</p:lastUpdate>",
+        )
+        .replace(
+            "<p:preferredLanguage xsi:nil=\"true\"/>",
+            "<p:preferredLanguage>en-US</p:preferredLanguage>",
+        )
+        .replace(
+            "</p:client>",
+            "<p:TPMManufacturer>IBM</p:TPMManufacturer><p:TPMFirmwareVersion>8217.4131.22.13878</p:TPMFirmwareVersion></p:client>",
+        )
+        .replace(
+            &format!("<a:To>{}</a:To>", found.policy_url),
+            &format!("<a:To>\n {}\n</a:To>", found.policy_url),
+        );
     let response = client
         .post(&found.policy_url)
         .header("content-type", "application/soap+xml")
-        .body(soap::encode(&policy, &CodecLimits::default())?)
+        .body(policy_wire)
         .send()
         .await?;
     ensure!(response.status() == StatusCode::OK);

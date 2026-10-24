@@ -402,7 +402,7 @@ pub async fn send(
                     data: None,
                 }],
             });
-            if s::encode(response, &CodecLimits::default()).is_err() {
+            if s::encode_outbound(response, &CodecLimits::default()).is_err() {
                 response.commands.pop();
                 break;
             }

@@ -315,10 +315,41 @@ fn gateway_public_origins_allow_shared_and_separate_hosts_and_ports() {
     assert_eq!(
         public_routes(&config).unwrap(),
         vec![
-            "https://manage.example.test:8443",
-            "https://mdm.example.test"
+            crate::native::origins::Origin {
+                origin: "https://manage.example.test:8443".into(),
+                client_certificate: true
+            },
+            crate::native::origins::Origin {
+                origin: "https://mdm.example.test".into(),
+                client_certificate: false
+            },
         ]
     );
+}
+
+#[test]
+fn bootstrap_tls_policy_rejects_device_channel_origin_conflicts() {
+    let value: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../fixtures/mdm-config.example.json")).unwrap();
+    for additional in [false, true] {
+        let mut config: crate::config::Config = serde_json::from_value(value.clone()).unwrap();
+        let windows = config.native_protocols.windows.as_mut().unwrap();
+        if additional {
+            windows
+                .additional_management
+                .push(crate::native::PublicEndpoint {
+                    origin: windows.enrollment.origin.clone(),
+                });
+        } else {
+            windows.management.origin = windows.enrollment.origin.clone();
+        }
+        assert!(public_routes(&config).is_err());
+    }
+    for endpoint in ["https://agent.example.test", "https://enroll.example.test"] {
+        let mut config: crate::config::Config = serde_json::from_value(value.clone()).unwrap();
+        config.agent_pki = serde_json::from_value(json!({"mode":"step_ca","endpoint":{"origin":endpoint},"additional_origins":["https://enroll.example.test"]})).unwrap();
+        assert!(public_routes(&config).is_err());
+    }
 }
 
 fn test_certificate() -> Vec<u8> {

@@ -293,7 +293,7 @@ fn authenticate_server(
             if !server_authenticated {
                 nonce = next_nonce.clone();
             }
-        } else if row.try_get::<String, _>("state").map_err(db)? != "collecting" {
+        } else if !server_authenticated {
             return Err(Error::Unauthorized);
         }
     }
@@ -329,6 +329,28 @@ fn initialization(
         && !matches!(
             initialization.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
+                | [
+                    Command::Alert {
+                        alert: syncml::Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::Alert {
+                        alert: syncml::Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ]
+                | [
+                    Command::Alert {
+                        alert: syncml::Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::Alert {
+                        alert: syncml::Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ]
         )
         || authenticated_before
             && initial.iter().any(|c| {
@@ -394,24 +416,6 @@ fn management_response(
             }));
         }
     }
-    for result in message
-        .commands
-        .iter()
-        .filter(|c| matches!(c, Command::Results(_)))
-    {
-        execution.push(Command::Status(Status {
-            id: execution.len() as u32 + 1,
-            message_ref: message.header.message_id,
-            command_ref: result.id(),
-            command: CommandName::Results,
-            target_refs: vec![],
-            source_refs: vec![],
-            code: 200,
-            items: vec![],
-            challenge: None,
-            credential: None,
-        }));
-    }
     let response = syncml::Message {
         header: syncml::Header {
             session_id: message.header.session_id,
@@ -430,6 +434,8 @@ fn management_response(
                     nonce,
                 )),
             }),
+            // Windows ignores SyncHdr/Meta. Enforce the receiving budget by
+            // bounding dispatched commands and their possible replies instead.
             meta: None,
         },
         commands: execution,

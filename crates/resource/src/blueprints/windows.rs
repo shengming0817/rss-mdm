@@ -382,7 +382,7 @@ pub(super) fn catalog() -> Vec<Blueprint> {
         ("non_store", WindowsInventory::NonStore),
         ("system", WindowsInventory::System),
     ] {
-        out.push(inventory(
+        let mut blueprint = inventory(
             &format!("software.{id}"),
             "software",
             10586,
@@ -395,12 +395,15 @@ pub(super) fn catalog() -> Vec<Blueprint> {
                 ("architecture", "/Architecture", I),
                 ("is_bundle", "/IsBundle", boolean()),
                 ("is_framework", "/IsFramework", boolean()),
-                ("is_provisioned", "/IsProvisioned", boolean()),
+                ("is_provisioned", "/IsProvisionedBoolean", I),
+                ("is_provisioned_native", "/IsProvisioned", N),
                 ("package_status", "/PackageStatus", N),
                 ("registered_users_native", "/Users", I),
                 ("collection_scope", "/collection_scope", I),
             ],
-        ));
+        );
+        blueprint.version = "2".into();
+        out.push(blueprint);
     }
     for (id, kind, extra) in [
         ("installed", WindowsInventory::InstalledUpdates, vec![]),

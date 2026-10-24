@@ -211,6 +211,13 @@ impl ValueType {
                     .iter()
                     .all(|(key, p)| old.contains_key(key) || !p.required)
             }
+            (Self::Record { properties: new }, Self::Object { properties: old }) => {
+                old.iter()
+                    .all(|(key, ty)| new.get(key).is_some_and(|p| p.value_type.extends(ty)))
+                    && new
+                        .iter()
+                        .all(|(key, p)| old.contains_key(key) || !p.required)
+            }
             _ => self == previous,
         }
     }

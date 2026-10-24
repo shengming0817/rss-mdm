@@ -16,7 +16,7 @@ const ISSUE: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Issue";
 pub struct Discover {
     /// Nonblank email claim bounded by `field_bytes`; no email syntax or ownership verification.
     pub email: Secret<String>,
-    /// One of `1.0` through `7.0`, within the identifier budget.
+    /// One of `1.0` through `9.0`, within the identifier budget.
     pub request_version: String,
     /// Exactly `CIMClient_Windows`.
     pub device_type: String,
@@ -214,7 +214,7 @@ pub(super) fn validate_discover(d: &Discover, l: &CodecLimits) -> Result<()> {
     }
     if !matches!(
         d.request_version.as_str(),
-        "1.0" | "2.0" | "3.0" | "4.0" | "5.0" | "6.0" | "7.0"
+        "1.0" | "2.0" | "3.0" | "4.0" | "5.0" | "6.0" | "7.0" | "8.0" | "9.0"
     ) || d.device_type != "CIMClient_Windows"
     {
         return Err(E::Unsupported);
@@ -309,9 +309,6 @@ pub(super) fn read_discover_response(p: &mut Input<'_>) -> Result<DiscoverRespon
     p.end(ENROLL, "DiscoverResult")?;
     p.end(ENROLL, "DiscoverResponse")?;
     let auth_policy = AuthPolicy::parse(auth.as_deref().ok_or(E::Structure)?)?;
-    if auth_policy == AuthPolicy::Certificate {
-        return Err(E::Unsupported);
-    }
     Ok(DiscoverResponse {
         auth_policy,
         enrollment_version: version.ok_or(E::Structure)?,
@@ -320,9 +317,6 @@ pub(super) fn read_discover_response(p: &mut Input<'_>) -> Result<DiscoverRespon
     })
 }
 pub(super) fn validate_discover_response(d: &DiscoverResponse, l: &CodecLimits) -> Result<()> {
-    if d.auth_policy == AuthPolicy::Certificate {
-        return Err(E::Unsupported);
-    }
     text(&d.enrollment_version, l.identifier_bytes, false)?;
     if d.enrollment_version != "4.0" {
         return Err(E::Unsupported);
@@ -409,7 +403,14 @@ fn write_binary(w: &mut Output<'_>, data: &[u8], value_type: &str, l: &CodecLimi
 }
 fn context(p: &mut Input<'_>, name: &str) -> Result<Option<String>> {
     let s = p.start(TRUST, name)?;
-    s.attrs(&[("", "Context")])?;
+    // WS-Trust's Context plus xs:anyAttribute namespace=##other. Foreign
+    // attributes carry no enrollment authority and remain under XML budgets.
+    if s.attrs
+        .iter()
+        .any(|a| a.ns == TRUST || a.ns.is_empty() && a.name != "Context")
+    {
+        return Err(E::Unsupported);
+    }
     let v = s.attr("", "Context").map(str::to_owned);
     if let Some(v) = &v {
         text(v, p.limits.identifier_bytes, false)?;
@@ -431,23 +432,18 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
                 return Err(E::Duplicate);
             }
             token = true;
-            if p.scalar(TRUST, "TokenType", p.limits.uri_bytes, false)? != TOKEN {
+            if uri(p, TRUST, "TokenType")? != TOKEN {
                 return Err(E::Unsupported);
             }
         } else if p.is(TRUST, "RequestType")? {
             if request.is_some() {
                 return Err(E::Duplicate);
             }
-            request = Some(
-                match p
-                    .scalar(TRUST, "RequestType", p.limits.uri_bytes, false)?
-                    .as_str()
-                {
-                    ISSUE => false,
-                    RENEW => true,
-                    _ => return Err(E::Unsupported),
-                },
-            );
+            request = Some(match uri(p, TRUST, "RequestType")?.as_str() {
+                ISSUE => false,
+                RENEW => true,
+                _ => return Err(E::Unsupported),
+            });
         } else if p.is(SECURITY, "BinarySecurityToken")? {
             if csr.is_some() {
                 return Err(E::Duplicate);
@@ -468,11 +464,26 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
                 let key = s.attr("", "Name").ok_or(E::Structure)?.to_string();
                 text(&key, p.limits.identifier_bytes, false)?;
                 let value = p.scalar(CONTEXT, "Value", p.limits.field_bytes, true)?;
+                let value = match key.as_str() {
+                    "OSEdition"
+                    | "OSVersion"
+                    | "ApplicationVersion"
+                    | "DeviceType"
+                    | "EnrollmentType"
+                    | "UXInitiated"
+                    | "NotInOobe"
+                    | "TargetedUserLoggedIn" => xml_token(&value).to_owned(),
+                    _ => value,
+                };
                 p.end(CONTEXT, "ContextItem")?;
                 values.push((key, value));
             }
             p.end(CONTEXT, "AdditionalContext")?;
             additional_context = Some(Secret(values));
+        } else if let Some((namespace, name)) = p.element_name()? {
+            // MS-WSTEP 3.1.4.1.3.3: unused elements SHOULD be ignored.
+            p.item()?;
+            p.skip(&namespace, &name)?;
         } else {
             break;
         }
@@ -527,7 +538,8 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
             }
             "DeviceName" | "DeviceID" => text(v, l.identifier_bytes, false)?,
             "UXInitiated" | "NotInOobe" | "TargetedUserLoggedIn" => {
-                if !matches!(v.as_str(), "true" | "false" | "0" | "1") {
+                // Microsoft's complete OnPremise example uses capitalized True.
+                if !matches!(v.as_str(), "true" | "false" | "True" | "False" | "0" | "1") {
                     return Err(E::InvalidValue);
                 }
             }
@@ -545,25 +557,18 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
                     return Err(E::InvalidValue);
                 }
             }
-            "OfflineAutoPilotEnrollmentCorrelator" => {
+            "OfflineAutoPilotEnrollmentCorrelator"
                 if v.is_empty()
                     || v.len() > 100
                     || v.starts_with('-')
-                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                {
-                    return Err(E::InvalidValue);
-                }
+                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+            {
+                return Err(E::InvalidValue);
             }
-            "DeviceType"
-            | "EnrollmentType"
-            | "EnrollmentData"
-            | "MAC"
-            | "IMEI"
-            | "Locale"
-            | "HWDevID"
-            | "DomainName"
-            | "ExternalMgmtAgentHint" => {}
-            _ => return Err(E::Unsupported),
+            // AdditionalContext carries extra descriptive information. Unknown
+            // bounded claims cannot replace the required, uniquely named claims
+            // above or authorize a tenant/device/registration.
+            _ => {}
         }
     }
     if matches!(i.request, CertificateRequest::Pkcs10(_))
@@ -672,6 +677,10 @@ pub(super) fn read_issue_response(p: &mut Input<'_>) -> Result<IssueResponse> {
             p.end(TRUST, "RequestedSecurityToken")?;
         } else if p.is(WSTEP, "RequestID")? {
             once(&mut request_id, read_nillable(p, "RequestID")?)?;
+        } else if let Some((namespace, name)) = p.element_name()? {
+            // MS-WSTEP 3.1.4.1.3.4 has the same extensible content model.
+            p.item()?;
+            p.skip(&namespace, &name)?;
         } else {
             break;
         }
