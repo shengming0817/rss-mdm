@@ -561,6 +561,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let malformed=parameters(1,Some("search=icontains=' '"),None);
         assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await,Err(rss_mdm_device_service::Error::Malformed)));
+        crate::test_support::identity::set_grants(case_a(),admin.principal_id(),crate::test_support::identity::device_grants(None,&["inventory_read"])?).await?;
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-budget-'||n FROM generate_series(1,4096) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await,Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
         let _=first;

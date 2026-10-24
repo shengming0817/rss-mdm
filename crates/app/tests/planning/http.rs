@@ -92,7 +92,9 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
         "pending directory: {status} {page}"
     );
     ensure!(page["items"][0]["id"] == device && page["items"][0]["status"] == "pending");
-    ensure!(page["items"][0]["inventoryAvailable"] == false && page["statistics"]["total"] == 1);
+    let (statistics_status,statistics)=browser.call(&router,Method::GET,"/api/v1/devices/statistics",None).await?;
+    ensure!(statistics_status==StatusCode::OK && statistics["statistics"]["total"]==1);
+    ensure!(page["items"][0]["inventoryAvailable"] == false && page.get("statistics").is_none());
     let detail = browser
         .call(
             &router,

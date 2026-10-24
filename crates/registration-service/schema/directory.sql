@@ -3,21 +3,21 @@ BEGIN;
 -- Raw narrow source rows, before deduplication or value decoding. UNION ALL
 -- allows the caller's overflow probe to stop at its explicit source-row budget.
 CREATE VIEW mdm_access.directory_inputs WITH (security_barrier=true) AS
-SELECT tenant_id FROM mdm_access.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.devices WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.requests WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,CASE WHEN state='pending' THEN expires_at END AS expires_at FROM mdm_access.requests WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.registrations WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.registrations WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.credentials WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.credentials WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.agent_grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.agent_grants WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.registration_users WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.registration_users WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
-SELECT tenant_id FROM mdm_access.report_sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid;
+SELECT tenant_id,NULL::timestamptz AS expires_at FROM mdm_access.report_sources WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid;
 REVOKE ALL ON mdm_access.directory_inputs FROM PUBLIC;
 GRANT SELECT ON mdm_access.directory_inputs TO mdm_access,mdm_identity_runtime;
 CREATE VIEW mdm_access.directory_metadata WITH (security_barrier=true) AS

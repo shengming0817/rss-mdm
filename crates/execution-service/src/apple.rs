@@ -137,9 +137,10 @@ pub(crate) async fn observations(
         .map(|(op, status)| {
             let progress = super::service::status(*status).to_owned();
             let value = match page.remove(&op.id).ok_or(Error::Conflict)? {
-                channels::AppleEvidence::Declarations(facts) => {
-                    NativeObservation::Declarations { facts, progress }
-                }
+                channels::AppleEvidence::Declarations(facts) => NativeObservation::Declarations {
+                    facts: facts.map(|v| *v),
+                    progress,
+                },
                 channels::AppleEvidence::Observations(rows) => NativeObservation::Apple {
                     facts: rss_mdm_apple_mdm::native::evidence::summarize(
                         rows,

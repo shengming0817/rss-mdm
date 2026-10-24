@@ -473,7 +473,7 @@ fn windows_from_rows(
         let value = if sensitive || !native_values {
             None
         } else {
-            result_value(protection, tenant, op, &row)?
+            result_value(protection, tenant, op, row)?
         };
         use crate::queries::records::WindowsReceipt;
         let receipt = WindowsReceipt {
@@ -625,7 +625,7 @@ fn effect_from_rows(
         facts.push(EffectFact {
             uri: row.try_get::<Option<String>, _>("uri")?.unwrap_or_default(),
             status: row.try_get("status")?,
-            value: result_value(protection, tenant, op, &row)?,
+            value: result_value(protection, tenant, op, row)?,
             receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
             result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
         });

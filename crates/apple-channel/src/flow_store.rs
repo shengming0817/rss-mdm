@@ -329,7 +329,12 @@ impl channels::AppleResults for Store {
                     .await?;
             let mut result = ids
                 .into_iter()
-                .map(|id| (id, channels::AppleEvidence::Declarations(facts.remove(&id))))
+                .map(|id| {
+                    (
+                        id,
+                        channels::AppleEvidence::Declarations(facts.remove(&id).map(Box::new)),
+                    )
+                })
                 .collect::<std::collections::BTreeMap<_, _>>();
             result.extend(
                 crate::evidence::observations_many(

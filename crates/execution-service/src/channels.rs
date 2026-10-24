@@ -245,7 +245,7 @@ pub trait ApplePush: Send + Sync {
     ) -> Pending<'a, bool>;
 }
 pub enum AppleEvidence {
-    Declarations(Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>),
+    Declarations(Option<Box<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>>),
     Observations(Vec<rss_mdm_apple_mdm::native::evidence::Observation>),
 }
 pub trait AppleResults: Send + Sync {

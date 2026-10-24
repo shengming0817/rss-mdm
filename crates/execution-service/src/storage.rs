@@ -39,7 +39,7 @@ fn decode_operation(
     Ok(Operation {
         id,
         device: row.try_get("device")?,
-        request: super::input_storage::open_row(protection, tenant, id, &row, "request")?,
+        request: super::input_storage::open_row(protection, tenant, id, row, "request")?,
         authority: stored(serde_json::from_str(
             &row.try_get::<String, _>("authority")?,
         ))?,
