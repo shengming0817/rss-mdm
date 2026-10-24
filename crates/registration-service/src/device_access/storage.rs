@@ -373,24 +373,32 @@ pub async fn mac_configuration_in(
     tenant: Uuid,
     device: &str,
 ) -> Result<rss_mdm_agent_wire::platform_sso::LoginConfiguration, Error> {
-    let candidates: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' ORDER BY p.id LIMIT 129")
-        .bind(tenant).fetch_all(&mut *c).await.map_err(db)?;
+    // Apply the budget to eligible Mac configurations, not unrelated tenant policies.
+    let candidates: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT q.result->'configuration' FROM mdm_policy.policies p
+         JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version)
+         CROSS JOIN LATERAL (SELECT mdm_commands.access_policy(p.id,$2,
+             floor(extract(epoch FROM statement_timestamp()))::bigint) AS result OFFSET 0) q
+         WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access'
+           AND q.result->>'state'='eligible'
+           AND q.result#>>'{configuration,enabled}'='true'
+           AND q.result#>'{configuration,mac}' IS NOT NULL
+           AND q.result#>'{configuration,mac}' <> 'null'::jsonb
+         ORDER BY p.id LIMIT 129",
+    )
+    .bind(tenant)
+    .bind(device)
+    .fetch_all(&mut *c)
+    .await
+    .map_err(db)?;
     if candidates.len() > 128 {
         return Err(Error::Capacity);
     }
     let mut selected = None;
-    for policy in candidates {
-        let result: serde_json::Value = sqlx::query_scalar("SELECT mdm_commands.access_policy($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint)")
-            .bind(policy).bind(device).fetch_one(&mut *c).await.map_err(db)?;
-        if result["state"] != "eligible" {
-            continue;
-        }
+    for configuration in candidates {
         let config: AccessConfiguration =
-            serde_json::from_value(result["configuration"].clone()).map_err(|_| Error::Corrupt)?;
+            serde_json::from_value(configuration).map_err(|_| Error::Corrupt)?;
         config.validate().map_err(|_| Error::Corrupt)?;
-        if !config.enabled {
-            continue;
-        }
         if let Some(mac) = config.mac {
             if selected.as_ref().is_some_and(|old| old != &mac) {
                 return Err(Error::Conflict);

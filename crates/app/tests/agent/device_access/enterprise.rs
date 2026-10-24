@@ -355,6 +355,14 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         let identity=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"execute"}))).await?;ensure!(identity.0==StatusCode::OK,"Identity disposition {identity:?}");
         let progress=f.author.call(&f.router,Method::GET,&operation_path,None).await?;ensure!(progress.0==StatusCode::OK,"progress {progress:?}");
         let target=progress.1["operation"]["idp"][0]["id"].clone();ensure!(target.is_string(),"frozen IdP target {progress:?}");
+        // Empty sessions while the account is enabled cannot close the logout obligation.
+        admin(&client,&admin_base,&token,reqwest::Method::POST,&format!("/users/{user}/logout"),None).await?;
+        let reconciled=f.author.call(&f.router,Method::POST,&format!("{operation_path}/idp"),Some(json!({"kind":"reconcile","target":target}))).await?;
+        ensure!(reconciled.0==StatusCode::OK,"reconcile {reconciled:?}");
+        ensure!(reconciled.1["operation"]["idp"][0]["sessions"]=="pending","enabled account's empty sessions prematurely confirmed: {reconciled:?}");
+        // Keycloak impersonation creates a real new user session after that observation.
+        admin(&client,&admin_base,&token,reqwest::Method::POST,&format!("/users/{user}/impersonation"),None).await?;
+        ensure!(admin(&client,&admin_base,&token,reqwest::Method::GET,&format!("/users/{user}/sessions"),None).await?.as_array().is_some_and(|sessions|!sessions.is_empty()));
         for action in ["disable_account","revoke_sessions"]{
             let input=json!({"kind":"execute","target":target,"action":action});
             let applied=f.author.call(&f.router,Method::POST,&format!("{operation_path}/idp"),Some(input.clone())).await?;

@@ -305,6 +305,40 @@ pub(super) async fn login(
         login_request(f, device, user, encryption, id).await
     }
 }
+pub(super) async fn capacity(
+    f: &super::Fixture,
+    device: &Key,
+    encryption: &Key,
+    id: &Value,
+) -> Result<()> {
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    // Copy a completed exchange to preserve valid FK/context material without 4096 IdP calls.
+    let ids: Vec<Uuid> = sqlx::query_scalar("INSERT INTO mdm_apple.psso_password_attempts(tenant_id,id,source,version,provider,provider_fingerprint,context,expires_at,state) SELECT a.tenant_id,gen_random_uuid(),a.source,a.version,a.provider,a.provider_fingerprint,a.context,floor(extract(epoch FROM clock_timestamp()))::bigint+120,CASE n%3 WHEN 0 THEN 'succeeded' WHEN 1 THEN 'rejected' ELSE 'unavailable' END FROM (SELECT * FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid LIMIT 1) a CROSS JOIN generate_series(1,4096) n RETURNING id")
+        .bind(case_tenant()).fetch_all(&mut c).await?;
+    ensure!(ids.len() == 4096);
+    let assertion = request(f, device, encryption, id, PASSWORD).await?;
+    ensure!(
+        token(f, &assertion).await?.0 == StatusCode::OK,
+        "retained terminal attempts must not consume active capacity"
+    );
+    sqlx::query("UPDATE mdm_apple.psso_password_attempts SET state='verifying',expires_at=floor(extract(epoch FROM clock_timestamp()))::bigint+120 WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(case_tenant()).bind(&ids).execute(&mut c).await?;
+    let assertion = request(f, device, encryption, id, PASSWORD).await?;
+    ensure!(
+        token(f, &assertion).await?.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "live attempts must still enforce capacity"
+    );
+    sqlx::query("UPDATE mdm_apple.psso_password_attempts SET expires_at=floor(extract(epoch FROM clock_timestamp()))::bigint WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(case_tenant()).bind(&ids).execute(&mut c).await?;
+    ensure!(
+        token(f, &assertion).await?.0 == StatusCode::OK,
+        "expired attempts free capacity without consuming the rejected nonce"
+    );
+    let retained:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid AND id=ANY($2)").bind(case_tenant()).bind(&ids).fetch_one(&mut c).await?;
+    ensure!(retained == 4096, "recovery history is retained");
+    c.close().await?;
+    Ok(())
+}
 pub(super) async fn negative(
     f: &super::Fixture,
     device: &Key,

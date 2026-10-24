@@ -213,7 +213,8 @@ impl Administrator {
         }
         Ok(Observation {
             account_disabled: !user.enabled,
-            sessions_revoked: sessions.is_empty(),
+            // An enabled account can create sessions after an empty observation.
+            sessions_revoked: !user.enabled && sessions.is_empty(),
         })
     }
     /// Exactly one external mutation; caller journals Executing first and reconciles uncertainty.

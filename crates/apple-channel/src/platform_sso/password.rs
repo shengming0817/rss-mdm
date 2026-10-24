@@ -263,9 +263,10 @@ async fn prepare(
     sqlx::query("DELETE FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid AND id IN(SELECT id FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid AND expires_at<$2-86400 ORDER BY expires_at LIMIT 128)")
         .bind(&tenant).bind(now).execute(&mut *c).await.map_err(db)?;
     let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid",
+        "SELECT count(*) FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid AND state='verifying' AND expires_at>$2",
     )
     .bind(&tenant)
+    .bind(now)
     .fetch_one(&mut *c)
     .await
     .map_err(db)?;

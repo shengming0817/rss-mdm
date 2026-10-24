@@ -449,6 +449,50 @@ async fn binding_with_configuration(f: &mut Fixture, device: &str, login: Value)
     );
     Ok(serde_json::from_value(receipt["id"].clone())?)
 }
+async fn mac_policy_capacity(
+    binding: Uuid,
+    device: &str,
+    expected: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+) -> Result<()> {
+    use rss_mdm_registration_service::{Error, device_access::storage::mac_configuration_in};
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let policy:Uuid=sqlx::query_scalar("SELECT (document->>'policy')::uuid FROM mdm_access.device_access_bindings WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(binding).fetch_one(&mut *tx).await?;
+    // Valid publications with Windows-only configuration or a no-longer-resolvable scope.
+    sqlx::query("CREATE TEMP TABLE mac_policy_copies ON COMMIT DROP AS SELECT gen_random_uuid() id,gen_random_uuid() version,n FROM generate_series(1,128) n").execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.policies SELECT p.tenant_id,x.id,p.revision,x.version,p.version_number,p.execution_binding,p.state,CASE WHEN x.n<=64 THEN p.definition ELSE jsonb_set(p.definition,'{scope}',to_jsonb(gen_random_uuid())) END,p.author,p.updated_at FROM mdm_policy.policies p CROSS JOIN mac_policy_copies x WHERE p.tenant_id=$1::uuid AND p.id=$2").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions SELECT v.tenant_id,x.version,x.id,v.number,v.action_kind,v.resource,v.resource_version,CASE WHEN x.n<=64 THEN jsonb_set(v.frozen,'{configuration,mac}','null'::jsonb) ELSE v.frozen END,v.fingerprint FROM mdm_policy.versions v JOIN mdm_policy.policies p ON (p.tenant_id,p.current_version)=(v.tenant_id,v.id) CROSS JOIN mac_policy_copies x WHERE p.tenant_id=$1::uuid AND p.id=$2").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_access")
+        .execute(&mut *tx)
+        .await?;
+    let tenant = Uuid::parse_str(case_tenant())?;
+    ensure!(
+        &mac_configuration_in(&mut tx, tenant, device).await? == expected,
+        "unrelated publications must not exhaust Mac candidate capacity"
+    );
+    sqlx::query("RESET ROLE").execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_policy.policies p SET definition=original.definition FROM mdm_policy.policies original,mac_policy_copies x WHERE p.tenant_id=$1::uuid AND original.tenant_id=p.tenant_id AND original.id=$2 AND p.id=x.id").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_policy.versions v SET frozen=original.frozen FROM mdm_policy.versions original,mdm_policy.policies p,mac_policy_copies x WHERE v.tenant_id=$1::uuid AND original.tenant_id=v.tenant_id AND p.tenant_id=v.tenant_id AND p.id=$2 AND original.id=p.current_version AND v.id=x.version").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_access")
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        matches!(
+            mac_configuration_in(&mut tx, tenant, device).await,
+            Err(Error::Capacity)
+        ),
+        "129 eligible Mac policies must still enforce the budget"
+    );
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
+}
 async fn applied_binding(id: Uuid) -> Result<()> {
     use rss_mdm_agent_wire::runtime::{
         AccessEffect, AccessMacFacts, AccessObservation, AccessRole,
@@ -573,6 +617,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let login=if let Some(p)=&password{p.login()}else{Default::default()};
         let binding=binding_with_configuration(&mut f,agent_device,serde_json::to_value(&login)?).await?;
         if let Some(p)=&password{p.mapping(binding).await?;}
+        if !mode {mac_policy_capacity(binding,agent_device,&login).await?;}
         let profile=f.ade.platform_sso.as_ref().unwrap().profile(&login)?;
         let (_,operation)=f.configuration_policy(json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),None,"retain").await?;
         let (security,_) = peer.next("SecurityInfo").await?;
@@ -620,7 +665,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         ensure!(pending_response.0==if mode {StatusCode::OK}else{StatusCode::BAD_REQUEST},"Password bootstrap may synchronize a pending binding; key login requires applied binding");
         if mode {let pending_tokens=decrypt(&encryption,&pending_response.1)?;ensure!(browser_exchange(&f,binding,&user,&registered,pending_tokens["access_token"].as_str().context("pending token")?).await?.0==StatusCode::UNAUTHORIZED,"password verification does not prove local synchronization");}
         applied_binding(binding).await?;
-        if let Some(provider)=&password {password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
+        if let Some(provider)=&password {password::capacity(&f,&device,&encryption,&registered["sourceId"]).await?;password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
         let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
         let (one,two)=(one?,two?);
