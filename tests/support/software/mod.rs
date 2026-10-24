@@ -301,10 +301,7 @@ async fn seed_version(
     document: ExportDocument,
     enabled: bool,
 ) -> PublishInput {
-    let store = resource_pg::ResourceStore::new(runtime, tenant(), deadline())
-        .await
-        .unwrap();
-    let source_snapshot = admit_private_source(&server.logical).await;
+    let source_snapshot = seed_private_source(&server.logical).await;
     let key = id(&unique());
     let mut variants = Vec::new();
     let (package, package_version, platform, variant) = match &document {
@@ -544,26 +541,12 @@ async fn seed_version(
                 .unwrap();
         }
     }
-    for (revision, command) in [
-        (0, resource_pg::Command::Create(resource::Kind::Software)),
-        (1, resource_pg::Command::Insert(version.clone())),
-    ] {
-        store
-            .execute(
-                &resource_pg::Request {
-                    id: id(&unique()),
-                    resource: key.clone(),
-                    expected_storage_revision: revision,
-                    as_of: at(1),
-                    command,
-                },
-                deadline(),
-            )
-            .await
-            .unwrap();
-    }
+    runtime.local_tx_with_context(tenant(), deadline(), &version, |version, tx| Box::pin(async move {
+        resource_pg::fixture::draft_version_in(tx, version.clone(), at(1)).await?;
+        Ok(Ok(()))
+    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
     if enabled {
-        admit_version(&version).await;
+        seed_enabled_version(&version, &content).await;
     }
     PublishInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
@@ -844,123 +827,33 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
     .unwrap()
 }
 
-async fn admit_private_source(source: &str) -> resource::SoftwareSource {
+async fn seed_private_source(source: &str) -> resource::SoftwareSource {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant(), &budget.control())
-            .await
-            .unwrap(),
-    );
-    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
-    let definition = c::SourceDefinition {
-        id: source.into(),
-        revision: "1".into(),
-        protocol: c::SourceProtocol::Private,
-    };
+    let definition = c::SourceDefinition { id: source.into(), revision: "1".into(), protocol: c::SourceProtocol::Private };
     let snapshot = definition.snapshot().unwrap();
-    for (expected_revision, input) in [(0, c::SourceChange::Register { definition })] {
-        let request = rss_mdm_audit_integration::RequestAudit::new(
-            tenant().to_string(),
-            "software_source_write",
-        );
-        request.set_principal("operator", INSTANCE);
-        let op = c::Operation {
-            operation_id: uuid::Uuid::new_v4(),
-            expected_revision,
-            input,
-        };
-        let result = runtime
-            .local_tx_with_context(
-                tenant(),
-                deadline(),
-                (&catalog, &request, &op, source),
-                |(catalog, request, op, source), tx| {
-                    Box::pin(async move {
-                        if let Ok(value) = catalog.reader().source_read_in(tx, source, "1").await
-                            && value["lifecycle"]["state"] == "enabled"
-                        {
-                            return Ok(Ok(()));
-                        }
-                        catalog
-                            .source_in(tx, request, source, "1", op)
-                            .await
-                            .map(|_| Ok(()))
-                            .map_err(|_| {
-                                sqlx::Error::Protocol("fixture source lifecycle".into()).into()
-                            })
-                    })
-                },
-            )
-            .await;
-        result.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
-        request.finalize(None);
-    }
+    runtime.local_tx_with_context(tenant(), deadline(), &definition, |definition, tx| Box::pin(async move {
+        let reader = c::Reader::new(tx.tenant_id());
+        match reader.source_read_in(tx, &definition.id, &definition.revision).await {
+            Ok(value) if value["lifecycle"]["state"] == "enabled" => (),
+            Err(c::Error::Missing) => {
+                c::fixture::source_in(tx, definition.clone()).await.map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            }
+            _ => return Err(sqlx::Error::Protocol("source seed requires missing or enabled state".into()).into()),
+        }
+        Ok(Ok(()))
+    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
     runtime.close().await;
     snapshot
 }
-async fn admit_version(version: &resource::Version) {
+async fn seed_enabled_version(version: &resource::Version, content: &rss_mdm_content_service::Store) {
     use rss_mdm_software_service::catalog::{self as c, ContentPort};
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant(), &budget.control())
-            .await
-            .unwrap(),
-    );
-    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
-    let content = stored_content()
-        .await
-        .as_ref()
-        .verify(version)
-        .await
-        .unwrap();
-    let op = c::Operation {
-        operation_id: uuid::Uuid::new_v4(),
-        expected_revision: 0,
-        input: c::VersionChange::Enable,
-    };
-    let request = rss_mdm_audit_integration::RequestAudit::new(
-        tenant().to_string(),
-        "software_version_write",
-    );
-    request.set_principal("operator", INSTANCE);
-    runtime
-        .local_tx_with_context(
-            tenant(),
-            deadline(),
-            (&catalog, &request, &op, &content, version),
-            |(catalog, request, op, content, version), tx| {
-                Box::pin(async move {
-                    catalog
-                        .version_change_in(
-                            tx,
-                            request,
-                            version.resource().as_str(),
-                            version.label().as_str(),
-                            op,
-                            Some(content.as_ref()),
-                            &[],
-                        )
-                        .await
-                        .map(|_| Ok(()))
-                        .map_err(|_| {
-                            sqlx::Error::Protocol("fixture version lifecycle".into()).into()
-                        })
-                })
-            },
-        )
-        .await
-        .fold(|r| r, Err, Err, Err, Err, Err)
-        .unwrap();
-    request.finalize(None);
+    let verified = content.verify(version).await.unwrap();
+    runtime.local_tx_with_context(tenant(), deadline(), (version, &verified), |(version, verified), tx| Box::pin(async move {
+        c::fixture::enabled_in(tx, version, verified.as_ref()).await.map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+        Ok(Ok(()))
+    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
     runtime.close().await;
 }
 
