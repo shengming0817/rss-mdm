@@ -397,7 +397,7 @@ class Graph:
                     ):
                         raise ValueError('invalid dependency edge')
                     if key in self.members and dep['pkg'] in self.members:
-                        self.reverse[dep['pkg']].add(key)
+                        self.reverse[dep['pkg']].add((key, any(k['kind'] != 'dev' for k in dep['dep_kinds'])))
         except (KeyError, TypeError, ValueError) as error:
             raise SelectionError('metadata-invalid') from error
 
@@ -406,19 +406,19 @@ class Graph:
         return next((k for p, k in self.roots if candidate == p or p in candidate.parents), None)
 
     def closure(self, keys, *, reverse=False):
-        selected, pending = set(keys), list(keys)
+        selected, pending, tests = set(keys), list(keys), set()
         while pending:
             key = pending.pop()
-            deps = (
-                self.reverse.get(key, ())
-                if reverse
-                else (d['pkg'] for d in self.nodes[key]['deps'] if any(k['kind'] != 'dev' for k in d['dep_kinds']))
-            )
-            for dep in deps:
-                if dep not in selected:
+            edges = (self.reverse.get(key, ()) if reverse else
+                     ((d['pkg'], True) for d in self.nodes[key]['deps']
+                      if any(k['kind'] != 'dev' for k in d['dep_kinds'])))
+            for dep, production in edges:
+                if not production:
+                    tests.add(dep)
+                elif dep not in selected:
                     selected.add(dep)
                     pending.append(dep)
-        return selected
+        return selected | tests
 
     def names(self, keys):
         return {self.packages[k]['name'] for k in keys if k in self.members}
@@ -559,6 +559,7 @@ def analyze_dependencies(oldroot, root, changes, graphs):
     }
     for g in graphs:
         seeds = set(g.members) if cargo_common else set()
+        test_seeds = set()
         for key, manifest in g.manifests.items():
             fields = manifest_fields.get(manifest, ())
             behavioral = any(
@@ -603,10 +604,10 @@ def analyze_dependencies(oldroot, root, changes, graphs):
                     )
                     if not changed_declaration and not resolved_change:
                         continue
-                    seeds.add(key)
+                    (test_seeds if kind == 'dev' else seeds).add(key)
                     reasons.append(dict(kind='tool', input=manifest + ':' + kind + ':' + alias,
                                         modules=[], detail='dependency'))
-        packages.update(g.names(g.closure(seeds, reverse=True)))
+        packages.update(g.names(g.closure(seeds, reverse=True) | test_seeds))
     return packages & graphs[1].names(graphs[1].members), reasons
 
 
@@ -778,7 +779,8 @@ def select(root, base):
             if old != new:
                 modules.update(old | new)
                 reasons.append(dict(kind='representative', input=path, modules=sorted(old | new)))
-        cargo_inputs = any(p.startswith('crates/') or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
+        cargo_inputs = any(p.startswith('crates/') or p.endswith('.rs')
+                           or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
         graphs = (metadata(oldroot, 'baseline:' + base), metadata(root)) if cargo_inputs else (None, None)
         checks = ownership_builds(proof_modules, graphs[1] or metadata(root)) if proof_modules else []
         for path in sorted(paths):
@@ -810,8 +812,14 @@ def select(root, base):
                 )
                 if graph:
                     owner = graph.owner(path)
+                    # A test carrier/helper is not part of its package's exported library.
+                    relative = str(PurePosixPath(path).relative_to(PurePosixPath(graph.manifests[owner]).parent)) if owner else path
+                    test_input = relative.startswith('tests/')
+                    if test_input:
+                        packages.update(module['build']['package'] for name, module in registry.modules.items()
+                                        if name in consumers and module['build'])
                     if owner:
-                        packages.update(graph.names(graph.closure({owner}, reverse=True)))
+                        packages.update(graph.names({owner} if test_input else graph.closure({owner}, reverse=True)))
                         if path in after.tool_only:
                             checks.extend(ownership_builds(
                                 [module for module in after.modules.values() if module['build']
