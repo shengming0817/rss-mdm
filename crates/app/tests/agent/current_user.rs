@@ -146,14 +146,14 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(hidden.0==StatusCode::OK && hidden.1["statistics"]["deviceViewCount"]==0);
+        ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.len()==0));
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(visible.0==StatusCode::OK && visible.1["statistics"]["deviceViewCount"]==1,"visible {visible:?}");
+        ensure!(visible.0==StatusCode::OK && visible.1["items"].as_array().is_some_and(|items|items.len()==1),"visible {visible:?}");
         let projected=visible.1["items"][0]["endpoints"][0]["currentUser"].clone();
         ensure!(projected["state"]=="active" && projected["user"]["principalId"]==f.author_id);
         let detail=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
@@ -164,7 +164,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         // A stale binding cannot borrow the validity of the current registration generation.
         crate::test_support::process::pg(&format!("UPDATE mdm_access.current_users SET generation=generation+1 WHERE tenant_id='{}' AND device='{}'",case_tenant(),device))?;
         let invalid=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(invalid.0==StatusCode::OK && invalid.1["statistics"]["deviceViewCount"]==0);
+        ensure!(invalid.0==StatusCode::OK && invalid.1["items"].as_array().is_some_and(|items|items.len()==0));
         let state=call(&f,Method::GET,None,true,false).await?;
         ensure!(state.0==StatusCode::OK && state.1["state"]=="invalidated");
         f.author=agent_user.clone();

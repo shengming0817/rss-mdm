@@ -181,6 +181,12 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         measured.rows.load(Relaxed),
         measured.bytes.load(Relaxed)
     );
+    println!(
+        "QUERY-05 execution calls={} rows={} payload_bytes={}",
+        measured.calls.load(Relaxed),
+        measured.rows.load(Relaxed),
+        measured.bytes.load(Relaxed)
+    );
     let cursor = response.1["nextCursor"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("mixed continuation"))?;
@@ -214,6 +220,10 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     ensure!(
         measured.calls.load(Relaxed) == 0,
         "unrequested evidence reached a provider read"
+    );
+    println!(
+        "QUERY-05 execution metadata-only provider_calls={}",
+        measured.calls.load(Relaxed)
     );
     let oversized = fixture
         .author

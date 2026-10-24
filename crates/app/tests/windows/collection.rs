@@ -508,6 +508,10 @@ async fn template_flow(
     );
     // Restore the durable pre-settlement state while retaining the already sealed response.
     // Recovery happens after its original execution timeout, as after worker downtime.
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
     host.app

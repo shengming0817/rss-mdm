@@ -421,6 +421,10 @@ async fn damaged_committed_transcript_fails_closed_without_rewriting_evidence() 
     )
     .await?;
     let mut pg = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let changed = sqlx::query("UPDATE mdm_access.management_messages SET request=set_byte(request,0,get_byte(request,0)#1) WHERE tenant_id=$1::uuid AND registration=$2 AND session_id='1901' AND message_id=1")
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?;
     ensure!(changed.rows_affected() == 1);
@@ -567,8 +571,12 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
         state.1
     );
 
-    // Retired response recovery survives temporary transcript pruning.
-    let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
+    // Retired response recovery survives temporary transcript pruning. Every pool
+    // connection must carry the tenant required by product revision triggers.
+    let pool = sqlx::PgPool::connect_with(
+        options("postgres")?.options([("rss.tenant_id", case_tenant())]),
+    )
+    .await?;
     sqlx::query(
         "DELETE FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2",
     )
@@ -785,6 +793,10 @@ async fn admission_pause_blocks_first_authentication_but_preserves_authenticated
         recorded,
         "authenticated management must record communication"
     );
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     sqlx::query("UPDATE mdm_access.registrations SET last_communication_received_at=to_timestamp(1) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(registration).execute(&mut pg).await?;
 

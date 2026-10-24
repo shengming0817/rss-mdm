@@ -237,8 +237,8 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(people.iter().any(|p|p["source"]["kind"]=="identity_local" && p["status"]=="available" && p["displayName"]=="Local Device Owner"));
     ensure!(people.iter().any(|p|p["source"]["provider"]==second_id && p["status"]=="available" && p["username"]=="bob"),"missing linked source: {people:?}");
     for name in ["Local%20Device%20Owner","bob%20Fixture"] {
-        let found=admin.call(&router,Method::GET,&format!("/api/v1/device-views?filter=search=icontains={name}"),None).await?;
-        ensure!(found.0==StatusCode::OK && found.1["statistics"]["deviceViewCount"]==1,"a visible source name was not searchable");
+        let found=admin.call(&router,Method::GET,&format!("/api/v1/device-views?filter=search=icontains=%22{name}%22"),None).await?;
+        ensure!(found.0==StatusCode::OK && found.1["items"].as_array().is_some_and(|items|items.len()==1),"a visible source name was not searchable: {found:?}");
     }
     ensure!(admin.call(&router,Method::POST,&second_path,Some(json!({"expectedVersion":second_enabled.1["version"],"enabled":false}))).await?.0==StatusCode::OK);
     let device_view=admin.call(&router,Method::GET,&device_path,None).await?;
