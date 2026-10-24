@@ -26,6 +26,7 @@ OUT = ROOT / "artifacts" / "local-ci"
 
 LOCAL_PACKAGES = {
     "rss-mdm-http-contract": "crates/http-contract",
+    "rss-mdm-query-postgres": "crates/query-postgres",
     "rss-mdm-query": "crates/query",
     "rss-mdm-mail-service": "crates/mail-service",
     "rss-mdm-telemetry-service": "crates/telemetry-service",
@@ -276,7 +277,7 @@ def verify_capability_boundaries(data):
         if owner in {'certificate', 'apple-mdm'}:
             invalid |= {name for name in dependencies if name.startswith('rss-mdm-')}
         if owner in {'query', 'http-contract'}:
-            invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-'))}
+            invalid |= {name for name in dependencies if name.startswith(('rss-mdm-', 'rss-identity-')) and not (owner == 'http-contract' and name == 'rss-mdm-query')}
         require(not invalid, f'{owner}: forbidden production dependencies: {sorted(invalid)}')
 
 

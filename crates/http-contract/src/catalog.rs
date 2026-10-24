@@ -29,7 +29,7 @@ pub static AGENT_CONFIGURATIONS: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "agent.configurations",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::AGENT_CONFIGURATIONS),
 };
 pub static AGENT_CONFIGURATION_OPERATIONS: Resource = Resource {
@@ -77,7 +77,7 @@ pub static AGENT_PACKAGES: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "software.catalog",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::AGENT_PACKAGES),
 };
 pub static AGENT_REGISTRATION_RECOVERY: Resource = Resource {
@@ -245,7 +245,7 @@ pub static COMPLIANCE_RULES: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "compliance.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::COMPLIANCE_RULES),
 };
 pub static CONTENT_MAINTENANCE: Resource = Resource {
@@ -365,7 +365,7 @@ pub static GROUPS: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "planning.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::GROUPS),
 };
 pub static HEALTH: Resource = Resource {
@@ -397,7 +397,7 @@ pub static POLICIES: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "planning.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::POLICIES),
 };
 pub static PROTOCOL_AGENT_CHANNEL: Resource = Resource {
@@ -445,7 +445,7 @@ pub static PUBLICATIONS: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "software.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::PUBLICATIONS),
 };
 pub static PUBLICATION_TARGETS: Resource = Resource {
@@ -453,7 +453,7 @@ pub static PUBLICATION_TARGETS: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "software.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::PUBLICATION_TARGETS),
 };
 pub static REGISTRATION_CHANNELS: Resource = Resource {
@@ -501,7 +501,7 @@ pub static SAVED_QUERIES: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "assets.queries",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::SAVED_QUERIES),
 };
 pub static SCOPES: Resource = Resource {
@@ -509,7 +509,7 @@ pub static SCOPES: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "planning.http",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::SCOPES),
 };
 pub static SELF_ENROLLMENTS: Resource = Resource {
@@ -541,7 +541,7 @@ pub static SOFTWARE_SOURCES: Resource = Resource {
     category: Category::Versioned,
     owner: "management-http",
     proof: "software.catalog",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::SOFTWARE_SOURCES),
 };
 pub static SOFTWARE_VERSIONS: Resource = Resource {
@@ -549,7 +549,7 @@ pub static SOFTWARE_VERSIONS: Resource = Resource {
     category: Category::Versioned,
     owner: "management-http",
     proof: "software.catalog",
-    query: QueryPolicy::Pending(2902),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::SOFTWARE_VERSIONS),
 };
 pub static STORAGE_CONNECTIONS: Resource = Resource {
@@ -597,7 +597,7 @@ pub static USER_ATTRIBUTES: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "settings.user_profiles",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::USER_ATTRIBUTES),
 };
 pub static USER_ATTRIBUTE_OPERATIONS: Resource = Resource {
@@ -798,18 +798,6 @@ pub static GAPS: &[crate::Gap] = &[
         reason: "account configuration is embedded in organization List",
     },
     crate::Gap {
-        resource: "agent_configurations",
-        operation: crate::Operation::List,
-        issue: 2902,
-        reason: "signed configuration collection has no management List",
-    },
-    crate::Gap {
-        resource: "agent_packages",
-        operation: crate::Operation::Get,
-        issue: 2902,
-        reason: "public package metadata is not a management Get",
-    },
-    crate::Gap {
         resource: "apple_account_configuration",
         operation: crate::Operation::Get,
         issue: 2906,
@@ -832,18 +820,6 @@ pub static GAPS: &[crate::Gap] = &[
         operation: crate::Operation::Get,
         issue: 2906,
         reason: "entry metadata is currently returned by List and history",
-    },
-    crate::Gap {
-        resource: "compliance_rules",
-        operation: crate::Operation::Delete,
-        issue: 2902,
-        reason: "disable is not rule deletion",
-    },
-    crate::Gap {
-        resource: "software_versions",
-        operation: crate::Operation::List,
-        issue: 2902,
-        reason: "version listing belongs to the Resource aggregate read",
     },
     crate::Gap {
         resource: "user_groups",

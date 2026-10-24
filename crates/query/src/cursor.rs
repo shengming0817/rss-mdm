@@ -18,8 +18,12 @@ struct Payload<T> {
     context: String,
     position: T,
 }
+#[derive(Clone)]
 pub struct CursorCodec(ring::hmac::Key);
 impl CursorCodec {
+    pub fn from_key(key: ring::hmac::Key) -> Self {
+        Self(key)
+    }
     pub fn new(secret: &[u8]) -> Result<Self> {
         if secret.len() != 32 {
             return Err(Error::Invalid);

@@ -1,0 +1,12 @@
+[package]
+name = "rss-mdm-query-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+[dependencies]
+rss-mdm-query.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+[lints]
+workspace = true

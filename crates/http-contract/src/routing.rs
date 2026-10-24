@@ -1,6 +1,10 @@
 use crate::{Endpoint, Operation, Resource};
 type Ownership = (&'static Resource, &'static [Operation]);
-type MethodBinding = (&'static str, Option<Ownership>);
+type MethodBinding = (
+    &'static str,
+    Option<Ownership>,
+    Option<&'static rss_mdm_query::directory::Schema>,
+);
 #[derive(Clone)]
 pub struct MethodRouter<S = ()> {
     pub(crate) inner: axum::routing::MethodRouter<S>,
@@ -17,13 +21,24 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         );
         self
     }
+    /// Bind a List method to the same field authority consumed by its handler and repository.
+    pub fn queried(mut self, schema: &'static rss_mdm_query::directory::Schema) -> Self {
+        let last = self.bindings.last_mut().expect("method exists");
+        let (resource, operations) = last.1.expect("query follows ownership");
+        assert!(
+            operations.contains(&Operation::List) && resource.id == schema.id,
+            "query owner mismatch"
+        );
+        assert!(last.2.replace(schema).is_none(), "duplicate query owner");
+        self
+    }
     pub fn patch<H, T>(mut self, handler: H) -> Self
     where
         H: axum::handler::Handler<T, S>,
         T: 'static,
     {
         self.inner = self.inner.patch(handler);
-        self.bindings.push(("PATCH", None));
+        self.bindings.push(("PATCH", None, None));
         self
     }
     pub fn with_state<S2>(self, state: S) -> MethodRouter<S2> {
@@ -35,7 +50,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
     pub(crate) fn endpoints(&self, path: &str) -> Vec<Endpoint> {
         self.bindings
             .iter()
-            .map(|(method, binding)| {
+            .map(|(method, binding, query)| {
                 let (resource, operations) =
                     binding.expect("every method requires a resource and semantic operation");
                 Endpoint {
@@ -43,6 +58,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
                     method,
                     resource,
                     operations,
+                    query: *query,
                 }
             })
             .collect()
@@ -53,7 +69,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         T: 'static,
     {
         self.inner = self.inner.get(handler);
-        self.bindings.push(("GET", None));
+        self.bindings.push(("GET", None, None));
         self
     }
     pub fn post<H, T>(mut self, handler: H) -> Self
@@ -62,7 +78,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         T: 'static,
     {
         self.inner = self.inner.post(handler);
-        self.bindings.push(("POST", None));
+        self.bindings.push(("POST", None, None));
         self
     }
     pub fn put<H, T>(mut self, handler: H) -> Self
@@ -71,7 +87,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         T: 'static,
     {
         self.inner = self.inner.put(handler);
-        self.bindings.push(("PUT", None));
+        self.bindings.push(("PUT", None, None));
         self
     }
     pub fn delete<H, T>(mut self, handler: H) -> Self
@@ -80,7 +96,7 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
         T: 'static,
     {
         self.inner = self.inner.delete(handler);
-        self.bindings.push(("DELETE", None));
+        self.bindings.push(("DELETE", None, None));
         self
     }
 
@@ -127,7 +143,7 @@ where
 {
     MethodRouter {
         inner: axum::routing::get(handler),
-        bindings: vec![("GET", None)],
+        bindings: vec![("GET", None, None)],
     }
 }
 pub fn post<H, T, S>(handler: H) -> MethodRouter<S>
@@ -138,7 +154,7 @@ where
 {
     MethodRouter {
         inner: axum::routing::post(handler),
-        bindings: vec![("POST", None)],
+        bindings: vec![("POST", None, None)],
     }
 }
 pub fn put<H, T, S>(handler: H) -> MethodRouter<S>
@@ -149,7 +165,7 @@ where
 {
     MethodRouter {
         inner: axum::routing::put(handler),
-        bindings: vec![("PUT", None)],
+        bindings: vec![("PUT", None, None)],
     }
 }
 pub fn delete<H, T, S>(handler: H) -> MethodRouter<S>
@@ -160,6 +176,6 @@ where
 {
     MethodRouter {
         inner: axum::routing::delete(handler),
-        bindings: vec![("DELETE", None)],
+        bindings: vec![("DELETE", None, None)],
     }
 }

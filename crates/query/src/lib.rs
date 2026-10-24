@@ -1,5 +1,6 @@
 //! Product query syntax and bounded continuation tokens; no HTTP, SQL or authority owner.
 pub mod cursor;
+pub mod directory;
 mod parameters;
 mod parser;
 pub use parameters::Parameters;
@@ -25,6 +26,7 @@ pub enum Operator {
     Ge,
     In,
     Out,
+    Icontains,
 }
 impl Operator {
     pub fn range(self) -> bool {

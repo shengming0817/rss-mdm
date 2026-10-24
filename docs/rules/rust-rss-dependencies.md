@@ -33,7 +33,9 @@ schema/Git/制品摘要与业务 revision、执行版本各自独立。身份、
 ## 产品查询与 HTTP 能力契约
 
 `rss-mdm-query` 只持有有界语法、排序／投影值类型、页和游标编码；不依赖 Axum、PG、Identity 或业务服务。
-Resource 的字段目录和类型绑定归 Resource，SQL 归 resource-postgres，当前授权和查询绑定归应用服务。
+各资源的字段目录、类型绑定和 SQL 映射归领域 owner，当前授权与查询绑定归应用服务。
+`rss-mdm-query-postgres` 仅适配已校验字段的绑定参数、过滤和 keyset SQL；不持有表、连接、事务或 CRUD。
+`http-contract` 读取 `query` 的字段描述，真实 List 注册必须绑定执行所用的同一目录声明。
 `rss-mdm-http-contract` 仅供 App 与 ingress 持有原生 Axum Router 的方法归属和组合描述；不负责匹配、认证、
 中间件策略、业务执行或持久化。应用服务和领域不得反向依赖该包。
 资源类别、实际注册、最终挂载及行为证明分别校验；存量迁移项只能缩小，完成后删除，不能用类别或任意开关
