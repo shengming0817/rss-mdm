@@ -544,7 +544,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let payload=base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(token)?;
         let text=String::from_utf8_lossy(&payload[..payload.len()-32]);
         assert!(!text.contains(hidden)&&!text.contains(admin.principal_id()));
-        let mut next =parameters(1,None,Some(&token));
+        let mut next =parameters(1,None,Some(token));
         sqlx::query("UPDATE mdm.inventory SET value=$3,last_known=$3 WHERE tenant_id=$1::uuid AND registration=$2 AND field='device.serial_number'").bind(case_a()).bind(secret.to_string()).bind(serde_json::to_string(&json!({"kind":"string","value":"hidden-changed"}))?).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let refreshed=s.views(&admin,&query(1),&people(&authority)?).await?;

@@ -67,7 +67,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         sqlx::query("INSERT INTO identity_authority.memberships(tenant_id,principal_id) SELECT tenant_id,principal_id FROM identity_authority.accounts WHERE tenant_id=$1::uuid ON CONFLICT DO NOTHING")
             .bind(case_a()).execute(&mut pg).await?;
         let page = ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&filter=search=icontains={login}"),None).await?;
-        ensure!(page["items"].as_array().context("page")?.len()==1 && page["items"][0]["endpoints"][0]["id"]==last);
+        ensure!(page["items"].as_array().context("page")?.len()==1 && page["items"][0]["endpoints"][0]["id"]==last,"authorized personnel page: {page}");
         let display = &page["items"][0]["endpoints"][0]["registrationUser"]["display"];
         ensure!(display["login"]==login && display["profiles"]==json!([]), "never-logged-in account lost its login");
         let mut person = Browser::default();

@@ -7,7 +7,20 @@ use serde_json::json;
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.windows"]
 async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()> {
+    use crate::test_support::query_reads::QueryReadCounts;
     use crate::test_support::{agent_execution as agent, identity};
+    use std::sync::atomic::Ordering::Relaxed;
+    use tracing_subscriber::layer::SubscriberExt;
+    // Provider work runs in owned runtime tasks, so a future-local subscriber
+    // cannot see it. T2 executes this case in its own nextest process.
+    let measured = QueryReadCounts::new("execution.");
+    let unselected_runs = QueryReadCounts::new("execution.runs");
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(measured.clone())
+            .with(unselected_runs.clone()),
+    )?;
+
     let mut base: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     // The real Windows Host below owns this case's Windows endpoint and trust.
@@ -115,10 +128,6 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         };
         ensure!(kinds == expected, "mixed cursor lost an owner: {kinds:?}");
     }
-    use crate::test_support::query_reads::QueryReadCounts;
-    use std::sync::atomic::Ordering::Relaxed;
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::layer::SubscriberExt;
     // An unrelated protected input larger than the entire hydration budget must
     // never be transferred or decrypted when selecting another command.
     let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
@@ -149,16 +158,12 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     crate::test_support::process::pg(&format!(
         "UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{output}}',jsonb_build_object('canary',repeat('off-page-',100000))) WHERE id='{id}'"
     ))?;
-    let unselected_runs = QueryReadCounts::new("execution.runs");
-    let measured = QueryReadCounts::new("execution.");
-    let observer = tracing_subscriber::registry()
-        .with(measured.clone())
-        .with(unselected_runs.clone());
+    measured.reset();
+    unselected_runs.reset();
     let selected = format!("/api/v1/operations?limit=1&filter=id=={id}&sort=-id,-kind");
     let response = fixture
         .author
         .call(&fixture.router, Method::GET, &selected, None)
-        .with_subscriber(observer)
         .await?;
     ensure!(
         response.0 == StatusCode::OK,
@@ -171,7 +176,10 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     );
     ensure!(
         measured.bytes.load(Relaxed) > 0 && measured.bytes.load(Relaxed) < 65536,
-        "off-page protected input was read"
+        "provider read budget: calls={} rows={} bytes={}",
+        measured.calls.load(Relaxed),
+        measured.rows.load(Relaxed),
+        measured.bytes.load(Relaxed)
     );
     let cursor = response.1["nextCursor"]
         .as_str()
@@ -189,8 +197,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             == StatusCode::OK,
         "no-op recovery invalidated a cursor"
     );
-    let skipped = QueryReadCounts::new("execution.");
-    let observer = tracing_subscriber::registry().with(skipped.clone());
+    measured.reset();
     let response = fixture
         .author
         .call(
@@ -199,14 +206,13 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             "/api/v1/operations?filter=kind==command&fields=id,kind&limit=100",
             None,
         )
-        .with_subscriber(observer)
         .await?;
     ensure!(
         response.0 == StatusCode::OK,
         "metadata projection read protected payload: {response:?}"
     );
     ensure!(
-        skipped.calls.load(Relaxed) == 0,
+        measured.calls.load(Relaxed) == 0,
         "unrequested evidence reached a provider read"
     );
     let oversized = fixture

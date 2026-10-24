@@ -7,6 +7,12 @@ pub(crate) struct QueryReadCounts {
     pub bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 impl QueryReadCounts {
+    pub fn reset(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.calls.store(0, Relaxed);
+        self.rows.store(0, Relaxed);
+        self.bytes.store(0, Relaxed);
+    }
     pub fn new(prefix: &'static str) -> Self {
         Self {
             prefix,

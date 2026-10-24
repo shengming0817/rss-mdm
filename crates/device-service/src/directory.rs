@@ -49,7 +49,16 @@ fn permission_scope(
     proof: &AuthorizedPrincipal,
     permission: Permission,
 ) -> Result<Option<Vec<String>>> {
-    match snapshot.devices_for(proof, permission) {
+    // Tenant capabilities (notably InventorySensitiveRead) apply only inside
+    // the independently authorized device candidates. devices_for rejects these
+    // capabilities; treating that rejection as denial would hide permitted data.
+    // This adapter does not introduce device-scoped sensitive grants.
+    let scope = if permission.device() {
+        snapshot.devices_for(proof, permission)
+    } else {
+        snapshot.require(proof, permission, None).map(|()| None)
+    };
+    match scope {
         Ok(scope) => Ok(scope.map(|s| s.into_iter().collect())),
         Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {
             Ok(Some(Vec::new()))
