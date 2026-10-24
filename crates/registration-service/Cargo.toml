@@ -30,7 +30,7 @@ rss-mdm-audit-integration.workspace = true
 rss-audit-postgres.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

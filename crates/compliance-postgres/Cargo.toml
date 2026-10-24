@@ -10,7 +10,7 @@ rss-mdm-query-postgres.workspace = true
 rss-mdm-query.workspace = true
 rss-mdm-compliance.workspace = true
 rss-request-context.workspace = true
-sqlx = { workspace = true, features = ["uuid"] }
+sqlx = { workspace = true, features = ["uuid", "json"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
