@@ -75,7 +75,7 @@ class DependencyPolicy(unittest.TestCase):
         registry = 'registry+https://github.com/rust-lang/crates.io-index'
         identity_url,revision = ci.identity_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
         identity_source = f'git+{identity_url}?rev={revision}#{revision}'
-        extra = [{'id':name,'name':name,'version':version,'source':registry} for name,version in [('openidconnect','4.0.1'),('rsa','0.9.10')]]
+        extra = []
         extra += [{'id':name,'name':name,'source':identity_source} for name in ci.IDENTITY_PACKAGES]
         audit_url, revision = ci.audit_pin(ci.tomllib.loads((root / 'Cargo.toml').read_text()))
         audit_source = f'git+{audit_url}?rev={revision}#{revision}'
@@ -83,7 +83,7 @@ class DependencyPolicy(unittest.TestCase):
         data['packages'][-2:-2] = extra
         for node in data['resolve']['nodes']: node['deps'] = []
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')['deps'] = [{'pkg':name} for name in ci.IDENTITY_PACKAGES | {'rss-mdm-audit-integration', 'rss-mdm-backend-postgres-support'}]
-        data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':([{'pkg':'rsa'}] if p['id']=='openidconnect' else [{'pkg':'openidconnect'}] if p['id']=='rss-identity-oidc' else [])} for p in extra]
+        data['resolve']['nodes'][-2:-2] = [{'id':p['id'],'features':[],'deps':[]} for p in extra]
         next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-software-service')['deps'] = [{'pkg':'rss-mdm-audit-integration'}]
         for owner in ['rss-mdm-telemetry-service','rss-mdm-mail-service','rss-mdm-recovery-credentials', 'rss-mdm-device-service', 'rss-mdm-pki-service', 'rss-mdm-certificate-archive-service','rss-mdm-timeline-service', 'rss-mdm-authorization-service', 'rss-mdm-registration-service', 'rss-mdm-inventory-service', 'rss-mdm-flow-service', 'rss-mdm-execution-service', 'rss-mdm-content-service', 'rss-mdm-management-http', 'rss-mdm-agent-channel', 'rss-mdm-windows-channel', 'rss-mdm-apple-channel']:
             next(n for n in data['resolve']['nodes'] if n['id']==owner)['deps'].append({'pkg':'rss-mdm-audit-integration'})
@@ -95,14 +95,15 @@ class DependencyPolicy(unittest.TestCase):
             previous=target['source'];target['source']='path+file:///untrusted'
             with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
             target['source']=previous
-        rsa=next(p for p in data['packages'] if p['name']=='rsa');rsa['version']='0.9.11'
-        with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
-        rsa['version']='0.9.10'
-        app=next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')
-        for injected in ['rsa','rss-mdm-examples']:
-            app['deps'].append({'pkg':injected})
+        for retired in ('rsa','openidconnect'):
+            data['packages'].append({'id':retired,'name':retired,'source':registry})
+            data['resolve']['nodes'].append({'id':retired,'features':[],'deps':[]})
             with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
-            app['deps'].pop()
+            data['packages'].pop();data['resolve']['nodes'].pop()
+        app=next(n for n in data['resolve']['nodes'] if n['id']=='rss-mdm-app')
+        app['deps'].append({'pkg':'rss-mdm-examples'})
+        with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,'normal',pin)
+        app['deps'].pop()
         with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,"integration",pin)
         data["resolve"]["nodes"][-2]["features"] = ["integration"]
         with self.assertRaises(RuntimeError): ci.verify_metadata(data,root,"normal",pin)
@@ -237,7 +238,7 @@ class AdvisoryPolicy(unittest.TestCase):
         manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())
         policy=ci.tomllib.loads((ci.ROOT/'deny.toml').read_text())
         ci.verify_policy(policy,manifest)
-        for ignores in [[],['RUSTSEC-2023-0071','RUSTSEC-9999-0001'],['RUSTSEC-9999-0001']]:
+        for ignores in [['RUSTSEC-2023-0071'],['RUSTSEC-2023-0071','RUSTSEC-9999-0001'],['RUSTSEC-9999-0001']]:
             changed=copy.deepcopy(policy);changed['advisories']['ignore']=ignores
             with self.assertRaises(RuntimeError):ci.verify_policy(changed,manifest)
         changed=copy.deepcopy(policy);changed['sources']['allow-git'].append('https://example.com/unapproved')

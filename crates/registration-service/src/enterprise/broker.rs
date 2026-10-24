@@ -364,6 +364,10 @@ impl Service {
         })
         .await
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Identity or RP authority, browser proof and frozen operation coordinates are independently validated"
+    )]
     pub async fn broker_finish(
         &self,
         id: Uuid,
@@ -534,6 +538,10 @@ impl Service {
         tx.rollback().await.map_err(db)?;
         Ok(reference)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Identity or RP authority, browser proof and frozen operation coordinates are independently validated"
+    )]
     pub async fn broker_consume(
         &self,
         client: &dyn Client,
@@ -676,10 +684,7 @@ impl Service {
             .map_err(|_| Error::Corrupt)?;
         let handoff: Handoff =
             serde_json::from_slice(plain.expose()).map_err(|_| Error::Corrupt)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::Runtime)?
-            .as_secs() as i64;
+        let now = self.now()?;
         if handoff.expires_at <= now || context.expires_at <= now {
             return Err(Error::Conflict);
         }

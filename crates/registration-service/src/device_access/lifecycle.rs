@@ -264,6 +264,10 @@ impl crate::agent::Service {
         .await
         .map(|v| v.1)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Frozen target, external component, attempt and observed outcome are independently fenced"
+    )]
     pub async fn settle_offboarding(
         &self,
         actor: &AuthorizedPrincipal,
@@ -285,6 +289,10 @@ impl crate::agent::Service {
         .await
         .map(|v| v.0)
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Frozen target, external component, attempt and observed outcome are independently fenced"
+    )]
     pub async fn observe_offboarding(
         &self,
         actor: &AuthorizedPrincipal,

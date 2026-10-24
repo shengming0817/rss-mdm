@@ -67,6 +67,10 @@ impl Credentials {
         self.disclose_inner(principal, device, id, version, None, false, audit)
             .await
     }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Exact material version, actor, one-use proof and audit are separate disclosure coordinates"
+    )]
     async fn disclose_inner(
         &self,
         principal: &AuthorizedPrincipal,

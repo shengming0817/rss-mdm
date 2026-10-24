@@ -263,6 +263,23 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Identity,
 }
+async fn device_access_audit(
+    identity: &Identity,
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    enabled: bool,
+) -> Result<Option<Arc<rss_mdm_audit_integration::AuditStore>>, Error> {
+    if !enabled {
+        return Ok(None);
+    }
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
+    Ok(Some(Arc::new(
+        audit_store
+            .on_runtime(identity.runtime.clone(), identity.tenant, &budget.control())
+            .await?,
+    )))
+}
+
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
@@ -493,7 +510,7 @@ pub(crate) async fn from_compiled(
     if !mount_channels {
         fixture_native_mounted(&windows, &apple, &agent_pki, &channels)?;
     }
-    for (enabled, name) in [
+    for (_, name) in [
         (
             windows.is_some(),
             crate::channel_status::ChannelName::Windows,
@@ -503,22 +520,13 @@ pub(crate) async fn from_compiled(
             agent_pki.is_some(),
             crate::channel_status::ChannelName::Agent,
         ),
-    ] {
-        if enabled {
-            channels.mounted(name)?;
-        }
+    ]
+    .into_iter()
+    .filter(|(enabled, _)| *enabled)
+    {
+        channels.mounted(name)?;
     }
-    let access_audit = if agent_pki.is_some() {
-        let budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
-        Some(Arc::new(
-            audit_store
-                .on_runtime(identity.runtime.clone(), identity.tenant, &budget.control())
-                .await?,
-        ))
-    } else {
-        None
-    };
+    let access_audit = device_access_audit(&identity, &audit_store, agent_pki.is_some()).await?;
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {

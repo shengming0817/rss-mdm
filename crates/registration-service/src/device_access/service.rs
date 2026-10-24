@@ -268,6 +268,10 @@ impl Service {
         Ok(out)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Actor, current authorization, one-use proof and audited operation remain distinct capabilities"
+    )]
     pub async fn change_device_access(
         &self,
         actor: &AuthorizedPrincipal,

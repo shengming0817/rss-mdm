@@ -216,7 +216,7 @@ impl Provider {
             || !facts
                 .iat
                 .is_some_and(|v| v >= now.saturating_sub(5) && v <= now.saturating_add(10))
-            || !facts.exp.is_some_and(|v| v > now)
+            || facts.exp.is_none_or(|v| v <= now)
         {
             return Err(Error::Unauthorized);
         }

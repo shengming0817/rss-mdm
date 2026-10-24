@@ -167,10 +167,13 @@ impl Fixture {
                     let audit = access
                         .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?;
+                    #[cfg(feature = "integration")]
                     let enterprise_identity=if !base["identity"]["enterprise"].is_null() {
                         let config=serde_json::from_value(base.clone())?;
                         Some(crate::identity::Identity::for_oidc_fixture(&config,Arc::new(crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?),Default::default(),|r|resources.acquire(r)).await?)
                     }else{None};
+                    #[cfg(not(feature = "integration"))]
+                    let enterprise_identity=None;
                     let (router, execution, plan_runtime, planning, application_resources) =
                         crate::api::application_fixture(
                             serde_json::from_value(base.clone())?,

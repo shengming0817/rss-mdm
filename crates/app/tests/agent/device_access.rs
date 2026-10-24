@@ -875,7 +875,7 @@ async fn binding_settlement_serializes_revocation(wrong_nonce: bool) -> Result<(
                 .bind(case_tenant()).bind(challenge).fetch_one(&mut observer).await?;
             let receipt:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND operation_id=$2)")
                 .bind(case_tenant()).bind(operation).fetch_one(&mut observer).await?;
-            ensure!(consumed == !wrong_nonce && receipt == !wrong_nonce, "settlement {result:?}");
+            ensure!(consumed != wrong_nonce && receipt != wrong_nonce, "settlement {result:?}");
             if wrong_nonce { ensure!(!result.0.is_success(),"wrong nonce accepted"); }
             else { ensure!(result.0==StatusCode::OK,"confirm {result:?}"); }
             let mut guard=observer.begin().await?;
