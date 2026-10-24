@@ -24,6 +24,8 @@ pub(super) struct Source {
     pub configuration: String,
     pub login_configuration: rss_mdm_agent_wire::platform_sso::LoginConfiguration,
     pub profile_uuid: Uuid,
+    pub password_provider_revision: Option<u64>,
+    pub password_provider_fingerprint: Option<String>,
     pub password_identity: Option<rss_mdm_registration_service::enterprise::Subject>,
     pub signing: Option<PublicKey>,
     pub encryption: PublicKey,

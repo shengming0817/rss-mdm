@@ -307,9 +307,13 @@ async fn bootstrap(
     let login_configuration =
         super::deployment::configuration_for_object(c, app.tenant, &object).await?;
     let mut password_identity = None;
+    let mut password_provider_revision = None;
+    let mut password_provider_fingerprint = None;
     if login_configuration.authentication == AuthenticationMode::Password {
         let provider = rt.password_provider(&login_configuration)?;
         provider.admit_on(c, app.tenant).await?;
+        password_provider_revision = Some(provider.configuration.revision);
+        password_provider_fingerprint = Some(provider.fingerprint()?);
         if let Some(binding) = &binding {
             password_identity = Some(
                 rss_mdm_registration_service::enterprise::subject_on(
@@ -327,6 +331,8 @@ async fn bootstrap(
         login_configuration,
         profile_uuid,
         password_identity,
+        password_provider_revision,
+        password_provider_fingerprint,
         id,
         kind: input.kind,
         registration: apple,

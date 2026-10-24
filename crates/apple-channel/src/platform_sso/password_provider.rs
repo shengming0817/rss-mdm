@@ -1,7 +1,6 @@
 //! Fixed Keycloak Direct Access Grant adapter. It neither owns nor issues Identity sessions.
 //! ref: keycloak 26.7.3 ResourceOwnerPasswordCredentialsGrantType.java.
 use crate::{Error, Failure};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
 use rss_mdm_registration_service::enterprise::Subject;
 use serde::Deserialize;
 use std::{net::SocketAddr, time::Duration};
@@ -42,11 +41,28 @@ impl Drop for TokenResponse {
     }
 }
 #[derive(Deserialize)]
-struct Claims {
-    sub: String,
-    azp: String,
-    iat: i64,
-    exp: i64,
+struct Introspection {
+    active: bool,
+    sub: Option<String>,
+    client_id: Option<String>,
+    iss: Option<String>,
+    aud: Option<Audience>,
+    iat: Option<i64>,
+    exp: Option<i64>,
+}
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+impl Audience {
+    fn contains(&self, value: &str) -> bool {
+        match self {
+            Self::One(v) => v == value,
+            Self::Many(v) => v.len() <= 32 && v.iter().any(|s| s == value),
+        }
+    }
 }
 impl Provider {
     pub fn new(
@@ -168,56 +184,39 @@ impl Provider {
         if !token.token_type.eq_ignore_ascii_case("bearer") || token.access_token.len() > 32768 {
             return Err(Error::Unauthorized);
         }
-        let header =
-            jsonwebtoken::decode_header(&token.access_token).map_err(|_| Error::Unauthorized)?;
-        if header.alg != Algorithm::RS256 {
-            return Err(Error::Unauthorized);
-        }
-        let kid = header
-            .kid
-            .as_deref()
-            .filter(|v| !v.is_empty() && v.len() <= 256)
-            .ok_or(Error::Unauthorized)?;
+        // Keycloak owns access-token validation; this adapter consumes its authenticated introspection facts.
         let response = self
             .client
-            .get(format!(
-                "{}/protocol/openid-connect/certs",
+            .post(format!(
+                "{}/protocol/openid-connect/token/introspect",
                 self.configuration.issuer
             ))
+            .form(&[
+                ("token", token.access_token.as_str()),
+                ("token_type_hint", "access_token"),
+                ("client_id", self.configuration.client_id.as_str()),
+                ("client_secret", self.secret.as_str()),
+            ])
             .send()
             .await
             .map_err(|_| unavailable())?;
         if !response.status().is_success() {
             return Err(unavailable());
         }
-        let keys: JwkSet =
-            serde_json::from_slice(&bounded(response, 131072).await?).map_err(|_| unavailable())?;
-        if keys.keys.len() > 32 {
-            return Err(unavailable());
-        }
-        let matching = keys
-            .keys
-            .iter()
-            .filter(|k| k.common.key_id.as_deref() == Some(kid))
-            .collect::<Vec<_>>();
-        if matching.len() != 1 {
-            return Err(Error::Unauthorized);
-        }
-        let key = DecodingKey::from_jwk(matching[0]).map_err(|_| Error::Unauthorized)?;
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[&self.configuration.issuer]);
-        validation.set_audience(&[&self.configuration.client_id]);
-        validation.set_required_spec_claims(&["iss", "aud", "sub", "iat", "exp"]);
-        validation.leeway = 0;
-        validation.validate_nbf = true;
-        let claims = jsonwebtoken::decode::<Claims>(&token.access_token, &key, &validation)
-            .map_err(|_| Error::Unauthorized)?
-            .claims;
-        if claims.sub != subject.subject
-            || claims.azp != self.configuration.client_id
-            || claims.iat < now.saturating_sub(5)
-            || claims.iat > now.saturating_add(10)
-            || claims.exp <= now
+        let facts: Introspection =
+            serde_json::from_slice(&bounded(response, 65536).await?).map_err(|_| unavailable())?;
+        if !facts.active
+            || facts.sub.as_deref() != Some(subject.subject.as_str())
+            || facts.client_id.as_deref() != Some(self.configuration.client_id.as_str())
+            || facts.iss.as_deref() != Some(self.configuration.issuer.as_str())
+            || !facts
+                .aud
+                .as_ref()
+                .is_some_and(|v| v.contains(&self.configuration.client_id))
+            || !facts
+                .iat
+                .is_some_and(|v| v >= now.saturating_sub(5) && v <= now.saturating_add(10))
+            || !facts.exp.is_some_and(|v| v > now)
         {
             return Err(Error::Unauthorized);
         }

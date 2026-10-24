@@ -45,6 +45,7 @@ class RunFixtures:
         self.certificates = Environment(group='t2-certificates')
         self.certificates.root = self.root / 'certificates'
         self.lock = threading.RLock()
+        self.idp_lifecycle = threading.Lock()
         self.case_contexts = {}
         self.identities = {}
         self.identity_locks = {}
@@ -601,6 +602,8 @@ class RunFixtures:
                 with self.lock:
                     env.update(self.s3.environment())
             if 'idp' in module.fixtures:
+                # This owner has one mutable realm/container; serialize its full lifetime.
+                stack.enter_context(self.idp_lifecycle)
                 from enterprise_idp import fixture
                 env.update(stack.enter_context(fixture(root, owner)))
             with self.lock:

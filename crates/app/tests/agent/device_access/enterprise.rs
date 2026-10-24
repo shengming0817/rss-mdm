@@ -319,12 +319,17 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         let mut registration=rss_mdm_agent_wire::enterprise::KeyRegistration{binding_id:binding,binding_generation:1,factor_generation:1,binding_revision:1,public_key:rss_mdm_agent_wire::platform_sso::PublicKey{kty:"EC".into(),crv:"P-256".into(),x:enc(&key[1..33]),y:enc(&key[33..])},signature:String::new()};
         registration.signature=enc(native.sign(&rng,&registration.signing_bytes(Uuid::parse_str(case_tenant())?,Uuid::parse_str(INSTANCE)?,Uuid::parse_str(&f.author_id)?,operation)?).map_err(|_|anyhow::anyhow!("sign"))?.as_ref());
         configure(&mut f,json!({"operationId":operation,"expectedRevision":0,"configuration":{"kind":"windows_key","registration":registration}})).await?;
+        let configurations=f.author.call(&f.router,Method::GET,CONFIG,None).await?;
+        ensure!(configurations.0==StatusCode::OK&&configurations.1["items"].as_array().is_some_and(|items|items.len()==4&&items.iter().any(|v|v["kind"]=="subject")&&items.iter().any(|v|v["kind"]=="windows_key")),"configuration directory {configurations:?}");
         let mut browser=Browser::default();ensure!(browser.call(&f.router,Method::POST,&format!("{ROOT}/browser"),None).await?.0==StatusCode::OK);
         let mut sessions=vec![];
         for (index,rp) in ["rp-a","rp-b"].iter().enumerate(){
             let operation=Uuid::new_v4();let begin=json!({"operationId":operation,"bindingId":binding,"relyingParty":rp});
             let challenge=browser.call(&f.router,Method::POST,ROOT,Some(begin.clone())).await?;ensure!(challenge.0==StatusCode::OK,"challenge {challenge:?}");
             ensure!(browser.call(&f.router,Method::POST,ROOT,Some(begin)).await?==challenge);
+            let status=browser.call(&f.router,Method::GET,&format!("{ROOT}/{operation}"),None).await?;ensure!(status.0==StatusCode::OK&&status.1["phase"]=="awaiting_proof","normal same-origin GET {status:?}");
+            ensure!(!browser.call_headers(&f.router,Method::GET,&format!("{ROOT}/{operation}"),None,Some((&["origin"],&["https://other.example.test"]))).await?.0.is_success());
+
             let challenge:rss_mdm_agent_wire::enterprise::Challenge=serde_json::from_value(challenge.1)?;
             let signature=enc(native.sign(&rng,&challenge.signing_payload).map_err(|_|anyhow::anyhow!("sign"))?.as_ref());
             let completed=browser.call(&f.router,Method::POST,&format!("{ROOT}/complete"),Some(json!({"operationId":operation,"challengeId":challenge.challenge_id,"nonce":challenge.nonce,"proof":{"signature":signature,"accessToken":null}}))).await?;

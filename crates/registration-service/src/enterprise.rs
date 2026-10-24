@@ -89,6 +89,12 @@ pub enum Record {
     Subject(Subject),
     WindowsKey(WindowsSource),
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigurationPage {
+    pub items: Vec<Record>,
+    pub next_cursor: Option<String>,
+}
 fn text(s: &str) -> bool {
     !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control)
 }
@@ -220,22 +226,36 @@ impl Service {
         &self,
         actor: &AuthorizedPrincipal,
         after: Option<&str>,
-    ) -> Result<Vec<RelyingParty>, Error> {
+    ) -> Result<ConfigurationPage, Error> {
+        use sqlx::Row;
         if actor.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
+        if after.is_some_and(|v| v.len() > 256 || v.chars().any(char::is_control)) {
+            return Err(Error::Malformed);
+        }
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         authorize(&mut tx, actor, Permission::EnterpriseApplicationsRead).await?;
-        let rows:Vec<serde_json::Value>=sqlx::query_scalar("SELECT document FROM mdm_enterprise.relying_parties WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR id>$2) ORDER BY id LIMIT 100")
+        let rows=sqlx::query("SELECT cursor,record FROM (SELECT 'rp:'||id AS cursor,jsonb_build_object('kind','relying_party','value',document) AS record FROM mdm_enterprise.relying_parties WHERE tenant_id=$1::uuid UNION ALL SELECT 'subject:'||provider::text||':'||principal::text,jsonb_build_object('kind','subject','value',document) FROM mdm_enterprise.subjects WHERE tenant_id=$1::uuid UNION ALL SELECT 'windows:'||binding::text,jsonb_build_object('kind','windows_key','value',document) FROM mdm_enterprise.windows_sources WHERE tenant_id=$1::uuid) configurations WHERE $2::text IS NULL OR cursor>$2 ORDER BY cursor LIMIT 101")
             .bind(actor.tenant_id()).bind(after).fetch_all(&mut *tx).await.map_err(db)?;
-        let out = rows
+        let next_cursor = if rows.len() > 100 {
+            Some(rows[99].try_get::<String, _>("cursor").map_err(db)?)
+        } else {
+            None
+        };
+        let items = rows
             .into_iter()
-            .map(|v| serde_json::from_value(v).map_err(|_| Error::Corrupt))
-            .collect::<Result<Vec<_>, _>>()?;
+            .take(100)
+            .map(|row| {
+                serde_json::from_value(row.try_get("record").map_err(db)?)
+                    .map_err(|_| Error::Corrupt)
+            })
+            .collect::<Result<Vec<Record>, Error>>()?;
         tx.rollback().await.map_err(db)?;
-        Ok(out)
+        actor.check_live()?;
+        Ok(ConfigurationPage { items, next_cursor })
     }
-    /// The deployment fingerprint is composition data, never accepted from HTTP configuration.
+
     pub async fn change_enterprise_configuration(
         &self,
         actor: &AuthorizedPrincipal,

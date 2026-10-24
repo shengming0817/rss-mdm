@@ -98,6 +98,50 @@ impl Fixture {
             ..Default::default()
         }
     }
+    pub(super) async fn revision_fence(&self, f: &super::Fixture, source: Uuid) -> Result<()> {
+        let mut settings = self.configuration()?.password_providers.remove(0);
+        settings.configuration.revision += 1;
+        let provider = rss_mdm_apple_channel::platform_sso::password_provider::Provider::new(
+            settings.configuration,
+            zeroize::Zeroizing::new("fixture-password-client".into()),
+            Some(&std::fs::read(&self.ca)?),
+        )?;
+        let mut c =
+            sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                .await?;
+        let mut tx = c.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let config = serde_json::to_value(
+            f.ade
+                .platform_sso
+                .as_ref()
+                .context("runtime")?
+                .qualification_configuration()?,
+        )?;
+        let query = "SELECT count(*) FROM mdm_apple.platform_session_qualifications($1,$2,floor(extract(epoch FROM statement_timestamp()))::bigint)";
+        let before: i64 = sqlx::query_scalar(query)
+            .bind(source)
+            .bind(&config)
+            .fetch_one(&mut *tx)
+            .await?;
+        ensure!(before == 1);
+        provider.admit_on(&mut tx, f.app.identity.tenant).await?;
+        let after: i64 = sqlx::query_scalar(query)
+            .bind(source)
+            .bind(&config)
+            .fetch_one(&mut *tx)
+            .await?;
+        ensure!(
+            after == 0,
+            "old process configuration survived a provider revision change"
+        );
+        tx.rollback().await?;
+        c.close().await?;
+        Ok(())
+    }
     pub(super) async fn mapping(&self, binding: Uuid) -> Result<()> {
         // Stable pre-provisioned mapping. Enterprise management CAS/step-up is covered by its HTTP test.
         let mut c =

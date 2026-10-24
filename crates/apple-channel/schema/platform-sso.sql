@@ -26,8 +26,7 @@ CREATE TABLE mdm_apple.psso_challenges (
  purpose text NOT NULL CHECK(purpose IN('device','user','login')),
  nonce_digest bytea NOT NULL CHECK(octet_length(nonce_digest)=32),
  expires_at bigint NOT NULL,
- context jsonb NOT NULL FOREIGN KEY(tenant_id,provider) REFERENCES mdm_apple.psso_password_providers(tenant_id,id),
- CHECK(octet_length(context::text)<=16384),
+ context jsonb NOT NULL CHECK(octet_length(context::text)<=16384),
  consumed boolean NOT NULL DEFAULT false,
  PRIMARY KEY(tenant_id,id)
 );

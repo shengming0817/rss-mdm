@@ -74,9 +74,18 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
         std::time::Duration::from_secs(10),
     )
 }
-fn browser(s: &Services, h: &HeaderMap, create: bool) -> Result<Secret, Error> {
-    if h.get_all("origin").iter().count() != 1
-        || h.get("origin").and_then(|v| v.to_str().ok()) != Some(s.origin.as_str())
+fn browser(
+    s: &Services,
+    h: &HeaderMap,
+    create: bool,
+    require_origin: bool,
+) -> Result<Secret, Error> {
+    let origins = h.get_all("origin").iter().count();
+    if (require_origin && origins != 1)
+        || origins > 1
+        || (origins == 1
+            && h.get("origin").and_then(|v| v.to_str().ok()) != Some(s.origin.as_str()))
+        || h.get("sec-fetch-site").is_some_and(|v| v != "same-origin")
         || h.contains_key("authorization")
         || h.contains_key("x-api-key")
     {
@@ -133,7 +142,7 @@ async fn begin(
     h: HeaderMap,
     Json(input): Json<wire::Begin>,
 ) -> Result<Response, Error> {
-    let browser = browser(&s, &h, false)?;
+    let browser = browser(&s, &h, false, true)?;
     let client = client(&s, &input.relying_party)?;
     let (context, created) = s
         .registration
@@ -185,7 +194,7 @@ async fn complete(
     h: HeaderMap,
     Json(input): Json<wire::Complete>,
 ) -> Result<Json<wire::Status>, Error> {
-    let browser = browser(&s, &h, false)?;
+    let browser = browser(&s, &h, false, true)?;
     let context = s
         .registration
         .broker_claim(&input, &browser, s.execution.as_ref(), &a)
@@ -263,7 +272,7 @@ async fn status(
     Path(id): Path<Uuid>,
     h: HeaderMap,
 ) -> Result<Json<wire::Status>, Error> {
-    let browser = browser(&s, &h, false)?;
+    let browser = browser(&s, &h, false, false)?;
     Ok(Json(
         s.registration
             .broker_status(id, &browser, s.execution.as_ref())
@@ -276,7 +285,7 @@ async fn cancel(
     Extension(a): Extension<RequestAudit>,
     h: HeaderMap,
 ) -> Result<Json<serde_json::Value>, Error> {
-    let browser = browser(&s, &h, false)?;
+    let browser = browser(&s, &h, false, true)?;
     s.registration.broker_cancel(id, &browser, &a).await?;
     Ok(Json(serde_json::json!({"cancelled":true})))
 }
@@ -356,7 +365,7 @@ async fn current(
 }
 
 async fn initialize(State(s): State<Arc<Services>>, h: HeaderMap) -> Result<Response, Error> {
-    let browser = browser(&s, &h, true)?;
+    let browser = browser(&s, &h, true, true)?;
     let mut response = Json(serde_json::json!({"ready":true})).into_response();
     response.headers_mut().insert(
         "set-cookie",

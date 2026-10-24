@@ -777,12 +777,9 @@ async fn step_up_is_atomic_with_receipts_and_concurrent_duplicates() -> Result<(
         let path = format!("/api/v1/devices/{}/device-access/bindings/{id}", execution::case_device_id());
         let input = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"macos","generatedUid":Uuid::new_v4()}}}});
         ensure!(f.access_authorize(&path, Some(input.clone())).await?.is_none());
-        let mut first = f.author.clone();
-        let mut duplicate = first.clone();
-        let (a,b) = tokio::join!(
-            first.call(&f.router,Method::PUT,&path,Some(input.clone())),
-            duplicate.call(&f.router,Method::PUT,&path,Some(input.clone())));
-        let a=a?;let b=b?;
+        let first = f.author.clone();
+        let duplicate = first.clone();
+        let (a,b)=concurrent_access_calls(&f.router,first,duplicate,Method::PUT,&path,input.clone()).await?;
         ensure!(a.0==StatusCode::OK && b==a,"same proof concurrent: {a:?} {b:?}");
         f.author.cookies.remove("__Host-identity-operation");
         ensure!(f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?==a,"committed retry must not require another proof");
@@ -790,12 +787,11 @@ async fn step_up_is_atomic_with_receipts_and_concurrent_duplicates() -> Result<(
         ensure!(f.author.call(&f.router,Method::PUT,&path,Some(changed)).await?.0==StatusCode::CONFLICT);
         let next=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"disable"}});
         ensure!(f.access_authorize(&path,Some(next.clone())).await?.is_none());
-        let mut one=f.author.clone();
+        let one=f.author.clone();
         ensure!(f.access_authorize(&path,Some(next.clone())).await?.is_none());
-        let mut two=f.author.clone();
+        let two=f.author.clone();
         let before=pg(&format!("SELECT count(*) FROM identity_authority.step_up_grants WHERE tenant_id='{}' AND principal_id='{}'",case_tenant(),f.author_id))?.trim().parse::<i64>()?;
-        let (a,b)=tokio::join!(one.call(&f.router,Method::PUT,&path,Some(next.clone())),two.call(&f.router,Method::PUT,&path,Some(next.clone())));
-        let a=a?;let b=b?;
+        let (a,b)=concurrent_access_calls(&f.router,one,two,Method::PUT,&path,next.clone()).await?;
         ensure!(a.0==StatusCode::OK && b==a,"different proofs concurrent: {a:?} {b:?}");
         let after=pg(&format!("SELECT count(*) FROM identity_authority.step_up_grants WHERE tenant_id='{}' AND principal_id='{}'",case_tenant(),f.author_id))?.trim().parse::<i64>()?;
         ensure!(before-after==1,"duplicate operation consumed an extra proof");
@@ -906,3 +902,53 @@ mod enterprise;
 
 #[path = "device_access/lifecycle.rs"]
 mod lifecycle;
+
+/// Observe both requests competing before releasing the actual product publication fence.
+async fn concurrent_access_calls(
+    router: &Router,
+    mut first: Browser,
+    mut second: Browser,
+    method: Method,
+    path: &str,
+    input: Value,
+) -> Result<((StatusCode, Value), (StatusCode, Value))> {
+    use sqlx::Connection;
+    let options = crate::device::test_support::options("postgres")?;
+    let mut root = sqlx::PgConnection::connect_with(&options).await?;
+    let mut observer = sqlx::PgConnection::connect_with(&options).await?;
+    let mut hold = root.begin().await?;
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(case_tenant())
+        .execute(&mut *hold)
+        .await?;
+    let root_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *hold)
+        .await?;
+    let (router_a, path_a, method_a, input_a) = (
+        router.clone(),
+        path.to_owned(),
+        method.clone(),
+        input.clone(),
+    );
+    let a = tokio::spawn(async move {
+        first
+            .call(&router_a, method_a, &path_a, Some(input_a))
+            .await
+    });
+    let waiting = wait_sql_blocker(&mut observer, root_pid, "%lock_asset_watermark%").await;
+    let (router_b, path_b) = (router.clone(), path.to_owned());
+    let b = tokio::spawn(async move { second.call(&router_b, method, &path_b, Some(input)).await });
+    let competing = match &waiting {
+        Ok(pid) => wait_sql_blocker(&mut observer, *pid, "%identity_authority.guard%FOR UPDATE%")
+            .await
+            .map(|_| ()),
+        Err(_) => Ok(()),
+    };
+    hold.rollback().await?;
+    let (a, b) = (a.await??, b.await??);
+    waiting?;
+    competing?;
+    root.close().await?;
+    observer.close().await?;
+    Ok((a, b))
+}

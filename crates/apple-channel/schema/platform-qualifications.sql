@@ -56,7 +56,10 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
     AND mapping.provider=(u.document#>>'{passwordIdentity,provider}')::uuid
     AND (mapping.document#>>'{person,instance}')::uuid=(b.value#>>'{binding,person,instance}')::uuid
     AND mapping.principal=(b.value#>>'{binding,person,principal}')::uuid
-    AND mapping.document=u.document->'passwordIdentity' AND mapping.document->>'enabled'='true'))
+    AND mapping.document=u.document->'passwordIdentity' AND mapping.document->>'enabled'='true'
+    AND EXISTS(SELECT FROM mdm_apple.psso_password_providers provider WHERE provider.tenant_id=u.tenant_id
+      AND provider.id=mapping.provider AND provider.revision::text=u.document->>'passwordProviderRevision'
+      AND provider.fingerprint=u.document->>'passwordProviderFingerprint')))
   AND d.document->'loginConfiguration'=u.document->'loginConfiguration'
   AND d.document->'profileUuid'=u.document->'profileUuid'
   AND EXISTS(SELECT FROM jsonb_array_elements(u.document#>'{object,members}') m

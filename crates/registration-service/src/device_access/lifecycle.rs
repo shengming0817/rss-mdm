@@ -461,14 +461,13 @@ async fn load_on(
     locked: bool,
 ) -> Result<Offboarding, Error> {
     let sql = if locked {
-        "SELECT document FROM mdm_access.device_access_lifecycles WHERE tenant_id=$1::uuid AND operation=$2 AND actor=$3 AND instance=$4 AND device=$5 FOR UPDATE"
+        "SELECT document FROM mdm_access.device_access_lifecycles WHERE tenant_id=$1::uuid AND operation=$2 AND instance=$3 AND device=$4 FOR UPDATE"
     } else {
-        "SELECT document FROM mdm_access.device_access_lifecycles WHERE tenant_id=$1::uuid AND operation=$2 AND actor=$3 AND instance=$4 AND device=$5"
+        "SELECT document FROM mdm_access.device_access_lifecycles WHERE tenant_id=$1::uuid AND operation=$2 AND instance=$3 AND device=$4"
     };
     let document: serde_json::Value = sqlx::query_scalar(sql)
         .bind(actor.tenant_id())
         .bind(operation)
-        .bind(actor.principal_id())
         .bind(actor.instance_id())
         .bind(device)
         .fetch_optional(&mut *c)

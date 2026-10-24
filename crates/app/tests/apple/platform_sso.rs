@@ -642,6 +642,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
                 .bind(case_tenant()).bind(agent_registration).bind(&reference).execute(&mut pg).await?;
         }
         directory_session(&mut f,agent_device,true).await?;
+        if let Some(p)=&password{p.revision_fence(&f,serde_json::from_value(registered["sourceId"].clone())?).await?;}
         // A local lookup must not evaluate an unrelated source, even if its document is corrupt.
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;

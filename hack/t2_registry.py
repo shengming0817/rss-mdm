@@ -2269,3 +2269,5 @@ if __name__ == '__main__':
     parser.add_argument('--module-ids', action='store_true', required=True)
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
+
+consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/schema/enterprise.sql','crates/registration-service/src/enterprise/platform.rs'),'apple.platform_sso')
