@@ -43,7 +43,31 @@ impl FrozenAction {
             .definition
             .prepare_parameters(&parameters)
             .map_err(|_| Error::Malformed)?;
+        let projection = match (&spec.purpose, &self.collection) {
+            (r::ScriptPurpose::Collection { mappings, .. }, Some(collection)) => {
+                wire::ScriptProjection::Collection {
+                    fields: collection
+                        .bindings()
+                        .iter()
+                        .map(|f| {
+                            rss_mdm_inventory_service::collection::wire::to_wire_field(
+                                &f.definition,
+                            )
+                        })
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| Error::Malformed)?,
+                    mappings: mappings.clone(),
+                    output_schema: spec.output.clone(),
+                    scope: rss_mdm_agent_wire::CollectionScope::Device,
+                }
+            }
+            (r::ScriptPurpose::Collection { .. }, None) | (_, Some(_)) => {
+                return Err(Error::Malformed);
+            }
+            (_, None) => wire::ScriptProjection::None,
+        };
         wire::TaskSpec {
+            projection,
             wire_version: wire::WIRE_VERSION,
             tenant_id: tenant,
             device_id: target.device.clone(),

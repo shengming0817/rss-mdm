@@ -191,18 +191,20 @@ pub async fn finish(
 
 fn apply_missing(
     value: NativeValue,
-    policy: rss_mdm_resource::NativeMissing,
+    policy: rss_mdm_agent_wire::runtime::NativeMissing,
     nullable: bool,
 ) -> NativeValue {
     if !matches!(value, NativeValue::Missing) {
         return value;
     }
     match policy {
-        rss_mdm_resource::NativeMissing::Missing => NativeValue::Missing,
-        rss_mdm_resource::NativeMissing::Null if nullable => {
+        rss_mdm_agent_wire::runtime::NativeMissing::Missing => NativeValue::Missing,
+        rss_mdm_agent_wire::runtime::NativeMissing::Null if nullable => {
             NativeValue::Value(CollectedValue::Null)
         }
-        rss_mdm_resource::NativeMissing::Delete => NativeValue::Value(CollectedValue::Deleted),
+        rss_mdm_agent_wire::runtime::NativeMissing::Delete => {
+            NativeValue::Value(CollectedValue::Deleted)
+        }
         _ => NativeValue::Invalid,
     }
 }
@@ -214,7 +216,15 @@ fn bind_definition(
     use rss_mdm_inventory::{CollectionDefinition, CollectionField, Source};
     use sha2::{Digest, Sha256};
     checked_input(spec.execution.validate(&spec.plan))?;
-    if spec.plan != frozen.definition.spec().plan
+    let fields = frozen
+        .fields
+        .iter()
+        .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| Error::Malformed)?;
+    if spec.fields != fields
+        || spec.mappings != frozen.definition.spec().mappings
+        || spec.plan != frozen.definition.spec().plan
         || spec.resource_digest != frozen.resource_digest
         || spec.resource != frozen.resource
     {
@@ -481,7 +491,7 @@ mod tests {
     }
     #[test]
     fn explicit_absence_policy_does_not_promote_errors() {
-        use rss_mdm_resource::NativeMissing as M;
+        use rss_mdm_agent_wire::runtime::NativeMissing as M;
         assert!(matches!(
             apply_missing(NativeValue::Missing, M::Delete, false),
             NativeValue::Value(CollectedValue::Deleted)

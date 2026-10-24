@@ -8,6 +8,10 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
+不完整清单的逐行查询可返回 `quality=success` 行的类型化 `value`，无效行或未保留值返回 null。
+这只是该次采集的诊断证据：字段仍为 invalid、complete=false，整份清单不覆盖 Inventory 最后可信值，不能作为卸载或删除证明。
+macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量和 invalidItems 内，不伪造条目身份；重复身份的所有行也均标为 invalid。
+
 没有字段 TTL、validUntil、expiresAt、到期或延迟生效判断。所有时间仅用于溯源；改变评估时间不会改变固定规则对相同事实的结果。会话、凭据和任务期限不受此规则影响。
 
 ## API
@@ -22,6 +26,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 | PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
+| GET /devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100 | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
 | GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 criteria/select/sort |
@@ -324,3 +329,20 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 `{operationId,expectedRevision,input:{}}`，退出当前评估、释放当前组/字段引用及规则配额；
 同操作重试返回原回执，在途旧任务结算为 superseded。删除后普通 Get 为 404，原 ID 不可重建；
 历史版本和设备评估仍可读取，`filter=deleted==true` 可发现规则墓碑。只支持当前 V1 全新安装，不提供旧库升级。
+
+## 通用字段映射与发布
+
+自定义字段先经 `/api/v1/asset-fields/{field}` 定义；采集 Resource 通过原 `/api/v1/resources/{id}`
+版本接口声明该字段的映射，Policy 冻结当前已批准版本。类型、来源、平台、查询引用或预算不合法时拒绝发布。
+纯手工字段不要求采集映射；新增字段不会自动创建默认 Policy 或扩大本地 Agent 能力。
+未知展示扩展仍按原产品规则保存，不参与可信字段解释。
+
+`GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
+`limit` 默认 64、范围 1–128，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
+映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
+此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
+
+管理端映射与编辑契约由 [Collection schema](../../crates/management-http/schema/Collection.json) 派生提供，
+生成入口为 `cargo run --locked -p rss-mdm-management-http --example collection_schema`。
+类型源是真实 Resource HTTP 输入/输出和字段目录类型，不维护 Web 手写结构副本。
+企业采集的字段映射随签名任务/遥测配置下发；Agent 本地打包能力和桌面设置权限不受该接口控制。

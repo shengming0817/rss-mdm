@@ -80,6 +80,7 @@ pub async fn prepare_in(
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(FrozenProfile {
+        resource_digest: template.digest().bytes(),
         profile: definition.clone(),
         fields,
         collector: match variant.declaration() {
@@ -106,6 +107,7 @@ pub async fn prepare_in(
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FrozenProfile {
+    pub resource_digest: [u8; 32],
     pub profile: rss_mdm_resource::TelemetryProfile,
     pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub collector: FrozenCollector,

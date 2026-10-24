@@ -1,4 +1,5 @@
 use anyhow::Context;
+use base64::Engine as _;
 #[path = "delivery/signing.rs"]
 mod signing;
 #[path = "windows_assets.rs"]
@@ -647,6 +648,17 @@ async fn native_inventory_case(
         ps.budget.output_bytes=w::NATIVE_SYSTEM_MAX_BYTES;
         for q in ps.queries.values_mut() {q.budget.output_bytes=q.budget.output_bytes.min(w::NATIVE_SYSTEM_MAX_BYTES);}
     }
+    if macos {
+        f.grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventoryFieldsWrite, scope: crate::authorization::Scope::Tenant });
+        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        for (original, key) in [("device.memory.bytes", "custom.ship_memory"), ("device.network.interfaces", "custom.ship_network")] {
+            let mut field = rss_mdm_inventory::builtin::fields().into_iter().find(|f| f.key.as_str() == original).unwrap();
+            field.key = rss_mdm_inventory::FieldKey::parse(key)?;
+            let response = f.author.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?;
+            ensure!(response.0 == StatusCode::OK, "custom field: {response:?}");
+            mappings.insert(key.into(), mappings.get(original).unwrap().clone());
+        }
+    }
     let definition = r::AgentCollectionDefinition::new(r::AgentCollectionSpec {
                 applicability: specs.last().unwrap().applicability.clone(),
         plan: w::NativeCollectionPlan::new(ps)?,
@@ -663,7 +675,14 @@ async fn native_inventory_case(
         json!({"action":"create","kind":"agent_collection"}),
     )
     .await?;
-    resource(&mut f.author,&f.router,resource_id,1,json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":platform,"architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
+    let version_input = json!({"action":"version","version":"v1","kind":"agent_collection","variants":[{"platform":platform,"architecture":"x86_64","key":"default","declaration":{"kind":"agent_collection","artifact":{"reference":"native.json","length":bytes.len(),"sha256":digest},"definition":definition}}]});
+    if macos {
+        let mut invalid = version_input.clone();
+        invalid["variants"][0]["declaration"]["definition"]["mappings"]["custom.undefined"] = invalid["variants"][0]["declaration"]["definition"]["mappings"]["custom.ship_memory"].clone();
+        let rejected = f.author.call(&f.router, Method::POST, &format!("/api/v1/resources/{resource_id}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":invalid}))).await?;
+        ensure!(rejected.0 == StatusCode::BAD_REQUEST, "unknown mapping field: {rejected:?}");
+    }
+    resource(&mut f.author,&f.router,resource_id,1,version_input.clone()).await?;
     ensure!(
         upload_for(
             &f.author,
@@ -684,6 +703,17 @@ async fn native_inventory_case(
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
+    if macos {
+        let mut next = version_input.clone(); next["version"] = json!("v2");
+        resource(&mut f.author,&f.router,resource_id,3,next).await?;
+        let refs = f.author.call(&f.router, Method::GET, "/api/v1/asset-fields/custom.ship_memory/references?limit=1", None).await?;
+        ensure!(refs.0 == StatusCode::OK && refs.1["asset"]["mappings"][0]["state"] == "active", "mapping references: {refs:?}");
+        let cursor = refs.1["asset"]["nextCursor"].as_str().ok_or_else(|| anyhow::anyhow!("missing mapping continuation"))?;
+        let next = f.author.call(&f.router, Method::GET, &format!("/api/v1/asset-fields/custom.ship_memory/references?limit=1&cursor={cursor}"), None).await?;
+        ensure!(next.0 == StatusCode::OK && next.1["asset"]["mappings"][0]["version"] == "v2" && next.1["asset"]["mappings"][0]["state"] == "frozen", "next mapping page: {next:?}");
+        let wrong = f.author.call(&f.router, Method::GET, &format!("/api/v1/asset-fields/custom.ship_network/references?limit=1&cursor={cursor}"), None).await?;
+        ensure!(wrong.0 == StatusCode::BAD_REQUEST, "cross-field cursor: {wrong:?}");
+    }
     let worker = worker(&f.base).await?;
     let runtime = agent_runtime(&f.base).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
@@ -752,6 +782,16 @@ async fn native_inventory_case(
         let w::TaskPayload::Collection(spec) = &task.payload else {
             anyhow::bail!("native policy issued another task family");
         };
+        ensure!(spec.mappings == definition.spec().mappings && spec.fields.len() == spec.mappings.len());
+        if macos {
+            ensure!(spec.fields.iter().any(|f| f.key.as_str() == "custom.ship_memory" && f.version == 1));
+            let verify = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, f.key.public_key().as_ref());
+            let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&task.signature)?;
+            verify.verify(&spec.signing_bytes(&task.key_id)?, &signature).map_err(|_| anyhow::anyhow!("projection signature"))?;
+            let mut changed = spec.as_ref().clone();
+            changed.fields[0].version += 1;
+            ensure!(verify.verify(&changed.signing_bytes(&task.key_id)?, &signature).is_err());
+        }
         let path = format!("/api/v1/agent/runtime/tasks/{}/events", spec.task_id);
         let event = |operation, event: Value| json!({"wireVersion":1,"operationId":operation,"attemptId":spec.attempt_id,"executionContext":context,"event":event});
         let received = agent_call(
@@ -1000,6 +1040,12 @@ async fn native_inventory_case(
             loop{let rows=pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.memory.bytes' AND value::jsonb->>'value'='{}'",case_tenant(),spec.registration_id,8192+stage))?;if rows.trim()=="1"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}
         }).await??;
             let network = projected_value(spec.registration_id, "device.network.interfaces", None).await?;
+            if macos {
+                let custom = projected_value(spec.registration_id, "custom.ship_memory", None).await?;
+                let expected = projected_value(spec.registration_id, "device.memory.bytes", None).await?;
+                ensure!(custom == expected, "custom scalar differs from frozen mapping");
+                ensure!(projected_value(spec.registration_id, "custom.ship_network", None).await? == network, "custom list differs from frozen mapping");
+            }
             if stage == 0 {
                 prior_network = network.clone();
             } else if stage == 1 {

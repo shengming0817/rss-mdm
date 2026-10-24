@@ -177,6 +177,7 @@ async fn configuration_on(
         _ => return Err(Error::Unsupported),
     };
     Ok(TelemetryConfiguration {
+        resource_digest: frozen.resource_digest,
         tenant_id: Uuid::parse_str(&principal.tenant().to_string()).map_err(|_| Error::Storage)?,
         device_id: principal.device().into(),
         registration_id: principal.registration(),
@@ -244,6 +245,7 @@ fn collector(
     let fields = &frozen.fields;
     Ok(match &frozen.collector {
         F::Native { definition } => w::TelemetryCollector::Native {
+            plan_digest: definition.spec().plan.digest(),
             plan: definition.spec().plan.clone(),
             mappings: definition
                 .spec()
@@ -253,10 +255,11 @@ fn collector(
                 .map(|(key, value)| {
                     Ok((
                         key.clone(),
-                        w::TelemetryNativeMapping {
+                        w::AgentCollectionMapping {
                             counter_normalization: value.counter_normalization,
                             query: value.query.clone(),
-                            mapping: mapping(&value.mapping)?,
+                            missing: value.missing,
+                            mapping: value.mapping.clone(),
                         },
                     ))
                 })
@@ -300,52 +303,10 @@ fn collector(
                 mappings: mappings
                     .iter()
                     .filter(|(key, _)| fields.iter().any(|f| f.key.as_str() == key.as_str()))
-                    .map(|(k, v)| Ok((k.clone(), mapping(v)?)))
+                    .map(|(k, v)| Ok((k.clone(), v.clone())))
                     .collect::<Result<_, Error>>()?,
             }
         }
-    })
-}
-fn mapping(
-    value: &rss_mdm_resource::ValueMapping,
-) -> Result<rss_mdm_agent_wire::runtime::TelemetryValueMapping, Error> {
-    use rss_mdm_agent_wire::runtime::{TelemetryConversion as W, TelemetryValueMapping};
-    use rss_mdm_resource::Conversion as R;
-    Ok(TelemetryValueMapping {
-        pointer: value.pointer.clone(),
-        conversion: match &value.conversion {
-            R::Identity => W::Identity,
-            R::CimTime => W::CimTime,
-            R::Integer => W::Integer,
-            R::Number => W::Number,
-            R::Enum { values } => W::Enum {
-                values: values.clone(),
-            },
-            R::ArrayMember {
-                member,
-                present,
-                absent,
-            } => W::ArrayMember {
-                member: *member,
-                present: present.clone(),
-                absent: absent.clone(),
-            },
-            R::Scale {
-                numerator,
-                denominator,
-            } => W::Scale {
-                numerator: *numerator,
-                denominator: *denominator,
-            },
-            R::Bitmask { flags } => W::Bitmask {
-                flags: flags.clone(),
-            },
-        },
-        columns: value
-            .columns
-            .iter()
-            .map(|(k, v)| Ok((k.clone(), mapping(v)?)))
-            .collect::<Result<_, Error>>()?,
     })
 }
 

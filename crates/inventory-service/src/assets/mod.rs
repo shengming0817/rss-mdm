@@ -22,7 +22,7 @@ pub use field_layout::{FieldDisplayGroup, FieldLayout, FieldLayoutAccess};
 mod lists;
 mod runs;
 mod scopes;
-pub use fields::{FieldChange, FieldImpact};
+pub use fields::{FieldChange, FieldImpact, FieldMappingReference, FieldReferenceQuery, FieldView};
 mod model;
 pub mod planning;
 mod summaries;
@@ -133,19 +133,25 @@ impl AssetService {
                 run: self.collection_run(tx, device, *run, scope).await?,
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
-            Command::FieldReferences { field } => Response::FieldReferences {
-                field: *field,
-                impact: self.field_impact(tx, *field).await?,
-            },
+            Command::FieldReferences { field, query } => {
+                let page = self.field_mapping_references(tx, *field, query).await?;
+                Response::FieldReferences {
+                    field: *field,
+                    impact: self.field_impact(tx, *field).await?,
+                    mappings: page.items,
+                    next_cursor: page.next_cursor,
+                }
+            }
             Command::Fields => Response::Fields {
                 dictionary: rss_mdm_inventory::DICTIONARY.into(),
                 fields: catalog_in(tx, self.tenant, i64::MAX)
                     .await?
                     .fields()
                     .map(|f| {
-                        let mut v = checked_input(serde_json::to_value(f))?;
-                        v["operations"] = checked_input(serde_json::to_value(f.operations()))?;
-                        Ok(v)
+                        Ok(FieldView {
+                            definition: crate::collection::wire::to_wire_field(f)?,
+                            operations: f.operations(),
+                        })
                     })
                     .collect::<Result<_>>()?,
             },

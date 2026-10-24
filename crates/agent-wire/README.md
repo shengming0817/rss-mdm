@@ -118,3 +118,25 @@ SelfService 文案位于开放 presentation，核心授权、任务与签名结�
 当前字段切换与未知 key 编辑要求见 [Agent 接入](../../docs/guides/agent-integration.md#当前扩展对象与一次性字段切换)。
 
 Agent 安装包目录描述安装文件与 releaseId；注册 installation 仅引用当前 releaseId。注册配置验签、稳定服务身份与可变 origins 仍归注册协议，不再消费构建期候选 manifest、包内公钥或候选摘要。安装器代码签名由目标操作系统策略决定。
+
+## 统一采集映射（#2914）
+
+`runtime::ValueMapping`、`Conversion` 和 `AgentCollectionMapping` 是普通采集与遥测的唯一声明和纯求值实现。
+Resource 拥有配置发布，Inventory 拥有字段语义、质量和多来源合并；协议包不执行查询、设备操作或授权。
+`project_selected` 接受已经按根 pointer 选中的单值或单行；列表由调用方按声明的字段类型逐行调用，
+不得再次应用根 pointer。缺失选择、显式 null、逐行失败和完整空列表分别保留，由业务质量 owner 结算。
+
+普通 Collection 任务必带冻结 `fields` 与 `mappings`；Script 任务必带显式 `projection`，
+采集用途携带字段、输出 schema、映射和 scope，非采集为 `kind=none`。缺少这些结构拒绝解码。
+遥测复用同一映射并签入精确模板 Resource digest，Native collector 同时验证 plan digest。
+字段集合、query 引用、类型、来源和平台必须一致；每份投影限 48 KiB，完整签名消息仍受原预算限制。
+新增字段不重置业务版本，不把映射版本、Resource digest、plan digest 或 schema 指纹互相替代。
+
+Agent 接入应保留 PR 1445 定义的安装身份与企业注册世代边界：本地能力随客户端打包并在注册前可用，
+不能用企业签名映射创建、替换或解锁本地可执行目录。两类来源复用纯函数，权限仍由各自 owner 校验。
+从任务转换到物理 ReadPlan 时应在原受保护执行材料中保留投影来源与精确摘要；相同物理查询可以复用，
+投影缓存不能跨安装/企业作用域、映射身份或用户范围串用，也不能用新映射重新解释旧快照。
+客户端本地展示字段不自动成为最终 Inventory 字段；敏感性元数据不授予 IPC/AI 读取或设置修改权限。
+
+当前 V1 直接替换旧结构，无别名、双读或降级。Agent/Web 在各自 PBI 固定本次完整 Git rev 后接入；
+本仓生成、编译与服务端验证不代表客户端已切换，不清理旧部署或 journal 来跳过格式拒绝。

@@ -3344,6 +3344,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "time",
  "url",
  "uuid",
  "zeroize",
@@ -3992,6 +3993,7 @@ dependencies = [
  "rss-observation",
  "rss-request-context",
  "rss-timeseries",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4049,6 +4051,7 @@ dependencies = [
  "rss-runtime",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4331,7 +4334,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlparser",
- "time",
 ]
 
 [[package]]

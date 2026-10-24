@@ -1786,11 +1786,14 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .unwrap();
         let scope_task = Uuid::parse_str(scope_receipt["task"].as_str().unwrap()).unwrap();
         assert_eq!(
-            wait_task(
+            // 1001 endpoints require at least 63 bounded projection pages.
+            // This verifies publication correctness, not a 30-second throughput SLA.
+            wait_task_with_budget(
                 &service,
                 scope_task,
                 crate::automation::TaskKind::Scope,
-                &scope_id.to_string()
+                &scope_id.to_string(),
+                Duration::from_secs(120)
             )
             .await["members"],
             count

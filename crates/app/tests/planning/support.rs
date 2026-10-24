@@ -250,7 +250,18 @@ pub(crate) async fn wait_task(
     family: crate::automation::TaskKind,
     target: &str,
 ) -> Value {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    wait_task_with_budget(m, id, family, target, Duration::from_secs(30)).await
+}
+
+pub(crate) async fn wait_task_with_budget(
+    m: &Planning,
+    id: Uuid,
+    family: crate::automation::TaskKind,
+    target: &str,
+    budget: Duration,
+) -> Value {
+    let mut last = None;
+    tokio::time::timeout(budget, async {
         loop {
             let result = execute(
                 m,
@@ -274,6 +285,7 @@ pub(crate) async fn wait_task(
                 }
                 Err(error) => panic!("task status failed: {error:?}"),
             };
+            last = Some(value.clone());
             if value["status"] == "completed" {
                 return value;
             }
@@ -282,7 +294,7 @@ pub(crate) async fn wait_task(
         }
     })
     .await
-    .expect("bounded fixture task did not complete")
+    .unwrap_or_else(|error| panic!("bounded fixture {family:?} task {id} for {target} did not complete: {error}; last={last:?}; health={:?}", m.automation_health()))
 }
 
 pub(crate) async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {

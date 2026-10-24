@@ -261,10 +261,20 @@ pub async fn receive(
                                 .observe_value(key, value, now)
                                 .map_err(|_| Error::Conflict)?;
                         }
-                        NativeValue::InvalidItems(items) => run
-                            .attempts
-                            .observe_invalid_items(key, items, now)
-                            .map_err(|_| Error::Conflict)?,
+                        NativeValue::InvalidItems { items, values }
+                            if run.attempts.value_bytes().map_err(|_| corrupt())?
+                                + rss_mdm_inventory::CollectedValue::Value(
+                                    rss_mdm_inventory::Scalar::Array(values.clone()),
+                                )
+                                .encode(field)
+                                .map_err(|_| corrupt())?
+                                .len()
+                                <= template.spec().output_bytes as usize =>
+                        {
+                            run.attempts
+                                .observe_invalid_items(key, items, values, now)
+                                .map_err(|_| Error::Conflict)?
+                        }
                         _ => run
                             .attempts
                             .observe_invalid(key, now)

@@ -175,9 +175,9 @@ async fn template_flow(
                         uri: "./DevDetail/DevTyp".into(),
                     },
                 ),
-                mapping: rss_mdm_resource::ValueMapping {
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping {
                     pointer: "".into(),
-                    conversion: rss_mdm_resource::Conversion::Enum {
+                    conversion: rss_mdm_agent_wire::runtime::Conversion::Enum {
                         values: [(
                             "template-workstation".into(),
                             json!("canonical-workstation"),

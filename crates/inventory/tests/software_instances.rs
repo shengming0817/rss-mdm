@@ -72,11 +72,11 @@ fn invalid_software_rows_preserve_quality_and_never_publish_a_partial_list() {
     let invalid = decode(&item("msix.provisioned", "registered", "device", ""));
     assert!(
         matches!(NativeValue::list(&field, vec![Ok(valid.clone()), Ok(invalid)]).unwrap(),
-        NativeValue::InvalidItems(q) if q == vec![Quality::Success, Quality::Invalid])
+        NativeValue::InvalidItems { items: q, .. } if q == vec![Quality::Success, Quality::Invalid])
     );
     assert!(
         matches!(NativeValue::list(&field, vec![Ok(valid.clone()), Ok(valid.clone())]).unwrap(),
-        NativeValue::InvalidItems(q) if q == vec![Quality::Invalid, Quality::Invalid])
+        NativeValue::InvalidItems { items: q, .. } if q == vec![Quality::Invalid, Quality::Invalid])
     );
     let registered = decode(&item(
         "msix.registered",
@@ -96,4 +96,48 @@ fn invalid_software_rows_preserve_quality_and_never_publish_a_partial_list() {
     );
     assert!(matches!(NativeValue::list(&field, vec![]).unwrap(),
         NativeValue::Value(CollectedValue::Value(Scalar::Array(rows))) if rows.is_empty()));
+}
+
+#[test]
+fn apple_anonymous_and_duplicate_rows_retain_only_unambiguous_evidence() {
+    let field = builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.software.apple.installed_applications")
+        .unwrap();
+    let ValueType::Array { items, .. } = &field.value_type else {
+        unreachable!()
+    };
+    let rows = [
+        json!({"id":"com.example.valid", "name":"Valid application"}),
+        json!({"name":"Anonymous application"}),
+        json!({"id":"com.example.duplicate", "name":"First copy"}),
+        json!({"id":"com.example.duplicate", "name":"Second copy"}),
+        json!({"id":"com.example.last", "name":"Last application"}),
+    ];
+    let outcome =
+        NativeValue::list(&field, rows.iter().map(|v| items.decode_json(v)).collect()).unwrap();
+    let NativeValue::InvalidItems {
+        items: quality,
+        values,
+    } = outcome
+    else {
+        panic!("incomplete list accepted")
+    };
+    assert_eq!(
+        quality,
+        [
+            Quality::Success,
+            Quality::Invalid,
+            Quality::Invalid,
+            Quality::Invalid,
+            Quality::Success
+        ]
+    );
+    assert_eq!(
+        values,
+        vec![
+            items.decode_json(&rows[0]).unwrap(),
+            items.decode_json(&rows[4]).unwrap()
+        ]
+    );
 }

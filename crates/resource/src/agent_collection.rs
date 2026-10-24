@@ -1,35 +1,11 @@
 //! Agent-native declaration and server-owned field mapping.
-use crate::{Error, ValueMapping};
-use rss_mdm_agent_wire::runtime::{NativeCardinality, NativeCollectionPlan, NativeType};
+use crate::Error;
+use rss_mdm_agent_wire::runtime::NativeCollectionPlan;
+use rss_mdm_agent_wire::runtime::{AgentCollectionMapping, NativeMissing};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-/// Complete absence handling, never applied to failed or truncated queries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NativeMissing {
-    /// Preserve the prior fact and record Missing.
-    Missing,
-    /// Publish explicit null (only for nullable fields).
-    Null,
-    /// Publish a source-local tombstone.
-    Delete,
-}
-/// One field binds to one reusable query.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AgentCollectionMapping {
-    /// Explicit telemetry-only durable counter normalization.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub counter_normalization: Option<rss_mdm_agent_wire::runtime::NativeCounterNormalization>,
-    /// Stable query identity.
-    pub query: String,
-    /// Existing pointer and conversion semantics.
-    pub mapping: ValueMapping,
-    /// Explicit handling of complete absence.
-    pub missing: NativeMissing,
-}
 /// Construction input. Native protocol types stay owned by agent-wire.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCollectionSpec {
     /// Frozen platform prerequisites, checked by the same preview/Offer/Start admission.
@@ -40,7 +16,7 @@ pub struct AgentCollectionSpec {
     pub mappings: BTreeMap<String, AgentCollectionMapping>,
 }
 /// Validated declaration with an immutable canonical artifact.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "AgentCollectionSpec", into = "AgentCollectionSpec")]
 pub struct AgentCollectionDefinition(AgentCollectionSpec);
 impl From<AgentCollectionDefinition> for AgentCollectionSpec {
@@ -92,12 +68,7 @@ impl AgentCollectionDefinition {
                     return Err(Error::InvalidInput);
                 }
             }
-            let props = query.definition.properties();
-            validate_mapping(
-                &binding.mapping,
-                &props,
-                query.cardinality == NativeCardinality::List,
-            )?;
+            binding.validate_query(&spec.plan)?;
         }
         Ok(Self(spec))
     }
@@ -126,50 +97,4 @@ impl AgentCollectionDefinition {
     pub fn canonical(&self) -> Vec<u8> {
         serde_json::to_vec(&self.0).expect("closed agent collection")
     }
-}
-fn validate_mapping(
-    m: &ValueMapping,
-    p: &BTreeMap<String, NativeType>,
-    list: bool,
-) -> Result<(), Error> {
-    if list || !m.columns.is_empty() {
-        if !m.pointer.is_empty()
-            || m.columns.is_empty()
-            || m.conversion != crate::Conversion::Identity
-        {
-            return Err(Error::InvalidInput);
-        }
-        for column in m.columns.values() {
-            validate_mapping(column, p, false)?;
-        }
-        return Ok(());
-    }
-    let key = m.pointer.strip_prefix('/').ok_or(Error::InvalidInput)?;
-    let ty = p.get(key).ok_or(Error::InvalidInput)?;
-    if !m.columns.is_empty() {
-        return Err(Error::InvalidInput);
-    }
-    use crate::Conversion;
-    if match &m.conversion {
-        Conversion::Identity => false,
-        Conversion::ArrayMember { .. } => {
-            !matches!(ty, NativeType::Array {items} if **items==NativeType::Integer)
-        }
-        Conversion::CimTime => !matches!(ty, NativeType::CimTime),
-        Conversion::Integer => !matches!(
-            ty,
-            NativeType::Integer | NativeType::UInt64 | NativeType::String
-        ),
-        Conversion::Number => !matches!(
-            ty,
-            NativeType::Number | NativeType::Integer | NativeType::String
-        ),
-        Conversion::Scale { .. } | Conversion::Bitmask { .. } => {
-            !matches!(ty, NativeType::Integer | NativeType::UInt64)
-        }
-        Conversion::Enum { .. } => matches!(ty, NativeType::Array { .. }),
-    } {
-        return Err(Error::InvalidInput);
-    }
-    Ok(())
 }

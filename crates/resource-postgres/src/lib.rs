@@ -45,4 +45,4 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 #[cfg(feature = "integration")]
 pub mod fixture;
 
-pub use artifacts::field_reference_details_in;
+pub use artifacts::{field_mapping_references_in, field_reference_details_in};

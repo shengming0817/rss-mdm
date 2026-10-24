@@ -58,14 +58,14 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
         plan: plan.clone(),
         mappings: [(
             field.key.as_str().into(),
-            r::AgentCollectionMapping {
+            rss_mdm_agent_wire::runtime::AgentCollectionMapping {
                 query: "cpu".into(),
-                mapping: r::ValueMapping {
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping {
                     pointer: "/busy_percent".into(),
-                    conversion: r::Conversion::Identity,
+                    conversion: rss_mdm_agent_wire::runtime::Conversion::Identity,
                     columns: Default::default(),
                 },
-                missing: r::NativeMissing::Missing,
+                missing: rss_mdm_agent_wire::runtime::NativeMissing::Missing,
                 counter_normalization: None,
             },
         )]
@@ -150,20 +150,37 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
         )
         .map_err(|_| anyhow::anyhow!("native configuration signature"))?;
     let config = signed.configuration;
+    ensure!(config.resource_digest.iter().any(|b| *b != 0));
+    let mut altered = config.clone();
+    altered.resource_digest[0] ^= 1;
+    ensure!(
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            f.key.public_key().as_ref()
+        )
+        .verify(
+            &altered.signing_bytes(&signed.key_id)?,
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?
+        )
+        .is_err()
+    );
+
     ensure!(matches!(config.source, wire::Source::AgentNative));
     let wire::TelemetryCollector::Native {
         plan: actual,
+        plan_digest,
         mappings,
     } = &config.collector
     else {
         anyhow::bail!("native configuration downgraded to script")
     };
+    ensure!(*plan_digest == actual.digest());
     ensure!(serde_json::to_value(actual)? == serde_json::to_value(&plan)? && mappings.len() == 1);
     let mapping = &mappings[field.key.as_str()];
     ensure!(
         mapping.query == "cpu"
             && mapping.mapping.pointer == "/busy_percent"
-            && mapping.mapping.conversion == wire::TelemetryConversion::Identity
+            && mapping.mapping.conversion == wire::Conversion::Identity
             && mapping.mapping.columns.is_empty()
     );
     cpu_reading(f, &policy, &config, &field).await?;
@@ -400,7 +417,7 @@ async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
         )]
         .into(),
     })?;
-    let column = |pointer: &str, conversion| r::ValueMapping {
+    let column = |pointer: &str, conversion| rss_mdm_agent_wire::runtime::ValueMapping {
         pointer: pointer.into(),
         conversion,
         columns: Default::default(),
@@ -410,18 +427,24 @@ async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
         plan,
         mappings: [(
             field.key.as_str().into(),
-            r::AgentCollectionMapping {
+            rss_mdm_agent_wire::runtime::AgentCollectionMapping {
                 query: "network".into(),
-                missing: r::NativeMissing::Missing,
+                missing: rss_mdm_agent_wire::runtime::NativeMissing::Missing,
                 counter_normalization: Some(wire::NativeCounterNormalization::LocalCumulativeV1),
-                mapping: r::ValueMapping {
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping {
                     pointer: String::new(),
-                    conversion: r::Conversion::Identity,
+                    conversion: rss_mdm_agent_wire::runtime::Conversion::Identity,
                     columns: [
-                        ("id".into(), column("/id", r::Conversion::Identity)),
+                        (
+                            "id".into(),
+                            column("/id", rss_mdm_agent_wire::runtime::Conversion::Identity),
+                        ),
                         (
                             "received".into(),
-                            column("/received_bytes", r::Conversion::Integer),
+                            column(
+                                "/received_bytes",
+                                rss_mdm_agent_wire::runtime::Conversion::Integer,
+                            ),
                         ),
                     ]
                     .into(),
@@ -448,10 +471,13 @@ async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
     mixed.plan = wire::NativeCollectionPlan::new(plan)?;
     mixed.mappings.insert(
         "custom.performance.cpu".into(),
-        r::AgentCollectionMapping {
+        rss_mdm_agent_wire::runtime::AgentCollectionMapping {
             query: "cpu".into(),
-            mapping: column("/busy_percent", r::Conversion::Identity),
-            missing: r::NativeMissing::Missing,
+            mapping: column(
+                "/busy_percent",
+                rss_mdm_agent_wire::runtime::Conversion::Identity,
+            ),
+            missing: rss_mdm_agent_wire::runtime::NativeMissing::Missing,
             counter_normalization: None,
         },
     );

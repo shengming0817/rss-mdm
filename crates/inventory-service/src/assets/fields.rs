@@ -1,13 +1,16 @@
 //! Field definitions are tenant configuration; references are checked on the shared configuration transaction.
 use super::*;
 use rss_mdm_inventory::{FieldDefinition, Sensitivity};
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum FieldChange {
-    Put { definition: Box<FieldDefinition> },
+    Put {
+        #[schemars(with = "rss_mdm_agent_wire::runtime::FieldDefinition")]
+        definition: Box<FieldDefinition>,
+    },
     Delete {},
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldImpact {
     pub groups: i64,
@@ -152,4 +155,101 @@ impl AssetService {
 /// Only explicit grants can expose sensitive raw fields or accept conditions using them.
 pub fn visible(definition: &FieldDefinition, sensitive: bool) -> bool {
     sensitive || definition.sensitivity == Sensitivity::Standard
+}
+
+/// Actual field directory entry, using the same field contract as signed projections.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldView {
+    #[serde(flatten)]
+    pub definition: rss_mdm_agent_wire::runtime::FieldDefinition,
+    pub operations: Vec<rss_mdm_inventory::Operator>,
+}
+
+/// Bounded continuation for the existing field-reference endpoint.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldReferenceQuery {
+    #[serde(default = "reference_limit")]
+    #[schemars(extend("minimum" = 1, "maximum" = 128))]
+    pub limit: u16,
+    pub cursor: Option<String>,
+}
+fn reference_limit() -> u16 {
+    64
+}
+/// Exact resource coordinates; presence is configuration, not an execution/readiness assertion.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldMappingReference {
+    pub resource: String,
+    pub version: String,
+    pub state: String,
+    pub telemetry: bool,
+}
+impl AssetService {
+    pub(super) async fn field_mapping_references(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        field: FieldKey,
+        query: &FieldReferenceQuery,
+    ) -> Result<rss_mdm_query::Page<FieldMappingReference>> {
+        if !(1..=128).contains(&query.limit) {
+            return Err(Error::Malformed.into());
+        }
+        let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());
+        let context = checked_input(rss_mdm_query::cursor::fingerprint(&(
+            "field-mapping-references-v1",
+            self.tenant.to_string(),
+            field,
+            query.limit,
+        )))?;
+        let after: Option<(String, String)> = query
+            .cursor
+            .as_ref()
+            .map(|cursor| {
+                let token = checked_input(rss_contract::PageCursor::parse(cursor))?;
+                checked_input(codec.decode(&token, &context))
+            })
+            .transpose()?;
+        let mut rows = rss_mdm_resource_postgres::field_mapping_references_in(
+            tx,
+            field.as_str(),
+            after,
+            query.limit + 1,
+        )
+        .await?;
+        let more = rows.len() > usize::from(query.limit);
+        rows.truncate(usize::from(query.limit));
+        let next = if more {
+            let (owner, version, _, _) = rows.last().ok_or(Error::Malformed)?;
+            Some(
+                checked_input(codec.encode(&context, &(owner, version)))?
+                    .as_str()
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
+        let mut items = Vec::new();
+        for (resource, version, telemetry, state) in rows {
+            let state = match state {
+                rss_mdm_resource::State::Frozen => "frozen",
+                rss_mdm_resource::State::Active => "active",
+                rss_mdm_resource::State::Deprecated => "deprecated",
+                rss_mdm_resource::State::Archived => "archived",
+            }
+            .into();
+            items.push(FieldMappingReference {
+                resource,
+                version,
+                state,
+                telemetry,
+            });
+        }
+        Ok(rss_mdm_query::Page {
+            items,
+            next_cursor: next,
+        })
+    }
 }
