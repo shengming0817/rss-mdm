@@ -170,6 +170,9 @@ pub struct FieldView {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FieldReferenceQuery {
+    #[serde(skip_deserializing)]
+    #[schemars(skip)]
+    pub authority: String,
     #[serde(default = "reference_limit")]
     #[schemars(extend("minimum" = 1, "maximum" = 128))]
     pub limit: u16,
@@ -202,7 +205,7 @@ impl AssetService {
             "field-mapping-references-v1",
             self.tenant.to_string(),
             field,
-            query.limit,
+            &query.authority,
         )))?;
         let after: Option<(String, String)> = query
             .cursor

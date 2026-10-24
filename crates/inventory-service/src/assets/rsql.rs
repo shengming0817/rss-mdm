@@ -5,6 +5,12 @@ use rss_mdm_inventory::{Catalog, Kind};
 use rss_mdm_query::{Expression, Operator as Op};
 use serde::{Deserialize, Serialize};
 
+pub static CONTRACT: rss_mdm_query::CatalogQuery = rss_mdm_query::CatalogQuery {
+    id: "asset_queries",
+    catalog_resource: "asset_fields",
+    max_fields: 1024,
+    max_sort: 16,
+};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryScope {
@@ -33,6 +39,7 @@ pub struct QueryInput {
 }
 impl QueryInput {
     pub(super) fn compile(&self, catalog: &Catalog) -> Result<Query> {
+        checked_input(CONTRACT.validate(self.fields.len(), self.sort.len()))?;
         let criteria = self
             .filter
             .as_ref()
@@ -60,7 +67,7 @@ impl QueryInput {
             sort: self.sort.clone(),
         })
     }
-    pub(super) fn from_query(query: Query) -> Result<Self> {
+    pub fn from_query(query: Query) -> Result<Self> {
         let (filter, scope) = match query.criteria {
             Some(c) => (
                 Some(format(&c.criteria)?),

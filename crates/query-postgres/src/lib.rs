@@ -180,3 +180,25 @@ pub fn append(
     filter(sql, q, columns)?;
     page(sql, q, after, columns)
 }
+
+/// Observe actual PostgreSQL cell payloads before business JSON/decryption. No values are logged.
+/// This excludes wire framing; SQLx independently reports the executed statement and elapsed time.
+pub fn observe_rows(
+    stage: &'static str,
+    rows: &[sqlx::postgres::PgRow],
+) -> std::result::Result<usize, sqlx::Error> {
+    use sqlx::{Row, ValueRef};
+    let mut bytes = 0usize;
+    for row in rows {
+        for column in 0..row.len() {
+            let value = row.try_get_raw(column)?;
+            if !value.is_null() {
+                bytes = bytes
+                    .checked_add(value.as_bytes().map_err(sqlx::Error::Decode)?.len())
+                    .ok_or_else(|| sqlx::Error::Protocol("query byte counter overflow".into()))?;
+            }
+        }
+    }
+    tracing::debug!(target:"rss_mdm.query_read",stage,rows=rows.len(),payload_bytes=bytes,"bounded query payload");
+    Ok(bytes)
+}

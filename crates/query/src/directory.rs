@@ -67,6 +67,13 @@ impl Schema {
             .find(|f| f.name == name)
             .ok_or(Error::Invalid)
     }
+    pub fn statistics(&'static self, raw: &str) -> Result<Query> {
+        let p = Parameters::parse(raw)?;
+        if p.cursor.is_some() || p.limit.is_some() || p.fields.is_some() || !p.sort.is_empty() {
+            return Err(Error::Invalid);
+        }
+        Query::new(self, p)
+    }
     pub fn parse(&'static self, raw: &str) -> Result<Query> {
         Query::new(self, Parameters::parse(raw)?)
     }
@@ -144,6 +151,9 @@ impl Query {
         } else {
             Err(Error::Invalid)
         }
+    }
+    pub fn cursor(&self) -> Option<&rss_contract::PageCursor> {
+        self.cursor.as_ref()
     }
     pub fn schema(&self) -> &'static Schema {
         self.schema

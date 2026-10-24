@@ -5,31 +5,12 @@ use rss_mdm_inventory::{
     ArrayState, EndpointArrayFact, EndpointSourceFact, FieldKey, Sensitivity, ValueType,
 };
 pub use rss_mdm_inventory_service::objects::ObjectRef as ViewRef;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgConnection;
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::Duration,
 };
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ViewQuery {
-    pub search: Option<String>,
-    pub platform: Option<rss_mdm_inventory::Platform>,
-    pub cursor: Option<String>,
-    #[serde(default = "limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub descending: bool,
-    pub status: Option<String>,
-    pub channel: Option<String>,
-    pub source: Option<String>,
-    pub asset_state: Option<crate::lifecycle_management::AssetState>,
-}
-fn limit() -> usize {
-    64
-}
 pub(super) struct Group {
     pub(super) reference: ViewRef,
     pub(super) association: Option<Association>,
@@ -136,33 +117,11 @@ impl Associations {
     pub async fn views(
         &self,
         proof: &AuthorizedPrincipal,
-        query: &ViewQuery,
+        query: &rss_mdm_query::directory::Query,
         personnel: &crate::personnel::Reader<'_>,
     ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
-        }
-        if query.search.as_ref().is_some_and(|s| {
-            s.trim().is_empty() || s.len() > 256 || s.chars().any(char::is_control)
-        }) || !(1..=100).contains(&query.limit)
-            || query
-                .channel
-                .as_deref()
-                .is_some_and(|c| !["mdm", "agent"].contains(&c))
-            || query.status.as_deref().is_some_and(|s| {
-                ![
-                    "active",
-                    "pending",
-                    "revoked",
-                    "superseded",
-                    "registered",
-                    "cancelled",
-                    "expired",
-                ]
-                .contains(&s)
-            })
-        {
-            return Err(Error::Malformed);
         }
         self.directory_page(proof, query, personnel).await
     }
@@ -235,7 +194,7 @@ impl Associations {
                 let catalog=rss_mdm_inventory_postgres::catalog_at_in(c,service.tenant,world.watermark).await.map_err(|_|Error::Storage)?;
                 let raw=rss_mdm_inventory_service::assets::planning::SnapshotReader{tenant:service.tenant}.summary_devices_on(c,world.watermark,&ids,&catalog,sensitive).await.map_err(|_|Error::Storage)?;
                 let observed=crate::directory::read_generation(c,proof.tenant_id()).await?;
-                let context=json!({"generation":observed,"kind":"device-inventory-list","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"view":group.summary()});
+                let context=rss_mdm_query::cursor::fingerprint(&json!({"generation":observed,"kind":"device-inventory-list","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"view":group.reference})).map_err(|_|Error::Storage)?;
                 let mut fields=BTreeMap::new();let mut lists=BTreeMap::new();
                 for definition in catalog.fields().filter(|d|sensitive||d.sensitivity==Sensitivity::Standard) {
                     if matches!(definition.value_type,ValueType::Array{..}) {
@@ -244,8 +203,10 @@ impl Associations {
                         if let Some((field,token,limit))=list && *field==definition.key {
                             let cursor=service.decode(token)?;
                             if cursor.context["view"]!=context || cursor.context["field"]!=json!(field){return Err(Error::CursorInvalidated);}
-                            let selected=cursor.context["source"].as_u64().ok_or(Error::Malformed)? as usize;
-                            let source=resolved.sources.get(selected).ok_or(Error::CursorInvalidated)?;
+                            let selected=cursor.context["source"].as_str().ok_or(Error::Malformed)?;
+                            let mut source=None;
+                            for candidate in &resolved.sources {if source_key(candidate)?==selected{source=Some(candidate);break;}}
+                            let source=source.ok_or(Error::CursorInvalidated)?;
                             let ArrayState::Known(value)=&source.fact.state else { return Err(Error::Conflict); };
                             if cursor.context["version"]!=value.version {return Err(Error::CursorInvalidated);}
                             let page=rss_mdm_inventory_postgres::arrays::page(c,service.tenant,&value.version,cursor.offset,*limit,16*1024*1024).await.map_err(|_|Error::Storage)?;
@@ -253,9 +214,9 @@ impl Associations {
                             proof.check_live()?;
                             return Ok((json!({"reference":reference,"field":field,"source":source.fact.evidence,"endpoint":source.endpoint,"total":value.count,"items":page.items,"nextCursor":next}),bindings,sensitive,grants,observed));
                         }
-                        let sources=resolved.sources.iter().enumerate().map(|(i,s)| {
+                        let sources=resolved.sources.iter().map(|s| {
                             let version=match &s.fact.state {ArrayState::Known(value)=>Some(&value.version),_=>None};
-                            Ok(json!({"endpoint":s.endpoint,"evidence":s.fact.evidence,"state":list_state(&s.fact.state)?,"lastKnown":s.fact.last_known.as_ref().map(|v|json!({"state":{"kind":"known","count":v.value.count,"digest":v.value.digest},"evidence":v.evidence})),"cursor":service.encode(json!({"view":context,"field":definition.key,"source":i,"version":version}),0)?}))
+                            Ok(json!({"endpoint":s.endpoint,"evidence":s.fact.evidence,"state":list_state(&s.fact.state)?,"lastKnown":s.fact.last_known.as_ref().map(|v|json!({"state":{"kind":"known","count":v.value.count,"digest":v.value.digest},"evidence":v.evidence})),"cursor":service.encode(json!({"view":context,"field":definition.key,"source":source_key(s)?,"version":version}),0)?}))
                         }).collect::<Result<Vec<_>>>()?;
                         lists.insert(definition.key,json!({"state":list_state(&resolved.state)?,"sources":sources,"itemKey":definition.item_key}));
                     } else {
@@ -331,4 +292,9 @@ fn list_state(state: &ArrayState) -> Result<Value> {
         ArrayState::Known(v) => json!({"kind":"known","count":v.count,"digest":v.digest}),
         s => serde_json::to_value(s).map_err(|_| Error::Storage)?,
     })
+}
+
+fn source_key(source: &EndpointArrayFact) -> Result<String> {
+    rss_mdm_query::cursor::fingerprint(&(&source.endpoint, &source.fact.evidence))
+        .map_err(|_| Error::Storage)
 }

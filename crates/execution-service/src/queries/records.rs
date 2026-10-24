@@ -18,12 +18,6 @@ impl ExecutionKind {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExecutionCursor {
-    pub id: Uuid,
-    pub kind: ExecutionKind,
-}
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Page<T, C> {
@@ -63,13 +57,14 @@ pub struct ExecutionMetadata {
     origin: Origin,
     pub policy: Option<Uuid>,
     deadline: i64,
-    status: String,
+    pub(crate) status: String,
 }
 #[derive(Serialize)]
 pub struct ExecutionSummary {
     #[serde(flatten)]
     pub metadata: ExecutionMetadata,
-    pub evidence: ExecutionEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<ExecutionEvidence>,
 }
 #[derive(Deserialize)]
 pub(crate) struct DirectoryItem {
@@ -100,7 +95,7 @@ pub struct RunEvidence {
     effect: String,
     result: Option<SummaryResult>,
 }
-pub type ExecutionDirectory = Directory<ExecutionSummary, ExecutionCursor, ExecutionStatistics>;
+pub type ExecutionDirectory = Page<ExecutionSummary, String>;
 
 #[derive(Serialize)]
 #[serde(transparent)]

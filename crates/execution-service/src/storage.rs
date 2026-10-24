@@ -28,6 +28,14 @@ pub async fn load(
 ) -> Result<Operation> {
     let tenant = tx.tenant_id();
     let row=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=$2::uuid").bind(tenant.to_string()).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingOperation))?;
+    decode_operation(protection, tenant, id, &row)
+}
+fn decode_operation(
+    protection: &rss_mdm_native_protection::Protector,
+    tenant: TenantId,
+    id: Uuid,
+    row: &sqlx::postgres::PgRow,
+) -> Result<Operation> {
     Ok(Operation {
         id,
         device: row.try_get("device")?,
@@ -50,6 +58,39 @@ pub async fn load(
         registration: row.try_get("registration")?,
         registration_generation: row.try_get("registration_generation")?,
     })
+}
+
+/// One bounded provider read for the current authorized page's protected inputs.
+pub(crate) async fn load_many(
+    tx: &mut PgTransaction<'_>,
+    protection: &rss_mdm_native_protection::Protector,
+    ids: Vec<Uuid>,
+) -> Result<std::collections::BTreeMap<Uuid, Operation>> {
+    if ids.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let count = ids.len();
+    let tenant = tx.tenant_id();
+    let rows=tx.with_connection(move|c|Box::pin(async move{
+  sqlx::query("WITH selected AS MATERIALIZED (SELECT o.id,o.device,o.dispatch_failure,o.request,o.input_context,o.authority::text,o.revision,o.generation,o.epoch,o.registration,o.registration_generation,o.gateway_accepted,d.command_device::text FROM mdm_commands.operations o JOIN mdm_commands.devices d USING(tenant_id,device) WHERE o.tenant_id=$1::uuid AND o.id=ANY($2)), budget AS (SELECT coalesce(sum(octet_length(request)+octet_length(authority)+octet_length(input_context::text)+coalesce(octet_length(dispatch_failure::text),0)+1024),0)<=16777216 AS ok FROM selected) SELECT id,device,dispatch_failure,CASE WHEN budget.ok THEN request END AS request,input_context,authority,revision,generation,epoch,registration,registration_generation,gateway_accepted,command_device,budget.ok AS within_budget FROM selected CROSS JOIN budget WHERE budget.ok")
+  .bind(tenant.to_string()).bind(ids).fetch_all(c).await
+ })).await?;
+    rss_mdm_query_postgres::observe_rows("execution.inputs", &rows)?;
+    if rows.len() != count {
+        return Err(Error::Conflict.into());
+    }
+    let mut result = std::collections::BTreeMap::new();
+    for row in rows {
+        if !row.try_get::<bool, _>("within_budget")? {
+            return Err(Error::Conflict.into());
+        }
+        let id = row.try_get("id")?;
+        result.insert(id, decode_operation(protection, tenant, id, &row)?);
+    }
+    Ok(result)
 }
 
 /// Existing execute evidence may settle after source retirement; it cannot authorize a new attempt.

@@ -1243,6 +1243,51 @@
       ""
     ],
     [
+      "query_command_versions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "query_command_versions",
+      "command_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "query_command_versions",
+      "version",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "query_revisions",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "query_revisions",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "requests",
       "tenant_id",
       "uuid",
@@ -2240,6 +2285,41 @@
       true
     ],
     [
+      "query_command_versions",
+      "query_command_versions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, command_id)",
+      true
+    ],
+    [
+      "query_command_versions",
+      "query_command_versions_tenant_id_command_id_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, command_id) REFERENCES mdm_commands.operations(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED",
+      true
+    ],
+    [
+      "query_command_versions",
+      "query_command_versions_version_check",
+      "c",
+      "CHECK ((version > 0))",
+      true
+    ],
+    [
+      "query_revisions",
+      "query_revisions_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id)",
+      true
+    ],
+    [
+      "query_revisions",
+      "query_revisions_revision_check",
+      "c",
+      "CHECK ((revision >= 0))",
+      true
+    ],
+    [
       "requests",
       "requests_actor_check",
       "c",
@@ -2543,6 +2623,22 @@
       true
     ],
     [
+      "query_command_versions",
+      "query_command_versions_pkey",
+      "CREATE UNIQUE INDEX query_command_versions_pkey ON mdm_commands.query_command_versions USING btree (tenant_id, command_id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "query_revisions",
+      "query_revisions_pkey",
+      "CREATE UNIQUE INDEX query_revisions_pkey ON mdm_commands.query_revisions USING btree (tenant_id)",
+      true,
+      true,
+      true
+    ],
+    [
       "requests",
       "requests_pkey",
       "CREATE UNIQUE INDEX requests_pkey ON mdm_commands.requests USING btree (tenant_id, actor, id)",
@@ -2613,6 +2709,78 @@
       true,
       true,
       true
+    ]
+  ],
+  "queryFunctions": [
+    "CREATE OR REPLACE FUNCTION mdm_commands.advance_query_revision(tenant uuid)\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n IF tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN RAISE EXCEPTION 'tenant context mismatch'; END IF;\n INSERT INTO mdm_commands.query_revisions VALUES(tenant,1) ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_commands.query_revisions.revision+1;\nEND $function$\n",
+    "CREATE OR REPLACE FUNCTION mdm_commands.capture_query_revision()\n RETURNS trigger\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;\n PERFORM mdm_commands.advance_query_revision(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END);\n RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;\nEND $function$\n",
+    "CREATE OR REPLACE FUNCTION mdm_commands.lock_query_revision(tenant uuid)\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nBEGIN\n IF tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN RAISE EXCEPTION 'tenant context mismatch'; END IF;\n INSERT INTO mdm_commands.query_revisions VALUES(tenant,0) ON CONFLICT(tenant_id) DO NOTHING;\n PERFORM 1 FROM mdm_commands.query_revisions WHERE tenant_id=tenant FOR UPDATE;\nEND $function$\n",
+    "CREATE OR REPLACE FUNCTION mdm_commands.observe_query_commands(tenant uuid, ids text[], versions bigint[])\n RETURNS void\n LANGUAGE plpgsql\n SECURITY DEFINER\n SET search_path TO 'pg_catalog'\nAS $function$\nDECLARE changed boolean;\nBEGIN\n PERFORM mdm_commands.lock_query_revision(tenant);\n IF cardinality(ids)>1000 OR cardinality(ids)<>cardinality(versions) THEN RAISE EXCEPTION 'query witness budget'; END IF;\n WITH updated AS (\n  INSERT INTO mdm_commands.query_command_versions SELECT tenant,id::uuid,version FROM unnest(ids,versions) q(id,version)\n  ON CONFLICT(tenant_id,command_id) DO UPDATE SET version=excluded.version\n  WHERE mdm_commands.query_command_versions.version<>excluded.version RETURNING 1\n ) SELECT EXISTS(SELECT FROM updated) INTO changed;\n IF changed THEN PERFORM mdm_commands.advance_query_revision(tenant); END IF;\nEND $function$\n"
+  ],
+  "queryTriggers": [
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_access.agent_bootstraps FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_access.agent_grants FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_access.management_messages FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_access.registrations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_apple.attempts FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_apple.declarations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_apple.profiles FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_apple.status_reports FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_commands.attempt_frames FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_commands.attempt_items FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_commands.attempts FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_commands.operations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
+    ],
+    [
+      "O",
+      "CREATE TRIGGER execution_query_revision AFTER INSERT OR DELETE OR UPDATE ON mdm_windows.collections FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision()"
     ]
   ],
   "softwareBindingTrigger": [

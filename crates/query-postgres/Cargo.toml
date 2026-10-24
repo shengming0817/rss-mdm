@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+tracing.workspace = true
 rss-mdm-query.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

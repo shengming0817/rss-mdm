@@ -32,7 +32,11 @@ impl AssetService {
         let JobInput::AssetQuery { scope: owner, .. } = job else {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
-        if &owner != scope {
+        if owner.subject != scope.subject
+            || owner.collection_scope != scope.collection_scope
+            || owner.devices != scope.devices
+            || owner.sensitive != scope.sensitive
+        {
             return Err(Error::Forbidden.into());
         }
         let status = if failure.is_some() {
@@ -151,6 +155,7 @@ impl AssetService {
             sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::text[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
                 .bind(tenant).bind(task.to_string()).bind(ids).fetch_all(c).await
         })).await?;
+        rss_mdm_query_postgres::observe_rows("assets.results", &rows)?;
         let mut items = Vec::new();
         for row in rows {
             let raw: Vec<u8> = row.try_get("document")?;

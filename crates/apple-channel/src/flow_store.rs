@@ -305,6 +305,47 @@ impl channels::AppleCollections for Store {
     }
 }
 impl channels::AppleResults for Store {
+    fn evidence_page<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        requests: Vec<(Uuid, rss_mdm_apple_mdm::native::request::Request)>,
+        native_values: bool,
+    ) -> Pending<'a, std::collections::BTreeMap<Uuid, channels::AppleEvidence>> {
+        Box::pin(async move {
+            if requests.len() > 1000 {
+                return Err(channels::Rejection::Malformed);
+            }
+            let (declarations, other): (Vec<_>, Vec<_>) =
+                requests.into_iter().partition(|(_, r)| {
+                    matches!(
+                        r,
+                        rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
+                    )
+                });
+            let ids = declarations.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            let mut facts =
+                crate::ddm::observations(c, &self.protection, &tenant, ids.clone(), native_values)
+                    .await?;
+            let mut result = ids
+                .into_iter()
+                .map(|id| (id, channels::AppleEvidence::Declarations(facts.remove(&id))))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            result.extend(
+                crate::evidence::observations_many(
+                    c,
+                    &self.protection,
+                    &tenant,
+                    other,
+                    native_values,
+                )
+                .await?
+                .into_iter()
+                .map(|(id, rows)| (id, channels::AppleEvidence::Observations(rows))),
+            );
+            Ok(result)
+        })
+    }
     fn purge_credential_inputs<'a>(
         &'a self,
         c: &'a mut PgConnection,

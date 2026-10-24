@@ -131,6 +131,7 @@ pub struct Owner {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReadScope {
+    pub authority: String,
     pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub subject: String,
     pub sensitive: bool,
@@ -141,6 +142,7 @@ impl ReadScope {
         Self {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "group".into(),
+            authority: "internal".into(),
             sensitive: true,
             devices: None,
         }
@@ -148,7 +150,13 @@ impl ReadScope {
     pub fn from_proof(
         p: &crate::authorization::context::AuthorizedPrincipal,
     ) -> std::result::Result<Self, Error> {
-        let sensitive = match p.authorization()?.require(
+        Self::from_snapshot(p, p.authorization()?)
+    }
+    pub(super) fn from_snapshot(
+        p: &crate::authorization::context::AuthorizedPrincipal,
+        snapshot: &crate::authorization::Snapshot,
+    ) -> std::result::Result<Self, Error> {
+        let sensitive = match snapshot.require(
             p,
             crate::authorization::Permission::InventorySensitiveRead,
             None,
@@ -161,7 +169,8 @@ impl ReadScope {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             sensitive,
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
-            devices: p.authorization()?.inventory_devices(p)?,
+            devices: snapshot.inventory_devices(p)?,
+            authority: snapshot.query_binding(p)?,
         })
     }
     pub fn full(&self) -> std::result::Result<(), AssetError> {
@@ -231,7 +240,7 @@ pub enum Response {
         run: Uuid,
         field: FieldKey,
         items: Vec<ItemQualityView>,
-        next_offset: Option<usize>,
+        next_cursor: Option<String>,
     },
     ListItems {
         device: String,
@@ -272,9 +281,13 @@ pub enum Response {
         task: Uuid,
         status_url: String,
     },
-    Fields {
+    FieldList {
         dictionary: String,
-        fields: Vec<super::FieldView>,
+        items: Vec<Value>,
+        next_cursor: Option<String>,
+    },
+    FieldDescriptor {
+        field: Value,
     },
     Detail {
         device: DeviceView,
@@ -326,7 +339,7 @@ pub enum Command {
         run: Uuid,
         field: FieldKey,
         scope: ReadScope,
-        offset: usize,
+        cursor: Option<String>,
         limit: usize,
     },
     ListItems {
@@ -366,7 +379,6 @@ pub enum Command {
         limit: usize,
         cursor: Option<String>,
     },
-    Fields,
     Detail {
         device: String,
         scope: ReadScope,

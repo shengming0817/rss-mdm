@@ -145,7 +145,7 @@ impl Associations {
         proof: &AuthorizedPrincipal,
         device: &str,
         selected: Channel,
-        after: Option<&str>,
+        token: Option<&str>,
         limit: usize,
     ) -> Result<CandidatePage> {
         if !(1..=100).contains(&limit) || !model::text(device) {
@@ -155,22 +155,26 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(proof,device,after,selected),|(proof,device,after,selected),tx|Box::pin(async move {
-            tx.with_connection_context(&mut (*proof,*device,*after,*selected),|(proof,device,after,selected),c|Box::pin(async move {
+        self.audit.read(self.tenant,&budget.control(),(self,proof,device,token,selected),|(service,proof,device,token,selected),tx|Box::pin(async move {
+            tx.with_connection_context(&mut (*service,*proof,*device,*token,*selected),|(service,proof,device,token,selected),c|Box::pin(async move {
                 let snapshot=authorization(c,proof).await?;
                 snapshot.require(proof,Permission::InventoryRead,Some(device))?;
                 snapshot.require(proof,Permission::DeviceAssociationWrite,Some(device))?;
                 if endpoints::current_in(c,proof.tenant_id(),device,*selected).await?.is_none(){return Err(Error::Conflict);}
+                let generation=directory::read_generation(c,proof.tenant_id()).await?;
+                let binding=rss_mdm_query::cursor::fingerprint(&("association-candidates",proof.tenant_id(),proof.instance_id(),proof.principal_id(),*device,*selected,snapshot.query_binding(proof)?,generation)).map_err(|_|Error::Malformed)?;
+                let codec=rss_mdm_query::cursor::CursorCodec::from_key(service.key.clone());
+                let after:Option<String>=token.map(|token|codec.decode(&rss_contract::PageCursor::parse(token).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::CursorInvalidated)).transpose()?;
                 let channel=if *selected==Channel::Mdm{Channel::Agent}else{Channel::Mdm};
                 let allowed=snapshot.inventory_devices(proof)?.map(|s|s.into_iter().collect::<Vec<_>>());
                 let writable=snapshot.devices_for(proof,Permission::DeviceAssociationWrite)?.map(|s|s.into_iter().collect::<Vec<_>>());
                 let rows=sqlx::query("SELECT r.device,r.id,r.generation FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.channel=$2 AND r.purpose='primary' AND r.state='active' AND r.device<>$3 AND ($4::text IS NULL OR r.device COLLATE \"C\">$4 COLLATE \"C\") AND ($5::text[] IS NULL OR r.device=ANY($5)) AND ($6::text[] IS NULL OR r.device=ANY($6)) AND EXISTS(SELECT FROM mdm_access.credentials k WHERE (k.tenant_id,k.registration)=(r.tenant_id,r.id) AND k.state='active') AND NOT EXISTS(SELECT FROM mdm_devices.members m WHERE (m.tenant_id,m.device)=(r.tenant_id,r.device) AND NOT m.released) ORDER BY r.device COLLATE \"C\" LIMIT $7")
-                    .bind(proof.tenant_id()).bind(channel.as_str()).bind(*device).bind(*after).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
+                    .bind(proof.tenant_id()).bind(channel.as_str()).bind(*device).bind(after).bind(allowed).bind(writable).bind((limit+1) as i64).fetch_all(c).await?;
                 let mut items=rows.into_iter().map(|row|Ok(Member {
                     device:row.try_get("device")?,channel,registration_id:row.try_get("id")?,generation:row.try_get("generation")?,
                 })).collect::<Result<Vec<_>>>()?;
                 let more=items.len()>limit;items.truncate(limit);
-                let next_cursor=more.then(||items.last().expect("lookahead").device.clone());
+                let next_cursor=if more{Some(codec.encode(&binding,&items.last().ok_or(Error::Storage)?.device).map_err(|_|Error::Malformed)?.as_str().to_owned())}else{None};
                 proof.check_live()?;
                 Ok(CandidatePage {items,next_cursor})
             })).await

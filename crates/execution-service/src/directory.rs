@@ -1,110 +1,158 @@
 //! Cross-device read projections retain the existing command and action-run owners.
 use super::*;
 use crate::authorization::{Permission, context::AuthorizedPrincipal};
-use serde::Deserialize;
+use rss_mdm_query::{
+    cursor::CursorCodec,
+    directory::{Field, Kind, Query, Schema},
+};
 use serde_json::{Value, json};
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Query {
-    pub after: Option<Uuid>,
-    pub after_kind: Option<String>,
-    #[serde(default = "limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub descending: bool,
-    pub device: Option<String>,
-    pub kind: Option<String>,
-    pub policy: Option<Uuid>,
-    pub status: Option<String>,
-}
-fn limit() -> usize {
-    64
-}
-impl Query {
-    fn validate(&self) -> std::result::Result<(), Error> {
-        if self.after.is_some() != self.after_kind.is_some()
-            || self
-                .after_kind
-                .as_deref()
-                .is_some_and(|v| !["command", "action_run"].contains(&v))
-            || !(1..=1000).contains(&self.limit)
-            || self.after.is_some_and(|id| id.is_nil())
-            || self.policy.is_some_and(|id| id.is_nil())
-            || self
-                .device
-                .as_ref()
-                .is_some_and(|id| rss_observation::Id::new(id).is_err())
-            || self
-                .kind
-                .as_deref()
-                .is_some_and(|v| !["command", "action_run"].contains(&v))
-            || self
-                .status
-                .as_ref()
-                .is_some_and(|v| v.is_empty() || v.len() > 64)
-        {
-            return Err(Error::Malformed);
-        }
-        Ok(())
+pub static SCHEMA: Schema = Schema {
+    id: "executions",
+    keys: &["id", "kind"],
+    default_limit: 64,
+    max_limit: 1000,
+    fields: &[
+        Field::scalar("id", Kind::Uuid),
+        Field::scalar("kind", Kind::Enum(&["command", "action_run"])),
+        Field::scalar("device", Kind::Text),
+        Field::scalar("policy", Kind::Uuid),
+        Field::scalar("status", Kind::Text),
+        Field::scalar("registrationId", Kind::Uuid),
+        Field::scalar("generation", Kind::Integer),
+        Field::scalar("origin", Kind::Enum(&["direct", "policy"])),
+        Field::scalar("deadline", Kind::Integer),
+        Field::output("evidence"),
+        Field::output("detailUrl"),
+    ],
+};
+fn query_error(e: rss_mdm_query::Error) -> Error {
+    match e {
+        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        _ => Error::Malformed,
     }
+}
+fn column(name: &str) -> &'static str {
+    match name {
+        "id" => "id::text COLLATE \"C\"",
+        "kind" => "kind COLLATE \"C\"",
+        "device" => "device COLLATE \"C\"",
+        "policy" => "policy::text COLLATE \"C\"",
+        "status" => "status COLLATE \"C\"",
+        "registrationId" => "registration::text COLLATE \"C\"",
+        "generation" => "generation",
+        "origin" => "source_kind COLLATE \"C\"",
+        "deadline" => "deadline",
+        _ => unreachable!("checked execution field"),
+    }
+}
+fn relation(
+    tenant: String,
+    allowed: Option<Vec<String>>,
+    evidence: bool,
+) -> sqlx::QueryBuilder<sqlx::Postgres> {
+    let mut sql = sqlx::QueryBuilder::new(
+        "WITH executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status,NULL::jsonb AS evidence FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=",
+    );
+    sql.push_bind(tenant).push("::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown'),");
+    if evidence {
+        sql.push("jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',").push(actions::history::RESULT_SUMMARY_SQL).push(")");
+    } else {
+        sql.push("NULL::jsonb");
+    }
+    sql.push(" FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE ");
+    if let Some(ids) = allowed {
+        sql.push("device=ANY(").push_bind(ids).push(")");
+    } else {
+        sql.push("true");
+    }
+    sql.push(") ");
+    sql
 }
 impl crate::queries::Queries {
     pub async fn directory(
         &self,
         proof: &AuthorizedPrincipal,
-        page: &Query,
+        q: &Query,
+        codec: &CursorCodec,
         audit: &RequestAudit,
     ) -> std::result::Result<crate::queries::records::ExecutionDirectory, crate::queries::QueryError>
     {
-        page.validate()?;
+        q.require_schema(&SCHEMA).map_err(query_error)?;
         proof
             .authorization()?
             .devices_for(proof, Permission::OperationRead)?;
-        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,page,audit),|ctx,tx|Box::pin(async move {
-            let (s,a,page,audit)=*ctx;
-            let current=crate::action_admission::current(tx,a).await?;
-            let allowed=current.devices_for(a,Permission::OperationRead)?.map(|v|v.into_iter().collect::<Vec<_>>());
-            let tenant=tx.tenant_id().to_string();let page=page.clone();
-            let mut query=sqlx::QueryBuilder::<sqlx::Postgres>::new("WITH executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,o.input_context->>'deadline' AS deadline,coalesce(d.status,'unknown') AS status,jsonb_build_object('commandStatus',d.status) AS evidence FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline::text,coalesce(r.state->>'execution','unknown'),jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',");
-            query.push(actions::history::RESULT_SUMMARY_SQL).push(") FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE ($2::text[] IS NULL OR device=ANY($2)) AND ($3::text IS NULL OR device=$3) AND ($4::text IS NULL OR kind=$4) AND ($5::uuid IS NULL OR policy=$5) AND ($6::text IS NULL OR status=$6)), page AS (SELECT * FROM visible WHERE ($7::uuid IS NULL OR CASE WHEN $8 THEN (id,kind)<($7,$10::text) ELSE (id,kind)>($7,$10::text) END) ORDER BY CASE WHEN NOT $8 THEN id END ASC,CASE WHEN $8 THEN id END DESC,CASE WHEN NOT $8 THEN kind END ASC,CASE WHEN $8 THEN kind END DESC LIMIT $9) SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline::bigint,'status',status,'evidence',evidence) ORDER BY CASE WHEN NOT $8 THEN id END ASC,CASE WHEN $8 THEN id END DESC,CASE WHEN NOT $8 THEN kind END ASC,CASE WHEN $8 THEN kind END DESC) FROM page),'[]'::jsonb),'statistics',(SELECT jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')) FROM visible),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint)");
-            let sql=query.sql().to_owned();
-            let mut value:Value=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar(sql).bind(tenant).bind(allowed).bind(page.device).bind(page.kind).bind(page.policy)
-                    .bind(page.status).bind(page.after).bind(page.descending).bind((page.limit+1) as i64).bind(page.after_kind).fetch_one(c).await
-            })).await?;
-            let items=value["items"].as_array_mut().ok_or(Error::Malformed)?;let more=items.len()>page.limit;items.truncate(page.limit);
-            let next=if more{items.last().map(|v|json!({"id":v["id"],"kind":v["kind"]}))}else{None};value["nextCursor"]=next.unwrap_or(Value::Null);
-            use crate::queries::records::{self, Directory, DirectoryItem, ExecutionEvidence, ExecutionSummary};
-            let raw: Directory<DirectoryItem, records::ExecutionCursor, records::ExecutionStatistics> = records::decode(value)?;
-            let mut items = Vec::with_capacity(raw.items.len());
-            for item in raw.items {
-                let evidence = match item.metadata.kind {
-                    records::ExecutionKind::Command => {
-                        let op = storage::load(tx, &s.protection, item.metadata.id).await?;
-                        let command = s.command_status(tx, &op).await?;
-                        let mut observation = super::protocol::observation(tx, &s.protection,
-                            s.apple_results.clone(), &op, command, false).await?;
-                        observation.redact_values();
-                        let agent_installation = if op.authority.agent_package().is_some() {
-                            Some(records::decode(super::native_installation::installation_observation(
-                                tx, s.apple_results.clone(), s.agent_store.clone(), &op).await?)?)
-                        } else { None };
-                        ExecutionEvidence::Command(Box::new(records::CommandEvidence {
-                            command_status: crate::service::status(command).into(), observation,
-                            dispatch_failure: op.dispatch_failure, agent_installation,
-                        }))
-                    }
-                    records::ExecutionKind::ActionRun => ExecutionEvidence::Run(records::decode(item.evidence)?),
-                };
-                items.push(ExecutionSummary { metadata: item.metadata, evidence });
-            }
-            a.check_live()?;
-            audit.require_request_settlement();
-            Ok(Directory { items, next_cursor: raw.next_cursor, statistics: raw.statistics, as_of: raw.as_of })
-        })).await.map_err(Into::into)
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,proof,q,codec,audit),|ctx,tx|Box::pin(async move{
+   let(s,p,q,codec,audit)=*ctx;
+   let current=crate::action_admission::current(tx,p).await?;
+   let grant=current.query_binding(p)?;
+   let generation=crate::query_generation::read(tx).await?;
+   let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),&grant,generation)).map_err(query_error)?;
+   let after=q.after(codec,&binding).map_err(query_error)?;
+   let allowed=current.devices_for(p,Permission::OperationRead)?.map(|v|v.into_iter().collect());
+   let mut sql=relation(p.tenant_id().to_owned(),allowed,q.selects("evidence"));
+   sql.push("SELECT jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'evidence',evidence) FROM visible WHERE true");
+   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(query_error)?;
+   let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+   let page=q.unprojected_page(rows,codec,&binding).map_err(query_error)?;
+   use crate::queries::records::{self,DirectoryItem,ExecutionEvidence,ExecutionSummary};
+   let command_ids=if q.selects("evidence"){page.items.iter().filter(|v|v["kind"]=="command").map(|v|v["id"].as_str().ok_or(Error::Malformed).and_then(|id|Uuid::parse_str(id).map_err(|_|Error::Malformed))).collect::<std::result::Result<Vec<_>,_>>()?}else{Vec::new()};
+   let mut commands=storage::load_many(tx,&s.protection,command_ids).await?;
+   let windows=page.items.iter().filter_map(|v|{
+    if v["kind"]!="command"{return None;}
+    let id=v["id"].as_str().and_then(|id|Uuid::parse_str(id).ok())?;
+    let op=commands.get(&id)?;
+    if !matches!(op.request.task,Task::Windows{..}){return None;}
+    Some(v["status"].as_str().ok_or(Error::Malformed).and_then(|status|dc::Status::restore(status).map_err(|_|Error::Malformed)).map(|status|(op,status)))
+   }).collect::<std::result::Result<Vec<_>,_>>()?;
+   let mut windows=super::protocol::windows_observations(tx,&s.protection,&windows,false).await?;
+   let apples=page.items.iter().filter_map(|v|{
+    if v["kind"]!="command"{return None;}
+    let id=v["id"].as_str().and_then(|id|Uuid::parse_str(id).ok())?;let op=commands.get(&id)?;
+    if !matches!(op.request.task,Task::Macos{..}){return None;}
+    Some(v["status"].as_str().ok_or(Error::Malformed).and_then(|status|dc::Status::restore(status).map_err(|_|Error::Malformed)).map(|status|(op,status)))
+   }).collect::<std::result::Result<Vec<_>,_>>()?;
+   let mut apples=super::apple::observations(tx,s.apple_results.clone(),&apples,false).await?;
+   let install_ops=commands.values().filter(|op|op.authority.agent_package().is_some()).collect::<Vec<_>>();
+   let mut installations=super::native_installation::installation_observations(tx,s.apple_results.clone(),s.agent_store.clone(),&install_ops).await?;
+   let mut items=Vec::new();
+   for value in page.items {
+    let item:DirectoryItem=records::decode(value)?;
+    let evidence=if !q.selects("evidence"){None}else{Some(match item.metadata.kind{
+     records::ExecutionKind::Command=>{
+      let op=commands.remove(&item.metadata.id).ok_or(Error::Conflict)?;
+      let command=stored(dc::Status::restore(&item.metadata.status))?;
+      let mut observation=if matches!(op.request.task,Task::Windows{..}){windows.remove(&op.id).ok_or(Error::Conflict)?}else{apples.remove(&op.id).ok_or(Error::Conflict)?};
+      observation.redact_values();
+      let agent_installation=if op.authority.agent_package().is_some(){Some(records::decode(installations.remove(&op.id).ok_or(Error::Conflict)?)?)}else{None};
+      ExecutionEvidence::Command(Box::new(records::CommandEvidence{command_status:crate::service::status(command).into(),observation,dispatch_failure:op.dispatch_failure,agent_installation}))
+     },
+     records::ExecutionKind::ActionRun=>ExecutionEvidence::Run(records::decode(item.evidence)?),
+    })};
+    items.push(ExecutionSummary{metadata:item.metadata,evidence});
+   }
+   if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
+   p.check_live()?;audit.require_request_settlement();Ok(records::Page{items,next_cursor:page.next_cursor})
+  })).await.map_err(Into::into)
     }
-
+    pub async fn directory_statistics(
+        &self,
+        p: &AuthorizedPrincipal,
+        q: &Query,
+        audit: &RequestAudit,
+    ) -> std::result::Result<Value, crate::queries::QueryError> {
+        q.require_schema(&SCHEMA).map_err(query_error)?;
+        crate::transaction::inspect(&self.runtime,self.tenant,(self,p,q,audit),|ctx,tx|Box::pin(async move{
+   let(_,p,q,audit)=*ctx;let current=crate::action_admission::current(tx,p).await?;
+   let grant=current.query_binding(p)?;let generation=crate::query_generation::read(tx).await?;
+   let allowed=current.devices_for(p,Permission::OperationRead)?.map(|v|v.into_iter().collect());
+   let mut sql=relation(p.tenant_id().to_owned(),allowed,false);
+   sql.push("SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM visible WHERE true");
+   rss_mdm_query_postgres::filter(&mut sql,q,column).map_err(query_error)?;
+   let value=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_one(c).await})).await?;
+   if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
+   p.check_live()?;audit.require_request_settlement();Ok(value)
+  })).await.map_err(Into::into)
+    }
     pub async fn directory_capabilities(
         &self,
         proof: &AuthorizedPrincipal,

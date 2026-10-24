@@ -1,16 +1,15 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
-use rss_mdm_device_service::{Associations, Confirm, Revoke, ViewQuery, ViewRef};
+use rss_mdm_device_service::{Associations, Confirm, Revoke, ViewRef};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -22,7 +21,13 @@ pub fn routes(
     Router::new()
         .route(
             "/device-views",
-            get(list).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::DEVICE_VIEWS, &[RouteOperation::List])
+                .queried(&rss_mdm_device_service::directory::SCHEMA),
+        )
+        .route(
+            "/device-views/statistics",
+            get(statistics).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Query]),
         )
         .route(
             "/device-retirements/{id}",
@@ -42,15 +47,23 @@ pub fn routes(
         )
         .route(
             "/device-views/{kind}/{id}/inventory-lists/{field}",
-            get(items).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Action]),
+            get(items)
+                .owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Action])
+                .windowed(&rss_mdm_device_service::association_directory::SOURCE_ITEMS),
         )
         .route(
             "/device-associations",
-            post(confirm).owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Create]),
+            post(confirm)
+                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::Create])
+                .get(association_list)
+                .owned(&contracts::DEVICE_ASSOCIATIONS, &[RouteOperation::List])
+                .queried(&rss_mdm_device_service::association_directory::SCHEMA),
         )
         .route(
             "/device-associations/changes",
-            get(changes).owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List]),
+            get(changes)
+                .owned(&contracts::ASSOCIATION_CHANGES, &[RouteOperation::List])
+                .windowed(&rss_mdm_device_service::changes::SCHEMA),
         )
         .route(
             "/device-associations/{id}",
@@ -65,7 +78,9 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/association-candidates",
-            get(candidates).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(candidates)
+                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_device_service::association_directory::CANDIDATES),
         )
         .layer(Extension(sessions))
         .layer(Extension(identity))
@@ -91,13 +106,48 @@ async fn list(
     >,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: Result<Query<ViewQuery>, axum::extract::rejection::QueryRejection>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_view_read");
     Ok(Json(
         s.views(
             &a.proof,
-            &query.map_err(|_| Error::Malformed)?.0,
+            &rss_mdm_device_service::directory::parse(raw.as_deref().unwrap_or(""))
+                .map_err(|_| Error::Malformed)?,
+            &rss_mdm_device_service::personnel::Reader::new(
+                &identity,
+                deadline.0,
+                &rss_mdm_audit_integration::budget::RuntimeTimer,
+                platform.as_ref(),
+            ),
+        )
+        .await?,
+    ))
+}
+async fn statistics(
+    State(s): State<Arc<Associations>>,
+    (Extension(identity), Extension(deadline)): (
+        Extension<rss_identity_postgres::Authority>,
+        Extension<crate::runtime_diagnostics::RequestDeadline>,
+    ),
+    Extension(platform): Extension<
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
+    >,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("device_view_read");
+    let mut query = rss_mdm_device_service::directory::SCHEMA
+        .statistics(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    query
+        .default_filter("assetState", "active")
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(
+        s.statistics(
+            &a.proof,
+            &query,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
                 deadline.0,
@@ -141,16 +191,6 @@ async fn detail(
         .await?,
     ))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Items {
-    cursor: String,
-    #[serde(default = "limit")]
-    limit: usize,
-}
-fn limit() -> usize {
-    64
-}
 async fn items(
     State(s): State<Arc<Associations>>,
     (Extension(identity), Extension(deadline)): (
@@ -163,16 +203,18 @@ async fn items(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id, field)): Path<(String, String, String)>,
-    query: Result<Query<Items>, axum::extract::rejection::QueryRejection>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_view_read");
-    let q = query.map_err(|_| Error::Malformed)?.0;
+    let (q, _) = rss_mdm_device_service::association_directory::SOURCE_ITEMS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.list_items(
             &a.proof,
             &reference(kind, id)?,
             rss_mdm_inventory::FieldKey::parse(&field).map_err(|_| Error::Malformed)?,
-            &q.cursor,
+            q.cursor.as_deref().ok_or(Error::Malformed)?,
             q.limit,
             &rss_mdm_device_service::personnel::Reader::new(
                 &identity,
@@ -218,45 +260,41 @@ async fn revoke(
             .await?,
     ))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Candidates {
-    channel: rss_mdm_inventory::Channel,
-    after: Option<String>,
-    #[serde(default = "limit")]
-    limit: usize,
-}
 async fn candidates(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    query: Result<Query<Candidates>, axum::extract::rejection::QueryRejection>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<rss_mdm_device_service::CandidatePage>, Error> {
     audit.set_action("device_association_read");
-    let q = query.map_err(|_| Error::Malformed)?.0;
+    let (q, context) = rss_mdm_device_service::association_directory::CANDIDATES
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    let channel = serde_json::from_value(Value::String(
+        context.get("channel").ok_or(Error::Malformed)?.clone(),
+    ))
+    .map_err(|_| Error::Malformed)?;
     Ok(Json(
-        s.candidates(&a.proof, &device, q.channel, q.after.as_deref(), q.limit)
+        s.candidates(&a.proof, &device, channel, q.cursor.as_deref(), q.limit)
             .await?,
     ))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Changes {
-    cursor: Option<String>,
-}
 async fn changes(
     State(s): State<Arc<Associations>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: Result<Query<Changes>, axum::extract::rejection::QueryRejection>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("device_association_read");
     Ok(Json(
         s.changes(
             &a.proof,
-            query.map_err(|_| Error::Malformed)?.0.cursor.as_deref(),
+            &rss_mdm_device_service::changes::SCHEMA
+                .parse(raw.as_deref().unwrap_or(""))
+                .map_err(|_| Error::Malformed)?
+                .0,
         )
         .await?,
     ))
@@ -305,4 +343,17 @@ async fn asset_state(
         )
         .await?,
     ))
+}
+
+async fn association_list(
+    State(s): State<Arc<Associations>>,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, Error> {
+    audit.set_action("device_association_read");
+    let q = rss_mdm_device_service::association_directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(s.directory(&a.proof, &q).await?))
 }

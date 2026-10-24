@@ -23,6 +23,14 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, devices, proof) = ctx;
+                    let current = crate::transaction::query_authority(tx, proof).await?;
+                    for device in devices.iter() {
+                        current.require(
+                            proof,
+                            rss_mdm_authorization_service::Permission::InventoryRead,
+                            Some(device),
+                        )?;
+                    }
                     let watermark = s.list_watermark(tx).await?;
                     let catalog = catalog_in(tx, s.tenant, watermark).await?;
                     let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();

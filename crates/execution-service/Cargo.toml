@@ -7,6 +7,8 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-query.workspace = true
+rss-mdm-query-postgres.workspace = true
 rss-mdm-webhook-service.workspace = true
 rss-mdm-device-service.workspace = true
 rss-mdm-recovery-credentials.workspace = true

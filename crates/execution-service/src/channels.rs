@@ -244,7 +244,19 @@ pub trait ApplePush: Send + Sync {
         registration: Uuid,
     ) -> Pending<'a, bool>;
 }
+pub enum AppleEvidence {
+    Declarations(Option<rss_mdm_apple_mdm::native::evidence::DeclarationEvidence>),
+    Observations(Vec<rss_mdm_apple_mdm::native::evidence::Observation>),
+}
 pub trait AppleResults: Send + Sync {
+    /// Bounded evidence for one authorized page; all native decoding stays with Apple.
+    fn evidence_page<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: String,
+        requests: Vec<(Uuid, rss_mdm_apple_mdm::native::request::Request)>,
+        native_values: bool,
+    ) -> Pending<'a, std::collections::BTreeMap<Uuid, AppleEvidence>>;
     /// Purge input copies only after execution delivery settles and the material owner permits expiry.
     fn purge_credential_inputs<'a>(
         &'a self,
