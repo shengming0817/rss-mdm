@@ -7,10 +7,11 @@ type Worker = crate::automation::Automation;
 
 async fn connect(service: &Arc<Planning>) -> Arc<Worker> {
     Worker::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(service).await,
         compliance(service).await,
-        options(),
     )
     .await
     .unwrap()
@@ -89,7 +90,7 @@ async fn release(worker: &Worker, claim: &PgClaim) {
 }
 
 async fn close(worker: Arc<Worker>, service: &Planning) {
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;

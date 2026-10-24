@@ -43,10 +43,13 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        f.app.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            f.app.flow.planning.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
         f.app.flow.assets.clone(),
         f.app.flow.compliance.clone(),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -55,7 +58,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());

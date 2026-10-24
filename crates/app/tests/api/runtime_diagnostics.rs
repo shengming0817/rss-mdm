@@ -108,7 +108,7 @@ impl Fixture {
         )
         .await?;
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
-            authority.access.archive_pool(),
+            authority.pool.clone(),
             authority.audit.clone(),
             vec![],
             execution.providers.clone(),
@@ -127,8 +127,12 @@ impl Fixture {
                 pki: pki.clone(),
                 clock: Arc::new(crate::clock::SystemClock),
             }),
-            apple_store: authority.access.apple_store(),
-            access: authority.access.archive_pool(),
+            apple_store: Arc::new(rss_mdm_apple_channel::Store::from_pool(
+                authority.pool.clone(),
+                authority.registration.clone(),
+                authority.authorization.clone(),
+            )),
+            access: authority.pool.clone(),
             telemetry: None,
             execution: execution.service,
             inventory,
@@ -328,17 +332,20 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
     ))?;
     let automation = crate::automation::Automation::connect(
-        fixture.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            fixture.flow.planning.clone(),
+            config
+                .flow
+                .storage
+                .database
+                .options()?
+                .username(&role)
+                .password("diagnostic-fixture")
+                .application_name(&role),
+        )
+        .await?,
         fixture.flow.assets.clone(),
         fixture.flow.compliance.clone(),
-        config
-            .flow
-            .storage
-            .database
-            .options()?
-            .username(&role)
-            .password("diagnostic-fixture")
-            .application_name(&role),
     )
     .await?;
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
@@ -436,7 +443,9 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
     pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
     let clean = stack.shutdown().join().await?.is_clean();
-    crate::automation::Resource(automation).shutdown().await?;
+    crate::automation::Resource(automation.work.clone())
+        .shutdown()
+        .await?;
     pg(&format!("DROP ROLE {role}"))?;
     fixture.close().await?;
     result?;
@@ -573,7 +582,7 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     use rss_runtime::ManagedResource;
     let fixture = Fixture::open().await?;
     let service = DeviceService::new(
-        fixture.authority.access.registration(),
+        fixture.authority.registration.clone(),
         case_tenant().into(),
         fixture.authority.audit.clone(),
     );
@@ -582,7 +591,8 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     bind(&service, &operator, &credential, "diagnostic-device", 0).await?;
     let report = crate::inventory_runtime::test_support::report(
         &service,
-        &fixture.authority.access,
+        &rss_mdm_inventory_service::Store::from_pool(fixture.authority.pool.clone()),
+        &fixture.authority.audit,
         &credential,
         [Some("safe-name"), Some("10")],
     )
@@ -591,7 +601,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     ensure!(component(&before, "inventory")["queues"][0]["count"] == 1);
     ensure!(component(&before, "inventory")["progress"]["state"] == "unobserved");
     let reports = crate::collection::store::Delivery::new(
-        fixture.authority.access.inventory(),
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(
+            fixture.authority.pool.clone(),
+        )),
         fixture.authority.audit.clone(),
     )
     .pending_reports(case_tenant())
@@ -624,10 +636,13 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        fixture.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            fixture.flow.planning.clone(),
+            config.flow.storage.database.options()?,
+        )
+        .await?,
         fixture.flow.assets.clone(),
         fixture.flow.compliance.clone(),
-        config.flow.storage.database.options()?,
     )
     .await?;
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
@@ -742,7 +757,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     }
     .await;
     ensure!(!stack.shutdown().join().await?.is_clean());
-    crate::automation::Resource(automation).shutdown().await?;
+    crate::automation::Resource(automation.work.clone())
+        .shutdown()
+        .await?;
     ensure!(component(&fixture.query().await?, "inventory")["task"] == "failed");
     fixture.close().await?;
     result
@@ -756,7 +773,7 @@ async fn management_audit_capacity_is_visible_without_cross_tenant_counts() -> R
     let mut fixture = Fixture::open().await?;
     let own = fixture.authority.identity.tenant;
     let management = TenantId::parse(crate::test_support::case::peer())?;
-    let pool = fixture.authority.access.archive_pool();
+    let pool = fixture.authority.pool.clone();
     let runtime = crate::audit_test_support::source_runtime(&pool, own).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(20));
     let store = Arc::new(

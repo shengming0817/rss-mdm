@@ -127,6 +127,7 @@ pub(crate) async fn application_fixture(
                 Identity::connect(
                     &compiled.config,
                     compiled.identity_management.clone(),
+                    Some(crate::apple::identity_platform(&compiled.config).await?),
                     |resource| resources.acquire(resource),
                 )
                 .await?
@@ -654,11 +655,11 @@ pub(crate) fn from_state(
         ),
         requests: state.requests.clone(),
     });
-    state
-        .identity
-        .platform
-        .bind(&apple_state)
-        .expect("single platform composition");
+    if let Some(platform) = &state.identity.platform {
+        platform
+            .bind(&apple_state)
+            .expect("single platform composition");
+    }
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(

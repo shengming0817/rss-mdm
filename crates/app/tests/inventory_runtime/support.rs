@@ -16,13 +16,15 @@ pub(super) fn clock() -> Arc<dyn rss_observation::Clock> {
 
 pub(crate) async fn report(
     service: &DeviceService,
-    access: &Database,
+    inventory: &rss_mdm_inventory_service::Store,
+    store: &rss_mdm_audit_integration::AuditStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
 ) -> Result<Run> {
     report_statuses(
         service,
-        access,
+        inventory,
+        store,
         credential,
         values,
         values.map(|value| if value.is_some() { 200 } else { 404 }),
@@ -32,15 +34,13 @@ pub(crate) async fn report(
 
 pub(crate) async fn report_statuses(
     service: &DeviceService,
-    access: &Database,
+    inventory: &rss_mdm_inventory_service::Store,
+    store: &rss_mdm_audit_integration::AuditStore,
     credential: &VerifiedChannelCredential,
     values: [Option<&str>; 2],
     statuses: [u16; 2],
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
-    let store = access
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
     let audit = RequestAudit::new(principal.tenant().to_string(), "windows_management");
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
@@ -98,7 +98,7 @@ pub(crate) async fn report_statuses(
     );
     let (scope, id) = result?;
     Ok(
-        crate::collection::store::collection(&access.inventory(), &scope, Some(id))
+        crate::collection::store::collection(inventory, &scope, Some(id))
             .await?
             .unwrap(),
     )

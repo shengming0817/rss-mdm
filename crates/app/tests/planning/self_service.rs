@@ -931,8 +931,8 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
         "employees must retain independent original events"
     );
     ensure!(
-        matching[0].decoded.event().identity().event_id().as_str()
-            != matching[1].decoded.event().identity().event_id().as_str()
+        matching[0].event.identity().event_id().as_str()
+            != matching[1].event.identity().event_id().as_str()
     );
     let (available, available_policy) =
         publish_definition(&mut f, definition(resource, false)).await?;

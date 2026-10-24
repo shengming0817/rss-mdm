@@ -261,8 +261,6 @@ pub use input_preparation::authorize_policy_snapshot;
 /// Exact execution storage contracts consumed by application admission.
 pub const CATALOG_SQL: &str = include_str!("catalog.sql");
 pub const CATALOG_JSON: &str = include_str!("catalog.json");
-pub const DEPENDENCIES_SQL: &str = include_str!("dependencies.sql");
-pub const DEPENDENCIES_JSON: &str = include_str!("dependencies.json");
 
 pub mod queries;
 

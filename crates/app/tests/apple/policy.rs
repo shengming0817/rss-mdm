@@ -40,15 +40,19 @@ impl Fixture {
             Arc::new(crate::lifecycle::RuntimeTimer),
         )?;
         let automation = crate::automation::Automation::connect(
-            self.app.flow.planning.clone(),
+            crate::automation::PlanningWork::connect(
+                self.app.flow.planning.clone(),
+                crate::device::test_support::options("mdm_flow_runtime")?
+                    .password("runtime-fixture"),
+            )
+            .await?,
             self.app.flow.assets.clone(),
             self.app.flow.compliance.clone(),
-            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?;
         let mut startup = owner.startup()?;
         startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-            crate::automation::Resource(automation.clone()),
+            crate::automation::Resource(automation.work.clone()),
         ));
         let mut launch = startup.commit();
         launch.stage_deferred_task_with_token(

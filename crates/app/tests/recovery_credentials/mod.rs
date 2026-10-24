@@ -16,7 +16,7 @@ fn keys(active: &str, old: bool) -> Arc<KeyRing> {
 async fn begin(
     authority: &authority::Authority,
 ) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
-    let mut tx = authority.access.archive_pool().begin().await?;
+    let mut tx = authority.pool.clone().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
@@ -64,7 +64,7 @@ fn route(
                 "/api/v1",
                 rss_mdm_management_http::recovery_credentials::routes(Some(Arc::new(
                     Credentials::new(
-                        authority.access.archive_pool(),
+                        authority.pool.clone(),
                         authority.audit.clone(),
                         keys,
                         admission,

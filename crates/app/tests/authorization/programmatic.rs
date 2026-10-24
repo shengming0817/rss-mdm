@@ -307,7 +307,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         ensure!(call(&router, Method::POST, &resource_path, &[("x-api-key",secret)], Some(body)).await? == written);
         ensure!(call(&router, Method::GET, &resource_path, &[("x-api-key",secret)], None).await?.0 == StatusCode::OK);
         let actor = format!("api-key:{id}");
-        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.decoded.event().facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success").await? > 0);
+        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.event.facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success").await? > 0);
         let enrollment_op = Uuid::new_v4().to_string();
         let enrollment = call(&router, Method::POST, "/api/v1/enrollments", &[("x-api-key",secret),("idempotency-key",&enrollment_op)], Some(json!({"deviceId":case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
         ensure!(enrollment.0 == StatusCode::OK, "managed enrollment: {}", enrollment.0);

@@ -94,7 +94,7 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
         let filled=owner(&mut f,None).await?;
         ensure!(filled["revision"].as_u64()==Some(cleared["revision"].as_u64().unwrap()+1) && filled["user"]==initial_owner["user"]);
         let old_author=f.author.clone();
-        f.author=crate::test_support::authority::Authority::prepared_browser("admin").await?;
+        f.author=crate::test_support::authority::Authority::prepared_browser("admin")?;
         let admin=crate::test_support::http::browser_subject(&f.author,&f.router).await?;
         crate::test_support::identity::set_grants(case_tenant(),&admin,f.grants.clone()).await?;
         let switch=json!({"operationId":Uuid::new_v4(),"expectedRevision":bound.1["revision"]});
@@ -223,7 +223,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
         let authority_resources=std::mem::take(&mut authority.resources);
         authority_resources.finish(async {
             let sessions=rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(),authority.identity.tenant);
-            let proof=sessions.authenticate(authority.access.authorization(),rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?)).await?;
+            let proof=sessions.authenticate(authority.authorization.as_ref(),rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?)).await?;
             let service=rss_mdm_device_service::Associations::new(authority.audit.clone(),authority.identity.tenant,&[7;32])?;
             let mut root=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
             let mut observer=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;

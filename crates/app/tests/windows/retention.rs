@@ -83,7 +83,11 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         .await?;
     ensure!(response.status() == StatusCode::OK);
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
-    crate::audit_test_support::audit_records().await?;
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(tenant)?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let before = history(&mut pg, tenant).await?;
     let live: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid",

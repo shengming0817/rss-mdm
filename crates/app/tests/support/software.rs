@@ -134,7 +134,7 @@ impl Fixture {
         let origin = format!("http://{address}");
         let mut user = Browser {
             network: Some((client.clone(), origin.clone())),
-            ..authority::Authority::prepared_browser("admin").await?
+            ..authority::Authority::prepared_browser("admin")?
         };
         let subject = browser_subject(&user, &router).await?;
         let grants = [

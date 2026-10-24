@@ -158,16 +158,14 @@ impl Fixture {
                 |resource| resources.resource(resource),
             )
             .await?;
-        let content = {
-            let _guard = crate::test_support::software::content_setup_guard().await?;
-            crate::execution_assembly::open_content(config, config.native_protector()?).await?
-        };
+        let content = crate::execution_assembly::open_content(config, config.native_protector()?).await?;
         if let Some(content) = &content {
             resources.resource(crate::execution_assembly::ContentResource(content.clone()));
         }
         let identity = crate::identity::Identity::connect(
             config,
             compiled.identity_management.clone(),
+            Some(crate::apple::identity_platform(config).await?),
             |resource| resources.acquire(resource),
         )
         .await?;
@@ -464,7 +462,7 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let browser = crate::test_support::authority::Authority::prepared_browser("admin").await?;
+        let browser = crate::test_support::authority::Authority::prepared_browser("admin")?;
         Ok(Self {
             resources: Default::default(),
             app,

@@ -75,15 +75,15 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
         )?
         .ok_or_else(|| anyhow::anyhow!("Agent PKI fixture missing"))?;
     let registry = rss_mdm_pki_service::registry::Registry::new(
-        fixture.access.archive_pool(),
+        fixture.pool.clone(),
         fixture.audit.clone(),
         vec![pki.issuer.trust().trust.clone()],
         providers,
     );
-    super::pki::seed_trust(&fixture.access.archive_pool(), registry.bindings()).await?;
+    super::pki::seed_trust(&fixture.pool.clone(), registry.bindings()).await?;
     Ok(Arc::new(Service::new(Assembly {
         tenant: fixture.identity.tenant,
-        store: fixture.access.registration(),
+        store: fixture.registration.clone(),
         audit: fixture.audit.clone(),
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
@@ -366,7 +366,9 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
                     telemetry: None,
                     enrollment: service.clone(),
                     audit_store: fixture.audit.clone(),
-                    access: Arc::new(fixture.access.agent_store()),
+                    access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
+                        fixture.pool.clone(),
+                    )),
                     inventory: runtime,
                 }),
                 envelope.clone(),

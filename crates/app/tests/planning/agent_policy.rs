@@ -14,13 +14,7 @@ async fn business_event(operation: Uuid) -> Result<String> {
         matching.len() == 1,
         "operation must retain one business event"
     );
-    Ok(matching[0]
-        .decoded
-        .event()
-        .identity()
-        .event_id()
-        .as_str()
-        .to_owned())
+    Ok(matching[0].event.identity().event_id().as_str().to_owned())
 }
 
 async fn policy(

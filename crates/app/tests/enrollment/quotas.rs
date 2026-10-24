@@ -173,7 +173,7 @@ async fn concurrent_self_enrollment_replays_and_preserves_live_reservations() ->
     let guessed = outsider.self_enrollment(receipt["deviceId"].as_str().unwrap())?;
     ensure!(matches!(
         rss_mdm_registration_service::enrollment::read::enrollment_status(
-            f.access.registration().as_ref(),
+            f.registration.clone().as_ref(),
             guessed,
             Uuid::parse_str(id)?,
             &crate::enrollment_progress::EnrollmentProgress {
@@ -331,7 +331,8 @@ async fn overrides_inherit_and_asset_owner_is_independent_of_enrollment_quota() 
     )
     .await?;
     ensure!(windows(&call(&mut other, &router, Method::GET, ME, None).await?)["limit"] == 20);
-    let mut tx = f.access.begin(case_tenant()).await?;
+    let mut tx = f.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     sqlx::query("UPDATE mdm_access.requests SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(Uuid::parse_str(receipt["enrollmentId"].as_str().unwrap())?).execute(&mut *tx).await?;
     tx.commit().await?;
     ensure!(windows(&call(&mut other, &router, Method::GET, ME, None).await?)["used"] == 0);
@@ -350,7 +351,7 @@ async fn active_registration_replaces_reservation_and_revocation_releases_it() -
             let receipt = write(&mut other, &router, Method::POST, SELF, native()).await?;
             let other_proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
             let service = crate::device::DeviceService::new(
-                f.access.registration(),
+                f.registration.clone(),
                 case_tenant().into(),
                 f.audit.clone(),
             );
