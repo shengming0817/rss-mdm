@@ -470,4 +470,6 @@ pub struct FacetCount {
 pub struct ItemQualityView {
     pub index: usize,
     pub quality: crate::collection::Quality,
+    /// Validated row evidence, independent of the whole field's snapshot eligibility.
+    pub value: Option<Scalar>,
 }

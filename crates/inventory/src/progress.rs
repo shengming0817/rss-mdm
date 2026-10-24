@@ -113,9 +113,15 @@ impl TryFrom<Document> for CollectionProgress {
             }) {
                 return Err(Invalid::Evidence);
             }
-            if matches!(&f.value,Some(CollectedValue::Value(crate::Scalar::Array(values))) if values.len()!=f.items.len())
-            {
-                return Err(Invalid::Evidence);
+            if let Some(CollectedValue::Value(crate::Scalar::Array(values))) = &f.value {
+                let expected = if f.terminal == Some(Quality::Invalid) {
+                    f.items.iter().filter(|q| **q == Quality::Success).count()
+                } else {
+                    f.items.len()
+                };
+                if values.len() != expected {
+                    return Err(Invalid::Evidence);
+                }
             }
             if !f.items.is_empty() {
                 let crate::ValueType::Array { max_items, .. } = &definition.value_type else {
@@ -132,6 +138,11 @@ impl TryFrom<Document> for CollectionProgress {
                     Some(CollectedValue::Value(crate::Scalar::Array(values)))
                         if values.len() == f.items.len()
                             && f.items.iter().all(|q| *q == Quality::Success) => {}
+                    Some(CollectedValue::Value(crate::Scalar::Array(values)))
+                        if f.terminal == Some(Quality::Invalid)
+                            && f.items.contains(&Quality::Invalid)
+                            && values.len()
+                                == f.items.iter().filter(|q| **q == Quality::Success).count() => {}
                     None if f.terminal == Some(Quality::Invalid)
                         && f.items.contains(&Quality::Invalid) => {}
                     _ => return Err(Invalid::Evidence),
@@ -148,7 +159,11 @@ impl TryFrom<Document> for CollectionProgress {
                     q,
                     Quality::Missing | Quality::Failed | Quality::Invalid | Quality::Deleted
                 )
-            }) || (f.terminal.is_some() && (f.value.is_some() || f.confirmed))
+            }) || (f.terminal.is_some()
+                && (f.confirmed
+                    || (f.value.is_some()
+                        && !(f.terminal == Some(Quality::Invalid)
+                            && f.items.contains(&Quality::Invalid)))))
             {
                 return Err(Invalid::Evidence);
             }
@@ -332,11 +347,12 @@ impl CollectionProgress {
         field.quality = quality(field, false);
         Ok(())
     }
-    /// Retain row-level validation failures while preserving the prior trusted field as a whole.
+    /// Retain valid row evidence and all ordinal failures without publishing a partial list.
     pub fn observe_invalid_items(
         &mut self,
         key: FieldKey,
         items: Vec<Quality>,
+        values: Vec<crate::Scalar>,
         at: i64,
     ) -> Result<()> {
         let crate::ValueType::Array { max_items, .. } = &self.0.definition.field(key)?.value_type
@@ -351,12 +367,16 @@ impl CollectionProgress {
         {
             return Err(Invalid::Evidence);
         }
+        if values.len() != items.iter().filter(|q| **q == Quality::Success).count() {
+            return Err(Invalid::Evidence);
+        }
+        let value = CollectedValue::Value(crate::Scalar::Array(values));
+        let bytes = value.encode(self.0.definition.field(key)?)?;
         self.observe_invalid(key, at)?;
-        self.0
-            .fields
-            .get_mut(&key)
-            .ok_or(Invalid::UnknownField)?
-            .items = items;
+        let field = self.0.fields.get_mut(&key).ok_or(Invalid::UnknownField)?;
+        field.items = items;
+        field.digest = Some(format!("{:x}", Sha256::digest(bytes)));
+        field.value = Some(value);
         Ok(())
     }
     /// Encoded values currently retained, for the native adapter's aggregate budget.
@@ -435,7 +455,12 @@ pub enum NativeValue {
     /// Typed native value or explicit unsupported/null.
     Value(CollectedValue),
     /// Per-row results from a malformed list; no partial list replaces trusted facts.
-    InvalidItems(Vec<Quality>),
+    InvalidItems {
+        /// Original ordinal qualities, including every anonymous or duplicate row.
+        items: Vec<Quality>,
+        /// Valid rows in their original relative order; diagnostic evidence only.
+        values: Vec<crate::Scalar>,
+    },
     /// Response did not match the expected schema.
     Invalid,
     /// Expected field was absent.
@@ -470,7 +495,9 @@ impl CollectionProgress {
                     f.confirmed = true;
                     f.quality = quality(f, false);
                 }
-                NativeValue::InvalidItems(items) => result.observe_invalid_items(key, items, at)?,
+                NativeValue::InvalidItems { items, values } => {
+                    result.observe_invalid_items(key, items, values, at)?
+                }
                 other => {
                     rss_contract::Timepoint::try_from(at).map_err(|_| Invalid::Time)?;
                     let f = result.0.fields.get_mut(&key).ok_or(Invalid::UnknownField)?;
@@ -570,11 +597,23 @@ impl NativeValue {
                         quality[index] = Quality::Invalid;
                     }
                 }
-                values.push(value);
+                values.push(Some(value));
+            } else {
+                values.push(None);
             }
         }
+        let values = values
+            .into_iter()
+            .zip(&quality)
+            .filter_map(|(value, quality)| {
+                (*quality == Quality::Success).then_some(value).flatten()
+            })
+            .collect::<Vec<_>>();
         if quality.contains(&Quality::Invalid) {
-            Ok(Self::InvalidItems(quality))
+            Ok(Self::InvalidItems {
+                items: quality,
+                values,
+            })
         } else {
             Ok(Self::Value(CollectedValue::Value(
                 field.canonical_value(crate::Scalar::Array(values))?,

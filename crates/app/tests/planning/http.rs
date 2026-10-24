@@ -1136,3 +1136,58 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
         }).await
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=planning.http: current dataset inventory presence matches real asset reads"]
+async fn console_inventory_presence_uses_current_dataset_authority() -> Result<()> {
+    let mut fixture = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let (router, resources) = app(&fixture.base).await?;
+        resources.finish(async {
+            let mut browser = fixture.browser("other")?;
+            let device = case::name("dataset-presence");
+            set_device_grants(&mut browser, &router, device, &["inventory_read"]).await?;
+            let (registration, epoch) = crate::test_support::inventory::seed_source(device, "agent", "agent.native", "old")?;
+            pg(&format!("DELETE FROM mdm.inventory WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?;
+            let path = format!("/api/v1/devices/{device}");
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == false);
+            let definition = crate::test_support::inventory::definition("presence-real-dataset", "agent.native", &[rss_mdm_inventory::builtin::MODEL]);
+            crate::test_support::inventory::register_definition(&definition)?;
+            let scope = crate::device::scope_dataset(rss_request_context::TenantId::parse(case_tenant())?, registration, "agent.native", epoch, definition.dataset())?.encode()?;
+            let user_scope = rss_mdm_inventory::CollectionScope::MacosApplications {
+                root: rss_mdm_inventory::ApplicationRoot::User, uid: Some(501),
+            };
+            let user_definition = rss_mdm_inventory::CollectionDefinition::new(
+                "presence-user-dataset", "v1", rss_mdm_inventory::Source::AgentNative,
+                vec![rss_mdm_inventory::CollectionField {
+                    definition: definition.fields().next().unwrap().clone(), scope: user_scope.clone(),
+                }],
+            )?;
+            crate::test_support::inventory::register_definition(&user_definition)?;
+            let user_coordinate = crate::device::scope_dataset(rss_request_context::TenantId::parse(case_tenant())?, registration, "agent.native", epoch, user_definition.dataset())?.encode()?;
+            let user_coverage = serde_json::to_string(&user_definition.coverage()?)?;
+            let namespace = user_scope.canonical()?;
+            pg(&format!("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{}','mdm.observation.v1','inventory-projection-v1','{user_coordinate}','{user_coverage}','device.model','{namespace}','{{\"kind\":\"string\",\"value\":\"user-model\"}}','user-presence-test',1,2,'known','{registration}','agent.native','{epoch}',1)", case_tenant()))?;
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == false);
+            let query = url::form_urlencoded::Serializer::new(String::new()).append_pair("scope", &namespace).finish();
+            let user_inventory = browser.call(&router,Method::GET,&format!("{path}/inventory?{query}"),None).await?;
+            ensure!(user_inventory.0 == StatusCode::OK && user_inventory.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "user-model", "user inventory: {user_inventory:?}");
+            let coverage = serde_json::to_string(&definition.coverage()?)?;
+            pg(&format!("INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,field_scope,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','device.model','{{\"kind\":\"device\"}}','{{\"kind\":\"string\",\"value\":\"current-model\"}}','presence-test',1,2,'known','{registration}','agent.native','{epoch}',1)", case_tenant()))?;
+            let inventory = browser.call(&router,Method::GET,&format!("{path}/inventory"),None).await?;
+            ensure!(inventory.0 == StatusCode::OK && inventory.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "current-model", "inventory: {inventory:?}");
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == true);
+            let page = browser.call(&router,Method::GET,"/api/v1/devices",None).await?;
+            ensure!(page.1["items"][0]["inventoryAvailable"] == true, "directory: {page:?}");
+            // Retained facts from a previous epoch are not current inventory.
+            pg(&format!("UPDATE mdm_access.report_sources SET epoch=gen_random_uuid() WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?;
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == false);
+            pg(&format!("UPDATE mdm_access.report_sources SET epoch='{epoch}' WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?;
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == true);
+            pg(&format!("UPDATE mdm_access.credentials SET state='revoked' WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?;
+            ensure!(browser.call(&router,Method::GET,&path,None).await?.1["inventoryAvailable"] == false);
+            Ok(())
+        }).await
+    }).await
+}

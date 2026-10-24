@@ -1,6 +1,5 @@
 //! Bounded asset-presence projection for the product management identity directory.
 use super::*;
-use sqlx::Row;
 impl AssetService {
     pub async fn directory_presence(
         &self,
@@ -24,27 +23,31 @@ impl AssetService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, devices, proof) = ctx;
-                    let tenant = s.tenant.to_string();
+                    let watermark = s.list_watermark(tx).await?;
+                    let catalog = catalog_in(tx, s.tenant, watermark).await?;
+                    let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
+                    let tenant = s.tenant;
                     let ids = devices.clone();
-                    let rows = tx
+                    let selected = tx
                         .with_connection(move |c| {
-                            Box::pin(crate::device::read::active_sources(c, tenant, ids))
+                            Box::pin(async move {
+                                Ok(planning::SnapshotReader { tenant }
+                                    .sources_on(
+                                        c,
+                                        watermark,
+                                        &ids,
+                                        &rss_mdm_inventory::CollectionScope::Device,
+                                        &fields,
+                                    )
+                                    .await)
+                            })
                         })
-                        .await?;
-                    let mut owners = BTreeMap::new();
-                    for row in rows {
-                        let source: String = row.try_get("source")?;
-                        let scope = crate::device::scope(
-                            s.tenant,
-                            stored(Uuid::parse_str(row.try_get("registration")?))?,
-                            &source,
-                            stored(Uuid::parse_str(row.try_get("epoch")?))?,
-                        )?;
-                        owners.insert(
-                            checked_input(scope.encode())?,
-                            row.try_get::<String, _>("device")?,
-                        );
-                    }
+                        .await??;
+                    let mut owners = selected
+                        .subjects
+                        .into_iter()
+                        .map(|(scope, (device, _))| (scope, device))
+                        .collect::<BTreeMap<_, _>>();
                     let scopes = owners.keys().cloned().collect();
                     let ids = devices.clone();
                     let tenant = s.tenant;

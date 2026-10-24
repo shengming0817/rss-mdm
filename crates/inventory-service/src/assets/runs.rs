@@ -174,17 +174,35 @@ impl AssetService {
         }
         let tenant = self.tenant.to_string();
         let field_name = field.as_str().to_owned();
-        let rows: Vec<(i64, String)> = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_as("WITH selected AS (SELECT progress_version AS version FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL), origin AS (SELECT coalesce((SELECT prefix_bytes FROM mdm_access.collection_items i,selected s WHERE i.tenant_id=$1::uuid AND i.version=s.version AND i.field=$3 AND i.ordinal=$4-1),0) AS bytes) SELECT i.ordinal,i.quality FROM mdm_access.collection_items i,selected s,origin o WHERE i.tenant_id=$1::uuid AND i.version=s.version AND i.field=$3 AND i.ordinal>=$4 AND i.prefix_bytes<=o.bytes+16777216 ORDER BY i.ordinal LIMIT $5")
+        let rows: Vec<(i64, String, Option<String>)> = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_as("WITH selected AS (
+                SELECT progress_version AS version,attempts::jsonb AS progress FROM mdm_access.collection_runs
+                WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NOT NULL
+            ), indexed AS (
+                SELECT i.ordinal,i.quality,count(*) FILTER(WHERE i.quality='success') OVER(ORDER BY i.ordinal)-1 AS position
+                FROM mdm_access.collection_items i,selected s
+                WHERE i.tenant_id=$1::uuid AND i.version=s.version AND i.field=$3
+            ), page AS (
+                SELECT i.ordinal,i.quality,CASE WHEN i.quality='success'
+                  THEN (s.progress #> ARRAY['fields',$3,'value','value','value'])->i.position::integer END AS value
+                FROM indexed i,selected s WHERE i.ordinal>=$4 ORDER BY i.ordinal LIMIT $5
+            ), bounded AS (
+                SELECT *,sum(octet_length(quality)+coalesce(octet_length(value::text),4)) OVER(ORDER BY ordinal) AS bytes FROM page
+            ) SELECT ordinal,quality,value::text FROM bounded WHERE bytes<=16777216 ORDER BY ordinal")
                 .bind(tenant).bind(id).bind(field_name).bind(offset as i64).bind(limit as i64).fetch_all(c).await
         })).await?;
         let mut items = Vec::with_capacity(rows.len());
-        for (ordinal, quality) in rows {
+        for (ordinal, quality, value) in rows {
             if ordinal != (offset + items.len()) as i64 {
                 return Err(Error::Unavailable(Failure::CollectionQuery).into());
             }
             items.push(ItemQualityView {
                 index: ordinal as usize,
+                value: value
+                    .as_deref()
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .map_err(|_| Error::Unavailable(Failure::CollectionQuery))?,
                 quality: stored(serde_json::from_value(serde_json::Value::String(quality)))?,
             });
         }

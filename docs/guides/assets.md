@@ -8,6 +8,10 @@ Inventory 是唯一字段目录和来源解析 owner，应用把解析结果送�
 
 known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源相同值合并证据，不同值返回 conflict；一条来源删除不删除另一条来源。来源必须绑定当前有效注册及 epoch。Partial 应用独立成功字段，缺失或失败字段保留此前可信事实；Failed 不清空事实，最新 CollectionRun 质量另行呈现。带 itemKey 的清单按条目身份比较，相同内容的不同返回顺序不产生冲突。
 
+不完整清单的逐行查询可返回 `quality=success` 行的类型化 `value`，无效行或未保留值返回 null。
+这只是该次采集的诊断证据：字段仍为 invalid、complete=false，整份清单不覆盖 Inventory 最后可信值，不能作为卸载或删除证明。
+macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量和 invalidItems 内，不伪造条目身份；重复身份的所有行也均标为 invalid。
+
 没有字段 TTL、validUntil、expiresAt、到期或延迟生效判断。所有时间仅用于溯源；改变评估时间不会改变固定规则对相同事实的结果。会话、凭据和任务期限不受此规则影响。
 
 ## API
@@ -22,6 +26,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 | PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
+| GET /devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100 | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
 | GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 criteria/select/sort |

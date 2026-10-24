@@ -145,6 +145,15 @@ fn invalid_list_items_are_recorded_without_replacing_previous_list_facts() {
         &[Quality::Success, Quality::Invalid]
     );
     assert_eq!(progress.fields()[&field.key].quality, Quality::Invalid);
+    assert!(!progress.coverage_complete());
+    let evidence = serde_json::to_value(&progress).unwrap();
+    assert_eq!(
+        evidence["fields"][field.key.as_str()]["value"]["value"]["value"],
+        serde_json::json!([{"kind":"integer","value":1}])
+    );
+    let mut corrupt = evidence.clone();
+    corrupt["fields"][field.key.as_str()]["items"] = serde_json::json!(["invalid", "invalid"]);
+    assert!(serde_json::from_value::<CollectionProgress>(corrupt).is_err());
     assert!(matches!(
         progress.body().unwrap(),
         Some(Body::Failed { .. })

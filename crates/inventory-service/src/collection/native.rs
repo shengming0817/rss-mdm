@@ -876,7 +876,7 @@ mod mapping_tests {
         );
         assert!(matches!(
             mapped_value(&field, &mapping, &json!(["bad"])),
-            NativeValue::InvalidItems(_)
+            NativeValue::InvalidItems { .. }
         ));
         field.value_type = ValueType::Array {
             items: Box::new(ValueType::Enum {
