@@ -146,7 +146,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.len()==0));
+        ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
@@ -164,7 +164,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         // A stale binding cannot borrow the validity of the current registration generation.
         crate::test_support::process::pg(&format!("UPDATE mdm_access.current_users SET generation=generation+1 WHERE tenant_id='{}' AND device='{}'",case_tenant(),device))?;
         let invalid=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(invalid.0==StatusCode::OK && invalid.1["items"].as_array().is_some_and(|items|items.len()==0));
+        ensure!(invalid.0==StatusCode::OK && invalid.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let state=call(&f,Method::GET,None,true,false).await?;
         ensure!(state.0==StatusCode::OK && state.1["state"]=="invalidated");
         f.author=agent_user.clone();
