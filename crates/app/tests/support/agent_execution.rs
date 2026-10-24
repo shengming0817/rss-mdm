@@ -135,6 +135,11 @@ pub(crate) struct Fixture {
     pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
+    pub(crate) access_authenticator: Option<
+        webauthn_authenticator_rs::WebauthnAuthenticator<
+            webauthn_authenticator_rs::softpasskey::SoftPasskey,
+        >,
+    >,
     pub(crate) author_id: String,
     pub(crate) grants: Vec<crate::authorization::Grant>,
     pub(crate) key: ring::signature::Ed25519KeyPair,
@@ -162,13 +167,20 @@ impl Fixture {
                     let audit = access
                         .audit_store_fixture(&crate::config::AuditConfig::Plain)
                         .await?;
+                    #[cfg(feature = "integration")]
+                    let enterprise_identity=if !base["identity"]["enterprise"].is_null() {
+                        let config=serde_json::from_value(base.clone())?;
+                        Some(crate::identity::Identity::for_oidc_fixture(&config,Arc::new(crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?),Default::default(),|r|resources.acquire(r)).await?)
+                    }else{None};
+                    #[cfg(not(feature = "integration"))]
+                    let enterprise_identity=None;
                     let (router, execution, plan_runtime, planning, application_resources) =
                         crate::api::application_fixture(
                             serde_json::from_value(base.clone())?,
                             Arc::new(crate::clock::SystemClock),
                             monotonic(),
                             access,
-                            None,
+                            enterprise_identity,
                             audit,
                         )
                         .await
@@ -234,6 +246,7 @@ impl Fixture {
                         plan_runtime,
                         planning,
                         author,
+                        access_authenticator: None,
                         author_id,
                         grants,
                         key,

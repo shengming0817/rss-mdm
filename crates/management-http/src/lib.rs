@@ -67,3 +67,5 @@ pub mod telemetry;
 
 mod device_access;
 pub mod user_profiles;
+
+mod enterprise_broker;

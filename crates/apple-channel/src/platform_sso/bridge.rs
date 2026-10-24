@@ -72,6 +72,19 @@ impl PlatformVerifier for Verifier {
     fn audience(&self) -> &str {
         &self.audience
     }
+    fn authorize_purpose<'a>(
+        &'a self,
+        binding: &'a PlatformBinding,
+        purpose: &'a PlatformPurpose,
+        c: &'a mut PgConnection,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            if *purpose != PlatformPurpose::BrowserLogin {
+                return Err(PlatformError::Rejected);
+            }
+            self.recheck(binding, c).await
+        })
+    }
     fn resolve<'a>(
         &'a self,
         instance: rss_identity_core::InstanceId,
@@ -114,29 +127,53 @@ impl PlatformVerifier for Verifier {
             let user = store::read(&mut tx, &app.tenant.to_string(), subject.source_id)
                 .await
                 .map_err(failure)?;
-            let claims = crypto::verify(
-                token,
-                &user.signing,
-                rss_mdm_agent_wire::platform_sso::BRIDGE_TYPE,
+            let parent = store::read(
+                &mut tx,
+                &app.tenant.to_string(),
+                user.parent.ok_or(PlatformError::Rejected)?,
             )
+            .await
             .map_err(failure)?;
-            let now = store::now(&mut tx).await.map_err(failure)?;
-            crypto::times(&claims, now).map_err(failure)?;
-            let claims: rss_mdm_agent_wire::platform_sso::BrowserClaims =
-                serde_json::from_value(claims).map_err(|_| PlatformError::Rejected)?;
-            if claims.iss != user.id
-                || claims.aud != challenge.audience
-                || claims.nonce != challenge.nonce
-                || claims.source_version != user.version
+            let key = if user.login_configuration.authentication
+                == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password
             {
-                return Err(PlatformError::Rejected);
-            }
-            let access = claims.access_token.as_str();
-            if access.len() != 43 {
+                parent.signing.as_ref().ok_or(PlatformError::Rejected)?
+            } else {
+                user.signing.as_ref().ok_or(PlatformError::Rejected)?
+            };
+            let access = if matches!(challenge.purpose, PlatformPurpose::EnterpriseRp(_)) {
+                let proof: rss_mdm_agent_wire::enterprise::NativeProof =
+                    serde_json::from_slice(evidence).map_err(|_| PlatformError::Rejected)?;
+                rss_mdm_registration_service::enterprise::verify_signature(
+                    key,
+                    &proof.signature,
+                    &challenge.signing_payload()?,
+                )
+                .map_err(|_| PlatformError::Rejected)?;
+                proof.access_token.ok_or(PlatformError::Rejected)?
+            } else {
+                let claims =
+                    crypto::verify(token, key, rss_mdm_agent_wire::platform_sso::BRIDGE_TYPE)
+                        .map_err(failure)?;
+                let now = store::now(&mut tx).await.map_err(failure)?;
+                crypto::times(&claims, now).map_err(failure)?;
+                let claims: rss_mdm_agent_wire::platform_sso::BrowserClaims =
+                    serde_json::from_value(claims).map_err(|_| PlatformError::Rejected)?;
+                if claims.iss != user.id
+                    || claims.aud != challenge.audience
+                    || claims.nonce != challenge.nonce
+                    || claims.source_version != user.version
+                {
+                    return Err(PlatformError::Rejected);
+                }
+                rss_mdm_agent_wire::runtime::Secret::parse(&claims.access_token)
+                    .map_err(|_| PlatformError::Rejected)?
+            };
+            if access.expose().len() != 43 {
                 return Err(PlatformError::Rejected);
             }
             let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_apple.psso_tokens WHERE tenant_id=$1::uuid AND digest=$2 AND source=$3 AND version=$4 AND expires_at>floor(extract(epoch FROM clock_timestamp()))::bigint)")
-            .bind(app.tenant.to_string()).bind(crypto::digest(access)).bind(user.id).bind(user.version).fetch_one(&mut *tx).await.map_err(|_|PlatformError::Unavailable)?;
+            .bind(app.tenant.to_string()).bind(crypto::digest(access.expose())).bind(user.id).bind(user.version).fetch_one(&mut *tx).await.map_err(|_|PlatformError::Unavailable)?;
             if !valid {
                 return Err(PlatformError::Rejected);
             }

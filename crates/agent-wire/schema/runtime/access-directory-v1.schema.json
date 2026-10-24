@@ -5,20 +5,25 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "description": "Windows account, with provenance reported by the authenticated native session.",
           "properties": {
+            "authority": {
+              "$ref": "#/$defs/AccessWindowsAuthority",
+              "description": "Local machine, AD domain or Entra tenant authority; never inferred from a name."
+            },
             "platform": {
               "const": "windows",
               "type": "string"
             },
             "sid": {
-              "description": "SID returned by the authenticated native account operation.",
+              "description": "SID returned by the native account operation.",
               "type": "string"
             }
           },
           "required": [
             "platform",
-            "sid"
+            "sid",
+            "authority"
           ],
           "type": "object"
         },
@@ -44,6 +49,26 @@
         }
       ]
     },
+    "AccessAccountDisposition": {
+      "description": "Explicit OS account handling when removing RSS integration. Data is always retained.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Preserve the account's enabled state and privilege.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "Disable interactive login without deleting the account.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Remove administrator privilege while preserving login.",
+          "type": "string"
+        }
+      ]
+    },
     "AccessBindingStatus": {
       "additionalProperties": false,
       "description": "Safe employee-facing binding projection. This is not a login credential.",
@@ -58,6 +83,10 @@
             }
           ],
           "description": "Actual native account, if known."
+        },
+        "accountDisposition": {
+          "$ref": "#/$defs/AccessAccountDisposition",
+          "description": "Desired account handling on revocation."
         },
         "appliedRevision": {
           "description": "Last confirmed applied revision.",
@@ -116,6 +145,7 @@
         }
       },
       "required": [
+        "accountDisposition",
         "id",
         "bindingGeneration",
         "factorGeneration",
@@ -133,6 +163,17 @@
           "description": "Enable the platform's RSS login integration.",
           "type": "boolean"
         },
+        "mac": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoginConfiguration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Device-wide Mac profile settings; absence excludes Mac integration from this policy."
+        },
         "role": {
           "anyOf": [
             {
@@ -147,9 +188,17 @@
         "selfEnrollment": {
           "description": "Permit the first association to the currently authenticated interactive local account.",
           "type": "boolean"
+        },
+        "windowsAccounts": {
+          "description": "Explicit admitted Windows account authorities.",
+          "items": {
+            "$ref": "#/$defs/AccessWindowsKind"
+          },
+          "type": "array"
         }
       },
       "required": [
+        "windowsAccounts",
         "selfEnrollment",
         "enabled"
       ],
@@ -206,15 +255,20 @@
         },
         {
           "additionalProperties": false,
-          "description": "The integration was removed, preserving the OS account and its data.",
+          "description": "Integration removal and the requested OS disposition were independently read back.",
           "properties": {
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Verified account handling; account data is retained."
+            },
             "state": {
               "const": "unbound",
               "type": "string"
             }
           },
           "required": [
-            "state"
+            "state",
+            "disposition"
           ],
           "type": "object"
         },
@@ -296,6 +350,14 @@
           "$ref": "#/$defs/AccessObservation",
           "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
         },
+        "keychainSync": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Native login keychain synchronization, independent of account password success."
+        },
+        "passwordSync": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Native account password synchronization, never inferred from the IdP exchange."
+        },
         "secureToken": {
           "$ref": "#/$defs/AccessObservation",
           "description": "The account's Secure Token status, not Bootstrap Token custody."
@@ -306,6 +368,8 @@
         }
       },
       "required": [
+        "passwordSync",
+        "keychainSync",
         "secureToken",
         "volumeOwner",
         "filevaultUnlock"
@@ -378,6 +442,70 @@
         }
       ]
     },
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "AccessWindowsFacts": {
       "additionalProperties": false,
       "description": "Installed factor identity is independent of the account association and configuration revision.",
@@ -397,6 +525,41 @@
         "recovery"
       ],
       "type": "object"
+    },
+    "AccessWindowsKind": {
+      "description": "Windows account classes admitted by the selected policy.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local SAM account.",
+          "type": "string"
+        },
+        {
+          "const": "active_directory",
+          "description": "AD domain account.",
+          "type": "string"
+        },
+        {
+          "const": "entra",
+          "description": "Entra directory account.",
+          "type": "string"
+        }
+      ]
+    },
+    "AuthenticationMode": {
+      "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+      "oneOf": [
+        {
+          "const": "secure_enclave",
+          "description": "Existing Secure Enclave user-key protocol.",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "Device-signed Apple Password request, verified by the selected password authority.",
+          "type": "string"
+        }
+      ]
     },
     "CredentialReceipt": {
       "additionalProperties": false,
@@ -503,26 +666,108 @@
           "type": "object"
         }
       ]
+    },
+    "LoginConfiguration": {
+      "additionalProperties": false,
+      "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+      "properties": {
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "Chosen native authentication method."
+        },
+        "filevault": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for Apple silicon FileVault unlock."
+        },
+        "login": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for the login window."
+        },
+        "maintenanceAccounts": {
+          "description": "Exact local maintenance account short names excluded from platform login policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offlineGraceSeconds": {
+          "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passwordProvider": {
+          "description": "Configured password provider identity; required only in Password mode.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationGraceSeconds": {
+          "description": "Explicit allowance for unregistered accounts, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unlock": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for screen unlock."
+        }
+      },
+      "required": [
+        "authentication",
+        "login",
+        "unlock",
+        "filevault",
+        "maintenanceAccounts"
+      ],
+      "type": "object"
+    },
+    "LoginPolicy": {
+      "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Preserve native local login; do not emit an enforcing platform policy.",
+          "type": "string"
+        },
+        {
+          "const": "attempt",
+          "description": "Try the configured password authority with Apple's offline behavior.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Require the configured authority; grace periods must be explicitly selected.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Bounded employee discovery; cursors advance scanned rows, including ineligible policies.",
   "properties": {
-    "after": {
-      "description": "Cursor for the next policy scan.",
-      "format": "uuid",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "bindings": {
       "description": "This authenticated person's bindings in the current device registration.",
       "items": {
         "$ref": "#/$defs/AccessBindingStatus"
       },
       "type": "array"
+    },
+    "nextCursor": {
+      "description": "Cursor for the next policy scan.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "policies": {
       "description": "Eligible policies in this scan page.",

@@ -9,7 +9,7 @@ CREATE TABLE mdm_apple.psso_sources (
  parent uuid,
  version bigint NOT NULL CHECK(version>0),
  revoked boolean NOT NULL,
- signing_kid text NOT NULL CHECK(octet_length(signing_kid)=44),
+ signing_kid text CHECK(signing_kid IS NULL OR octet_length(signing_kid)=44),
  document jsonb NOT NULL CHECK(octet_length(document::text)<=16384),
  PRIMARY KEY(tenant_id,id),
  FOREIGN KEY(tenant_id,registration) REFERENCES mdm_access.registrations(tenant_id,id),
@@ -59,4 +59,31 @@ GRANT SELECT ON mdm_devices.input_snapshots,mdm_devices.input_objects,mdm.invent
 GRANT USAGE ON SCHEMA mdm_apple TO mdm_identity_runtime;
 GRANT SELECT ON mdm_apple.psso_sources,mdm_apple.psso_tokens TO mdm_identity_runtime;
 GRANT UPDATE(tenant_id) ON mdm_apple.psso_sources TO mdm_identity_runtime;
+CREATE TABLE mdm_apple.psso_password_providers (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
+ fingerprint text NOT NULL CHECK(length(fingerprint)=43), PRIMARY KEY(tenant_id,id)
+);
+CREATE TABLE mdm_apple.psso_password_attempts (
+ tenant_id uuid NOT NULL, id uuid NOT NULL, source uuid NOT NULL, version bigint NOT NULL CHECK(version>0),
+ provider uuid NOT NULL, provider_fingerprint text NOT NULL CHECK(length(provider_fingerprint)=43), context jsonb NOT NULL,
+ expires_at bigint NOT NULL, state text NOT NULL CHECK(state IN('verifying','succeeded','rejected','unavailable')),
+ PRIMARY KEY(tenant_id,id), FOREIGN KEY(tenant_id,source) REFERENCES mdm_apple.psso_sources(tenant_id,id),
+ FOREIGN KEY(tenant_id,provider) REFERENCES mdm_apple.psso_password_providers(tenant_id,id),
+ CHECK(octet_length(context::text)<=16384)
+);
+ALTER TABLE mdm_apple.psso_password_providers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.psso_password_providers FORCE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.psso_password_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_apple.psso_password_attempts FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_apple.psso_password_providers USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE POLICY tenant ON mdm_apple.psso_password_attempts USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT ON mdm_apple.psso_password_providers,mdm_apple.psso_password_attempts TO mdm_access;
+GRANT UPDATE(revision,fingerprint) ON mdm_apple.psso_password_providers TO mdm_access;
+GRANT UPDATE(state) ON mdm_apple.psso_password_attempts TO mdm_access;
+CREATE POLICY expired_only ON mdm_apple.psso_password_attempts AS RESTRICTIVE FOR DELETE USING(expires_at < floor(extract(epoch FROM clock_timestamp()))::bigint-86400);
+GRANT DELETE ON mdm_apple.psso_password_attempts TO mdm_access;
+GRANT SELECT ON mdm_apple.psso_password_providers TO mdm_identity_runtime;
+-- The existing profile dispatcher fences provider generations before issuing the profile.
+GRANT SELECT,INSERT ON mdm_apple.psso_password_providers TO mdm_command_runtime;
+GRANT UPDATE(revision,fingerprint) ON mdm_apple.psso_password_providers TO mdm_command_runtime;
 COMMIT;

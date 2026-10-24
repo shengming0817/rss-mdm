@@ -18,6 +18,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 pub(crate) struct Assembly {
+    pub(crate) access_audit: Option<Arc<rss_mdm_audit_integration::AuditStore>>,
     pub(crate) channels: Arc<crate::channel_status::Channels>,
     pub(crate) telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub(crate) runtime_observation: crate::setup::host::Observation,
@@ -262,6 +263,23 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Identity,
 }
+async fn device_access_audit(
+    identity: &Identity,
+    audit_store: &rss_mdm_audit_integration::AuditStore,
+    enabled: bool,
+) -> Result<Option<Arc<rss_mdm_audit_integration::AuditStore>>, Error> {
+    if !enabled {
+        return Ok(None);
+    }
+    let budget =
+        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
+    Ok(Some(Arc::new(
+        audit_store
+            .on_runtime(identity.runtime.clone(), identity.tenant, &budget.control())
+            .await?,
+    )))
+}
+
 pub(crate) async fn from_compiled(
     compiled: crate::config::Compiled,
     dependencies: AssemblyDependencies,
@@ -492,7 +510,7 @@ pub(crate) async fn from_compiled(
     if !mount_channels {
         fixture_native_mounted(&windows, &apple, &agent_pki, &channels)?;
     }
-    for (enabled, name) in [
+    for (_, name) in [
         (
             windows.is_some(),
             crate::channel_status::ChannelName::Windows,
@@ -502,11 +520,13 @@ pub(crate) async fn from_compiled(
             agent_pki.is_some(),
             crate::channel_status::ChannelName::Agent,
         ),
-    ] {
-        if enabled {
-            channels.mounted(name)?;
-        }
+    ]
+    .into_iter()
+    .filter(|(enabled, _)| *enabled)
+    {
+        channels.mounted(name)?;
     }
+    let access_audit = device_access_audit(&identity, &audit_store, agent_pki.is_some()).await?;
     let agent_enrollment = agent_pki
         .as_ref()
         .map(|pki| {
@@ -519,6 +539,7 @@ pub(crate) async fn from_compiled(
                     tenant: identity.tenant,
                     store: access.registration(),
                     audit: audit_store.clone(),
+                    access_audit: access_audit.clone().ok_or(Error::Malformed)?,
                     issuer: pki.issuer.clone(),
                     clock: pki.pki_clock.clone(),
                     binding: Arc::new(rss_mdm_agent_channel::Bindings),
@@ -575,6 +596,7 @@ pub(crate) async fn from_compiled(
         apple_material_roots,
         webhooks,
         pki,
+        access_audit,
         agent_enrollment,
         agent_pki,
         certificate_archive,
@@ -659,6 +681,11 @@ pub(crate) fn from_state(
         ),
         requests: state.requests.clone(),
     });
+    state
+        .identity
+        .enterprise_platform
+        .bind(state.execution.clone())
+        .expect("single enterprise platform composition");
     if let Some(platform) = &state.identity.platform {
         platform
             .bind(&apple_state)
@@ -862,6 +889,7 @@ pub(crate) fn from_state(
                     state.access.archive_pool(),
                     state.audit_store.clone(),
                     p.keys.clone(),
+                    state.access_audit.clone(),
                     state.execution.clone(),
                 ))
             }),

@@ -38,11 +38,13 @@ pub(super) async fn read(
         None => false,
     };
     store::fence(&mut tx, &tenant).await?;
-    let object = app
-        .platform_objects
-        .paired_in(&mut tx, p.tenant(), p.device())
-        .await
-        .map_err(db)?;
+    let object = rss_mdm_device_service::planning::PlanningObjects::paired_in(
+        &mut tx,
+        p.tenant(),
+        p.device(),
+    )
+    .await
+    .map_err(db)?;
     if !object
         .members
         .iter()
@@ -62,8 +64,15 @@ pub(super) async fn read(
     let now = store::now(&mut tx).await?;
     let application_observed =
         deployment::application(&mut tx, rt, p.tenant(), member.registration_id, now).await?;
-    let profile_observed =
-        deployment::profile(&mut tx, app, member.registration_id, member.generation).await?;
+    let login = deployment::configuration_for_object(&mut tx, app.tenant, &object).await?;
+    let profile_observed = deployment::profile(
+        &mut tx,
+        app,
+        member.registration_id,
+        member.generation,
+        &login,
+    )
+    .await?;
     let device_id:Option<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND registration=$2 AND kind='device'")
         .bind(&tenant).bind(member.registration_id).fetch_optional(&mut *tx).await.map_err(db)?;
     let device = match device_id {
@@ -71,7 +80,10 @@ pub(super) async fn read(
         None => None,
     };
     let device_registered = device.as_ref().is_some_and(|s| {
-        !s.revoked && s.object == object && rt.fingerprint().is_ok_and(|f| s.configuration == f)
+        !s.revoked
+            && s.object == object
+            && s.login_configuration == login
+            && rt.fingerprint().is_ok_and(|f| s.configuration == f)
     });
     let user_registered = match &user {
         Some(u) => {
@@ -86,6 +98,29 @@ pub(super) async fn read(
     } else {
         false
     };
+    let password_exchange = if let Some(user) = &user {
+        use rss_mdm_agent_wire::platform_sso::{
+            PasswordExchangeState as State, PasswordExchangeStatus,
+        };
+        let last: Option<(Uuid, String, i64)> = sqlx::query_as("SELECT id,state,expires_at FROM mdm_apple.psso_password_attempts WHERE tenant_id=$1::uuid AND source=$2 AND version=$3 ORDER BY expires_at DESC,id DESC LIMIT 1")
+            .bind(&tenant).bind(user.id).bind(user.version).fetch_optional(&mut *tx).await.map_err(db)?;
+        last.map(|(attempt_id, state, expires)| {
+            Ok::<_, Error>(PasswordExchangeStatus {
+                attempt_id,
+                state: match state.as_str() {
+                    "verifying" if expires <= now => State::Unknown,
+                    "verifying" => State::Verifying,
+                    "succeeded" => State::Succeeded,
+                    "rejected" => State::Rejected,
+                    "unavailable" => State::Unavailable,
+                    _ => return Err(Error::Unavailable(crate::Failure::Database)),
+                },
+            })
+        })
+        .transpose()?
+    } else {
+        None
+    };
     let public = |s: store::Source| SourceStatus {
         id: s.id,
         version: s.version,
@@ -94,6 +129,7 @@ pub(super) async fn read(
         encryption_key: s.encryption,
     };
     Ok(Status {
+        password_exchange,
         application_observed,
         profile_observed,
         device_registered,

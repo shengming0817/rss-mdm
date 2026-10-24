@@ -99,11 +99,16 @@ ALTER TABLE mdm_access.directory_revisions FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_access.directory_revisions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 REVOKE ALL ON mdm_access.directory_revisions FROM PUBLIC;
 GRANT SELECT ON mdm_access.directory_revisions TO mdm_access;
+-- Scope the revision write to the already-authorized source row, including cross-tenant maintenance.
+-- Preserve the caller context; statement rollback restores local settings on errors.
 CREATE FUNCTION mdm_access.advance_directory_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE previous_tenant text:=current_setting('rss.tenant_id',true);
 BEGIN
  IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
+ PERFORM set_config('rss.tenant_id',(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END)::text,true);
  INSERT INTO mdm_access.directory_revisions VALUES(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END,1)
  ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_access.directory_revisions.revision+1;
+ PERFORM set_config('rss.tenant_id',coalesce(previous_tenant,''),true);
  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
 END $$;
 REVOKE ALL ON FUNCTION mdm_access.advance_directory_revision() FROM PUBLIC;
@@ -113,4 +118,10 @@ CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON m
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.requests FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.agent_grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.device_access_bindings FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.relying_parties FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.subjects FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.windows_sources FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.entries FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.versions FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 COMMIT;

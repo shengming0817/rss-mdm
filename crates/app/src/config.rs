@@ -138,6 +138,7 @@ pub struct Identity {
     pub audit_worker: Database,
     pub audit_recovery_keys: AuditRecoveryKeys,
     pub oidc: Option<crate::identity::OidcConfig>,
+    pub enterprise: Option<crate::identity::EnterpriseDeployment>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

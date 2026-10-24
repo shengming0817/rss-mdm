@@ -167,7 +167,7 @@ def run_smoke(directory):
         require(sql("SELECT count(*) FROM mdm_access.grants WHERE device='outside'")=="0","denied enrollment wrote business state")
         require(browser.request_id is not None,"candidate protected response has no request identity")
         event_id = "e-" + hashlib.sha256(browser.request_id.encode()).hexdigest()
-        require(sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1","candidate denial audit missing")
+        wait(lambda: sql("SELECT count(*) FROM rss_audit.records WHERE tenant_id='"+TENANT+"' AND source_id='mdm.request' AND event_id='"+event_id+"'")=="1", "candidate denial audit projection")
         require(browser.call("POST","/api/v1/devices/device-1/actions",dict(action="wipe"),str(uuid.uuid4()))[0]==403,"wipe permission bypass")
         require(browser.call("GET","/api/v1/devices/outside/inventory")[0]==403,"inventory scope bypass")
         pki_checks=native_pki_journey(deployed,administrator)

@@ -112,7 +112,7 @@ impl FrozenCredential {
                         .map_err(|_| {
                             sqlx::Error::Protocol("RSS recovery readiness unavailable".into())
                         })?
-                        || !matches!(&b.account,Some(wire::AccessAccount::Windows{sid:s}) if s==sid)
+                        || !matches!(&b.account,Some(wire::AccessAccount::Windows{sid:s,..}) if s==sid)
                     {
                         return Ok(false);
                     }

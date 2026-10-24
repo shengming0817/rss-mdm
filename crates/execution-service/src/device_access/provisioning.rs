@@ -5,7 +5,7 @@ use rss_mdm_recovery_credentials::{self as vault, storage as materials};
 
 fn subject(b: &access::Binding) -> Option<wire::CredentialSubject> {
     match &b.account {
-        Some(wire::AccessAccount::Windows { sid }) => Some(wire::CredentialSubject::RssLogin {
+        Some(wire::AccessAccount::Windows { sid, .. }) => Some(wire::CredentialSubject::RssLogin {
             binding: b.id,
             binding_generation: b.generation,
             sid: sid.clone(),
@@ -235,7 +235,7 @@ pub(crate) async fn finish(
     if facts.factor_generation != task.factor_generation {
         return Err(Error::Conflict.into());
     }
-    let wire::AccessAccount::Windows { sid } = account else {
+    let wire::AccessAccount::Windows { sid, .. } = account else {
         return Err(Error::Malformed.into());
     };
     if facts.recovery.subject

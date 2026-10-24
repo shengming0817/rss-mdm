@@ -86,6 +86,26 @@ impl Fixture {
         mdm_software: bool,
         platform_sso: bool,
     ) -> Result<Self> {
+        Self::with_platform_configuration(
+            agent,
+            address,
+            preserve_authorization,
+            ade,
+            mdm_software,
+            platform_sso,
+            None,
+        )
+        .await
+    }
+    async fn with_platform_configuration(
+        agent: Option<serde_json::Value>,
+        address: Option<std::net::SocketAddr>,
+        preserve_authorization: bool,
+        ade: Option<rss_mdm_apple_channel::ade::Fixture>,
+        mdm_software: bool,
+        platform_sso: bool,
+        platform_configuration: Option<config::PlatformSso>,
+    ) -> Result<Self> {
         let _ = agent;
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
@@ -112,7 +132,7 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&trust_path, std::fs::Permissions::from_mode(0o600))?;
         apple.trust_file = trust_path;
-        if platform_sso {apple.platform_sso=Some(platform_sso::configuration(&root)?);}
+        if platform_sso {apple.platform_sso=Some(match platform_configuration{Some(c)=>c,None=>platform_sso::configuration(&root)?});}
         config.native_protocols.apple = Some(apple);
         let compiled = config.compile()?;
         let config = &compiled.config;
@@ -208,11 +228,12 @@ impl Fixture {
             crate::device_pki::providers(&config.device_pki)?,
             config.agent_pki.bootstrap_materials(&config.identity.instance_id,crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
+        let access_audit=Arc::new(agent_audit.on_runtime(identity.runtime.clone(),identity.tenant,&rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5)).control()).await?);
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
                 crate::test_support::agent::application_service(
-                    pki,
+                    access_audit.clone(),                    pki,
                     &access,
                     agent_audit.clone(),
                     execution.service.clone(),
@@ -275,6 +296,7 @@ impl Fixture {
         }
         let platform_configuration = apple.platform_sso.as_ref().map(|rt| rt.qualification_configuration()).transpose()?;
         let app = Arc::new(Assembly {
+            access_audit: Some(access_audit),
             platform_configuration,
             audit_projection_health: Default::default(),
             channels: execution.channels.clone(),

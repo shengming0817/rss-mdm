@@ -297,6 +297,74 @@
     },
     {
       "schema": "mdm_access",
+      "table": "device_access_subject_denials",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "device_access_lifecycles",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "relying_parties",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "subjects",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "subject_versions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "subject_owners",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "windows_sources",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_enterprise",
+      "table": "brokers",
+      "read_write": true,
+      "updates": [
+        "document",
+        "sealed",
+        "expires_at",
+        "phase"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
       "table": "directory_revisions",
       "read_write": false,
       "read_only": true,

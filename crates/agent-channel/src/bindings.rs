@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use uuid::Uuid;
     fn context() -> rss_mdm_agent_wire::runtime::SoftwareExecutionContext {
-        serde_json::from_value(serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":{"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false},"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})).unwrap()
+        serde_json::from_value(serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":{"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false},"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false})).unwrap()
     }
     #[test]
     fn context_updates_cannot_reuse_a_revision_or_restore_a_previous_login() {

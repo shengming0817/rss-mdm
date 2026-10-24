@@ -469,8 +469,9 @@ add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='
              'crates/device-service/src/planning.rs','crates/device-service/src/planning/*','crates/inventory-postgres/src/reader.rs',
              'crates/execution-service/src/device_access.rs','crates/registration-service/src/device/store.rs'),
     support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/lifecycle.rs','crates/app/tests/apple/policy.rs','crates/app/tests/apple/support/scep.rs'),
-    tests=('crates/app/tests/apple/platform_sso.rs',))
+    tests=('crates/app/tests/apple/platform_sso.rs','crates/app/tests/apple/platform_sso/*.rs'),)
 MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],scope='tenant',policies=(
+    CasePolicy('apple::tests::platform_sso::password::native_password_registration_exchange_and_recovery','reuse','tenant',(*MODULES['apple.platform_sso'].fixtures,'content','idp')),
     CasePolicy('apple::tests::platform_sso::native_registration_login_browser_bridge_and_revocation', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
     CasePolicy('apple::tests::platform_sso::third_party_profile_dispatch_with_rss_runtime', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
     CasePolicy('apple::tests::platform_sso::third_party_profile_dispatch_without_rss_runtime', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
@@ -2157,8 +2158,12 @@ consume(('hack/ingress_network.py',), 'gateway.admission')
 # Device Access owns the joint human/device ceremony and exact application receipts.
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','shared_worker'),
     sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
-    tests=('crates/app/tests/agent/device_access.rs',),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
+    tests=('crates/app/tests/agent/device_access.rs','crates/app/tests/agent/device_access/*.rs'),support=MODULES['agent.current_user'].support_inputs,actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant', fixtures=(*MODULES['device-access.http'].fixtures, 'content'))
+module=MODULES['device-access.http']
+MODULES['device-access.http']=replace(module, policies=(*module.policies,CasePolicy('agent::t2::device_access::enterprise::two_rps_exchange_cancel_and_revoke','reuse','tenant',fixtures=(*module.fixtures,'idp'))),support_inputs=(*module.support_inputs,'hack/enterprise_idp.py'))
+consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/src/enterprise/*','crates/registration-service/schema/enterprise.sql','crates/management-http/src/enterprise_broker.rs','crates/app/src/identity/enterprise.rs','crates/agent-wire/src/enterprise.rs','crates/agent-wire/schema/enterprise/*'),'device-access.http')
+consume(('crates/registration-service/schema/enterprise.sql',),'installation.migration catalog.contract')
 consume(('crates/registration-service/schema/device-access.sql',),'installation.migration catalog.contract device.admission')
 consume(('crates/agent-wire/src/device_access.rs','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/registration-service/src/device_access*','crates/registration-service/src/device_access/*'),'recovery-credentials.http execution.agent.delivery')
 T1_INPUTS += ('crates/agent-wire/tests/device_access.rs',)
@@ -2269,6 +2274,7 @@ if __name__ == '__main__':
 
 # Certificate-based enrollment is carried by management TLS, separately from bootstrap.
 consume(('crates/windows-channel/src/certificate_enrollment.rs',), 'windows.enrollment windows.issuance windows.declared')
+consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/schema/enterprise.sql','crates/registration-service/src/enterprise/platform.rs'),'apple.platform_sso')
 # QUERY-05: page bounds, source evidence batching and continuation owners.
 consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')
 consume(('crates/execution-service/src/query_generation.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')

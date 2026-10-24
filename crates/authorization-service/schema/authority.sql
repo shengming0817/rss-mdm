@@ -21,7 +21,7 @@ RETURNS bigint LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog A
   WHERE c.actor->>'kind'='api_key' AND c.basis->>'kind'='api_key'
    AND k.enabled AND NOT k.revoked AND (k.expires_at IS NULL OR k.expires_at>as_of AND to_timestamp(k.expires_at)>statement_timestamp())
    AND requested NOT IN('tenant_create','tenant_read','tenant_update','tenant_delete','tenant_administrator_create',
-      'identity_accounts_manage','identity_providers_manage','authorization_read','authorization_write','user_group_read','user_group_write','department_read')
+      'identity_accounts_manage','enterprise_applications_read','enterprise_applications_write','identity_providers_manage','authorization_read','authorization_write','user_group_read','user_group_write','department_read')
  )
  SELECT max(coalesce(c.expires_at::bigint,9223372036854775807))
   FROM candidates c WHERE authority->>'permission'=requested AND c.tenant=nullif(current_setting('rss.tenant_id',true),'')

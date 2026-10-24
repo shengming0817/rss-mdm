@@ -15,6 +15,26 @@
         }
       ]
     },
+    "AccessWindowsKind": {
+      "description": "Windows account classes admitted by the selected policy.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local SAM account.",
+          "type": "string"
+        },
+        {
+          "const": "active_directory",
+          "description": "AD domain account.",
+          "type": "string"
+        },
+        {
+          "const": "entra",
+          "description": "Entra directory account.",
+          "type": "string"
+        }
+      ]
+    },
     "Action": {
       "description": "Each action owns its inputs; registration never requires a fictitious resource.",
       "oneOf": [
@@ -25,6 +45,17 @@
             "kind": {
               "const": "device_access",
               "type": "string"
+            },
+            "mac": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LoginConfiguration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Shared current wire settings for device-wide Mac login configuration."
             },
             "role": {
               "anyOf": [
@@ -40,10 +71,18 @@
             "selfEnrollment": {
               "description": "Permit first association to the authenticated current interactive local account.",
               "type": "boolean"
+            },
+            "windowsAccounts": {
+              "description": "Explicit supported Windows account classes.",
+              "items": {
+                "$ref": "#/$defs/AccessWindowsKind"
+              },
+              "type": "array"
             }
           },
           "required": [
             "kind",
+            "windowsAccounts",
             "selfEnrollment"
           ],
           "type": "object"
@@ -491,6 +530,21 @@
         }
       ]
     },
+    "AuthenticationMode": {
+      "description": "Device-wide login mode; every user on one Mac consumes the same system profile.",
+      "oneOf": [
+        {
+          "const": "secure_enclave",
+          "description": "Existing Secure Enclave user-key protocol.",
+          "type": "string"
+        },
+        {
+          "const": "password",
+          "description": "Device-signed Apple Password request, verified by the selected password authority.",
+          "type": "string"
+        }
+      ]
+    },
     "Change": {
       "description": "Closed configuration mutations. Execution progress cannot mutate this CAS.",
       "oneOf": [
@@ -517,6 +571,17 @@
                           "const": "device_access",
                           "type": "string"
                         },
+                        "mac": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/$defs/LoginConfiguration"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "description": "Shared current wire settings for device-wide Mac login configuration."
+                        },
                         "role": {
                           "anyOf": [
                             {
@@ -531,10 +596,18 @@
                         "selfEnrollment": {
                           "description": "Permit first association to the authenticated current interactive local account.",
                           "type": "boolean"
+                        },
+                        "windowsAccounts": {
+                          "description": "Explicit supported Windows account classes.",
+                          "items": {
+                            "$ref": "#/$defs/AccessWindowsKind"
+                          },
+                          "type": "array"
                         }
                       },
                       "required": [
                         "kind",
+                        "windowsAccounts",
                         "selfEnrollment"
                       ],
                       "type": "object"
@@ -1266,6 +1339,89 @@
         {
           "const": "every_trigger",
           "description": "Each distinct due trigger, subject to outstanding execution safety.",
+          "type": "string"
+        }
+      ]
+    },
+    "LoginConfiguration": {
+      "additionalProperties": false,
+      "description": "Business configuration compiled into one device-wide System profile. No deployment secrets.",
+      "properties": {
+        "authentication": {
+          "$ref": "#/$defs/AuthenticationMode",
+          "description": "Chosen native authentication method."
+        },
+        "filevault": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for Apple silicon FileVault unlock."
+        },
+        "login": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for the login window."
+        },
+        "maintenanceAccounts": {
+          "description": "Exact local maintenance account short names excluded from platform login policy.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "offlineGraceSeconds": {
+          "description": "Explicit offline allowance, in seconds; never synthesized by the server.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "passwordProvider": {
+          "description": "Configured password provider identity; required only in Password mode.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "registrationGraceSeconds": {
+          "description": "Explicit allowance for unregistered accounts, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "unlock": {
+          "$ref": "#/$defs/LoginPolicy",
+          "description": "Policy for screen unlock."
+        }
+      },
+      "required": [
+        "authentication",
+        "login",
+        "unlock",
+        "filevault",
+        "maintenanceAccounts"
+      ],
+      "type": "object"
+    },
+    "LoginPolicy": {
+      "description": "An explicit platform login policy, independent for login, unlock and FileVault.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Preserve native local login; do not emit an enforcing platform policy.",
+          "type": "string"
+        },
+        {
+          "const": "attempt",
+          "description": "Try the configured password authority with Apple's offline behavior.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Require the configured authority; grace periods must be explicitly selected.",
           "type": "string"
         }
       ]
