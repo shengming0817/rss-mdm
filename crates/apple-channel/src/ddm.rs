@@ -19,7 +19,7 @@ mod guards;
 mod reports;
 pub use assets::asset;
 pub(crate) use guards::{profile_conflict, profile_observation_guards, release_profiles};
-pub(crate) use reports::{observation, withdrawal_published};
+pub(crate) use reports::{observation, observations, withdrawal_published};
 
 #[derive(Serialize, Deserialize)]
 struct Publication {

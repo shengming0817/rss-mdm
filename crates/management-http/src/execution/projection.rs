@@ -24,8 +24,8 @@ pub fn directory(facts: ExecutionDirectory) -> Value {
         .items
         .iter()
         .map(|item| match &item.evidence {
-            ExecutionEvidence::Command(command) => Some(observation(&command.observation)),
-            ExecutionEvidence::Run(_) => None,
+            Some(ExecutionEvidence::Command(command)) => Some(observation(&command.observation)),
+            Some(ExecutionEvidence::Run(_)) | None => None,
         })
         .collect::<Vec<_>>();
     let mut value = serde_json::to_value(facts).expect("directory facts serialize");

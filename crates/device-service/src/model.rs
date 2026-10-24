@@ -54,6 +54,8 @@ pub struct CandidatePage {
 }
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("device query budget exceeded")]
+    Capacity,
     #[error("invalid association request")]
     Malformed,
     #[error("identity rejected")]

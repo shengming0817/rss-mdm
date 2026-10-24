@@ -139,21 +139,21 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         let login=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
         ensure!(login.0==StatusCode::OK,"login {login:?}");
         f.author=manager;
-        let search=format!("/api/v1/device-views?search={}",f.author_id);
+        let search=format!("/api/v1/device-views?filter=search=icontains={}",f.author_id);
         let owner_before=owner(&mut f,None).await?;
         // Hide ownership so a current-user search cannot pass by matching the same owner.
         let mut grants=crate::test_support::identity::device_grants(Some(device),&["inventory_read"])?;
         grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(hidden.0==StatusCode::OK && hidden.1["statistics"]["deviceViewCount"]==0);
+        ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(visible.0==StatusCode::OK && visible.1["statistics"]["deviceViewCount"]==1,"visible {visible:?}");
+        ensure!(visible.0==StatusCode::OK && visible.1["items"].as_array().is_some_and(|items|items.len()==1),"visible {visible:?}");
         let projected=visible.1["items"][0]["endpoints"][0]["currentUser"].clone();
         ensure!(projected["state"]=="active" && projected["user"]["principalId"]==f.author_id);
         let detail=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views/endpoint/{device}"),None).await?;
@@ -164,7 +164,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         // A stale binding cannot borrow the validity of the current registration generation.
         crate::test_support::process::pg(&format!("UPDATE mdm_access.current_users SET generation=generation+1 WHERE tenant_id='{}' AND device='{}'",case_tenant(),device))?;
         let invalid=f.author.call(&f.router,Method::GET,&search,None).await?;
-        ensure!(invalid.0==StatusCode::OK && invalid.1["statistics"]["deviceViewCount"]==0);
+        ensure!(invalid.0==StatusCode::OK && invalid.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let state=call(&f,Method::GET,None,true,false).await?;
         ensure!(state.0==StatusCode::OK && state.1["state"]=="invalidated");
         f.author=agent_user.clone();
@@ -230,7 +230,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let mut hold=root.begin().await?;
             let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
             sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
-            let query=rss_mdm_device_service::ViewQuery{search:None,platform:None,cursor:None,limit:64,descending:false,status:None,channel:None,source:None,asset_state:None};
+            let query=rss_mdm_device_service::directory::parse("limit=64")?;
             let directory_identity=authority.identity.authority.clone();
             let task=tokio::spawn(async move {
                 let timer=rss_mdm_audit_integration::budget::RuntimeTimer;

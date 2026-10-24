@@ -526,6 +526,7 @@ impl Planning {
                         &assets::ReadScope {
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             subject: "group".into(),
+                            authority: "internal".into(),
                             sensitive: true,
                             devices: build
                                 .request

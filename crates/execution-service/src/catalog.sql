@@ -5,6 +5,8 @@ WITH tables AS (
  WHERE n.nspname='mdm_commands' AND c.relkind='r'
 )
 SELECT jsonb_build_object(
+ 'queryFunctions',(SELECT jsonb_agg(pg_get_functiondef(p.oid) ORDER BY p.proname COLLATE "C") FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='mdm_commands' AND p.proname IN('advance_query_revision','lock_query_revision','observe_query_commands','capture_query_revision')),
+ 'queryTriggers',(SELECT jsonb_agg(jsonb_build_array(t.tgenabled,pg_get_triggerdef(t.oid)) ORDER BY n.nspname COLLATE "C",c.relname COLLATE "C") FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE t.tgfoid='mdm_commands.capture_query_revision()'::regprocedure),
  'softwareResults',(SELECT pg_get_functiondef('mdm_commands.advance_software_results()'::regprocedure)),
  'softwareBindings',(SELECT pg_get_functiondef('mdm_commands.advance_software_bindings()'::regprocedure)),
  'softwareResultTrigger',(SELECT jsonb_build_array(tgenabled,pg_get_triggerdef(oid)) FROM pg_trigger WHERE tgrelid='mdm_commands.action_runs'::regclass AND tgname='software_results'),

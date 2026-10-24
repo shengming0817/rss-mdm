@@ -6,6 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "association_changes",
+    default_limit: 64,
+    max_limit: 64,
+    order: "audit position in fixed window",
+    context: &[],
+};
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum Position {
@@ -16,12 +23,20 @@ enum Position {
 impl Associations {
     /// A nextCursor continues one fixed window; a terminal checkpoint starts the next window.
     /// Both tokens are passed back through the same cursor input.
-    pub async fn changes(&self, proof: &AuthorizedPrincipal, token: Option<&str>) -> Result<Value> {
+    pub async fn changes(
+        &self,
+        proof: &AuthorizedPrincipal,
+        query: &rss_mdm_query::window::Query,
+    ) -> Result<Value> {
         if proof.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
+        let token = query.cursor.as_deref();
+        if !(1..=64).contains(&query.limit) {
+            return Err(Error::Malformed);
+        }
         let budget = AuditBudget::new(Duration::from_secs(5));
-        self.audit.read(self.tenant,&budget.control(),(self,proof,token),|(service,proof,token),tx|Box::pin(async move {
+        self.audit.read(self.tenant,&budget.control(),(self,proof,token,query.limit),|(service,proof,token,limit),tx|Box::pin(async move {
             let snapshot=tx.with_connection_context(proof,|proof,c|Box::pin(read::authorization(c,proof))).await?;
             snapshot.inventory_devices(proof)?;
             let binding=json!({"kind":"device-association-changes","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":snapshot.query_binding(proof)?});
@@ -47,7 +62,7 @@ impl Associations {
                     (rss_audit_postgres::Cursor::resume(service.tenant,after,through).map_err(|_|Error::Storage)?,Some(after))
                 }
             };
-            let page=tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Storage)?).await.map_err(|e|Error::Audit(e.into()))?;
+            let page=tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(*limit as u32,8388608).map_err(|_|Error::Storage)?).await.map_err(|e|Error::Audit(e.into()))?;
             let mut items=Vec::new();
             for record in page.records(){
                 let decoded=rss_audit_core::decode_untrusted(record.prepared().canonical_bytes()).map_err(|_|Error::Storage)?;

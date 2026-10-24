@@ -3722,6 +3722,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
+ "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -3991,6 +3992,7 @@ dependencies = [
  "ring",
  "rss-audit-core",
  "rss-audit-postgres",
+ "rss-contract",
  "rss-identity-core",
  "rss-identity-postgres",
  "rss-mdm-agent-wire",
@@ -3999,6 +4001,8 @@ dependencies = [
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-request-context",
  "rss-runtime",
@@ -4086,6 +4090,8 @@ dependencies = [
  "rss-mdm-native-protection",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -4466,6 +4472,7 @@ dependencies = [
  "rss-mdm-query",
  "serde_json",
  "sqlx",
+ "tracing",
 ]
 
 [[package]]

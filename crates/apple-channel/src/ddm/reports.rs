@@ -256,9 +256,46 @@ pub(crate) async fn observation(
     operation: Uuid,
     native_values: bool,
 ) -> Result<Option<native::evidence::DeclarationEvidence>, Error> {
-    let row=sqlx::query("SELECT registration,generation,user_key,snapshot,projection,retired_at FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=$2")
-        .bind(tenant).bind(operation).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(row) = row else { return Ok(None) };
+    Ok(observations(c, key, tenant, vec![operation], native_values)
+        .await?
+        .remove(&operation))
+}
+pub(crate) async fn observations(
+    c: &mut PgConnection,
+    key: &Protector,
+    tenant: &str,
+    ids: Vec<Uuid>,
+    native_values: bool,
+) -> Result<std::collections::BTreeMap<Uuid, native::evidence::DeclarationEvidence>, Error> {
+    if ids.len() > 1000 {
+        return Err(Error::Malformed);
+    }
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT operation,registration,generation,user_key,snapshot,projection,retired_at FROM mdm_apple.declarations WHERE tenant_id=$1::uuid AND operation=ANY($2)),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok").bind(tenant).bind(ids).fetch_all(c).await.map_err(db)?;
+    rss_mdm_query_postgres::observe_rows("execution.apple", &rows).map_err(db)?;
+    let mut result = std::collections::BTreeMap::new();
+    for row in rows {
+        if !row.try_get::<bool, _>("within_budget").map_err(db)? {
+            return Err(Error::Malformed);
+        }
+        if let Some(operation) = row.try_get::<Option<Uuid>, _>("operation").map_err(db)? {
+            result.insert(
+                operation,
+                decode_observation(&row, key, tenant, operation, native_values)?,
+            );
+        }
+    }
+    Ok(result)
+}
+fn decode_observation(
+    row: &sqlx::postgres::PgRow,
+    key: &Protector,
+    tenant: &str,
+    operation: Uuid,
+    native_values: bool,
+) -> Result<native::evidence::DeclarationEvidence, Error> {
     let registration = row.try_get("registration").map_err(db)?;
     let generation = row.try_get("generation").map_err(db)?;
     let user: String = row.try_get("user_key").map_err(db)?;
@@ -326,7 +363,7 @@ pub(crate) async fn observation(
             row["native"]["reasons"] = serde_json::json!([]);
         }
     }
-    Ok(Some(native::evidence::DeclarationEvidence {
+    Ok(native::evidence::DeclarationEvidence {
         input_version: publication.input_version,
         expected: set.manifest()["Declarations"].clone(),
         publication: if retired.is_some() {
@@ -336,7 +373,7 @@ pub(crate) async fn observation(
         },
         received_at,
         status,
-    }))
+    })
 }
 
 /// Logical desired ownership can leave after withdrawal without fabricating an OS effect.

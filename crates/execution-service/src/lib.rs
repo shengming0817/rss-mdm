@@ -55,6 +55,7 @@ pub use retirement::retire_in;
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 mod protocol;
+mod query_generation;
 pub mod recovery;
 mod service;
 pub mod storage;
@@ -97,7 +98,7 @@ pub struct ExecutionService {
     pub(crate) task_signing_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) runtime: Arc<PgRuntime>,
     pub(crate) outbox: Arc<PgOutboxStore<()>>,
-    pub(crate) store: rss_device_command_postgres::PgStore<()>,
+    pub(crate) store: query_generation::CommandStore,
     pub(crate) reconcile: rss_reconcile_postgres::PgStore,
     pub(crate) tenant: TenantId,
     pub(crate) instance: String,
@@ -160,7 +161,7 @@ impl ExecutionService {
             task_signing_audit: dependencies.task_signing_audit,
             runtime: dependencies.runtime,
             outbox: dependencies.outbox,
-            store: dependencies.store,
+            store: query_generation::CommandStore(dependencies.store),
             reconcile: dependencies.reconcile,
             tenant: dependencies.tenant,
             instance: dependencies.instance,

@@ -45,7 +45,12 @@ pub(super) fn key(value: Option<&State>, descending: bool) -> Result<Vec<u8>> {
         }
     }
     let mut result = vec![0];
-    result.extend(payload);
+    // Self-delimiting byte encoding composes lexicographic keys without letting a
+    // variable-length component consume the next field. Preserve byte ordering.
+    for byte in payload {
+        result.extend([1, byte]);
+    }
+    result.push(0);
     Ok(result)
 }
 #[cfg(test)]

@@ -1,22 +1,14 @@
 //! Authorized, immutable result reads. Cursor projection is part of its signature.
 use super::*;
 use crate::tasks::JobInput;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_query::cursor::CursorCodec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Position {
-    Items { key: Vec<u8>, device: String },
+    Items { device: String },
     Facet { facet: Facet, label: String },
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    tenant: String,
-    task: Uuid,
-    scope: String,
-    position: Position,
 }
 struct QueryState {
     summary: Summary,
@@ -40,7 +32,11 @@ impl AssetService {
         let JobInput::AssetQuery { scope: owner, .. } = job else {
             return Err(Error::Unavailable(Failure::AssetsStorage).into());
         };
-        if &owner != scope {
+        if owner.subject != scope.subject
+            || owner.collection_scope != scope.collection_scope
+            || owner.devices != scope.devices
+            || owner.sensitive != scope.sensitive
+        {
             return Err(Error::Forbidden.into());
         }
         let status = if failure.is_some() {
@@ -81,24 +77,14 @@ impl AssetService {
         })
     }
     fn query_cursor(&self, token: &str, task: Uuid, scope: &ReadScope) -> Result<Position> {
-        if token.len() > 4096 {
-            return Err(Error::Malformed.into());
-        }
-        let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-        if bytes.len() <= 32 {
-            return Err(Error::Malformed.into());
-        }
-        let (payload, signature) = bytes.split_at(bytes.len() - 32);
-        ring::hmac::verify(&self.asset_cursor_key, payload, signature)
-            .map_err(|_| Error::Conflict)?;
-        let cursor: Cursor = checked_input(serde_json::from_slice(payload))?;
-        if cursor.tenant != self.tenant.to_string()
-            || cursor.task != task
-            || cursor.scope != digest(scope)?
-        {
-            return Err(Error::Conflict.into());
-        }
-        Ok(cursor.position)
+        let codec = CursorCodec::from_key(self.asset_cursor_key.clone());
+        let binding = digest(&("asset-results", self.tenant.to_string(), task, scope))?;
+        codec
+            .decode(
+                &checked_input(rss_contract::PageCursor::parse(token))?,
+                &binding,
+            )
+            .map_err(|_| Error::Conflict.into())
     }
     fn next_query_cursor(
         &self,
@@ -106,16 +92,11 @@ impl AssetService {
         scope: &ReadScope,
         position: Position,
     ) -> Result<String> {
-        let cursor = Cursor {
-            tenant: self.tenant.to_string(),
-            task,
-            scope: digest(scope)?,
-            position,
-        };
-        let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
-        let signature = ring::hmac::sign(&self.asset_cursor_key, &bytes);
-        bytes.extend(signature.as_ref());
-        Ok(URL_SAFE_NO_PAD.encode(bytes))
+        let codec = CursorCodec::from_key(self.asset_cursor_key.clone());
+        let binding = digest(&("asset-results", self.tenant.to_string(), task, scope))?;
+        Ok(checked_input(codec.encode(&binding, &position))?
+            .as_str()
+            .to_owned())
     }
     pub(super) async fn asset_query_items(
         &self,
@@ -132,40 +113,51 @@ impl AssetService {
         if !state.ready {
             return Err(Error::Conflict.into());
         }
-        let (after_key, after_device) = if let Some(token) = cursor {
+        // Completed results are immutable. Recover the key by their indexed identity
+        // within this signed task, rather than serializing a 1024-byte key as JSON
+        // numbers (which can exceed PageCursor even for a valid stored result).
+        let after_device = if let Some(token) = cursor {
             match self.query_cursor(token, task, scope)? {
-                Position::Items { key, device } => (Some(key), Some(device)),
+                Position::Items { device } => Some(device),
                 _ => return Err(Error::Conflict.into()),
             }
         } else {
-            (None, None)
+            None
         };
         let tenant = self.tenant.to_string();
         let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,sort_key,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::bytea IS NULL OR (sort_key,device)>($3,$4 COLLATE \"C\")) ORDER BY sort_key,device LIMIT $5")
-                .bind(tenant).bind(task.to_string()).bind(after_key).bind(after_device).bind(limit as i64).fetch_all(c).await
+            sqlx::query("SELECT device,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::text IS NULL OR (sort_key,device)>(SELECT sort_key,device FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=$3 COLLATE \"C\")) ORDER BY sort_key,device LIMIT $4")
+                .bind(tenant).bind(task.to_string()).bind(after_device).bind((limit + 1) as i64).fetch_all(c).await
         })).await?;
+        let mut more = metadata.len() > limit;
         let mut ids = Vec::new();
         let mut bytes = 0usize;
         let mut next = None;
-        for row in metadata {
+        for row in metadata.into_iter().take(limit) {
             let size = row.try_get::<i32, _>("bytes")? as usize + 1024;
             if bytes + size > 16 * 1024 * 1024 {
+                if ids.is_empty() {
+                    return Err(Error::Unavailable(Failure::AssetBytesLimit).into());
+                }
+                more = true;
                 break;
             }
             let device: String = row.try_get("device")?;
             next = Some(Position::Items {
-                key: row.try_get("sort_key")?,
                 device: device.clone(),
             });
             ids.push(device);
             bytes += size;
+        }
+        if !more {
+            next = None;
         }
         let tenant = self.tenant.to_string();
         let rows=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query("SELECT r.device,r.document,r.digest FROM unnest($3::text[]) WITH ORDINALITY p(device,n) JOIN mdm_assets.asset_query_results r ON r.device=p.device WHERE r.tenant_id=$1::uuid AND r.run=$2::uuid ORDER BY p.n")
                 .bind(tenant).bind(task.to_string()).bind(ids).fetch_all(c).await
         })).await?;
+        rss_mdm_query_postgres::observe_rows("assets.results", &rows)?;
         let mut items = Vec::new();
         for row in rows {
             let raw: Vec<u8> = row.try_get("document")?;
@@ -214,12 +206,15 @@ impl AssetService {
             None
         };
         let tenant = self.tenant.to_string();
-        let rows:Vec<(String,i64)>=tx.with_connection(move |c|Box::pin(async move {
+        let mut rows:Vec<(String,i64)>=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_as("SELECT label,total FROM mdm_assets.asset_query_facets WHERE tenant_id=$1::uuid AND run=$2::uuid AND kind=$3 AND ($4::text IS NULL OR label>$4 COLLATE \"C\") ORDER BY label LIMIT $5")
-                .bind(tenant).bind(task.to_string()).bind(facet.as_str()).bind(after).bind(limit as i64).fetch_all(c).await
+                .bind(tenant).bind(task.to_string()).bind(facet.as_str()).bind(after).bind((limit + 1) as i64).fetch_all(c).await
         })).await?;
+        let more = rows.len() > limit;
+        rows.truncate(limit);
         let next_cursor = rows
             .last()
+            .filter(|_| more)
             .map(|(label, _)| {
                 self.next_query_cursor(
                     task,
@@ -245,3 +240,7 @@ impl AssetService {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/assets/query_read_unit.rs"]
+mod tests;

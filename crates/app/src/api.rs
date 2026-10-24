@@ -819,6 +819,8 @@ pub(crate) fn from_state(
     );
     let management = rss_mdm_management_http::router(
         rss_mdm_management_http::Services {
+            query_cursor: rss_mdm_query::cursor::CursorCodec::new(&state.flow.cursor_key)
+                .expect("validated query key"),
             first_use,
             user_profiles: Arc::new(crate::user_profiles::Backend {
                 cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(

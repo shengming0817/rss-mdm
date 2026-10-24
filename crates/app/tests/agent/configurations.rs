@@ -1102,6 +1102,10 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     let mut owner =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut owner)
+        .await?;
     sqlx::query("UPDATE mdm_access.agent_grants SET created_at=clock_timestamp()-interval '1 hour',expires_at=clock_timestamp()+interval '2 seconds' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_tenant()).bind(grant["grantId"].as_str().unwrap()).execute(&mut owner).await?;
     let mut blocker = owner.begin().await?;
     sqlx::query("SELECT id FROM mdm_access.agent_configurations WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(case_tenant()).bind(file.configuration.configuration_id).fetch_one(&mut *blocker).await?;

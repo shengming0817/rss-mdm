@@ -2,7 +2,7 @@ use super::*;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::StatusCode,
 };
 use rss_mdm_execution_service::{
@@ -15,7 +15,10 @@ use rss_mdm_http_contract::{
     routing::{get, post},
 };
 use serde_json::Value;
-pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<HttpState>> {
+pub fn routes(
+    queries: Arc<rss_mdm_execution_service::queries::Queries>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/task-signing/trust/devices/{device}/observation",
@@ -41,16 +44,25 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
             Router::new()
                 .route(
                     "/operations",
-                    get(directory).owned(&contracts::EXECUTIONS, &[RouteOperation::List]),
+                    get(directory)
+                        .owned(&contracts::EXECUTIONS, &[RouteOperation::List])
+                        .queried(&rss_mdm_execution_service::directory::SCHEMA),
+                )
+                .route(
+                    "/operations/statistics",
+                    get(statistics).owned(&contracts::EXECUTIONS, &[RouteOperation::Query]),
                 )
                 .route(
                     "/devices/{device}/ddm",
-                    get(ddm).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+                    get(ddm)
+                        .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                        .windowed(&rss_mdm_execution_service::queries::ddm::SCHEMA),
                 )
                 .route(
                     "/devices/{device}/operations/{id}",
                     get(read).owned(&contracts::DEVICES, &[RouteOperation::Action]),
                 )
+                .layer(Extension(cursor))
                 .with_state(queries),
         )
         .route(
@@ -70,16 +82,32 @@ async fn directory(
     State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: std::result::Result<
-        Query<rss_mdm_execution_service::directory::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<Json<Value>, Error> {
     audit.set_action("command_read");
-    let Query(q) = query.map_err(|_| Error::Malformed)?;
-    Ok(Json(crate::execution::projection::directory(
-        s.directory(&auth.proof, &q, &audit).await?,
-    )))
+    let q = rss_mdm_execution_service::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    let mut page = crate::execution::projection::directory(
+        s.directory(&auth.proof, &q, &codec, &audit).await?,
+    );
+    for item in page["items"].as_array_mut().ok_or(Error::Malformed)? {
+        *item = q.project(item.take()).map_err(|_| Error::Malformed)?;
+    }
+    Ok(Json(page))
+}
+async fn statistics(
+    State(s): State<Arc<rss_mdm_execution_service::queries::Queries>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    RawQuery(raw): RawQuery,
+) -> std::result::Result<Json<Value>, Error> {
+    audit.set_action("command_read");
+    let q = rss_mdm_execution_service::directory::SCHEMA
+        .statistics(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(s.directory_statistics(&auth.proof, &q, &audit).await?))
 }
 async fn create(
     State(app): State<Arc<HttpState>>,
@@ -168,14 +196,14 @@ async fn ddm(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    query: Result<
-        Query<rss_mdm_execution_service::queries::ddm::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    let Query(query) = query.map_err(|_| Error::Malformed)?;
+    let (query, _) = rss_mdm_execution_service::queries::ddm::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(crate::execution::projection::ddm(
-        s.ddm(&auth.proof, &device, &query, &audit).await?,
+        s.ddm(&auth.proof, &device, &query, &audit, &codec).await?,
     )))
 }
 

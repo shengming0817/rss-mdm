@@ -11,17 +11,18 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
         request: Operation {
             operation_id: id,
             expected_revision: 0,
-            input: Query::default(),
+            input: rsql::QueryInput::default(),
         }
         .into(),
         scope: ReadScope {
+            authority: "internal".into(),
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "operator".into(),
             sensitive: false,
             devices: None,
         },
     };
-    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"criteria":null,"select":[],"sort":null}},"scope":{"collection_scope":{"kind":"device"},"subject":"operator","sensitive":false,"devices":null}}}]"#;
+    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"filter":null,"scope":{"selector":{"kind":"device"},"quantifier":"one"},"fields":[],"sort":[]}},"scope":{"authority":"internal","collection_scope":{"kind":"device"},"subject":"operator","sensitive":false,"devices":null}}}]"#;
     let (operation, digest) = operation_identity(&command, &audit).unwrap();
     assert_eq!(operation, Some(id));
     assert_eq!(digest, Sha256::digest(original).to_vec());

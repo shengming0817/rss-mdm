@@ -11,6 +11,17 @@ fn request(revision: u64, input: Value) -> Value {
 fn predicate(field: &str, kind: &str, value: Value) -> Value {
     json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":field,"op":"eq","value":{"kind":kind,"value":value}}})
 }
+fn rsql_query(condition: Value) -> Value {
+    let definition = rss_mdm_inventory_service::assets::Query {
+        criteria: Some(serde_json::from_value(condition).unwrap()),
+        fields: vec![],
+        sort: vec![],
+    };
+    serde_json::to_value(
+        rss_mdm_inventory_service::assets::rsql::QueryInput::from_query(definition).unwrap(),
+    )
+    .unwrap()
+}
 async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
     let mut grants = crate::test_support::identity::device_grants(
         device,

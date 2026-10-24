@@ -304,7 +304,7 @@ async fn credential_race(
 #[tokio::test]
 #[ignore = "MODULE=device.binding: current registration communication persistence and fencing"]
 async fn communication_is_transactional_and_bound_to_current_registration() -> anyhow::Result<()> {
-    use rss_mdm_registration_service::device::{directory::Query, store::record_communication_in};
+    use rss_mdm_registration_service::device::{directory::SCHEMA, store::record_communication_in};
     let (access, service, viewer, mut root) = fixture().await?;
     let device = crate::test_support::case::name("communication");
     let credential = proof(case_a(), Channel::Mdm, 71);
@@ -336,23 +336,12 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     let page = service
         .directory(
             &viewer,
-            &Query {
-                after: None,
-                limit: 1000,
-                descending: false,
-                status: None,
-                channel: None,
-                source: None,
-            },
+            &SCHEMA.parse("limit=1000")?,
+            &rss_mdm_query::cursor::CursorCodec::new(&[7; 32])?,
         )
         .await?;
     assert_eq!(
-        page["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|v| v["id"] == device)
-            .unwrap()["channels"],
+        page.items.iter().find(|v| v["id"] == device).unwrap()["channels"],
         detail["channels"]
     );
     let unchanged: i64 = sqlx::query_scalar(

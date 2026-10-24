@@ -57,19 +57,29 @@ pub async fn lock_device_in(
     tenant: &str,
     device: &str,
 ) -> Result<(), Error> {
-    // Registration/credential history publishes through asset_clock in this same transaction.
-    // Acquire that existing publication fence before the endpoint lifecycle fence.
+    lock_devices_in(c, tenant, &[device.to_owned()]).await
+}
+/// Acquire a page's endpoint fences in the same lexical order as single-device writers.
+pub async fn lock_devices_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    devices: &[String],
+) -> Result<(), Error> {
+    if devices.len() > 1000 {
+        return Err(Error::Malformed);
+    }
     sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
         .bind(tenant)
         .execute(&mut *c)
         .await
         .map_err(crate::database::db)?;
-    let key = serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed)?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2790))")
-        .bind(key)
-        .execute(c)
-        .await
-        .map_err(crate::database::db)?;
+    let keys = devices
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|device| serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed))
+        .collect::<Result<Vec<_>, _>>()?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2790)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(crate::database::db)?;
     Ok(())
 }
 

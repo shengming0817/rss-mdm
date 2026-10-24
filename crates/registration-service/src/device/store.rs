@@ -24,13 +24,28 @@ pub async fn lock_channel(
     device: &str,
     channel: Channel,
 ) -> Result<(), Error> {
-    crate::lifecycle::lock_device_in(tx, tenant, device).await?;
-    let key = serde_json::to_string(&(tenant, device, channel)).expect("closed identity");
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2348))")
-        .bind(key)
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
+    lock_channels(tx, tenant, &[(device.to_owned(), channel)]).await
+}
+pub async fn lock_channels(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    targets: &[(String, Channel)],
+) -> Result<(), Error> {
+    let devices = targets
+        .iter()
+        .map(|(device, _)| device.clone())
+        .collect::<Vec<_>>();
+    crate::lifecycle::lock_devices_in(c, tenant, &devices).await?;
+    let keys = targets
+        .iter()
+        .map(|(d, c)| (d, c.as_str()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|(device, channel)| {
+            serde_json::to_string(&(tenant, device, channel)).map_err(|_| Error::Malformed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2348)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(db)?;
     Ok(())
 }
 /// Record a validated management exchange, Agent task poll or Agent report.

@@ -60,6 +60,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
                         None,
                         1,
                         &assets::ReadScope {
+                            authority: "internal".into(),
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             sensitive: true,
                             subject: "history".into(),

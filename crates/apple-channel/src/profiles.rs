@@ -201,12 +201,17 @@ pub(crate) async fn assessment(
     tenant: &str,
     operation: Uuid,
 ) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
-    use rss_mdm_apple_mdm::native::profiles::Verification as V;
     let state: Option<String> = sqlx::query_scalar(
         "SELECT verification FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=$2",
     )
     .bind(tenant).bind(operation).fetch_optional(c).await.map_err(db)?;
-    match state.as_deref() {
+    decode_assessment(state.as_deref())
+}
+pub(crate) fn decode_assessment(
+    state: Option<&str>,
+) -> Result<rss_mdm_apple_mdm::native::profiles::Verification, Error> {
+    use rss_mdm_apple_mdm::native::profiles::Verification as V;
+    match state {
         None | Some("unknown") => Ok(V::Unknown),
         Some("matched") => Ok(V::Matched),
         Some("mismatched") => Ok(V::Mismatched),

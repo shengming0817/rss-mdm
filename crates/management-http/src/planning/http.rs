@@ -30,7 +30,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{device}/groups",
-            get(device_groups).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(device_groups)
+                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::groups::memberships::SCHEMA),
         )
         .route(
             "/scopes",
@@ -445,12 +447,11 @@ async fn device_groups(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    query: Result<
-        Query<rss_mdm_inventory_service::groups::memberships::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
-    let Query(query) = query.map_err(|_| Error::Malformed)?;
+    let (query, _) = rss_mdm_inventory_service::groups::memberships::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.groups
             .memberships(&auth.proof, &device, &query, &audit)

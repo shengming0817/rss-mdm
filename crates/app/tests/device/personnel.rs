@@ -66,8 +66,8 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
             .bind(case_a()).execute(&mut pg).await?;
         sqlx::query("INSERT INTO identity_authority.memberships(tenant_id,principal_id) SELECT tenant_id,principal_id FROM identity_authority.accounts WHERE tenant_id=$1::uuid ON CONFLICT DO NOTHING")
             .bind(case_a()).execute(&mut pg).await?;
-        let page = ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&search={login}"),None).await?;
-        ensure!(page["statistics"]["deviceViewCount"]==1 && page["items"][0]["endpoints"][0]["id"]==last);
+        let page = ok(&mut reader,&router,Method::GET,&format!("/api/v1/device-views?limit=1&filter=search=icontains={login}"),None).await?;
+        ensure!(page["items"].as_array().context("page")?.len()==1 && page["items"][0]["endpoints"][0]["id"]==last,"authorized personnel page: {page}");
         let display = &page["items"][0]["endpoints"][0]["registrationUser"]["display"];
         ensure!(display["login"]==login && display["profiles"]==json!([]), "never-logged-in account lost its login");
         let mut person = Browser::default();
@@ -76,8 +76,8 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let detail = ok(&mut reader,&router,Method::GET,&path,None).await?;
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["displayName"]=="Directory Person");
         ensure!(detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0]["username"]=="source-alias");
-        let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&search=dIrEcToRy%20pErSoN",None).await?;
-        ensure!(found["statistics"]["deviceViewCount"]==1, "name search ran after pagination");
+        let found=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1&filter=search=icontains=%22dIrEcToRy%20pErSoN%22",None).await?;
+        ensure!(found["items"].as_array().context("filtered page")?.len()==1 && found["nextCursor"].is_null(), "name search ran after pagination");
         // Middleware proof predates revocation, while both product reads start afterwards.
         // Keep Enrollment and Identity read permissions so only the sensitive fence can hide names.
         let credential=rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(reader.cookies["__Host-identity-session"].clone())?);
@@ -89,12 +89,12 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         ensure!(hidden["endpoints"][0]["registrationUser"]["user"]["principalId"]==principal);
         ensure!(hidden["endpoints"][0]["registrationUser"]["display"].is_null(),"stale proof disclosed revoked personnel");
         let directory=service.views(&stale,&query(64),&people).await?;
-        ensure!(directory["statistics"]["deviceViewCount"]==2);
+        ensure!(service.statistics(&stale,&query(64),&people).await?["statistics"]["deviceViewCount"]==2);
         ensure!(directory["items"].as_array().context("directory items")?.iter().flat_map(|v|v["endpoints"].as_array().into_iter().flatten()).all(|e|e["registrationUser"]["display"].is_null()));
         for term in ["Directory Person",login] {
-            let mut search=query(1);search.search=Some(term.into());
+            let search=parameters(1,Some(&format!("search=icontains='{term}'")),None);
             let hidden=service.views(&stale,&search,&people).await?;
-            ensure!(hidden["statistics"]["deviceViewCount"]==0 && hidden["items"]==json!([]),"stale proof made revoked personnel searchable");
+            ensure!(hidden["items"]==json!([]),"stale proof made revoked personnel searchable");
         }
         identity::set_grants(case_a(),viewer_id,grants.clone()).await?;
         let page=ok(&mut reader,&router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
@@ -125,7 +125,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let detail=ok(&mut reader,&router,Method::GET,&path,None).await?;
         let profile=&detail["endpoints"][0]["registrationUser"]["display"]["profiles"][0];
         ensure!(profile["status"]=="expired" && profile["displayName"].is_null() && profile["username"].is_null());
-        ensure!(ok(&mut reader,&router,Method::GET,"/api/v1/device-views?search=renamed",None).await?["statistics"]["deviceViewCount"]==0);
+        ensure!(ok(&mut reader,&router,Method::GET,"/api/v1/device-views/statistics?filter=search=icontains=renamed",None).await?["statistics"]["deviceViewCount"]==0);
         ok(&mut browser,&router,Method::POST,&format!("{accounts}/{principal}/enabled"),Some(json!({"enabled":false}))).await?;
         ensure!(ok(&mut reader,&router,Method::GET,&path,None).await?["endpoints"][0]["registrationUser"]["display"].is_null());
         // Source-page responses retain their own DTO; personnel enriches endpoints only.

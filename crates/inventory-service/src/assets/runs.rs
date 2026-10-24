@@ -148,10 +148,10 @@ impl AssetService {
         id: Uuid,
         field: FieldKey,
         scope: &ReadScope,
-        page: (usize, usize),
+        page: (Option<&str>, usize),
     ) -> Result<Response> {
-        let (offset, limit) = page;
-        if !(1..=1000).contains(&limit) || offset > 100000 {
+        let (cursor, limit) = page;
+        if !(1..=1000).contains(&limit) {
             return Err(Error::Malformed.into());
         }
         let run = self.collection_run(tx, device, id, scope).await?;
@@ -169,6 +169,28 @@ impl AssetService {
             .iter()
             .find(|f| f.field == field)
             .ok_or(Error::Forbidden)?;
+        let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());
+        let binding = digest(&(
+            "collection-items",
+            self.tenant.to_string(),
+            device,
+            id,
+            field,
+            scope,
+            &run.fingerprint,
+            run.finished_at,
+        ))?;
+        let offset: usize = cursor
+            .map(|token| -> Result<usize> {
+                codec
+                    .decode(
+                        &checked_input(rss_contract::PageCursor::parse(token))?,
+                        &binding,
+                    )
+                    .map_err(|_| Error::Conflict.into())
+            })
+            .transpose()?
+            .unwrap_or(0);
         if offset > metadata.item_count {
             return Err(Error::Malformed.into());
         }
@@ -214,7 +236,15 @@ impl AssetService {
             run: id,
             field,
             items,
-            next_offset: (next < metadata.item_count).then_some(next),
+            next_cursor: if next < metadata.item_count {
+                Some(
+                    checked_input(codec.encode(&binding, &next))?
+                        .as_str()
+                        .to_owned(),
+                )
+            } else {
+                None
+            },
         })
     }
 }
