@@ -65,6 +65,35 @@ fn all_fixed_recipes_resolve_and_bind_actual_platform() {
     }
 }
 #[test]
+fn modern_package_settings_are_not_software_instances() {
+    for inventory in [Inventory::Store, Inventory::NonStore, Inventory::System] {
+        let plan = plan(inventory);
+        let mut state = plan.start("RSS").unwrap();
+        round(&mut state, &plan, 1, |_| (200, "Example_publisher"));
+        let packages = "AppSettingPolicy/Example_1.0.0.0_arm64__publisher";
+        round(&mut state, &plan, 2, |_| (200, packages));
+        round(&mut state, &plan, 3, |uri| {
+            assert!(!uri.contains("/AppSettingPolicy/"));
+            (200, "value")
+        });
+        round(&mut state, &plan, 4, |uri| {
+            (
+                200,
+                if uri.ends_with("/Example_publisher") {
+                    packages
+                } else {
+                    "Example_publisher"
+                },
+            )
+        });
+        let Outcome::Value(value) = state.outcomes(&plan).unwrap().remove("field").unwrap() else {
+            panic!("settings container invalidated software inventory")
+        };
+        assert_eq!(value.as_array().unwrap().len(), 1);
+        assert_eq!(value[0]["Name"], "value");
+    }
+}
+#[test]
 fn inventory_is_not_complete_until_verified_and_survives_restart() {
     let plan = plan(Inventory::Win32);
     let mut state = plan.start("RSS").unwrap();

@@ -30,6 +30,13 @@ pub enum Inventory {
     PendingRebootUpdates,
 }
 impl Inventory {
+    fn settings_child(self, depth: usize, child: &str) -> bool {
+        // Full enrollment exposes this user settings container under Device too.
+        // It is not a PackageFullName and has no package metadata leaves.
+        depth == 1
+            && matches!(self, Self::Store | Self::NonStore | Self::System)
+            && child == "AppSettingPolicy"
+    }
     /// Exact device namespace root.
     pub fn root(self) -> &'static str {
         match self {
@@ -371,7 +378,7 @@ impl State {
                             self.failed.insert(step.field.clone(), 500);
                             break;
                         };
-                        if !node.ends_with("/*") {
+                        if !node.ends_with("/*") || inventory.settings_child(*depth, child) {
                             continue;
                         }
                         if added.len() + step_count + inventory.columns().len()
