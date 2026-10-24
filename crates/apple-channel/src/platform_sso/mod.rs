@@ -8,6 +8,8 @@ pub mod bridge;
 pub(crate) mod deployment;
 mod http;
 mod native;
+mod password;
+pub mod password_provider;
 mod service;
 use crate::{Error, HttpState};
 pub use http::{agent_routes, browser_routes, management_routes};
@@ -25,6 +27,7 @@ pub struct Runtime {
     browser_audience: String,
     active: String,
     keys: BTreeMap<String, crypto::Signer>,
+    pub(super) password_providers: BTreeMap<uuid::Uuid, Arc<password_provider::Provider>>,
 }
 impl Runtime {
     pub fn new(
@@ -52,9 +55,53 @@ impl Runtime {
             browser_audience: browser_audience(origin),
             active,
             keys,
+            password_providers: BTreeMap::new(),
         })
     }
+    /// Install explicit password capabilities; a browser OIDC configuration is insufficient.
+    pub fn with_password_providers(
+        mut self,
+        providers: Vec<password_provider::Provider>,
+    ) -> Result<Self, Error> {
+        if providers.len() > 16 {
+            return Err(Error::Malformed);
+        }
+        for provider in providers {
+            if self
+                .password_providers
+                .insert(provider.configuration.id, Arc::new(provider))
+                .is_some()
+            {
+                return Err(Error::Malformed);
+            }
+        }
+        Ok(self)
+    }
+    pub(super) fn password_provider(
+        &self,
+        login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    ) -> Result<Arc<password_provider::Provider>, Error> {
+        self.password_providers
+            .get(&login.password_provider.ok_or(Error::Unsupported)?)
+            .cloned()
+            .ok_or(Error::Unsupported)
+    }
     pub fn fingerprint(&self) -> Result<String, Error> {
+        // Deployment identity is independent of each device's Policy-owned login configuration.
+        use sha2::Digest;
+        let providers = self
+            .password_providers
+            .iter()
+            .map(|(id, p)| Ok((*id, p.fingerprint()?)))
+            .collect::<Result<Vec<_>, Error>>()?;
+        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, providers))
+            .map_err(|_| Error::Malformed)?;
+        Ok(crypto::encode(&sha2::Sha256::digest(bytes)))
+    }
+    pub fn profile_fingerprint(
+        &self,
+        login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    ) -> Result<String, Error> {
         // Routine signing-key rotation does not revoke device registrations.
         // Hash actual desired payload content using neutral object IDs, so changing a required
         // payload invalidates retained profile qualification without a second format-version knob.
@@ -66,12 +113,20 @@ impl Runtime {
         let tenant = uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?;
         let template = rss_mdm_apple_mdm::platform_sso::profile(
             &self.configuration,
+            login,
             origin,
             tenant,
             uuid::Uuid::from_u128(1),
             uuid::Uuid::from_u128(2),
         )?;
-        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, template))
+        let provider = if login.authentication
+            == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password
+        {
+            Some(self.password_provider(login)?.fingerprint()?)
+        } else {
+            None
+        };
+        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, template, provider))
             .map_err(|_| Error::Malformed)?;
         use sha2::Digest;
         Ok(crypto::encode(&sha2::Sha256::digest(bytes)))
@@ -79,13 +134,11 @@ impl Runtime {
     pub fn qualification_configuration(
         &self,
     ) -> Result<rss_mdm_device_service::personnel::PlatformConfiguration, Error> {
-        let profile = self.profile()?;
         Ok(rss_mdm_device_service::personnel::PlatformConfiguration {
             configuration: self.fingerprint()?,
             application_id: self.configuration.application_id.clone(),
             application_version: self.configuration.application_version.clone(),
-            profile_identifier: profile.identifier,
-            profile_uuid: profile.uuid,
+            profile_identifier: format!("rss.platform-sso.{}", self.configuration.client_id),
         })
     }
     /// Public Redirect-extension association, derived only from deployment configuration.
@@ -95,8 +148,11 @@ impl Runtime {
     pub fn jwks(&self) -> serde_json::Value {
         serde_json::json!({"keys":self.keys.values().map(|k|k.jwk()).collect::<Vec<_>>()})
     }
-    pub fn profile(&self) -> Result<rss_mdm_apple_mdm::native::profiles::ProfileInput, Error> {
-        let digest = crypto::decode(&self.fingerprint()?)?;
+    pub fn profile(
+        &self,
+        login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    ) -> Result<rss_mdm_apple_mdm::native::profiles::ProfileInput, Error> {
+        let digest = crypto::decode(&self.profile_fingerprint(login)?)?;
         let id = uuid::Uuid::from_slice(&digest[..16]).map_err(|_| Error::Malformed)?;
         let payload = uuid::Uuid::from_slice(&digest[16..]).map_err(|_| Error::Malformed)?;
         let tenant = uuid::Uuid::parse_str(
@@ -115,6 +171,7 @@ impl Runtime {
             .ok_or(Error::Malformed)?;
         let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
             &self.configuration,
+            login,
             origin,
             tenant,
             id,

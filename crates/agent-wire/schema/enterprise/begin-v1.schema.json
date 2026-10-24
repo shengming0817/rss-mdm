@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Begin one RP-specific business interaction; browser selects no callback or token audience.",
+  "properties": {
+    "bindingId": {
+      "description": "Previously registered native account binding.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Caller-chosen operation identity, preserved across status requests.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "relyingParty": {
+      "description": "Administrator-registered RP.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "bindingId",
+    "relyingParty"
+  ],
+  "title": "Begin",
+  "type": "object",
+  "$id": "https://rss.example/agent/enterprise/v1/Begin"
+}

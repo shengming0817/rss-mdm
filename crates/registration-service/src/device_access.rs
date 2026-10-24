@@ -1,5 +1,6 @@
 //! Device Access association authority. Registration and local-account generations are distinct.
 //! ref: kanidm server/lib/src/idm/credupdatesession.rs (explicit credential ceremony state).
+pub mod lifecycle;
 mod service;
 pub mod storage;
 use crate::Error;
@@ -98,6 +99,9 @@ pub enum Origin {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Binding {
+    /// Operation that owns the current desired revision.
+    pub operation_id: Uuid,
+    pub account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
     pub id: Uuid,
     pub tenant: Uuid,
     pub device: String,
@@ -124,6 +128,7 @@ pub struct Binding {
 impl Binding {
     pub fn status(&self) -> rss_mdm_agent_wire::runtime::AccessBindingStatus {
         rss_mdm_agent_wire::runtime::AccessBindingStatus {
+            account_disposition: self.account_disposition,
             id: self.id,
             binding_generation: self.generation,
             factor_generation: self.factor_generation,
@@ -138,9 +143,19 @@ impl Binding {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if self.state != State::Revoked
+            && self.account_disposition
+                != rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep
+        {
+            return Err(Error::Malformed);
+        }
         self.person.validate()?;
         self.intent.validate()?;
-        if self.id.is_nil()
+        self.configuration
+            .validate()
+            .map_err(|_| Error::Malformed)?;
+        if self.operation_id.is_nil()
+            || self.id.is_nil()
             || self.tenant.is_nil()
             || self.registration.is_nil()
             || self.policy.is_nil()
@@ -180,7 +195,7 @@ impl Binding {
                 &self.device,
                 self.registration,
                 self.registration_generation,
-                self.id,
+                (self.id, self.operation_id),
                 self.generation,
                 self.factor_generation,
                 self.revision,
@@ -190,7 +205,7 @@ impl Binding {
                 self.policy,
                 self.policy_version,
                 &self.configuration,
-                self.state == State::Revoked,
+                (self.state == State::Revoked, self.account_disposition),
             ))
             .map_err(|_| Error::Malformed)?,
         )
@@ -198,10 +213,14 @@ impl Binding {
     }
     pub fn accepts_login(&self) -> bool {
         self.state == State::Active
+            && matches!(self.effect, Some(AccessEffect::Applied { .. }))
             && self.configuration.enabled
             && self.account.is_some()
             && self.applied_revision == Some(self.revision)
-            && self.effect.as_ref().is_some_and(AccessEffect::complete)
+            && self
+                .effect
+                .as_ref()
+                .is_some_and(|effect| effect.complete(&self.configuration))
     }
 }
 
@@ -236,6 +255,12 @@ pub trait Admission: Send + Sync {
         device: &'a str,
         policy: Uuid,
     ) -> crate::agent::Pending<'a, PolicySelection>;
+    fn binding_session<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: Uuid,
+        binding: &'a Binding,
+    ) -> crate::agent::Pending<'a, AccessLocalSession>;
     fn local_session<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -258,11 +283,67 @@ pub struct Change {
     deny_unknown_fields
 )]
 pub enum Action {
+    Offboard {
+        disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
+    },
     ResetFactors,
+    Reinstate {
+        person: Person,
+        intent: AccountIntent,
+        policy: Uuid,
+    },
     Put {
         person: Person,
         intent: AccountIntent,
         policy: Uuid,
     },
-    Unbind,
+    Unbind {
+        disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition,
+    },
+}
+
+impl Change {
+    /// The one canonical business input. Authentication handles are never part of its digest.
+    pub fn step_up_context(
+        &self,
+        actor: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+        device: &str,
+        binding: Uuid,
+        idp_fingerprints: &std::collections::BTreeMap<Uuid, String>,
+    ) -> Result<rss_identity_core::step_up::StepUpContext, Error> {
+        use sha2::{Digest, Sha256};
+        if self.operation_id.is_nil() || binding.is_nil() || self.expected_revision < 0 {
+            return Err(Error::Malformed);
+        }
+        actor.require(
+            rss_mdm_authorization_service::Permission::AccountWrite,
+            Some(device),
+        )?;
+        actor.session()?;
+        if matches!(
+            self.action,
+            Action::Offboard { .. } | Action::Reinstate { .. }
+        ) {
+            actor.require(
+                rss_mdm_authorization_service::Permission::IdentityAccountsManage,
+                None,
+            )?;
+        }
+        let digest = Sha256::digest(
+            serde_json::to_vec(&(
+                "mdm.device_access.change.v1",
+                actor.tenant_id(),
+                actor.instance_id(),
+                actor.principal_id(),
+                device,
+                binding,
+                self,
+                idp_fingerprints,
+            ))
+            .map_err(|_| Error::Malformed)?,
+        )
+        .into();
+        rss_identity_core::step_up::StepUpContext::new("mdm.device_access.change".into(), digest)
+            .map_err(|_| Error::Malformed)
+    }
 }

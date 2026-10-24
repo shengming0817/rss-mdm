@@ -26,10 +26,12 @@ pub enum AccessAction {
         /// New accounts default to standard privilege when role is absent.
         configuration: AccessConfiguration,
     },
-    /// Remove RSS integration, retaining the OS account, its data and Secure Token.
+    /// Remove RSS integration and apply the explicitly authorized account disposition.
     Unbind {
         /// Exact account whose integration must be removed.
         account: AccessAccount,
+        /// Account handling; never deletes the account or its data.
+        disposition: AccessAccountDisposition,
     },
 }
 
@@ -119,7 +121,7 @@ impl AccessTaskSpec {
             return Err(WireError::InvalidValue);
         }
         match &self.action {
-            AccessAction::Apply { account, .. } | AccessAction::Unbind { account } => {
+            AccessAction::Apply { account, .. } | AccessAction::Unbind { account, .. } => {
                 account.validate()?;
                 if account.platform() != self.platform {
                     return Err(WireError::InvalidValue);
@@ -136,6 +138,24 @@ impl AccessTaskSpec {
                     return Err(WireError::InvalidValue);
                 }
             }
+        }
+        match &self.action {
+            AccessAction::Apply {
+                account,
+                configuration,
+            } if !configuration.admits(account) => return Err(WireError::InvalidValue),
+            AccessAction::Create { configuration, .. } => {
+                configuration.validate()?;
+                if (self.platform == TaskPlatform::Macos && configuration.mac.is_none())
+                    || (self.platform == TaskPlatform::Windows
+                        && !configuration
+                            .windows_accounts
+                            .contains(&AccessWindowsKind::Local))
+                {
+                    return Err(WireError::InvalidValue);
+                }
+            }
+            _ => (),
         }
         let provisioning = self.platform == TaskPlatform::Windows
             && !matches!(self.action, AccessAction::Unbind { .. });
@@ -156,7 +176,7 @@ impl AccessTaskSpec {
                 if facts.factor_generation != self.factor_generation
                     || *binding != self.binding_id
                     || *binding_generation != self.binding_generation
-                    || !matches!(&self.action, AccessAction::Apply { account: AccessAccount::Windows { sid: expected }, .. } if expected == sid)
+                    || !matches!(&self.action, AccessAction::Apply { account: AccessAccount::Windows { sid: expected, .. }, .. } if expected == sid)
                 {
                     return Err(WireError::InvalidValue);
                 }
@@ -194,7 +214,7 @@ impl AccessTaskSpec {
             return Err(WireError::InvalidValue);
         }
         if let AccessAction::Apply { account, .. } = &self.action
-            && account != &(AccessAccount::Windows { sid: sid.clone() })
+            && !matches!(account, AccessAccount::Windows { sid: expected, .. } if expected == sid)
         {
             return Err(WireError::InvalidValue);
         }
@@ -269,10 +289,12 @@ pub struct AccessConfirm {
     deny_unknown_fields
 )]
 pub enum AccessAccount {
-    /// Windows local SAM account. Domain/cloud accounts are not admitted.
+    /// Windows account, with provenance reported by the authenticated native session.
     Windows {
-        /// SID returned by the authenticated native account operation.
+        /// SID returned by the native account operation.
         sid: String,
+        /// Local machine, AD domain or Entra tenant authority; never inferred from a name.
+        authority: AccessWindowsAuthority,
     },
     /// macOS local directory account.
     Macos {
@@ -284,14 +306,7 @@ impl AccessAccount {
     /// Check syntax; the endpoint must separately establish local account provenance.
     pub fn validate(&self) -> Result<(), WireError> {
         let valid = match self {
-            Self::Windows { sid } => {
-                let parts: Vec<_> = sid.split('-').collect();
-                parts.len() == 8
-                    && parts[..4] == ["S", "1", "5", "21"]
-                    && parts[4..]
-                        .iter()
-                        .all(|p| p.parse::<u32>().is_ok_and(|n| n > 0 && n.to_string() == *p))
-            }
+            Self::Windows { sid, authority } => authority.valid_for(sid),
             Self::Macos { generated_uid } => !generated_uid.is_nil(),
         };
         if valid {
@@ -319,10 +334,26 @@ pub enum AccessRole {
     Administrator,
 }
 
+/// Explicit OS account handling when removing RSS integration. Data is always retained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessAccountDisposition {
+    /// Preserve the account's enabled state and privilege.
+    Keep,
+    /// Disable interactive login without deleting the account.
+    Disable,
+    /// Remove administrator privilege while preserving login.
+    Standard,
+}
+
 /// Common product configuration; Apple protocol payloads remain with the Apple owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessConfiguration {
+    /// Device-wide Mac profile settings; absence excludes Mac integration from this policy.
+    pub mac: Option<crate::platform_sso::LoginConfiguration>,
+    /// Explicit admitted Windows account authorities.
+    pub windows_accounts: Vec<AccessWindowsKind>,
     /// Permit the first association to the currently authenticated interactive local account.
     pub self_enrollment: bool,
     /// Enable the platform's RSS login integration.
@@ -370,6 +401,10 @@ pub enum AccessObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessMacFacts {
+    /// Native account password synchronization, never inferred from the IdP exchange.
+    pub password_sync: AccessObservation,
+    /// Native login keychain synchronization, independent of account password success.
+    pub keychain_sync: AccessObservation,
     /// The account's Secure Token status, not Bootstrap Token custody.
     pub secure_token: AccessObservation,
     /// Apple silicon volume ownership.
@@ -416,8 +451,11 @@ pub enum AccessEffect {
         /// Installed Windows factors and exact durable escrow coordinates.
         windows: Option<AccessWindowsFacts>,
     },
-    /// The integration was removed, preserving the OS account and its data.
-    Unbound,
+    /// Integration removal and the requested OS disposition were independently read back.
+    Unbound {
+        /// Verified account handling; account data is retained.
+        disposition: AccessAccountDisposition,
+    },
     /// The device cannot yet establish the effect of the original attempt.
     Unknown,
     /// A known failure without claiming the requested state was installed.
@@ -454,7 +492,7 @@ impl AccessEffect {
                 return Err(WireError::InvalidValue);
             }
             facts.recovery.validate()?;
-            if !matches!((&facts.recovery.subject, account), (super::CredentialSubject::RssLogin { sid, .. }, AccessAccount::Windows { sid: expected }) if sid == expected)
+            if !matches!((&facts.recovery.subject, account), (super::CredentialSubject::RssLogin { sid, .. }, AccessAccount::Windows { sid: expected, .. }) if sid == expected)
             {
                 return Err(WireError::InvalidValue);
             }
@@ -462,10 +500,21 @@ impl AccessEffect {
         Ok(())
     }
     /// Application completion includes Secure Token confirmation on macOS.
-    pub fn complete(&self) -> bool {
+    pub fn complete(&self, configuration: &AccessConfiguration) -> bool {
         match self {
-            Self::Applied { mac: Some(mac), .. } => mac.secure_token == AccessObservation::Present,
-            Self::Applied { mac: None, .. } | Self::Unbound => true,
+            Self::Applied { mac: Some(mac), .. } => {
+                let Some(login) = &configuration.mac else {
+                    return false;
+                };
+                mac.secure_token == AccessObservation::Present
+                    && (login.authentication != crate::platform_sso::AuthenticationMode::Password
+                        || (mac.password_sync == AccessObservation::Present
+                            && mac.keychain_sync == AccessObservation::Present))
+                    && (login.filevault == crate::platform_sso::LoginPolicy::Local
+                        || (mac.filevault_unlock == AccessObservation::Present
+                            && mac.volume_owner == AccessObservation::Present))
+            }
+            Self::Applied { mac: None, .. } | Self::Unbound { .. } => true,
             Self::Unknown | Self::Failed { .. } => false,
         }
     }
@@ -609,6 +658,8 @@ pub struct AccessPrepared {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessBindingStatus {
+    /// Desired account handling on revocation.
+    pub account_disposition: AccessAccountDisposition,
     /// Stable binding.
     pub id: Uuid,
     /// Association generation.
@@ -651,4 +702,114 @@ pub struct AccessDirectory {
     pub after: Option<Uuid>,
     /// This authenticated person's bindings in the current device registration.
     pub bindings: Vec<AccessBindingStatus>,
+}
+
+/// Stable Windows identity authority. Display names and email addresses are excluded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AccessWindowsAuthority {
+    /// The current registered computer's SAM database.
+    Local,
+    /// Native directory domain SID, distinct from the user's account SID.
+    ActiveDirectory {
+        /// SID of the native AD domain, excluding the user's RID.
+        domain_sid: String,
+    },
+    /// Stable directory identifiers from the native Entra account.
+    Entra {
+        /// Tenant that owns the native directory account.
+        tenant_id: Uuid,
+        /// Immutable user object identifier within that tenant.
+        object_id: Uuid,
+    },
+}
+impl AccessWindowsAuthority {
+    /// Structural validation; the authenticated Agent must establish the native provenance.
+    pub fn valid_for(&self, sid: &str) -> bool {
+        if !valid_windows_account_sid(sid) {
+            return false;
+        }
+        match self {
+            Self::Local => sid.starts_with("S-1-5-21-"),
+            Self::ActiveDirectory { domain_sid } => {
+                sid.starts_with("S-1-5-21-")
+                    && sid
+                        .rsplit_once('-')
+                        .is_some_and(|(domain, _)| domain == domain_sid)
+            }
+            Self::Entra {
+                tenant_id,
+                object_id,
+            } => !tenant_id.is_nil() && !object_id.is_nil() && sid.starts_with("S-1-12-1-"),
+        }
+    }
+}
+/// A native user SID, not a display name. This check alone grants no identity authority.
+pub fn valid_windows_account_sid(sid: &str) -> bool {
+    let parts: Vec<_> = sid.split('-').collect();
+    parts.len() == 8
+        && (parts[..4] == ["S", "1", "5", "21"] || parts[..4] == ["S", "1", "12", "1"])
+        && parts[4..]
+            .iter()
+            .all(|p| p.parse::<u32>().is_ok_and(|n| n.to_string() == *p))
+        && parts[4..].iter().any(|p| *p != "0")
+}
+
+/// Windows account classes admitted by the selected policy.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessWindowsKind {
+    /// Local SAM account.
+    Local,
+    /// AD domain account.
+    ActiveDirectory,
+    /// Entra directory account.
+    Entra,
+}
+impl AccessWindowsAuthority {
+    /// Policy class of this native authority.
+    pub const fn kind(&self) -> AccessWindowsKind {
+        match self {
+            Self::Local => AccessWindowsKind::Local,
+            Self::ActiveDirectory { .. } => AccessWindowsKind::ActiveDirectory,
+            Self::Entra { .. } => AccessWindowsKind::Entra,
+        }
+    }
+}
+impl AccessConfiguration {
+    /// Check explicit platform policy and bounded settings.
+    pub fn validate(&self) -> Result<(), WireError> {
+        if self.windows_accounts.len() > 3
+            || self
+                .windows_accounts
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.windows_accounts.len()
+            || (self.mac.is_none() && self.windows_accounts.is_empty())
+        {
+            return Err(WireError::InvalidValue);
+        }
+        if let Some(mac) = &self.mac {
+            mac.validate()?;
+        }
+        Ok(())
+    }
+    /// Account admission; display names never choose a platform identity class.
+    pub fn admits(&self, account: &AccessAccount) -> bool {
+        self.validate().is_ok()
+            && match account {
+                AccessAccount::Windows { authority, .. } => {
+                    self.windows_accounts.contains(&authority.kind())
+                }
+                AccessAccount::Macos { .. } => self.mac.is_some(),
+            }
+    }
 }

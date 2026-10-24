@@ -237,11 +237,10 @@ async fn bootstrap(
         None
     };
     store::fence(c, &tenant).await?;
-    let object = app
-        .platform_objects
-        .paired_in(c, p.tenant(), p.device())
-        .await
-        .map_err(db)?;
+    let object =
+        rss_mdm_device_service::planning::PlanningObjects::paired_in(c, p.tenant(), p.device())
+            .await
+            .map_err(db)?;
     super::deployment::ready(app, c, &object, now).await?;
     let apple = object
         .members
@@ -305,7 +304,29 @@ async fn bootstrap(
         x: String::new(),
         y: String::new(),
     };
+    let login_configuration =
+        super::deployment::configuration_for_object(c, app.tenant, &object).await?;
+    let mut password_identity = None;
+    if login_configuration.authentication == AuthenticationMode::Password {
+        let provider = rt.password_provider(&login_configuration)?;
+        provider.admit_on(c, app.tenant).await?;
+        if let Some(binding) = &binding {
+            password_identity = Some(
+                rss_mdm_registration_service::enterprise::subject_on(
+                    c,
+                    binding.tenant,
+                    provider.configuration.id,
+                    &binding.person,
+                )
+                .await?,
+            );
+        }
+    }
+    let profile_uuid = rt.profile(&login_configuration)?.uuid;
     let source = store::Source {
+        login_configuration,
+        profile_uuid,
+        password_identity,
         id,
         kind: input.kind,
         registration: apple,
@@ -317,7 +338,7 @@ async fn bootstrap(
         version,
         revoked: false,
         configuration: rt.fingerprint()?,
-        signing: empty.clone(),
+        signing: None,
         encryption: empty,
         subject,
         subject_version: epochs,
@@ -373,7 +394,12 @@ async fn register(
     store::fence(c, &tenant).await?;
     store::current_object(app, c, &s.object, s.registration).await?;
     super::deployment::ready(app, c, &s.object, now).await?;
-    if s.configuration != app.runtime()?.fingerprint()? {
+    let current_login =
+        super::deployment::configuration_for_object(c, app.tenant, &s.object).await?;
+    if s.configuration != app.runtime()?.fingerprint()?
+        || s.login_configuration != current_login
+        || s.profile_uuid != app.runtime()?.profile(&current_login)?.uuid
+    {
         return Err(Error::Unauthorized);
     }
     if let Some(id) = s.binding {
@@ -381,6 +407,20 @@ async fn register(
             .execution
             .registration_access_binding_on(c, p, id, s.binding_generation)
             .await?;
+        if s.login_configuration.authentication == AuthenticationMode::Password {
+            let identity = rss_mdm_registration_service::enterprise::subject_on(
+                c,
+                b.tenant,
+                s.login_configuration
+                    .password_provider
+                    .ok_or(Error::Unauthorized)?,
+                &b.person,
+            )
+            .await?;
+            if s.password_identity.as_ref() != Some(&identity) {
+                return Err(Error::Unauthorized);
+            }
+        }
         if Some(subject(app, &b, s.id, s.version)?) != s.subject {
             return Err(Error::Unauthorized);
         }
@@ -404,7 +444,18 @@ async fn register(
     if current.unwrap_or(0) != ceremony.previous_version {
         return Err(Error::Conflict);
     }
-    let proof = crypto::verify(&input.proof, &input.signing_key, REGISTRATION_TYPE)?;
+    let signing = if s.kind == Kind::User
+        && s.login_configuration.authentication == AuthenticationMode::Password
+    {
+        if input.signing_key.is_some() {
+            return Err(Error::Malformed);
+        }
+        let parent = store::source(c, &tenant, s.parent.ok_or(Error::Unauthorized)?).await?;
+        parent.signing.ok_or(Error::Unauthorized)?
+    } else {
+        input.signing_key.clone().ok_or(Error::Malformed)?
+    };
+    let proof = crypto::verify(&input.proof, &signing, REGISTRATION_TYPE)?;
     crypto::times(&proof, now)?;
     let proof: RegistrationClaims =
         serde_json::from_value(proof).map_err(|_| Error::Unauthorized)?;
@@ -461,8 +512,8 @@ async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Re
     }
     let (client_nonce, apv) = super::native::verify(
         app.runtime()?,
-        &device.signing,
-        &user.signing,
+        device.signing.as_ref().ok_or(Error::Unauthorized)?,
+        user.signing.as_ref().ok_or(Error::Unauthorized)?,
         user.id,
         token,
         nonce,

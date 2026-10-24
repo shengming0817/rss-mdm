@@ -82,7 +82,7 @@ pub async fn active_in(c: &mut PgConnection, tenant: Uuid, binding: &Binding) ->
             || b.device != binding.device
             || b.registration != binding.registration
             || b.registration_generation != binding.generation
-            || !matches!(&b.account,Some(rss_mdm_agent_wire::runtime::AccessAccount::Windows{sid:current}) if current==sid)
+            || !matches!(&b.account,Some(rss_mdm_agent_wire::runtime::AccessAccount::Windows{sid:current,..}) if current==sid)
         {
             return Err(Error::Conflict);
         }
@@ -795,7 +795,7 @@ pub async fn access_unbound_in(
         || b.applied_revision != Some(revision)
         || !matches!(
             b.effect,
-            Some(rss_mdm_agent_wire::runtime::AccessEffect::Unbound)
+            Some(rss_mdm_agent_wire::runtime::AccessEffect::Unbound { .. })
         )
     {
         return Err(Error::Conflict);

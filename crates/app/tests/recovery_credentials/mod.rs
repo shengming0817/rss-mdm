@@ -67,6 +67,7 @@ fn route(
                         authority.pool.clone(),
                         authority.audit.clone(),
                         keys,
+                        None,
                         admission,
                     ),
                 )))
@@ -101,8 +102,13 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
             let tenant = Uuid::parse_str(case_tenant())?;
             let id = Uuid::new_v4();
             let sid = "S-1-5-21-100-200-300-1001".to_owned();
-            let account = AccessAccount::Windows { sid: sid.clone() };
+            let account = AccessAccount::Windows {
+                sid: sid.clone(),
+                authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local,
+            };
             let b = access::Binding {
+                operation_id: Uuid::new_v4(),
+                account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
                 id,
                 tenant,
                 device: device.into(),
@@ -124,6 +130,8 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 policy: Uuid::new_v4(),
                 policy_version: Uuid::new_v4(),
                 configuration: AccessConfiguration {
+                    mac: Some(Default::default()),
+                    windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
                     self_enrollment: true,
                     enabled: true,
                     role: None,

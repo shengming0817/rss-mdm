@@ -18,7 +18,7 @@ Agent 只带目标平台所需公共核心/值类型，不带服务端 PG/broker
 
 ## Identity 与安全
 
-MDM 直接装配公开认证组件并持有产品权限，不依赖 Identity 参考应用。OIDC RSA 仅作公钥验证；既有风险接受的精确路径与约束由 [deny.toml](../../deny.toml) 和 CI 持有，升级后重新检查最终 lock，不继承旧路径豁免。生产装配不启用测试 loopback 能力。
+MDM 直接装配公开认证组件并持有产品权限，不依赖 Identity 参考应用。OIDC JWT 通过固定 Identity 公共组件验证；已移除的 rsa/openidconnect 漏洞依赖闭包由 CI 禁止重新引入，[deny.toml](../../deny.toml) 不保留历史 advisory 豁免。生产装配不启用测试 loopback 能力。
 
 ## 当前产品字段基线
 

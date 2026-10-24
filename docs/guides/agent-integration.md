@@ -229,19 +229,20 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 先通过 `GET /api/v1/agent/runtime/device-access` 查询可开通 Policy 及本人绑定（Policy 游标为 `after`），
 再依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
 不接受 principal 或本地账号；返回 120 秒挑战及当前交互会话。Agent 必须从受保护的本机 broker
-重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认；Windows 域/Entra/MSA、RDP 不属于本期。
+重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认。Windows account 必须携带 authority：local、active_directory（domainSid）或 entra（tenantId/objectId），交互上下文 windowsAuthority 与账号来源一致；Mac 上该字段为 null。来源必须由原生安全上下文建立，不能根据用户名、UPN 或 SID 外形猜测。MSA 与 RDP 不在当前范围。
 普通进程上报、软件清单和最近登录记录不能替代该核验。用户名仅用于显示或新建目标，不能接管同名账号。
 
 首次开通只用于尚未建立 Device Access 关联的当前注册；之后由 RSS 后台管理员修改或新增。
+Begin/confirm 在宿主同一 READ COMMITTED 写事务内调用 Identity 的 live-session 准入，先取得 Identity guard，再取得注册和业务锁；会话撤销与绑定提交串行化。原会话过期仍然生效，此准入不续期、不消费 step-up。
 确认使用稳定 operationId；响应丢失重试原请求，不换 nonce 或账号。Begin 的 nonce 不入库存储，
 响应丢失后重新发起新 ceremony；并发 ceremony 仍只有一个能够完成首次关联。
 每设备每注册最多保留 128 个绑定记录及 128 个未清理 ceremony，失效绑定保留，过期未消费 ceremony 可清理。
 
 签名 `device_access` task 复用 Offer/Received/Start，包含人员、注册/绑定代际、配置 revision 和摘要。
 收到 Offer 不能执行；Start 前重新核验目标、权限及本机条件。Create 的系统密码只经本机交互设置，
-同名冲突必须失败，不能自动关联现有账号。Unbind 只清理 RSS 集成，不删除账号、数据或 Secure Token。
-收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 Secure Token、volume ownership 和
-FileVault 解锁观察，未知必须保持 unknown。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
+同名冲突必须失败，不能自动关联现有账号。Unbind 明确携带 disposition（keep/disable/standard）；保留数据，按原意图保留、禁用账号或移除管理员权限，结果 unbound 必须携带同一 disposition。
+收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 passwordSync、keychainSync、Secure Token、volume ownership 和
+FileVault 解锁观察，未知必须保持 unknown。Password 模式必须分别确认密码和钥匙串；FileVault 强化还须确认卷所有权与解锁资格。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
 
 Windows 首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
 以 `device_access_prepared` 报告真实 SID（尚非 Applied），再用既有加密 escrow 托管恢复材料。
@@ -273,3 +274,29 @@ Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rs
 `GET /api/v1/agent-packages/{id}` 读取同一元数据对象。管理目录可见不代表当前可安装。
 `/api/v1/agent/enroll/packages` 及下载协议保持原数组/准入行为，只向公共消费者开放当前可用包。
 本批后端直接替换旧管理列表数组，前端消费者需另行同步。
+
+
+## 受控企业 RP 的 Broker 协议
+
+跨进程输入由 `rss-mdm-agent-wire::enterprise` 持有。先同源 POST
+`/api/v1/device-access/broker/browser` 建立 Secure/HttpOnly/SameSite=Strict 的浏览器绑定，
+再 POST `/api/v1/device-access/broker`，提交 `{operationId,bindingId,relyingParty}`。
+客户端不选择回调、受众或身份；返回确切 `signingPayload`，原生 Broker 必须原样签署，
+不能重新编码 JSON。Windows 使用管理员已登记、绑定确切账户/因子代际的 P-256 key；
+Mac 使用当前 SE 用户 key，Password 模式使用设备 key，并提供有效原生 accessToken。
+这些证明只证明持钥和已验证凭据，不代表用户在场、UV 或 MFA。
+
+POST `/broker/complete` 使用 `{operationId,challengeId,nonce,proof:{signature,accessToken}}`，
+signature 为无填充 base64url 的 64 字节 ES256 签名，Windows 的 accessToken 为 null。
+服务端只在后台交换 Identity assertion；浏览器 Ready 响应只含固定 callback 和 continuation。
+GET `/broker/{operationId}` 与 POST `/broker/{operationId}/cancel` 都要求原浏览器绑定和精确 Origin。
+Preparing/Completing 中断须查询原 operation；120 秒准备窗口或原始挑战截止后状态过期/未知，
+不得重放可能已完成的 IdP 交换。取消后旧 continuation 和 RP 会话查询均拒绝。
+
+每个 RP 后端使用独立部署 bearer secret，POST
+`/api/v1/device-access/relying-parties/{rp}/consume`，提交 `{session:operationId,operationId:领取操作UUID,continuation}`。
+同一领取操作可以恢复回执，但每次秘密释放都重新联合核验 Identity 会话、RP 配置、稳定人员映射、
+绑定和原生会话；其他 RP 或其他领取操作不能冒领。交接只在上游令牌最多 30 秒的窗口内有效。
+RP 自己建立应用会话，每次使用前调用 GET `/relying-parties/{rp}/sessions/{session}` 复核。
+该 session 是产品业务定位符，不能用于 Identity 登录。当前交付互操作范围为受控 `rp-a`、`rp-b`，
+不声明任意外部应用或独立 Agent 已完成接入。

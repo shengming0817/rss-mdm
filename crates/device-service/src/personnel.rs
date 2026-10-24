@@ -31,8 +31,6 @@ pub struct PlatformConfiguration {
     pub application_version: String,
     /// Expected native profile identifier.
     pub profile_identifier: String,
-    /// Expected native profile UUID.
-    pub profile_uuid: Uuid,
 }
 const CURRENT_USERS: &str = concat!(
     "WITH platform_configuration AS (SELECT $2::jsonb AS config),",

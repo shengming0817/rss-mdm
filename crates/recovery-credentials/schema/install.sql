@@ -70,6 +70,19 @@ CREATE TABLE mdm_recovery.rss_login_uses (
 ALTER TABLE mdm_recovery.rss_login_uses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_recovery.rss_login_uses FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_recovery.rss_login_uses USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+CREATE TABLE mdm_recovery.disclosures (
+ tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id),actor text NOT NULL,operation uuid NOT NULL,
+ device text NOT NULL,entry uuid NOT NULL,version bigint NOT NULL,
+ PRIMARY KEY(tenant_id,actor,operation),
+ FOREIGN KEY(tenant_id,entry,version) REFERENCES mdm_recovery.versions(tenant_id,entry,version)
+);
+ALTER TABLE mdm_recovery.disclosures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_recovery.disclosures FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_recovery.disclosures USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT USAGE ON SCHEMA mdm_recovery TO mdm_identity_runtime;
+GRANT SELECT ON mdm_recovery.entries,mdm_recovery.versions,mdm_recovery.disclosures TO mdm_identity_runtime;
+GRANT INSERT ON mdm_recovery.disclosures TO mdm_identity_runtime;
+GRANT UPDATE(tenant_id) ON mdm_recovery.entries,mdm_recovery.versions TO mdm_identity_runtime;
 REVOKE ALL ON ALL TABLES IN SCHEMA mdm_recovery FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_recovery TO mdm_access,mdm_command_runtime;
 GRANT SELECT,INSERT ON ALL TABLES IN SCHEMA mdm_recovery TO mdm_access,mdm_command_runtime;

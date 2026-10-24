@@ -1,0 +1,29 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "KeyRegistration",
+      "file": "key-registration-v1.schema.json"
+    },
+    {
+      "type": "NativeProof",
+      "file": "native-proof-v1.schema.json"
+    },
+    {
+      "type": "Begin",
+      "file": "begin-v1.schema.json"
+    },
+    {
+      "type": "Challenge",
+      "file": "challenge-v1.schema.json"
+    },
+    {
+      "type": "Complete",
+      "file": "complete-v1.schema.json"
+    },
+    {
+      "type": "Status",
+      "file": "status-v1.schema.json"
+    }
+  ]
+}

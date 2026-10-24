@@ -70,4 +70,6 @@ GRANT UPDATE(status,recovery_version,lease_token,lease_until,retry_after) ON rss
 GRANT UPDATE(recovery_version) ON rss_transactional_messaging.consumer_dead_letter TO mdm_webhook_operator;
 GRANT INSERT ON rss_transactional_messaging.recovery_operations TO mdm_webhook_operator;
 GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb),rss_transactional_messaging.claim_outbox(uuid,text,integer,bigint),rss_transactional_messaging.next_outbox_wakeup(uuid,text),rss_transactional_messaging.outbox_lease(uuid,bigint,uuid,bigint,bigint,uuid),rss_transactional_messaging.settle_outbox(uuid,bigint,uuid,bigint,text,uuid) TO mdm_webhook_operator;
+GRANT USAGE ON SCHEMA mdm_webhook TO mdm_identity_runtime;
+GRANT SELECT,INSERT ON mdm_webhook.events TO mdm_identity_runtime;
 COMMIT;

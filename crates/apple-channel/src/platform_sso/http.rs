@@ -227,6 +227,12 @@ struct Token {
     grant_type: String,
     assertion: String,
 }
+impl Drop for Token {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.assertion.zeroize();
+    }
+}
 async fn token(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
@@ -234,17 +240,17 @@ async fn token(
     body: Result<Form<Token>, axum::extract::rejection::FormRejection>,
 ) -> Result<Response, NativeError> {
     tenant(&app, t)?;
-    let input = body.map_err(|_| Error::Malformed)?.0;
+    let mut input = body.map_err(|_| Error::Malformed)?.0;
     if input.platform_sso_version != "1.0" || input.grant_type != GRANT {
         return Err(Error::Malformed.into());
     }
-    let result = service::mutate(
-        &Context::new(&app),
-        None,
-        &audit,
-        Action::Login(input.assertion),
-    )
-    .await?;
+    let assertion = zeroize::Zeroizing::new(std::mem::take(&mut input.assertion));
+    let context = Context::new(&app);
+    let result = if super::password::is_password(&context, &assertion).await? {
+        super::password::login(&context, &audit, &assertion).await?
+    } else {
+        service::mutate(&context, None, &audit, Action::Login(assertion.to_string())).await?
+    };
     Ok((
         [(header::CONTENT_TYPE, "application/jose")],
         result.as_str().ok_or(Error::Malformed)?.to_owned(),
@@ -323,6 +329,7 @@ async fn begin(
         .begin_platform_login(
             app.identity.tenant(),
             input.binding_id,
+            rss_identity_postgres::platform::PlatformPurpose::BrowserLogin,
             browser.clone(),
             rss_identity_postgres::AttemptSource::parse("mdm-platform-sso")
                 .map_err(|_| Error::Malformed)?,
@@ -384,7 +391,10 @@ async fn complete(
         )
         .await
         .map_err(identity_error)?;
-    let mut response = rss_identity_http_axum::issued_session_response(session);
+    if session.assertion.is_some() {
+        return Err(Error::Unauthorized);
+    }
+    let mut response = rss_identity_http_axum::issued_session_response(session.session);
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_static(
@@ -393,17 +403,34 @@ async fn complete(
     );
     Ok(response)
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConfigurationQuery {
+    device_id: String,
+}
 async fn configuration(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<rss_mdm_authorization_service::context::RequestAuth>,
+    axum::extract::Query(query): axum::extract::Query<ConfigurationQuery>,
 ) -> Result<Json<Value>, Error> {
     auth.proof
         .manage(rss_mdm_authorization_service::Permission::RegistrationConfigurationRead)?;
     let rt = runtime(&app)?;
-    let profile = rt.profile()?;
+    let ctx = Context::new(&app);
+    let mut tx = ctx.access.begin(&ctx.tenant.to_string()).await?;
+    let object = rss_mdm_device_service::planning::PlanningObjects::paired_in(
+        &mut tx,
+        ctx.tenant,
+        &query.device_id,
+    )
+    .await
+    .map_err(crate::database::db)?;
+    let login = super::deployment::configuration_for_object(&mut tx, ctx.tenant, &object).await?;
+    let profile = rt.profile(&login)?;
+    tx.rollback().await.map_err(crate::database::db)?;
     auth.proof.check_live()?;
     Ok(Json(
-        json!({"configuration":rt.configuration,"endpoints":rt.endpoints,"profile":profile,"protocolVersion":"1.0","authenticationMethod":"UserSecureEnclaveKey","targetSdk":"26.4","registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false,"refreshMethod":"fresh_native_login","deploymentOrder":["signed_application","extensible_sso_profile","device_registration","user_registration","login_ready"]}),
+        json!({"configuration":rt.configuration,"endpoints":rt.endpoints,"profile":profile,"protocolVersion":"1.0","loginConfiguration":login,"targetSdk":"26.4","registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false,"refreshMethod":"fresh_native_login","deploymentOrder":["signed_application","extensible_sso_profile","device_registration","user_registration","login_ready"]}),
     ))
 }
 

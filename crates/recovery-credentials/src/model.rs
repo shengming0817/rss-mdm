@@ -113,9 +113,7 @@ impl Subject {
             } => {
                 !binding.is_nil()
                     && *binding_generation > 0
-                    && rss_mdm_agent_wire::runtime::AccessAccount::Windows { sid: sid.clone() }
-                        .validate()
-                        .is_ok()
+                    && rss_mdm_agent_wire::runtime::valid_windows_account_sid(sid)
             }
             Self::Filevault => true,
             Self::LocalAdministrator { sid } => {

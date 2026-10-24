@@ -62,6 +62,13 @@ pub struct Services {
     pub apple: bool,
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
+    let broker = crate::enterprise_broker::routes(
+        state.agent_enrollment.clone(),
+        state.execution.clone(),
+        state.identity.clone(),
+        &envelope.host,
+        serde_json::to_value(&state.platform_configuration).expect("closed platform configuration"),
+    );
     let directory_identity = state.identity.authority.clone();
     let sessions = Arc::new(
         rss_mdm_authorization_service::session::SessionAuthority::new(
@@ -102,7 +109,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         audit_store: state.audit_store.clone(),
     });
     let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
-        identity: state.identity,
+        identity: state.identity.clone(),
         access: state.authorization.clone(),
         requests: state.requests,
     });
@@ -144,7 +151,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         )
         .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
         .merge(crate::recovery_credentials::routes(
-            state.recovery_credentials,
+            state.recovery_credentials.clone(),
         ))
         .merge(
             crate::software_publication::http::routes().with_state(Arc::new(
@@ -175,8 +182,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         crate::software_catalog::agent_packages_public(state.software_catalog.clone());
     let operations = Router::new()
         .merge(crate::device_access::routes(
+            state.recovery_credentials,
             state.agent_enrollment.clone(),
             state.execution.clone(),
+            state.identity.clone(),
         ))
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::windows_entra::routes(state.windows_entra))
@@ -219,6 +228,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         ));
     crate::boundary::wrap(
         Router::new()
+            .merge(broker)
             .merge(software_content)
             .merge(host_context)
             .nest("/api/v1/agent/enroll", public_packages)

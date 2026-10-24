@@ -4,6 +4,7 @@ pub(super) fn permission(kind: EventType) -> Permission {
         EventType::Registered | EventType::Retired | EventType::Test => Permission::InventoryRead,
         EventType::PolicyTerminal => Permission::OperationRead,
         EventType::ComplianceChanged => Permission::ComplianceRead,
+        EventType::DeviceAccessChanged => Permission::AccountWrite,
     }
 }
 pub(super) fn settings(proof: &AuthorizedPrincipal, settings: &Settings) -> Result<(), HttpError> {

@@ -50,6 +50,15 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
   AND o.member->>'registrationId'=u.registration::text
   AND EXISTS(SELECT FROM mdm_apple.devices x WHERE(x.tenant_id,x.registration)=(u.tenant_id,u.registration) AND x.state='active')
   AND a.until IS NOT NULL AND b.value->>'state'='eligible'
+  AND u.document->'loginConfiguration'=b.value#>'{binding,configuration,mac}'
+  AND (u.document#>>'{loginConfiguration,authentication}'<>'password' OR EXISTS(
+   SELECT FROM mdm_enterprise.subjects mapping WHERE mapping.tenant_id=u.tenant_id
+    AND mapping.provider=(u.document#>>'{passwordIdentity,provider}')::uuid
+    AND (mapping.document#>>'{person,instance}')::uuid=(b.value#>>'{binding,person,instance}')::uuid
+    AND mapping.principal=(b.value#>>'{binding,person,principal}')::uuid
+    AND mapping.document=u.document->'passwordIdentity' AND mapping.document->>'enabled'='true'))
+  AND d.document->'loginConfiguration'=u.document->'loginConfiguration'
+  AND d.document->'profileUuid'=u.document->'profileUuid'
   AND EXISTS(SELECT FROM jsonb_array_elements(u.document#>'{object,members}') m
    WHERE m->>'registrationId'=b.value#>>'{binding,registration}'
     AND m->>'generation'=b.value#>>'{binding,registrationGeneration}' AND m->>'device'=b.value#>>'{binding,device}')
@@ -61,7 +70,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
     JOIN mdm_apple.profile_qualifications q USING(tenant_id,operation)
     WHERE p.tenant_id=u.tenant_id AND p.registration=u.registration
      AND p.generation=(o.member->>'generation')::bigint AND p.user_key=''
-     AND p.identifier=config->>'profileIdentifier' AND p.profile=(config->>'profileUuid')::uuid
+     AND p.identifier=config->>'profileIdentifier' AND p.profile=(u.document->>'profileUuid')::uuid
      AND p.present AND p.retired_at IS NULL AND p.observed_at IS NOT NULL)
 $$;
 REVOKE ALL ON FUNCTION mdm_apple.platform_session_qualifications(uuid,jsonb,bigint) FROM PUBLIC;

@@ -16,8 +16,7 @@ fn context(revision: u64, session: Uuid, account: Uuid) -> Value {
         crate::test_support::software_execution::Platform::MacOs,
     );
     c["revision"] = json!(revision);
-    c["interactiveUser"] =
-        json!({"identity":"501","generatedUid":account,"sessionId":session,"administrator":false});
+    c["interactiveUser"] = json!({"windowsAuthority":null,"identity":"501","generatedUid":account,"sessionId":session,"administrator":false});
     c
 }
 async fn claim(f: &Fixture, c: &Value) -> Result<(StatusCode, Value)> {
@@ -167,7 +166,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
     )
     .await?;
     let policy = Uuid::new_v4();
-    execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","selfEnrollment":true,"role":null}}}})).await?;
+    execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;
     Ok((policy, registration))
 }
 async fn event(
@@ -219,11 +218,11 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
         ensure!(user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?.0==StatusCode::CONFLICT);
         let id=accepted.1["id"].as_str().context("binding id")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
-        let command=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}});
-        let unbound=f.author.call(&f.router,Method::PUT,&path,Some(command.clone())).await?;
+        let command=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}});
+        let unbound=f.access_call(Method::PUT,&path,Some(command.clone())).await?;
         ensure!(unbound.0==StatusCode::OK && unbound.1["serverState"]=="revoked","unbind {unbound:?}");
         ensure!(unbound.1["appliedRevision"].is_null());
-        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(command)).await?.1==unbound.1);
+        ensure!(f.access_call(Method::PUT,&path,Some(command)).await?.1==unbound.1);
         ensure!(user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?.0==StatusCode::CONFLICT);
         let count=pg(&format!("SELECT count(*) FROM mdm_access.device_access_bindings WHERE tenant_id='{}' AND device='{}'",case_tenant(),execution::case_device_id()))?;
         ensure!(count.trim()=="1");Ok(())
@@ -258,7 +257,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         ensure!(received.0==StatusCode::OK && received.1[0]["receivedRevision"]==1 && received.1[0]["appliedRevision"].is_null(),"received {received:?}");
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];
-        let mut result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let mut result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         let mut wrong=result.clone();wrong["effect"]["account"]["generatedUid"]=json!(Uuid::new_v4());
         ensure!(event(&f,&task,&c,&registration,wrong).await?.0==StatusCode::CONFLICT);
         let applied=event(&f,&task,&c,&registration,result.take()).await?;ensure!(applied.0==StatusCode::OK,"applied {applied:?}");
@@ -268,7 +267,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let grants=crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["inventory_read"])?;
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
-        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?.0==StatusCode::FORBIDDEN);
+        ensure!(f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?.0==StatusCode::FORBIDDEN);
         Ok(())
     }).await
 }
@@ -285,13 +284,13 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         let path=format!("/api/v1/devices/{device}/device-access/bindings/{id}");
         let input=json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"workuser"}}});
         let mut foreign=input.clone();foreign["action"]["instance"]=json!(Uuid::new_v4());
-        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(foreign)).await?.0==StatusCode::FORBIDDEN);
-        let created=f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?;
+        ensure!(f.access_call(Method::PUT,&path,Some(foreign)).await?.0==StatusCode::FORBIDDEN);
+        let created=f.access_call(Method::PUT,&path,Some(input.clone())).await?;
         ensure!(created.0==StatusCode::OK && created.1["serverState"]=="pending" && created.1["account"].is_null(),"create {created:?}");
-        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?.1==created.1);
+        ensure!(f.access_call(Method::PUT,&path,Some(input.clone())).await?.1==created.1);
         let mut replacement=input.clone();replacement["operationId"]=json!(Uuid::new_v4());replacement["expectedRevision"]=json!(1);
         replacement["action"]["account"]=json!({"kind":"existing","account":{"platform":"macos","generatedUid":Uuid::new_v4()}});
-        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(replacement)).await?.0==StatusCode::CONFLICT);
+        ensure!(f.access_call(Method::PUT,&path,Some(replacement)).await?.0==StatusCode::CONFLICT);
         let op=format!("/api/v1/devices/{device}/device-access/operations/{}",input["operationId"].as_str().context("operation")?);
         ensure!(f.author.call(&f.router,Method::GET,&op,None).await?.1==created.1);
         let claimed=offer(&f,&c,&registration).await?;ensure!(claimed.0==StatusCode::OK,"claim {claimed:?}");let task=claimed.1["task"].clone();
@@ -299,11 +298,11 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];let account=Uuid::new_v4();
-        let mut result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"needs_administrator","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let mut result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"needs_administrator","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         let pending=event(&f,&task,&c,&registration,result.clone()).await?;ensure!(pending.0==StatusCode::OK,"pending token {pending:?}");
         let observed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/device-access"),None).await?;
         ensure!(observed.1[0]["serverState"]=="pending" && observed.1[0]["appliedRevision"].is_null());
-        let unbound=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+        let unbound=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(unbound.0==StatusCode::OK && unbound.1["serverState"]=="revoked");
         result["effect"]["mac"]["secureToken"]=json!("present");
         let late=event(&f,&task,&c,&registration,result).await?;ensure!(late.0==StatusCode::OK,"late receipt {late:?}");
@@ -327,7 +326,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let id=Uuid::new_v4();let device=execution::case_device_id();
         let path=format!("/api/v1/devices/{device}/device-access/bindings/{id}");
-        let created=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
+        let created=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
         ensure!(created.0==StatusCode::OK,"create {created:?}");
         let offered=offer(&f,&c,&registration).await?;ensure!(offered.0==StatusCode::OK);
         let expired=offered.1["task"]["payload"]["task"]["taskId"].as_str().context("offered")?;
@@ -341,10 +340,10 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let mut definition=old.1["definition"].clone();definition["action"]["role"]=json!("administrator");
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.1["task"].is_null(),"started creation must block another delivery");
-        let revised=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
+        let revised=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
         ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==1,"configuration preserves binding generation {revised:?}");
         let account=Uuid::new_v4();let spec=&task["payload"]["task"];
-        let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{device}/device-access");
         let pending=f.author.call(&f.router,Method::GET,&list,None).await?;
@@ -359,7 +358,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];
-        let late=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"administrator","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let late=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"administrator","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,late).await?.0==StatusCode::OK);
         let revoked=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(revoked.1[0]["serverState"]=="revoked" && revoked.1[0]["appliedRevision"].is_null());
@@ -410,7 +409,7 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         let offered=offer(&f,&c,&registration).await?;let task=offered.1["task"].clone();
         for kind in ["received","start"] {ensure!(event(&f,&task,&c,&registration,json!({"kind":kind})).await?.0==StatusCode::OK);}
         let spec=&task["payload"]["task"];
-        let result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
         let scope=Uuid::new_v4();f.scope(scope,json!([{"kind":"device","id":execution::case_device_id()}])).await?;
         let exit=Uuid::new_v4();let path=format!("/api/v1/policies/{exit}");
@@ -421,7 +420,7 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         ensure!(cleanup["payload"]["kind"]=="unmanage","cleanup {offered:?}");
         let retired=pg(&format!("SELECT retirement IS NOT NULL FROM mdm_access.devices WHERE tenant_id='{}' AND id='{}'",case_tenant(),execution::case_device_id()))?;
         ensure!(retired.trim()=="t");
-        let denied=f.author.call(&f.router,Method::PUT,&format!("/api/v1/devices/{}/device-access/bindings/{}",execution::case_device_id(),bound.1["id"].as_str().context("binding id")?),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+        let denied=f.author.call(&f.router,Method::PUT,&format!("/api/v1/devices/{}/device-access/bindings/{}",execution::case_device_id(),bound.1["id"].as_str().context("binding id")?),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::FORBIDDEN,"ordinary work crossed retirement {denied:?}");
         for kind in ["received","start"] {ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":kind})).await?.0==StatusCode::OK);}
         ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":"unmanage_result","outcome":"unknown"})).await?.0==StatusCode::OK);
@@ -435,7 +434,7 @@ fn windows_context() -> Value {
         crate::test_support::software_execution::Platform::Windows,
     );
     c["revision"] = json!(2);
-    c["interactiveUser"] = json!({"identity":"S-1-5-21-100-200-300-1001","generatedUid":null,"sessionId":Uuid::from_u128(100),"administrator":false});
+    c["interactiveUser"] = json!({"windowsAuthority":{"kind":"local"},"identity":"S-1-5-21-100-200-300-1001","generatedUid":null,"sessionId":Uuid::from_u128(100),"administrator":false});
     c
 }
 async fn directory(f: &Fixture, user: bool) -> Result<(StatusCode, Value)> {
@@ -557,7 +556,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let id = if create {
             let id = Uuid::new_v4();
             let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
-            let reply = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"windows","name":"workuser"}}}))).await?;
+            let reply = f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"windows","name":"workuser"}}}))).await?;
             ensure!(reply.0 == StatusCode::OK,"create {reply:?}"); id
         } else {
             let begun = user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?;
@@ -575,7 +574,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let signed: wire::SignedTask = serde_json::from_value(start.1["permit"].clone())?;
         let wire::TaskPayload::DeviceAccess(task) = &signed.payload else { anyhow::bail!("access task") };
         let sid = if create { "S-1-5-21-100-200-300-1002" } else { "S-1-5-21-100-200-300-1001" };
-        let account = wire::AccessAccount::Windows { sid:sid.into() };
+        let account = wire::AccessAccount::Windows { sid:sid.into(), authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local };
         let envelope = access_envelope(task,sid)?;
         let escrow = wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow { definition_digest:task.definition_digest,materials:vec![envelope] });
         if create { ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(&escrow)?).await?.0.is_success()); }
@@ -603,7 +602,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(wrong))?).await?.0.is_success());
         if withdraw {
             let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
-            let reply = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+            let reply = f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
             ensure!(reply.0 == StatusCode::OK,"unbind {reply:?}");
         }
         let done = event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(result))?).await?;
@@ -620,7 +619,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
             ensure!(event(&f,&unbind,&c,&registration,cleared.clone()).await?.0 == StatusCode::OK);
             let retained=pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND invalidated_at IS NULL AND sealed IS NOT NULL",case_tenant(),task.task_id))?;
             ensure!(retained.trim() == "1","Unknown must retain material");
-            cleared["effect"]=json!({"state":"unbound"});
+            cleared["effect"]=json!({"state":"unbound","disposition":"keep"});
             ensure!(event(&f,&unbind,&c,&registration,cleared).await?.0 == StatusCode::OK);
             verify_unbound_retention(&f.base,&receipt).await?;
             return Ok(());
@@ -629,11 +628,11 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         ensure!(ready.1["bindings"][0]["appliedRevision"] == 1 && ready.1["policies"] == json!([]));
         // An ordinary configuration update preserves both identity and factors.
         let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
-        let changed = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":account}}}))).await?;
+        let changed = f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":account}}}))).await?;
         ensure!(changed.0 == StatusCode::OK && changed.1["bindingGeneration"] == 1 && changed.1["factorGeneration"] == 1,"configure {changed:?}");
         let preserved = offer(&f,&c,&registration).await?.1["task"].clone();
         ensure!(preserved["payload"]["task"]["windows"]["kind"] == "preserve");
-        let reset = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"reset_factors"}}))).await?;
+        let reset = f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"reset_factors"}}))).await?;
         ensure!(reset.0 == StatusCode::OK && reset.1["bindingGeneration"] == 1 && reset.1["factorGeneration"] == 2,"reset {reset:?}");
         ensure!(event(&f,&preserved,&c,&registration,json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
@@ -676,3 +675,234 @@ async fn verify_unbound_retention(base: &Value, receipt: &wire::CredentialReceip
     connection.close().await?;
     Ok(())
 }
+
+// Exercise real HTTP and WebAuthn cryptography; no test-only proof issuance or SQL bypass.
+impl Fixture {
+    async fn access_call(
+        &mut self,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(StatusCode, Value)> {
+        if let Some(response) = self.access_authorize(path, body.clone()).await? {
+            return Ok(response);
+        }
+        self.author.call(&self.router, method, path, body).await
+    }
+    async fn access_authorize(
+        &mut self,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Option<(StatusCode, Value)>> {
+        use webauthn_authenticator_rs::{WebauthnAuthenticator, softpasskey::SoftPasskey};
+        let origin = url::Url::parse("https://mdm.example.test")?;
+        let identity = format!("/api/v1/identity/tenants/{}/webauthn", case_tenant());
+        if self.access_authenticator.is_none() {
+            let mut key = WebauthnAuthenticator::new(SoftPasskey::new(true));
+            self.author.cookies.remove("__Host-identity-operation");
+            let (status, start) = self
+                .author
+                .call(
+                    &self.router,
+                    Method::POST,
+                    &format!("{identity}/register/begin"),
+                    Some(json!({"label":"DA test authenticator","recover":false})),
+                )
+                .await?;
+            ensure!(
+                status == StatusCode::OK,
+                "registration begin {status}: {start}"
+            );
+            let response = key.do_registration(
+                origin.clone(),
+                serde_json::from_value(start["options"].clone())?,
+            )?;
+            let (status, result) = self
+                .author
+                .call(
+                    &self.router,
+                    Method::POST,
+                    &format!("{identity}/register/finish"),
+                    Some(json!({"id":start["id"],"response":response})),
+                )
+                .await?;
+            ensure!(
+                status == StatusCode::OK,
+                "registration finish {status}: {result}"
+            );
+            self.access_authenticator = Some(key);
+        }
+        let (status, start) = self
+            .author
+            .call(
+                &self.router,
+                Method::POST,
+                &format!("{path}/step-up"),
+                body.clone(),
+            )
+            .await?;
+        if status != StatusCode::OK {
+            return Ok(Some((status, start)));
+        }
+        let response = self
+            .access_authenticator
+            .as_mut()
+            .context("registered authenticator")?
+            .do_authentication(origin, serde_json::from_value(start["options"].clone())?)?;
+        let (status, result) = self
+            .author
+            .call(
+                &self.router,
+                Method::POST,
+                &format!("{identity}/authenticate/finish"),
+                Some(json!({"id":start["id"],"response":response})),
+            )
+            .await?;
+        ensure!(
+            status == StatusCode::OK,
+            "authentication finish {status}: {result}"
+        );
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device-access.http: operation proof concurrency, replay and rollback"]
+async fn step_up_is_atomic_with_receipts_and_concurrent_duplicates() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let (policy, _) = setup(&mut f).await?;
+        let id = Uuid::new_v4();
+        let path = format!("/api/v1/devices/{}/device-access/bindings/{id}", execution::case_device_id());
+        let input = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"macos","generatedUid":Uuid::new_v4()}}}});
+        ensure!(f.access_authorize(&path, Some(input.clone())).await?.is_none());
+        let mut first = f.author.clone();
+        let mut duplicate = first.clone();
+        let (a,b) = tokio::join!(
+            first.call(&f.router,Method::PUT,&path,Some(input.clone())),
+            duplicate.call(&f.router,Method::PUT,&path,Some(input.clone())));
+        let a=a?;let b=b?;
+        ensure!(a.0==StatusCode::OK && b==a,"same proof concurrent: {a:?} {b:?}");
+        f.author.cookies.remove("__Host-identity-operation");
+        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(input.clone())).await?==a,"committed retry must not require another proof");
+        let mut changed=input.clone();changed["action"]["account"]["account"]["generatedUid"]=json!(Uuid::new_v4());
+        ensure!(f.author.call(&f.router,Method::PUT,&path,Some(changed)).await?.0==StatusCode::CONFLICT);
+        let next=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"disable"}});
+        ensure!(f.access_authorize(&path,Some(next.clone())).await?.is_none());
+        let mut one=f.author.clone();
+        ensure!(f.access_authorize(&path,Some(next.clone())).await?.is_none());
+        let mut two=f.author.clone();
+        let before=pg(&format!("SELECT count(*) FROM identity_authority.step_up_grants WHERE tenant_id='{}' AND principal_id='{}'",case_tenant(),f.author_id))?.trim().parse::<i64>()?;
+        let (a,b)=tokio::join!(one.call(&f.router,Method::PUT,&path,Some(next.clone())),two.call(&f.router,Method::PUT,&path,Some(next.clone())));
+        let a=a?;let b=b?;
+        ensure!(a.0==StatusCode::OK && b==a,"different proofs concurrent: {a:?} {b:?}");
+        let after=pg(&format!("SELECT count(*) FROM identity_authority.step_up_grants WHERE tenant_id='{}' AND principal_id='{}'",case_tenant(),f.author_id))?.trim().parse::<i64>()?;
+        ensure!(before-after==1,"duplicate operation consumed an extra proof");
+        ensure!(a.1["accountDisposition"]=="disable" && a.1["appliedRevision"].is_null());
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device-access.http: HTTP binding commit holds Identity guard through business settlement"]
+async fn binding_commit_serializes_session_revocation() -> Result<()> {
+    binding_settlement_serializes_revocation(false).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=device-access.http: failed confirmation rolls back and releases Identity guard"]
+async fn binding_rollback_releases_session_guard() -> Result<()> {
+    binding_settlement_serializes_revocation(true).await
+}
+
+async fn binding_settlement_serializes_revocation(wrong_nonce: bool) -> Result<()> {
+    use sqlx::{Connection, PgConnection};
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let (policy, _) = setup(&mut f).await?;
+        ensure!(claim(&f, &context(2, Uuid::new_v4(), Uuid::new_v4())).await?.0 == StatusCode::OK);
+        let started = user_call(&f, "begin", json!({"operationId":Uuid::new_v4(),"policy":policy}), true).await?;
+        ensure!(started.0 == StatusCode::OK, "begin {started:?}");
+        let challenge: Uuid = serde_json::from_value(started.1["id"].clone())?;
+        let operation = Uuid::new_v4();
+        let input = json!({"operationId":operation,"challenge":challenge,
+            "nonce":if wrong_nonce { Value::String("A".repeat(43)) } else { started.1["nonce"].clone() },
+            "localSession":started.1["localSession"]});
+        let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
+        identity_resources.finish(async {
+            let session = identity.authority.inspect_session(identity.tenant,
+                rss_identity_core::session::SessionSecret::parse(f.author.cookies["__Host-identity-session"].clone())?,
+                crate::identity::deadline()).await?;
+            let options = crate::device::test_support::options("postgres")?;
+            let mut root = PgConnection::connect_with(&options).await?;
+            let mut observer = PgConnection::connect_with(&options).await?;
+            let mut hold = root.begin().await?;
+            let blocker:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
+            sqlx::query("SELECT id FROM mdm_access.device_access_ceremonies WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+                .bind(case_tenant()).bind(challenge).fetch_one(&mut *hold).await?;
+            let router = f.router.clone();
+            let token = f.author.cookies["__Host-identity-session"].clone();
+            let confirm = tokio::spawn(async move {
+                let request = Request::builder().method(Method::POST)
+                    .uri("/api/v1/agent/runtime/device-access/confirm")
+                    .header("host", "mdm.example.test:9445").header("content-type", "application/json")
+                    .header("x-rss-user-session", token)
+                    .extension(evidence(execution::case_credential()).unwrap())
+                    .body(Body::from(serde_json::to_vec(&input)?))?;
+                let response = router.oneshot(request).await?;
+                let status = response.status();
+                let bytes = response.into_body().collect().await?.to_bytes();
+                Ok::<_,anyhow::Error>((status, serde_json::from_slice::<Value>(&bytes)?))
+            });
+            let waiting = wait_sql_blocker(&mut observer, blocker, "%FROM mdm_access.device_access_ceremonies%FOR UPDATE%").await;
+            let revoke = if let Ok(consumer) = waiting.as_ref() {
+                let authority = identity.authority.clone();
+                let task = tokio::spawn(async move { authority.revoke_current_session(session,crate::identity::deadline()).await });
+                let blocked = wait_sql_blocker(&mut observer,*consumer,"%FROM identity_authority.guard%FOR UPDATE%").await;
+                Some((task, blocked))
+            } else { None };
+            // Always release the fixture lock before propagating failures or joining requests.
+            hold.rollback().await?;
+            let result = confirm.await??;
+            let revoked = match revoke {
+                Some((task, blocked)) => { let result=task.await?; blocked?; result?; true },
+                None => false,
+            };
+            waiting?;
+            ensure!(revoked);
+            let consumed:bool=sqlx::query_scalar("SELECT consumed IS NOT NULL FROM mdm_access.device_access_ceremonies WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(case_tenant()).bind(challenge).fetch_one(&mut observer).await?;
+            let receipt:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND operation_id=$2)")
+                .bind(case_tenant()).bind(operation).fetch_one(&mut observer).await?;
+            ensure!(consumed == !wrong_nonce && receipt == !wrong_nonce, "settlement {result:?}");
+            if wrong_nonce { ensure!(!result.0.is_success(),"wrong nonce accepted"); }
+            else { ensure!(result.0==StatusCode::OK,"confirm {result:?}"); }
+            let mut guard=observer.begin().await?;
+            sqlx::query("SET LOCAL lock_timeout='1s'").execute(&mut *guard).await?;
+            sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE")
+                .bind(case_tenant()).fetch_one(&mut *guard).await?;
+            guard.rollback().await?;
+            ensure!(user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?.0==StatusCode::UNAUTHORIZED);
+            observer.close().await?; root.close().await?;
+            Ok(())
+        }).await
+    }).await
+}
+async fn wait_sql_blocker(c: &mut sqlx::PgConnection, blocker: i32, query: &str) -> Result<i32> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let pid:Option<i32>=sqlx::query_scalar("SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND query LIKE $2 AND $1=ANY(pg_blocking_pids(pid)) LIMIT 1")
+                .bind(blocker).bind(query).fetch_optional(&mut *c).await?;
+            if let Some(pid)=pid {return Ok::<_,anyhow::Error>(pid);}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.context("expected real transaction blocker relationship")?
+}
+
+#[path = "device_access/enterprise.rs"]
+mod enterprise;
+
+#[path = "device_access/lifecycle.rs"]
+mod lifecycle;

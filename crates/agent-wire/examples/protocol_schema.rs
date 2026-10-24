@@ -2,6 +2,14 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "enterprise": {
+            "KeyRegistration": schemars::schema_for!(rss_mdm_agent_wire::enterprise::KeyRegistration),
+            "NativeProof": schemars::schema_for!(rss_mdm_agent_wire::enterprise::NativeProof),
+            "Begin": schemars::schema_for!(rss_mdm_agent_wire::enterprise::Begin),
+            "Challenge": schemars::schema_for!(rss_mdm_agent_wire::enterprise::Challenge),
+            "Complete": schemars::schema_for!(rss_mdm_agent_wire::enterprise::Complete),
+            "Status": schemars::schema_for!(rss_mdm_agent_wire::enterprise::Status),
+        },
         "platform_sso": {
             "Revocation": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Revocation),
             "Bootstrap": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Bootstrap),

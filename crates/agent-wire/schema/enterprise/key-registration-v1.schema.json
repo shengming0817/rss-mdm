@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "PublicKey": {
+      "additionalProperties": false,
+      "description": "Public key only. The verifier validates the curve, point and Apple's derived key id.",
+      "properties": {
+        "crv": {
+          "description": "JWK curve, P-256.",
+          "type": "string"
+        },
+        "kty": {
+          "description": "JWK key type, EC.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Canonical unpadded Base64URL x coordinate.",
+          "type": "string"
+        },
+        "y": {
+          "description": "Canonical unpadded Base64URL y coordinate.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kty",
+        "crv",
+        "x",
+        "y"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Register a user-held key against the exact applied Windows account binding.",
+  "properties": {
+    "bindingGeneration": {
+      "description": "Personnel association generation.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "bindingId": {
+      "description": "Existing business binding, never an account name.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "bindingRevision": {
+      "description": "Exact applied configuration revision.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "factorGeneration": {
+      "description": "Native factor generation.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "publicKey": {
+      "$ref": "#/$defs/PublicKey",
+      "description": "P-256 public key only; no private material reaches the service."
+    },
+    "signature": {
+      "description": "Unpadded base64url ES256 fixed-width signature of signing_bytes.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bindingId",
+    "bindingGeneration",
+    "factorGeneration",
+    "bindingRevision",
+    "publicKey",
+    "signature"
+  ],
+  "title": "KeyRegistration",
+  "type": "object",
+  "$id": "https://rss.example/agent/enterprise/v1/KeyRegistration"
+}

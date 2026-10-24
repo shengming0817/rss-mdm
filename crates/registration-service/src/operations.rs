@@ -9,7 +9,7 @@ pub(crate) async fn replay(
     let Operation {
         actor: proof,
         key,
-        digest,
+        digest: _,
     } = operation;
     let lock = format!(
         "registration:{}:{}:{}:{}",
@@ -23,6 +23,19 @@ pub(crate) async fn replay(
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+    read(tx, operation).await
+}
+
+/// Receipt lookup without acquiring a product lock, safe before Identity admission.
+pub(crate) async fn read(
+    tx: &mut sqlx::PgConnection,
+    operation: &Operation<'_>,
+) -> Result<Option<String>, Error> {
+    let Operation {
+        actor: proof,
+        key,
+        digest,
+    } = operation;
     let old = sqlx::query("SELECT digest,result,instance FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND actor=$2 AND operation_id=$3::uuid")
             .bind(proof.tenant).bind(proof.subject).bind(key.to_string()).fetch_optional(&mut *tx).await.map_err(db)?;
     old.map(|old| {

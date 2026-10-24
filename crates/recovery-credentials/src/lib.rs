@@ -6,6 +6,6 @@ mod service;
 pub mod storage;
 pub use model::*;
 pub use protection::{KeyRing, Protection, Recipient};
-pub use service::Credentials;
+pub use service::{Credentials, DisclosureRequest};
 pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");

@@ -52,9 +52,7 @@ impl CredentialSubject {
             } => {
                 !binding.is_nil()
                     && *binding_generation > 0
-                    && super::AccessAccount::Windows { sid: sid.clone() }
-                        .validate()
-                        .is_ok()
+                    && super::valid_windows_account_sid(sid)
             }
             Self::Bitlocker { volume, protector } => bounded(volume) && !protector.is_nil(),
             Self::LocalAdministrator { sid } => {

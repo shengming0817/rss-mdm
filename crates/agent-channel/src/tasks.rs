@@ -534,7 +534,7 @@ async fn access_begin(
         let p=authenticate_for(&app,&headers,peer.as_ref().map(|v|&v.0),&audit,false).await?;
         let employee=employee(&app,&headers,&audit).await?.ok_or(Error::Unauthorized)?;
         let input=body(input)?;
-        let value=app.enrollment.begin_device_access(&p,&employee,&input,app.execution.as_ref(),&app.identity,&audit).await.map_err(Error::from)?;
+        let value=app.enrollment.begin_device_access(&p,&employee,&input,app.execution.as_ref(),&audit).await.map_err(Error::from)?;
         use axum::response::IntoResponse;
         let mut response=Json(serde_json::json!({"id":value.id,"nonce":value.nonce,"expiresAt":value.expires_at,"localSession":value.local_session})).into_response();
         response.headers_mut().insert(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store"));
@@ -557,14 +557,7 @@ async fn access_confirm(
         let input = body(input)?;
         let value = app
             .enrollment
-            .confirm_device_access(
-                &p,
-                &employee,
-                &input,
-                app.execution.as_ref(),
-                &app.identity,
-                &audit,
-            )
+            .confirm_device_access(&p, &employee, &input, app.execution.as_ref(), &audit)
             .await
             .map_err(Error::from)?;
         Ok(Json(value.status()))

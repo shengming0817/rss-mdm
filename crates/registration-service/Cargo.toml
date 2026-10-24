@@ -24,6 +24,7 @@ reqwest = { workspace = true, features = ["json"] }
 rss-mdm-authorization-service.workspace = true
 rss-mdm-inventory.workspace = true
 rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
 rss-observation.workspace = true
 rss-request-context.workspace = true
 rss-mdm-audit-integration.workspace = true

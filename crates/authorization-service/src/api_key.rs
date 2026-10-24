@@ -36,6 +36,7 @@ impl Permission {
                 self,
                 Self::IdentityAccountsManage
                     | Self::IdentityProvidersManage
+                    | Self::EnterpriseApplicationsWrite
                     | Self::AuthorizationRead
                     | Self::AuthorizationWrite
                     | Self::UserGroupRead

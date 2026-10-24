@@ -6,6 +6,7 @@ mod database;
 pub mod device;
 pub mod device_access;
 pub mod enrollment;
+pub mod enterprise;
 mod error;
 pub mod lifecycle;
 mod operations;

@@ -1,4 +1,5 @@
-//! Product assembly of the four public Identity components. The database is the authority.
+pub mod enterprise;
+// Product assembly of the four public Identity components. The database is the authority.
 use crate::{
     ConfigIssue, Error, Failure,
     authorization::identity_management::IdentityManagementPolicy,
@@ -56,6 +57,16 @@ pub(crate) fn failure(error: AuthorityError) -> Error {
     }
 }
 pub(crate) struct Identity {
+    pub(crate) enterprise_administrators: BTreeMap<
+        uuid::Uuid,
+        Arc<rss_mdm_registration_service::enterprise::keycloak::Administrator>,
+    >,
+    pub(crate) enterprise_platform:
+        Arc<rss_mdm_registration_service::enterprise::platform::Verifier>,
+    pub(crate) enterprise_clients:
+        BTreeMap<String, Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>>,
+    pub(crate) runtime: Arc<PgRuntime>,
+    pub(crate) webauthn: rss_identity_postgres::WebauthnAuthority,
     pub(crate) platform: Option<Arc<rss_mdm_apple_channel::platform_sso::bridge::Verifier>>,
     pub(crate) instance: InstanceId,
     pub(crate) authority: Authority,
@@ -71,14 +82,20 @@ pub(crate) struct Identity {
 impl Identity {
     pub(crate) fn browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
         Arc::new(rss_mdm_management_http::identity::Identity {
+            enterprise_clients: self.enterprise_clients.clone(),
+            enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
+            webauthn: self.webauthn.clone(),
             http: self.http.clone(),
             tenant: self.tenant,
         })
     }
     pub(crate) fn management_browser(&self) -> Arc<rss_mdm_management_http::identity::Identity> {
         Arc::new(rss_mdm_management_http::identity::Identity {
+            enterprise_clients: self.enterprise_clients.clone(),
+            enterprise_administrators: self.enterprise_administrators.clone(),
             authority: self.authority.clone(),
+            webauthn: self.webauthn.clone(),
             http: self.http.clone(),
             tenant: self.management_tenant,
         })
@@ -96,6 +113,7 @@ impl Identity {
             acquire,
             |authority| authority,
             OidcConfig::federation,
+            enterprise::Backend::load,
         )
         .await
     }
@@ -112,6 +130,7 @@ impl Identity {
             InstanceId,
             TenantId,
         ) -> Result<rss_identity_postgres::Federation, Error>,
+        backend: impl Fn(&enterprise::Configuration, TenantId) -> Result<enterprise::Backend, Error>,
     ) -> Result<Self, Error> {
         let tenant = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid())?;
         let instance = InstanceId::parse(&config.identity.instance_id).map_err(|_| invalid())?;
@@ -141,13 +160,95 @@ impl Identity {
             instance,
             tenants.iter().map(|(tenant, _)| *tenant).collect(),
         )?;
-        if let Some(platform) = &platform {
-            options = options.with_platform(platform.clone());
+        let mut enterprise_clients: BTreeMap<
+            String,
+            Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>,
+        > = BTreeMap::new();
+        if let Some(deployment) = &config.identity.enterprise {
+            if deployment.clients.is_empty() || deployment.clients.len() > 64 {
+                return Err(invalid());
+            }
+            for input in &deployment.clients {
+                let client = backend(input, tenant)?;
+                if enterprise_clients
+                    .insert(input.target.id.clone(), Arc::new(client))
+                    .is_some()
+                {
+                    return Err(invalid());
+                }
+            }
+            let pem = config::read(&deployment.signing_key_file, 16384, true)?;
+            let signer = Arc::new(
+                rss_identity_oidc::enterprise::Es256EnterpriseSigner::new(
+                    deployment.key_id.clone(),
+                    &pem,
+                )
+                .map_err(|_| invalid())?,
+            );
+            options = options.with_enterprise(
+                rss_identity_postgres::platform::EnterpriseConfig::new(
+                    deployment
+                        .clients
+                        .iter()
+                        .map(|c| c.target.clone())
+                        .collect(),
+                    signer,
+                )
+                .map_err(failure)?,
+            );
         }
-        let authority =
-            Authority::connect_runtime(runtime, kdf.clone(), options, policy.clone(), deadline())
-                .await
-                .map_err(failure)?;
+        let mut enterprise_administrators = BTreeMap::new();
+        if let Some(deployment) = &config.identity.enterprise {
+            if deployment.administrators.len() > 64 {
+                return Err(invalid());
+            }
+            for entry in &deployment.administrators {
+                let secret = config::secret(&entry.client_secret_file)?;
+                let ca = entry
+                    .private_ca_file
+                    .as_ref()
+                    .map(|p| config::read(p, 65536, false))
+                    .transpose()?;
+                let admin = rss_mdm_registration_service::enterprise::keycloak::Administrator::new(
+                    entry.configuration.clone(),
+                    secret,
+                    ca.as_deref().map(|v| v.as_slice()),
+                )
+                .map_err(|_| invalid())?;
+                if enterprise_administrators
+                    .insert(admin.provider, Arc::new(admin))
+                    .is_some()
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        let target_fingerprints = enterprise_clients
+            .iter()
+            .map(|(id, c)| (id.clone(), c.fingerprint().to_owned()))
+            .collect();
+        let apple = platform
+            .as_ref()
+            .map(|p| p.clone() as Arc<dyn rss_identity_postgres::platform::PlatformVerifier>);
+        let enterprise_platform = Arc::new(
+            rss_mdm_registration_service::enterprise::platform::Verifier::new(
+                &config.product_origin,
+                tenant,
+                runtime.clone(),
+                apple,
+                target_fingerprints,
+            ),
+        );
+        options = options.with_platform(enterprise_platform.clone());
+        let authority = Authority::connect_runtime(
+            runtime.clone(),
+            kdf.clone(),
+            options,
+            policy.clone(),
+            deadline(),
+        )
+        .await
+        .map_err(failure)?;
         let authority = configure_authority(authority);
         let tenant_administration =
             crate::tenant_registry::http::Service::connect(config, management_tenant, kdf, policy)
@@ -162,8 +263,22 @@ impl Identity {
             Duration::from_secs(10),
         )
         .map_err(|_| invalid())?;
+        let origin = url::Url::parse(&config.product_origin).map_err(|_| invalid())?;
+        let rp = origin.host_str().ok_or_else(invalid)?.to_owned();
+        let webauthn = rss_identity_postgres::WebauthnAuthority::connect(
+            authority.clone(),
+            rp,
+            origin,
+            deadline(),
+        )
+        .await
+        .map_err(failure)?;
         let mut routes = rss_identity_http_axum::router(authority.clone(), http.clone())
             .map_err(failure)?
+            .merge(
+                rss_identity_http_axum::webauthn_router(webauthn.clone(), http.clone())
+                    .map_err(failure)?,
+            )
             .route_layer(axum::middleware::from_fn(product_profile_boundary));
         let bearer_routes = rss_identity_http_axum::bearer_router(authority.clone(), http.clone())
             .map_err(failure)?;
@@ -188,6 +303,11 @@ impl Identity {
             );
         }
         Ok(Self {
+            enterprise_platform,
+            enterprise_administrators,
+            enterprise_clients,
+            runtime,
+            webauthn,
             platform,
             instance,
             authority,
@@ -219,6 +339,7 @@ impl Identity {
                     .map_err(|_| invalid())?;
                 config.federation_using(authority, origin, instance, Arc::new(oidc))
             },
+            enterprise::Backend::for_loopback_test,
         )
         .await
     }
@@ -560,3 +681,21 @@ mod tests;
 #[cfg(test)]
 #[path = "../tests/identity/mod.rs"]
 pub(crate) mod t2;
+
+/// Installed assertion identities and signer. RP policy/callbacks remain product-owned.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnterpriseDeployment {
+    pub key_id: String,
+    pub signing_key_file: PathBuf,
+    pub clients: Vec<enterprise::Configuration>,
+    pub administrators: Vec<EnterpriseAdministrator>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnterpriseAdministrator {
+    pub configuration: rss_mdm_registration_service::enterprise::keycloak::Configuration,
+    pub client_secret_file: PathBuf,
+    pub private_ca_file: Option<PathBuf>,
+}

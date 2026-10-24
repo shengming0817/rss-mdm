@@ -12,21 +12,25 @@ pub enum EventType {
     PolicyTerminal,
     #[serde(rename = "compliance.status.changed")]
     ComplianceChanged,
+    #[serde(rename = "device.access.changed")]
+    DeviceAccessChanged,
     #[serde(rename = "webhook.test")]
     Test,
 }
 impl EventType {
-    pub const BUSINESS: [Self; 4] = [
+    pub const BUSINESS: [Self; 5] = [
         Self::Registered,
         Self::Retired,
         Self::PolicyTerminal,
         Self::ComplianceChanged,
+        Self::DeviceAccessChanged,
     ];
     pub const fn permission(self) -> &'static str {
         match self {
             Self::Registered | Self::Retired | Self::Test => "inventory_read",
             Self::PolicyTerminal => "operation_read",
             Self::ComplianceChanged => "compliance_read",
+            Self::DeviceAccessChanged => "account_write",
         }
     }
 }
@@ -49,6 +53,20 @@ pub struct Event {
     deny_unknown_fields
 )]
 pub enum EventData {
+    DeviceAccess {
+        operation_id: Uuid,
+        binding_id: Uuid,
+        registration_id: Uuid,
+        registration_generation: i64,
+        instance_id: Uuid,
+        principal_id: Uuid,
+        previous_principal: Option<Uuid>,
+        binding_generation: i64,
+        factor_generation: i64,
+        revision: i64,
+        revoked: bool,
+        phase: String,
+    },
     Registration {
         registration_id: Uuid,
         generation: i64,
@@ -83,6 +101,46 @@ impl Event {
             return Err(Error::Invalid);
         }
         let valid = match (&self.data, self.event_type) {
+            (
+                EventData::DeviceAccess {
+                    operation_id,
+                    binding_id,
+                    registration_id,
+                    registration_generation,
+                    instance_id,
+                    principal_id,
+                    previous_principal,
+                    binding_generation,
+                    factor_generation,
+                    revision,
+                    phase,
+                    ..
+                },
+                EventType::DeviceAccessChanged,
+            ) => {
+                [
+                    operation_id,
+                    binding_id,
+                    registration_id,
+                    instance_id,
+                    principal_id,
+                ]
+                .iter()
+                .all(|id| !id.is_nil())
+                    && previous_principal.is_none_or(|id| !id.is_nil())
+                    && [
+                        *registration_generation,
+                        *binding_generation,
+                        *factor_generation,
+                        *revision,
+                    ]
+                    .iter()
+                    .all(|v| *v > 0)
+                    && matches!(
+                        phase.as_str(),
+                        "accepted" | "pending" | "applied" | "failed" | "unknown" | "retired"
+                    )
+            }
             (
                 EventData::Registration {
                     registration_id,
@@ -189,7 +247,7 @@ impl Settings {
             || !text(&self.network_reference, 128)
             || self.endpoint.len() > 2048
             || self.event_types.is_empty()
-            || self.event_types.len() > 4
+            || self.event_types.len() > EventType::BUSINESS.len()
             || self.event_types.contains(&EventType::Test)
             || self
                 .event_types

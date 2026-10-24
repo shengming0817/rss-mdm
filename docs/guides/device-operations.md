@@ -136,9 +136,12 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 `put`/`unbind`/`reset_factors` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、已分配 policy，
 以及 existing 稳定账号或 create 平台/账号名。已有绑定换本地目标须新增绑定，不根据名称接管。
 后续变更和读取要求当前设备 AccountWrite 权限；只持有本机管理员权限不能调用。
-响应丢失先读取 `/device-access/operations/{operationId}`，或精确重放原写入。
+写入前向 `/device-access/bindings/{id}/step-up` POST 同一业务正文，完成 Identity WebAuthn authenticate 后携带用途绑定的 operation cookie 写入。证明先于产品锁消费，并与绑定、回执和审计同事务结算。业务摘要不包含 proof handle；成功后精确重试先返回同操作者的原回执，不额外消费证明。摘要不符返回冲突。
+响应丢失先读取 `/device-access/operations/{operationId}`，或精确重放原写入。回执保留当次提交快照，最新设备效果另读绑定列表。
 
-Policy action `device_access` 持有 selfEnrollment 与可选 role（standard/administrator）；沿用 Scope 分配、
+`unbind` 必须明确 `disposition: keep|disable|standard`；通常选择 keep 保留账号状态，禁用和降权由管理员显式选择。三种处置均不删除账号或数据。任务摘要绑定该意图，只有一致的原生回读结果才推进 appliedRevision。
+
+Policy action `device_access` 持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 windowsAccounts 来源集合（local/active_directory/entra）；沿用 Scope 分配、
 排除和 Policy 启停。role 为 null 时保留已有账号权限，新账号默认 standard。
 serverState、receivedRevision、appliedRevision、effect 各自表达不同事实。
 普通配置和角色更新只增加 revision；重新关联人员增加绑定代际及因子世代，Windows 的 `reset_factors` 显式增加因子世代。
@@ -147,3 +150,40 @@ serverState、receivedRevision、appliedRevision、effect 各自表达不同事�
 RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credentials 权限，轮换/核对使用现有 Credential Policy。
 它只恢复 Windows 的 RSS 附加因子，仍需正确系统密码；Mac 沿用原生系统及磁盘恢复。
 普通列表和事件不返回秘密，系统密码与 Secure Token 不作为可查阅 RSS 恢复材料。
+
+
+### 离职处置和恢复
+
+绑定 action `offboard` 固定目标人员及其全部当前绑定，先提交本地禁止新 DA 授权的状态，
+随后在 `/devices/{device}/device-access/operations/{operationId}/offboarding` 查询分项进度。
+POST 子路径 `/identity` 的 `{kind:"execute"}` 使用当前管理员会话停用目标成员并撤销其会话；
+需要重新认证时保留 requires_authentication，不保存管理员 session secret。
+未知结果使用 `{kind:"reconcile",after:null}` 查询，分页游标继续传 after。
+
+POST 子路径 `/idp` 使用 `{kind:"execute",target,action:"disable_account"|"revoke_sessions"}`，
+target 来自被冻结的分项 ID；先确认账号停用，再撤销会话。使用 `{kind:"reconcile",target}`
+读取真实 IdP 状态；负面观察不允许重放未知效果。设备处置沿原任务链恢复，离线时整体保持未完成。
+`reinstate` 是另一次 step-up 授权：还需当前 Identity 主体有效且旧外部未知/执行中分项已经核对。
+它不会恢复旧绑定、因子或 PSSO 凭据，旧 offboard operation 也不能继续处置新绑定。
+
+DA 因子材料通过 `/devices/{device}/device-access/materials/{id}/versions/{version}/step-up`
+发起 WebAuthn，完成 Identity ceremony 后 POST 同级 `/secret`，携带 `{operationId}`。
+成功重试保留原 operationId；回执不含秘密，每次披露仍复核当前权限、主体和绑定。
+普通 recovery-credentials GET secret 不披露 DA 因子材料。此流程不访问个人 Vault、FileVault 或其他磁盘恢复材料。
+`device.access.changed` 生命周期事件复用 Webhook Outbox，包含操作和代际事实，不携带秘密；
+企业 Vault 消费者须自行按 eventId 去重并处理乱序。
+
+### 企业接入配置
+
+`identity.enterprise` 部署配置包含 `key_id/signing_key_file`、`clients` 和 `administrators`。
+每个 client 固定 `target`（id/issuer/token_endpoint/client_id/scopes）、provider UUID、Keycloak issuer、
+client_secret_file、private_ca_file、private_cidrs、backend_key_id 与 backend_secret_file。
+RP assertion issuer 必须各自独立；Keycloak 专用 client 信任对应 ES256 issuer，禁止 assertion 重用，
+限制有效期及 access token 到 30 秒，不授予 offline_access。backend secret 至少 43 字符，使用独立随机材料。
+管理员 adapter 固定 provider/issuer/clientId/addresses 与受保护服务账号密钥文件，用于显式离职操作。
+
+业务 RP 与人员映射由 GET/POST `/api/v1/device-access/enterprise/configuration` 管理，
+写入用同路径 `/step-up` 发起证明。配置种类为 relying_party、subject、windows_key；
+operationId/expectedRevision 保护幂等和 CAS。RP 固定 HTTPS callback、能力和部署指纹；
+修改部署配置后先显式更新 RP revision，旧交接立即拒绝。稳定 IdP sub 永久归属其人员，不能重新分配给另一主体。
+Windows key 登记使用 wire 的 KeyRegistration.signing_bytes，证明只覆盖持钥，不替代原生用户在场证明。

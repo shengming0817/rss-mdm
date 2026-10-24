@@ -8,7 +8,16 @@ use rss_mdm_authorization_service::context::Principal;
 use rss_mdm_authorization_service::credential::{ApiKeySecret, RequestCredential};
 use rss_request_context::TenantId;
 pub struct Identity {
+    pub enterprise_administrators: std::collections::BTreeMap<
+        uuid::Uuid,
+        std::sync::Arc<rss_mdm_registration_service::enterprise::keycloak::Administrator>,
+    >,
+    pub enterprise_clients: std::collections::BTreeMap<
+        String,
+        std::sync::Arc<dyn rss_mdm_registration_service::enterprise::broker::Client>,
+    >,
     pub authority: Authority,
+    pub webauthn: rss_identity_postgres::WebauthnAuthority,
     pub http: rss_identity_http_axum::HttpConfig,
     pub tenant: TenantId,
 }
@@ -17,7 +26,7 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
         std::time::Duration::from_secs(10),
     )
 }
-fn failure(e: AuthorityError) -> Error {
+pub(crate) fn failure(e: AuthorityError) -> Error {
     match e {
         AuthorityError::Rejected | AuthorityError::ReauthenticationFailed => Error::Unauthorized,
         AuthorityError::CommitUnknown(_) => Error::CommitUnknown,
@@ -26,6 +35,34 @@ fn failure(e: AuthorityError) -> Error {
     }
 }
 impl Identity {
+    /// Reborrow a request credential when a component ceremony requires an owned session proof.
+    pub(crate) async fn ceremony_actor(
+        &self,
+        headers: &HeaderMap,
+    ) -> Result<rss_identity_postgres::AuthenticatedSession, Error> {
+        rss_identity_http_axum::authenticate_request(
+            &self.authority,
+            &self.http,
+            self.tenant,
+            headers,
+            rss_identity_http_axum::SessionActivity::Active,
+            deadline(),
+        )
+        .await
+        .map(|(session, _)| session)
+        .map_err(|response| {
+            match response
+                .extensions()
+                .get::<rss_identity_http_axum::HttpFailure>()
+            {
+                Some(rss_identity_http_axum::HttpFailure::Authority(error)) => failure(*error),
+                _ if response.status().is_server_error() => {
+                    Error::Unavailable(Failure::IdentityStorage)
+                }
+                _ => Error::Unauthorized,
+            }
+        })
+    }
     pub async fn authenticate_request(
         &self,
         headers: &HeaderMap,
