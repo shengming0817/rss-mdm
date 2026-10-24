@@ -600,3 +600,28 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
     c.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=windows.management: runtime cannot forge WNS qualification"]
+async fn runtime_role_cannot_insert_provider_success() -> Result<()> {
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    let tenant = uuid::Uuid::new_v4();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_wns.heads VALUES($1,0,NULL)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let error = sqlx::query("INSERT INTO mdm_wns.versions(tenant_id,revision,operation_id,actor,fingerprint_key,fingerprint,pfn,sid_digest,configuration,material,qualified_at,selected) VALUES($1,1,$2,'fake','fake',decode(repeat('00',32),'hex'),'fake',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),decode('00','hex'),1,true)")
+        .bind(tenant).bind(uuid::Uuid::new_v4()).execute(&mut *tx).await.unwrap_err();
+    ensure!(error.as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
+}

@@ -8,7 +8,45 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
 
-    let (router, app_resources) = app(&fixture.base).await?;
+        let config: Config = serde_json::from_value(fixture.base.clone())?;
+    let tenant = fixture.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let mut app_resources = Resources::default();
+    app_resources.resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum();
+    let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+    if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+    let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
+    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
+        runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+    });
+    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })).into_axum());
+    let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+    app_resources.resource(SourceResource(command_runtime.clone()));
+    let protection = config.native_protector()?;
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(rss_mdm_execution_service::InputDependencies {
+        software_distribution: config.software_distribution, product_origin: config.product_origin.clone(), recovery_enabled: config.recovery_credentials.is_some(), protection: protection.clone(),
+        software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(rss_mdm_software_service::catalog::Reader::new(tenant), Default::default())),
+        bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
+        agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
+    }));
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
+        policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
+    }));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
+    let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = prepared_subject(&browser)?;
@@ -30,11 +68,8 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         });
     }
     identity::seed_grants(case_tenant(), &member, grants).await?;
-    let automation = start_automation(&fixture.base).await?;
     let resource = Uuid::new_v4();
-    native_configuration_resource(
-        &mut browser,
-        &router,
+    native_configuration_resource(&(&planning).runtime, (&planning).tenant, content.as_deref().expect("native content"),
         resource,
         "windows",
         "x86_64",
@@ -52,38 +87,23 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         "CREATE TEMP TABLE scale_devices AS SELECT '{prefix}-'||n::text AS device,gen_random_uuid() AS grant_id,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(1,65) n;INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) SELECT '{TENANT}',grant_id,'fixture','{INSTANCE}',device,'enrollment','consumed',clock_timestamp()+interval '200 seconds' FROM scale_devices;INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile) SELECT '{TENANT}',request,grant_id,'mdm.windows','Device' FROM scale_devices;INSERT INTO mdm_access.devices SELECT '{TENANT}',device FROM scale_devices;INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{TENANT}',registration,device,'mdm',1,request,'active','primary',gen_random_uuid() FROM scale_devices; INSERT INTO mdm_access.credentials SELECT '{TENANT}',gen_random_uuid(),registration,'mdm',md5(registration::text)||md5(registration::text),'active' FROM scale_devices; INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) SELECT '{TENANT}',registration,'mdm.windows','77777777-7777-4777-8777-777777777777',true FROM scale_devices;",
         TENANT = case_tenant()
     ))?;
-    await_ingress().await?;
     let group = uuid::Uuid::new_v4();
     let scope = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
-    call(
-        browser,
-        router,
-        &group_path,
-        0,
-        json!({"action":"create","assetContext":"endpoint","presentation":{"name":"scale","description":""},"criteria":null}),
-    )
-    .await?;
-    let devices = (1..=65)
-        .map(|n| format!("{prefix}-{n}"))
-        .collect::<Vec<_>>();
-    for (index, batch) in devices.chunks(100).enumerate() {
-        call(
-            browser,
-            router,
-            &group_path,
-            index as u64 + 1,
-            json!({"action":"members","add":batch.iter().map(|id|json!({"kind":"endpoint","id":id})).collect::<Vec<_>>(),"remove":[]}),
-        )
-        .await?;
-    }
+    let devices = (1..=65).map(|n| format!("{prefix}-{n}")).collect::<Vec<_>>();
+    let members = devices.clone();
+    runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        rss_mdm_group_postgres::fixture::static_members_in(tx, rss_mdm_group_postgres::GroupId::parse(&group.to_string()).unwrap(),
+            json!({"name":"scale","description":""}).as_object().unwrap().clone(), members, rss_contract::Timepoint::try_from(1_i64).unwrap()).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+    let automation = start_automation(&fixture.base).await?;
     call(browser,router,&group_path,2,json!({"action":"members","add":[],"remove":[{"kind":"endpoint","id":devices[1]}]})).await?;
     let retained=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[0]),None).await?;
     ensure!(retained.0==StatusCode::OK && retained.1["items"][0]["id"]==group.to_string(),"sparse membership lost unchanged endpoint: {retained:?}");
     let removed=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[1]),None).await?;
     ensure!(removed.0==StatusCode::OK && removed.1["items"]==json!([]),"removed endpoint retained: {removed:?}");
     call(browser,router,&group_path,3,json!({"action":"members","add":[{"kind":"endpoint","id":devices[1]}],"remove":[]})).await?;
-    call(browser,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
+    crate::test_support::agent_execution::seed_scope(&planning, scope, json!([{"kind":"group","id":group}])).await?;
     let definition = json!({"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}});
     let before = pg(&format!(
         "SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}'",

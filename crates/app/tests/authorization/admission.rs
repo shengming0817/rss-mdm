@@ -3,15 +3,20 @@ use super::*;
 #[tokio::test]
 #[ignore = "MODULE=authorization.admission: real authorization contract"]
 async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
-    let Fixture {
-        resources,
-        config,
-        router,
-        mut admin,
-        mut member,
-        store,
-        ..
-    } = fixture().await?;
+    let authority = authority::Authority::open().await?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let policy = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
+    );
+    let router = authority.router(
+        authority
+            .authorization()
+            .merge(rss_mdm_management_http::identity_context_routes(policy).into_axum()),
+    )?;
+    let mut admin = authority.browser("admin")?;
+    let mut member = authority.browser("other")?;
+    let store = authority.authorization.clone();
+    let resources = authority.resources;
     resources.finish(async {
     let rule_id = Uuid::new_v4();
     pg(&format!(
@@ -140,6 +145,26 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted");
         crate::Database::connect(config.access_options()?).await?.close().await;
     }
+    // An unrelated Apple contract belongs to full App admission, not ordinary capabilities.
+    pg("ALTER TABLE mdm_apple.devices NO FORCE ROW LEVEL SECURITY")?;
+    let isolated = async {
+        let mut authority = crate::test_support::authority::Authority::open().await?;
+        let mut owners = std::mem::take(&mut authority.resources);
+        let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant));
+        let (execution, _, _) = crate::test_support::command::command_service(authority.audit.clone(), sessions, rss_device_command_postgres::CommandClock::Postgres).await?;
+        owners.resource(rss_mdm_execution_service::Resource(execution.clone()));
+        owners.finish(async {
+            let router = authority.router(authority.authorization())?;
+            let mut browser = authority.browser("admin")?;
+            ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
+            execution.relay_once().await?;
+            Ok(())
+        }).await
+    }.await;
+    let complete_app = crate::Database::connect(config.access_options()?).await;
+    pg("ALTER TABLE mdm_apple.devices FORCE ROW LEVEL SECURITY")?;
+    isolated?;
+    ensure!(matches!(complete_app, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "full App admitted a damaged Apple contract");
     let (identity, identity_resources) =
         crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
@@ -155,7 +180,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(store.authorization())
+    .load_authorization(&store)
     .await?;
     // Stop protocol replies after BEGIN/query, beyond the pool acquire timeout.
     use sqlx::Connection;
@@ -192,7 +217,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     let (stalled, frozen) = tokio::join!(
         tokio::time::timeout(
             Duration::from_secs(4),
-            crate::authorization::store::authorization_snapshot(store.authorization(), &stale)
+            crate::authorization::store::authorization_snapshot(&store, &stale)
         ),
         freeze
     );

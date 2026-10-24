@@ -68,3 +68,24 @@ pub async fn draft_version_in(
         .await?;
     crate::artifacts::insert(tx, &version).await
 }
+
+/// Insert a current resource header using the owner codec, without command receipts or events.
+pub async fn resource_in(
+    tx: &mut PgTransaction<'_>,
+    resource: Resource,
+    revision: u64,
+) -> Result<(), PgError> {
+    let snapshot = resource.snapshot();
+    if snapshot.tenant != tx.tenant_id() || revision == 0 {
+        return Err(STORAGE.fault("fixture.resource"));
+    }
+    STORAGE
+        .write(
+            tx,
+            snapshot.key.as_str(),
+            None,
+            revision,
+            codec::header(&resource)?,
+        )
+        .await
+}

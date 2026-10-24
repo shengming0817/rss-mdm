@@ -7,7 +7,12 @@ use sha2::{Digest, Sha256};
 async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     let mut f = Fixture::with_mdm_software().await?;
     let (peer, _device) = f.ready_local_peer().await?;
-    setup::grants(&f.browser).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        &crate::test_support::http::prepared_subject(&f.browser)?,
+        setup::installation_grants()?,
+    )
+    .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -59,7 +64,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         ensure!(f.router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
     }
     software_execution::seed_enabled(
-        &f.app.flow.planning,
+        &(&f.app.flow.planning).runtime,
         f.app.content_writer.as_ref().unwrap(),
         &version,
     )

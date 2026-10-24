@@ -329,7 +329,7 @@ async fn execute_owned(
                 state.flow.runtime.clone(),
                 state.flow.audit_store.clone(),
                 state.identity.tenant,
-                state.flow.planning.policy_store.clone(),
+                state.flow.policy_store.clone(),
                 state.inputs.clone(),
             );
             policies

@@ -27,7 +27,9 @@ use rss_mdm_registration_service::device;
 
 mod router;
 pub mod runtime_diagnostics;
-pub use router::{Services, identity_context_routes, router};
+pub use router::{
+    Services, device_action_routes, identity_context_routes, router, workspace_routes,
+};
 
 pub mod boundary;
 
@@ -52,7 +54,7 @@ pub mod agent_enrollment;
 
 mod pki;
 
-mod windows_entra;
+pub mod windows_entra;
 
 pub mod recovery_credentials;
 

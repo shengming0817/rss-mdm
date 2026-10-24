@@ -216,8 +216,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
             .status()
             == StatusCode::NOT_FOUND
     );
-    let response =
-        crate::test_support::bootstrap::grant(&f.router, &bootstrap_peer, &input).await?;
+    let response = crate::test_support::bootstrap::grant(&bootstrap_peer, &input).await?;
     let status = response.status();
     let receipt: serde_json::Value = response.json().await?;
     ensure!(status == StatusCode::OK, "register {status}: {receipt}");

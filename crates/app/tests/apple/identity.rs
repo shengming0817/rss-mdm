@@ -342,7 +342,7 @@ impl Fixture {
 #[ignore = "MODULE=apple.identity: native protocol and durable state"]
 async fn replacement_token_fencing_and_retirement() -> Result<()> {
     let mut f = Fixture::start().await?;
-    let (peer, device) = f.ready_scep_peer().await?;
+    let (peer, device) = f.ready_local_peer().await?;
     let replacement = f.replace(&peer, &device).await?;
     f.native_boundaries(&replacement).await?;
     drop(device);

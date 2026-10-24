@@ -52,21 +52,21 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     def["criteria"]["criteria"] = json!({"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Collected"}});
     ok(b, router, Method::PUT, &path, Some(request(0, def.clone()))).await?;
     for (model, expected) in [("Collected", "compliant"), ("Changed", "non_compliant")] {
-        let run = report(
-            &service,
-            &inventory.clone(),
-            authority.audit.clone()
-                .as_ref(),
-            &proof,
-            [Some(model), Some("11")],
-        )
-        .await?;
-        wait_ready_projection(&runtime, &run).await?;
+        let snapshot = if model == "Collected" {
+            let run = report(&service, &inventory, &authority.audit, &proof, [Some(model), Some("11")]).await?;
+            wait_ready_projection(&runtime, &run).await?;
+            run.id.to_string()
+        } else {
+            let snapshot = Uuid::new_v4().to_string();
+            let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String(model.into()))?;
+            pg(&format!("SELECT mdm.lock_asset_watermark('{tenant}'); UPDATE mdm.inventory SET value='{value}',value_version=NULL,batch_id='{snapshot}',last_known='{value}',last_known_batch='{snapshot}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'", tenant=case_tenant()))?;
+            snapshot
+        };
         let response = status(b, router, device, expected).await?;
         let current = &response["rules"][0]["current"];
         ensure!(current["applicability"]["platformDecision"] == "match");
         ensure!(current["evidence"][0]["sources"][0]["source"] == "mdm.windows");
-        ensure!(current["evidence"][0]["sources"][0]["snapshotId"] == run.id.to_string());
+        ensure!(current["evidence"][0]["sources"][0]["snapshotId"] == snapshot);
     }
 
     def["enabled"] = json!(false);

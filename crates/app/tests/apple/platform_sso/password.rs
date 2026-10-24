@@ -281,7 +281,7 @@ async fn request(
     use rss_mdm_agent_wire::platform_sso::{LOGIN_TYPE, SCOPE};
     let rt = f.ade.platform_sso.as_ref().context("PSSO")?;
     let (status, nonce) = call(
-        f,
+        &f.router,
         &format!("/api/v1/apple/platform-sso/{}/nonce", case_tenant()),
         json!({}),
     )

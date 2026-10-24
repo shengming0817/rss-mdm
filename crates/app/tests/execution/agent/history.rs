@@ -214,24 +214,9 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     )
     .await?;
     {
-        let policy = publish(&mut f.author, &f.router, id).await?;
-        let task_id = Uuid::new_v4();
-        let mut tx = f.authority.pool.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
-        let object = f.planning.objects.endpoint(&mut tx, f.authority.identity.tenant, case_device_id()).await?;
-        tx.rollback().await?;
-        let source_objects = serde_json::to_value(vec![object])?;
-        let tenant = f.authority.identity.tenant;
-        f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
-            tx.with_connection(move |c| Box::pin(async move {
-                let state = rss_mdm_execution_service::actions::state::RunState::new(300, 1).expect("valid run horizon");
-                sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT p.tenant_id,$2,p.current_version,r.device,r.id,r.generation,'retained-sensitive-result',1,1,300,$4,true,$5,$6 FROM mdm_policy.policies p JOIN mdm_access.registrations r ON r.tenant_id=p.tenant_id AND r.device=$3 AND r.channel='agent' AND r.state='active' WHERE p.tenant_id=$1::uuid AND p.id=$7")
-                    .bind(tenant.to_string()).bind(task_id).bind(case_device_id()).bind(serde_json::to_value(state).expect("run state"))
-                    .bind(vec![7u8;32]).bind(source_objects).bind(policy).execute(c).await?;
-                Ok(())
-            })).await
-        })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
-        seed_script_result(&f, task_id, "private-collection-canary").await?;
+        let policy = seed_script_policy(&f, id).await?;
+        let task_id = seed_script_run(&f, policy).await?;
+        seed_script_result(&f, task_id, json!({"secret":"private-collection-canary"}), "private-collection-canary").await?;
         let path = format!(
             "/api/v1/policies/{policy}/runs/{}",
             task_id

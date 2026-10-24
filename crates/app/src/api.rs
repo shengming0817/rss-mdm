@@ -942,7 +942,7 @@ pub(crate) fn from_state(
                 state.flow.runtime.clone(),
                 state.flow.audit_store.clone(),
                 state.identity.tenant,
-                state.flow.planning.policy_store.clone(),
+                state.flow.policy_store.clone(),
                 state.inputs.clone(),
             )),
             assets: state.flow.assets.clone(),

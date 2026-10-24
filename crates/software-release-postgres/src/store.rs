@@ -594,3 +594,25 @@ async fn freeze_attempt(
         )
         .await
 }
+
+/// Seed a validated pending publication and immutable material for integration consumers.
+/// Does not create a request receipt or publish an event.
+#[cfg(feature = "integration")]
+pub async fn fixture_pending_in(
+    tx: &mut PgTransaction<'_>,
+    publication: &Publication,
+) -> Result<(), PgError> {
+    let state = publication.snapshot();
+    if state.id.tenant() != tx.tenant_id()
+        || state.revision != 0
+        || state.withdrawn
+        || state.attempt.outcome != PublicationOutcome::Pending
+    {
+        return Err(STORAGE.fault("fixture.pending"));
+    }
+    STORAGE
+        .write(tx, state.id.value(), None, 0, codec::snapshot(publication)?)
+        .await?;
+    freeze_material(tx, &state.content).await?;
+    freeze_attempt(tx, publication).await
+}

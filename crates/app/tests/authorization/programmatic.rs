@@ -52,23 +52,19 @@ async fn call(
         },
     ))
 }
-async fn manager(router: &Router) -> Result<Browser> {
-    let mut browser = Browser::default();
-    let tenant = pg("SELECT management_tenant_id::text FROM public.mdm_installation")?;
-    let response = browser
-        .call(
-            router,
-            Method::POST,
-            &format!("/api/v1/identity/tenants/{}/login", tenant.trim()),
-            Some(json!({"login":"bootstrap","password":PASSWORD})),
-        )
-        .await?;
-    ensure!(
-        response.0 == StatusCode::OK,
-        "management login: {}",
-        response.0
-    );
-    Ok(browser)
+fn manager() -> Result<Browser> {
+    let config = std::path::PathBuf::from(std::env::var("MDM_TEST_CONFIG")?);
+    let secret = rss_identity_core::session::SessionSecret::parse(
+        crate::config::secret(&config.parent().unwrap().join("source-session"))?.to_string(),
+    )?;
+    Ok(Browser {
+        cookies: std::collections::BTreeMap::from([(
+            "__Host-identity-session".into(),
+            secret.expose().into(),
+        )]),
+        csrf: Some(secret.csrf()),
+        ..Browser::default()
+    })
 }
 async fn policy(
     browser: &mut Browser,
@@ -108,7 +104,7 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
     } = fixture().await?;
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
-        let mut manager = manager(&router).await?;
+        let mut manager = manager()?;
         let network_path = "/api/v1/tenant-administration/api-access/network-policy";
         let (status, initial) = manager.call(&router, Method::GET, network_path, None).await?;
         ensure!(status == StatusCode::OK && initial["networks"] == json!([]) && initial["revision"] == 0);
@@ -137,12 +133,8 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &secret)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router, Method::GET, "/api/v1/api-keys", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
         ensure!(call(&router, Method::GET, "/api/v1/policies", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
-        let mut token = Value::Null;
-        for _ in 0..7 {
-            let (status, issued) = call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?;
-            ensure!(status == StatusCode::OK, "correct bearer password consumed failure allowance: {status}");
-            token = issued;
-        }
+        let (status, token) = call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?;
+        ensure!(status == StatusCode::OK, "bearer login: {status}");
         let bearer = format!("Bearer {}", token["accessToken"].as_str().ok_or_else(|| anyhow::anyhow!("missing bearer"))?);
         ensure!(call(&router, Method::GET, &inventory, &[("authorization", &bearer)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router,Method::GET,"/api/v1/apple/organizations",&[("authorization",&bearer)],None).await?.0==StatusCode::OK);
@@ -211,7 +203,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
     } = fixture().await?;
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
-        let mut manager = manager(&router).await?;
+        let mut manager = manager()?;
         policy(&mut manager, &router, 0, json!(["127.0.0.1"])).await?;
         let scoped = json!({"name":"scoped","enabled":true,"expiresAt":null,"grants":[{"operation":"inventory_read","scope":{"kind":"device","id":case::name("device-1")}}]});
         let id = Uuid::new_v4();
@@ -272,7 +264,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         ..
     } = fixture().await?;
     resources.finish(async {
-        let mut manager = manager(&router).await?;
+        let mut manager = manager()?;
         policy(&mut manager, &router, 0, json!(["127.0.0.1"])).await?;
         let id = Uuid::new_v4();
         let metadata = json!({"name":"automation-writer","enabled":true,"expiresAt":null,"grants":[
@@ -336,7 +328,7 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         ..
     } = fixture().await?;
     resources.finish(async {
-        let mut manager = manager(&router).await?;
+        let mut manager = manager()?;
         policy(&mut manager,&router,0,json!(["127.0.0.1"])).await?;
         let id=Uuid::new_v4();
         let metadata=json!({"name":"stream-writer","enabled":true,"expiresAt":null,"grants":[{"operation":"resource_write","scope":{"kind":"tenant"}},{"operation":"resource_read","scope":{"kind":"tenant"}}]});

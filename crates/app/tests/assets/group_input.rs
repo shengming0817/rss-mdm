@@ -94,16 +94,11 @@ async fn collection_matrix(
         ensure!(preview.members["page"]["items"] == json!([{"kind":"endpoint","id":"tie-a"}]));
         ensure!(ok(browser, router, Method::GET, &group, None).await?["group"]["memberCount"] == 1);
     }
-    let unsupported = crate::inventory_runtime::test_support::report_statuses(
-        &service,
-        &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
-        &authority.audit,
-        &proof,
-        [None, Some("11")],
-        [501, 200],
-    )
-    .await?;
-    wait_ready_projection(&runtime, &unsupported).await?;
+    let unsupported = Uuid::new_v4();
+    pg(&format!(
+        "SELECT mdm.lock_asset_watermark('{tenant}'); UPDATE mdm.inventory SET state='unsupported',value=NULL,value_version=NULL,batch_id='{unsupported}',collection_sequence=collection_sequence+1 WHERE tenant_id='{tenant}' AND registration='{registration}' AND field='device.model'",
+        tenant = case_tenant()
+    ))?;
     let detail = ok(
         browser,
         router,

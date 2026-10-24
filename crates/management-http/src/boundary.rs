@@ -406,4 +406,39 @@ mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn unavailable_causes_remain_internal() {
+        use crate::{Error, Failure};
+        use axum::response::IntoResponse;
+        for reason in [
+            Failure::RequestDeadline,
+            Failure::IdentityStorage,
+            Failure::AssetsStorage,
+            Failure::InventoryQuery,
+            Failure::ManualQuery,
+            Failure::CollectionQuery,
+            Failure::AssetObjectLimit,
+            Failure::AssetSourceLimit,
+            Failure::AssetBytesLimit,
+            Failure::Clock,
+            Failure::Capacity,
+        ] {
+            let response = Error::Unavailable(reason).into_response();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::SERVICE_UNAVAILABLE
+            );
+            assert!(matches!(
+                response.extensions().get::<Error>(),
+                Some(Error::Unavailable(_))
+            ));
+            let bytes = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                serde_json::json!({"code":"service_unavailable"})
+            );
+        }
+    }
 }

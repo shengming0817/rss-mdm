@@ -57,41 +57,6 @@ pub(crate) fn seed_source(
     Ok((registration, epoch))
 }
 
-/// One completed run for retained-quality fixtures; no projection or behavior matrix runs here.
-pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<()> {
-    let (registration, _) = seed_source(device, "mdm", "mdm.windows", "fixture")?;
-    let proof =
-        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 124);
-    let locator = crate::test_support::runtime::secret("channel-proof-124")
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    pg(&format!(
-        "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
-    ))?;
-    let access = database(base).await?;
-    let service = crate::device::DeviceService::new(
-        access.registration(),
-        case_tenant().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    );
-    crate::inventory_runtime::test_support::report(
-        &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
-        &proof,
-        [Some("fixture"), Some("1")],
-    )
-    .await?;
-    access.close().await;
-    Ok(())
-}
-
 /// Explicit contract for a fixture collector; production never has a default field roster.
 pub(crate) fn definition(
     dataset: &str,

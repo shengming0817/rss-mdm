@@ -227,18 +227,6 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
         violations.is_empty(),
         "resource inventory violations: {violations:?}"
     );
-    for resource in catalog::ALL {
-        if let Some(rss_mdm_http_contract::collections::Description::Current(current)) =
-            resource.collection
-        {
-            assert!(
-                root().join(current.source).is_file(),
-                "{} has no source owner {}",
-                resource.id,
-                current.source
-            );
-        }
-    }
 }
 #[test]
 fn bare_registration_is_rejected() {

@@ -4,21 +4,28 @@ use crate::device::t2::*;
 async fn revocation_wins_waiting_report_authorization() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     let fourth_proof = proof(case_a(), Channel::Mdm, 4);
-    let (_, fourth) = bind(
-        &service,
+    let fourth = Uuid::new_v4();
+    let mut tx = root.begin().await?;
+    rss_mdm_registration_service::device::fixture::native_in(
+        &mut tx,
         &admin_a,
         &fourth_proof,
-        crate::test_support::case::name("same-serial"),
-        0,
+        rss_mdm_registration_service::device::fixture::NativeSeed {
+            device: crate::test_support::case::name("same-serial"),
+            request: Uuid::new_v4(),
+            ids: [fourth, Uuid::new_v4(), Uuid::new_v4()],
+            windows_profile: Some(crate::enrollment::WindowsProfile::Device),
+        },
     )
     .await?;
+    tx.commit().await?;
     let authorized = service
         .authorize_report(&fourth_proof, ReportSource::MdmWindows)
         .await?;
-    assert_eq!(authorized.0.registration(), fourth.registration);
+    assert_eq!(authorized.0.registration(), fourth);
     // Revocation wins the row lock: an authorization waiting behind it must fail.
     let mut revoke_tx = root.begin().await?;
-    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_a()).bind(fourth.registration.to_string()).execute(&mut *revoke_tx).await?;
+    sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(case_a()).bind(fourth.to_string()).execute(&mut *revoke_tx).await?;
     let authorize = service.authorize_report(&fourth_proof, ReportSource::MdmWindows);
     let release = async {
         let observed = tokio::time::timeout(Duration::from_secs(3), async {

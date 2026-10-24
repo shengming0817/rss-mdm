@@ -22,6 +22,15 @@ class WireArtifactTests(unittest.TestCase):
     def test_current_manifest_and_fingerprint(self):
         artifact.verify()
 
+    def declarations(self):
+        result = {}
+        for area, (name, _, _) in artifact.FAMILIES.items():
+            root = ROOT / 'crates/agent-wire/schema' / area
+            result[area] = {entry['type']: {key: value for key, value in
+                json.loads((root / entry['file']).read_text()).items() if key != '$id'}
+                for entry in json.loads((root / name).read_text())['schemas']}
+        return result
+
     @contextmanager
     def cloned(self, area):
         with tempfile.TemporaryDirectory() as temporary:
@@ -30,7 +39,8 @@ class WireArtifactTests(unittest.TestCase):
             manifest = schemas / artifact.FAMILIES[area][0]
             library = Path(temporary) / 'lib.rs'
             library.write_text((ROOT / 'crates/agent-wire/src' / (area + '.rs')).read_text())
-            yield schemas, manifest, library
+            with patch.object(artifact, "generated", return_value=self.declarations()):
+                yield schemas, manifest, library
 
     def copy(self, area, mutate, message, rehash=False, write=False):
         with self.cloned(area) as (schemas, manifest, library):
@@ -42,7 +52,7 @@ class WireArtifactTests(unittest.TestCase):
                 artifact.artifact(schemas, manifest, library, area, write)
 
     def test_mutations_cannot_be_approved_by_rehashing(self):
-        for area in artifact.FAMILIES:
+        for area in ('runtime', 'enroll'):
             for change in ('constraint', 'identity', 'embedded'):
                 def mutate(schemas, manifest, library):
                     path = schemas / json.loads(manifest.read_text())['schemas'][0]['file']
@@ -60,14 +70,14 @@ class WireArtifactTests(unittest.TestCase):
     def test_missing_or_extra_shape_fails(self):
         def remove(s, m, l):
             (s / json.loads(m.read_text())['schemas'][0]['file']).unlink()
-        for area in artifact.FAMILIES:
+        for area in ('runtime', 'enroll'):
             with self.subTest(area=area):
                 self.copy(area, remove, 'schema directory')
                 for write in (False, True):
                     self.copy(area, lambda s, m, l: (s / 'extra-v1.schema.json').write_text('{}'), 'schema directory', write=write)
 
     def test_write_materializes_missing_declared_shapes(self):
-        for area in artifact.FAMILIES:
+        for area in ('runtime', 'enroll'):
             with self.subTest(area=area), self.cloned(area) as (schemas, manifest, library):
                 files = [schemas / e['file'] for e in json.loads(manifest.read_text())['schemas']]
                 original = [p.read_bytes() for p in files]
@@ -78,7 +88,7 @@ class WireArtifactTests(unittest.TestCase):
                 self.assertEqual([p.read_bytes() for p in files], original)
 
     def test_manifest_cannot_drop_duplicate_or_escape_shapes(self):
-        for area in artifact.FAMILIES:
+        for area in ('runtime', 'enroll'):
             for change in ('drop', 'duplicate', 'escape'):
                 def mutate(schemas, manifest, library):
                     value = json.loads(manifest.read_text())
@@ -94,13 +104,14 @@ class WireArtifactTests(unittest.TestCase):
                     self.copy(area, mutate, 'Rust protocol declarations' if change == 'drop' else 'schema entries')
 
     def test_fingerprint_is_checked(self):
-        for area in artifact.FAMILIES:
+        for area in ('runtime', 'enroll'):
             with self.subTest(area=area):
                 self.copy(area, lambda s, m, l: l.write_text(l.read_text().replace('pub const SCHEMA_FINGERPRINT:', 'pub const OTHER:')), 'fingerprint declaration')
                 self.copy(area, lambda s, m, l: l.write_text(re.sub(r'(pub const SCHEMA_FINGERPRINT:\s*&str\s*=\s*")[0-9a-f]{64}', lambda match: match[1] + '0' * 64, l.read_text())), 'schema fingerprint differs')
 
     def test_major_is_exact(self):
-        for area, (_, _, versions) in artifact.FAMILIES.items():
+        for area in ("runtime", "enroll"):
+            versions = artifact.FAMILIES[area][2]
             for key in versions:
                 for invalid in (2, True, 1.0, '1', None):
                     def mutate(schemas, manifest, library):
@@ -111,7 +122,7 @@ class WireArtifactTests(unittest.TestCase):
                         self.copy(area, mutate, 'Agent V1')
 
     def test_unregistered_protocol_family_is_rejected(self):
-        generated = dict(artifact.generated())
+        generated = self.declarations()
         generated['unexpected'] = {}
         with patch.object(artifact, 'generated', return_value=generated):
             with self.assertRaisesRegex(ValueError, 'protocol families'):

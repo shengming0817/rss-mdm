@@ -801,7 +801,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let run: Uuid = serde_json::from_value(accepted.1["runId"].clone())?;
     let canary = "self-service-private-canary";
-    seed_script_result(&f, run, canary).await?;
+    seed_script_result(&f, run, json!({"secret":canary}), canary).await?;
     let path = format!("{INVOKE}/{}", input["operationId"].as_str().unwrap());
     let mut full = f.grants.clone();
     full.push(Grant {
@@ -949,35 +949,25 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
             == 1
     );
     post(&mut f.author,&f.router,&format!("/api/v1/policies/{available}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":available_policy["revision"],"input":{"action":"disable"}})).await?;
-    // Pending on the first Policy becomes a genuine Unknown through the existing reducer.
-    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-    let task = claim(&f.router).await?;
-    task_event(&f.router, &task, json!({"kind":"received"})).await?;
-    task_event(&f.router, &task, json!({"kind":"start"})).await?;
-    let run = task["payload"]["task"]["taskId"].as_str().unwrap();
-    pg(&format!(
-        "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{run}'"
-    ))?;
-    let policy = task["payload"]["task"]["authorization"]["policyId"]
-        .as_str()
-        .unwrap();
-    for _ in 0..2 {
-        f.execution
-            .recover_action_fixture(Uuid::parse_str(policy)?)
-            .await?;
-    }
-    ensure!(
-        pg(&format!(
-            "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{run}'"
-        ))?
-        .trim()
-            == "unknown"
-    );
+    let run = Uuid::parse_str(first_run)?;
+    let tenant = f.authority.identity.tenant;
+    f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |c| Box::pin(async move {
+            let (value, created): (Value, i64) = sqlx::query_as("SELECT state,created_at FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).fetch_one(&mut *c).await?;
+            let mut state: rss_mdm_execution_service::actions::state::RunState = serde_json::from_value(value).expect("stored run");
+            state.delivery = rss_mdm_execution_service::actions::state::Delivery::Received { attempt: Uuid::new_v4(), lease_until: state.deadline };
+            state.execution = rss_mdm_execution_service::actions::state::Execution::Unknown;
+            state.started_at = Some(created);
+            sqlx::query("UPDATE mdm_commands.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).bind(serde_json::to_value(state).expect("run state")).execute(c).await?;
+            Ok(())
+        })).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
     ensure!(
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
         "Unknown or pending script remained in directory"
     );
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

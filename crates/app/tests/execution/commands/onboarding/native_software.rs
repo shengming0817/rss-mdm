@@ -27,7 +27,12 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     host.listen().await?;
     let peer = host.peer().await?;
     let mut client = Client::start(host.browser.clone(), &host.app).await?;
-    setup::grants(&client.browser).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        &crate::test_support::http::prepared_subject(&client.browser)?,
+        setup::installation_grants()?,
+    )
+    .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -96,7 +101,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             );
         }
         software_execution::seed_enabled(
-            &host.app.flow.planning,
+            &(&host.app.flow.planning).runtime,
             host.app.content_writer.as_ref().unwrap(),
             &version,
         )

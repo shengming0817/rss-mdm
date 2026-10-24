@@ -964,25 +964,21 @@ async fn process_death_after_admission_recovers_without_caller_snapshot() {
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
     let id = group_id();
-    let created = s
-        .execute(
-            op(),
-            at(),
-            &Command::Create {
-                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                group: id,
-                presentation: serde_json::json!({"name":"restart","description":""})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                definition: Definition::Static,
-            },
-            deadline(),
-        )
-        .await
-        .unwrap();
+    runtime.local_tx(tenant(), deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_group.groups(tenant_id,id,kind,presentation,revision,member_version,member_count,deleted,calculation_revision,asset_context) VALUES($1::uuid,$2::uuid,'static',$3,1,0,0,false,0,'endpoint')")
+                .bind(tenant().to_string()).bind(id.to_string()).bind(serde_json::json!({"name":"restart","description":""})).execute(c).await?;
+            Ok(())
+        })).await
+    })).await.fold(|_| (), |e| panic!("{e}"), |e| panic!("{e}"), |e| panic!("{e}"), |e| panic!("{e}"), |e| panic!("{e}"));
+    let snapshot = s.get(id, deadline()).await.unwrap().unwrap();
     let request = builds::request(
-        &created,
+        &Receipt {
+            operation: op(),
+            group: snapshot,
+            added: 0,
+            removed: 0,
+        },
         Some(MemberPatch {
             add: vec!["a".into(), "b".into()],
             remove: vec![],

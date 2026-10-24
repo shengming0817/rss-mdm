@@ -622,7 +622,7 @@ MODULES['resource.persistence'] = replace(MODULES['resource.persistence'], db_mo
 MODULES['resource.recovery'] = replace(MODULES['resource.recovery'], db_mode='fresh', scope='objects')
 MODULES['software_release.persistence'] = replace(MODULES['software_release.persistence'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('admission_rejects_noninherited_switchable_privileges', 'instance', 'objects'),
-    CasePolicy('release_event_failure_and_runtime_admission', 'fresh', 'objects'),
+    CasePolicy('release_events_and_runtime_binding', 'reuse', 'objects'),
 ))
 MODULES['software_release.recovery'] = replace(MODULES['software_release.recovery'], db_mode='fresh', scope='objects')
 MODULES['compliance.storage'] = replace(MODULES['compliance.storage'], db_mode='fresh', scope='objects', policies=(
@@ -966,6 +966,7 @@ APP_HELPER_CONSUMERS = {
     'device/support.rs': ('device.binding',),
     'support/agent.rs': ('agent.registration',),
     'support/agent_tls.rs': ('agent.registration',),
+    'support/command.rs': ('execution.commands.admission',),
     'support/agent_execution.rs': ('execution.agent.delivery',),
     'support/software_execution.rs': ('execution.software.offer',),
     'support/software.rs': ('software.http',),
@@ -1461,21 +1462,6 @@ for module_id, selector, materials, actors in (
         policies[index] = policy
     MODULES[module_id] = replace(module, policies=tuple(policies))
 
-# These directory cases perform native Windows enrollment; other Agent consumers do not.
-module = MODULES['planning.http']
-policies = list(module.policies)
-for suffix in ('console_pending_directory_and_permission_changes', 'console_directory_pages_registered_revoked_and_pending'):
-    selector = 'planning::t2::http::' + suffix
-    index = next((i for i, policy in enumerate(policies) if policy.selector == selector), None)
-    policy = policies[index] if index is not None else CasePolicy(selector, module.db_mode, module.scope, actors=module.actors)
-    policy = replace(policy, fixtures=tuple(dict.fromkeys((*(policy.fixtures if policy.fixtures is not None else module.fixtures), 'windows'))))
-    if index is None:
-        policies.append(policy)
-    else:
-        policies[index] = policy
-MODULES[module.id] = replace(module, policies=tuple(policies))
-
-
 # Recovery is a distinct proof. Its policy and production seams come from the
 # final PKI description; it does not duplicate the ordinary PKI test namespace.
 module = MODULES['agent.pki']
@@ -1663,7 +1649,7 @@ consume(('crates/content-service/src/backup.rs','crates/app/src/setup/backup/sto
 consume(('crates/app/src/settings.rs','crates/management-http/src/settings.rs','crates/management-http/schema/SettingsCatalog.json'), 'execution.agent.task_trust')
 consume(('crates/windows-channel/src/wns_materials.rs','crates/windows-channel/schema/wns-materials.sql'), 'windows.management')
 add('installation.smtp_transport', selectors=('setup::providers::mail::tests::real_tls_authentication_and_unknown_submission_are_distinct',), profile='none', fixtures=('windows',), sources=('crates/mail-service/src/transport.rs',), tests=('crates/app/tests/setup/mail.rs',))
-add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap',), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))
+add('installation.smtp', selectors=('setup::providers::mail::tests::unknown_submission_is_not_requeued_and_materials_rewrap','setup::providers::mail::tests::runtime_role_cannot_insert_provider_success'), fixtures=('windows','runtime_config'), sources=('crates/mail-service/src/*','crates/mail-service/schema/*','crates/app/src/setup/providers/mail.rs','crates/management-http/src/mail.rs'), tests=('crates/app/tests/setup/mail.rs',))
 add('installation.ca_admin', selectors=('setup::providers::step_ca::tests::authenticated_readback_recovers_original_provider',), profile='none', fixtures=('windows',), sources=('crates/app/src/setup/providers/step_ca/*',), tests=('crates/app/tests/setup/ca_admin.rs',))
 MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.pki'].policies, CasePolicy('agent_pki_tests::bootstrap_sources_select_current_issuer_and_reject_missing_application', 'reuse', 'tenant', ('identity','agent_pki','task_signing','pki_rotation'))))
 add('installation.backup', selectors=('setup::backup::tests::database_connection_fence_replays_and_restores_original_grants',), profile='empty', sources=('crates/app/src/setup/backup.rs','crates/app/src/setup/snapshot_tree.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/ledger.rs','crates/app/src/setup/backup/accounts.rs'), tests=('crates/app/tests/setup/backup.rs',))
@@ -1728,7 +1714,6 @@ TOOL_INPUTS['deployment/tenant.compose.yaml'] = ('test_release',)
 
 consume(('crates/app/schema/first-use.sql',), 'settings.first_use installation.migration catalog.contract')
 consume(('crates/management-http/schema/FirstUse.json','crates/management-http/examples/first_use_schema.rs'), 'settings.first_use')
-consume(('crates/management-http/src/first_use.rs','crates/app/src/first_use.rs','crates/app/src/first_use/*'), 'deployment.management-tenant')
 
 add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_replay_and_reopen_without_runtime_ddl',), profile='none', fixtures=('telemetry',),
     sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*'),
@@ -1985,3 +1970,47 @@ for name in ('encrypted_versions_replay_rewrap_and_registration_retirement', 'po
     module = MODULES['recovery-credentials.http']
     MODULES[module.id] = replace(module, policies=(*module.policies, CasePolicy('recovery_credentials_tests::' + name,
         'fresh' if name == 'postgres_backup_restores_material_only_with_the_correct_key' else 'reuse', 'tenant', (), actors=())))
+
+# Final concrete preparation needs after shared module defaults are applied.
+for module_id, selector, fixtures, db_mode, scope, actors in (
+    ('planning.http', 'planning::t2::http::console_pending_directory_and_permission_changes', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::console_directory_pages_registered_revoked_and_pending', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::console_collection_routes_reuse_current_policy', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::console_metadata_filters_and_selectors', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::resource_query_executes_filter_sort_projection_and_bound_continuations', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::reverse_memberships_revalidate_authority_after_request_snapshot', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::console_inventory_presence_uses_current_dataset_authority', ('identity',), None, None, None),
+    ('planning.http', 'planning::t2::http::collection_blueprints_instantiate_replay_and_keep_tenant_versions', ('identity', 'content'), None, None, None),
+    ('planning.http', 'planning::t2::http::planning_routes_and_derived_result_authorization', ('identity', 'content', 'local_worker'), None, None, None),
+    ('planning.http', 'planning::t2::http::nested_groups_sources_references_and_authorized_pages', ('identity', 'content', 'local_worker'), None, None, None),
+    ('planning.http', 'planning::t2::http::console_script_support_requires_signer_and_content', ('identity', 'agent_pki', 'task_signing', 'content'), None, None, None),
+    ('planning.software', 'planning::t2::software::new_approval_changes_execution_version', ('identity', 'content'), None, None, (('tenant', 'admin'),)),
+    ('execution.commands.windows', 'execution::t2::commands::windows::console_mixed_kind_cursor_and_device_visibility', ('identity', 'content', 'agent_pki', 'task_signing'), None, None, None),
+    ('apple.platform_sso', 'apple::tests::platform_sso::nonce_is_bounded_and_never_stored_in_plaintext', ('identity',), None, None, None),
+    ('apple.push', 'apple::tests::push::deadline_query_failure_is_not_healthy_idle', ('apple', 'identity'), None, None, None),
+    ('content.gc', 'content::t2::gc::catalog_evidence_retains_pin_without_reserving_transfer', ('runtime_config', 'content'), 'reuse', 'objects', ()),
+    ('planning.policy', 'planning::t2::policy::assignment_pagination_uses_published_scope_without_eager_execution', ('identity', 'content', 'local_worker'), None, None, None),
+    ('planning.policy', 'planning::t2::execution_source::empty_candidate_page_preserves_progress_to_the_next_matching_policy', ('identity',), None, None, None),
+    ('apple.host', 'apple::tests::host::missing_apple_materials_keep_management_ready_and_listener_closed', ('apple', 'identity'), None, None, None),
+    ('apple.host', 'apple::tests::host::unavailable_apple_provider_keeps_management_ready_and_listener_closed', ('apple', 'identity'), None, None, None),
+    ('apple.host', 'apple::tests::host::conflicting_apple_trust_preserves_history_and_keeps_management_ready', ('apple', 'identity', 'scep'), None, None, None),
+ ):
+    module = MODULES[module_id]
+    existing = next((p for p in module.policies if p.selector == selector),
+                    CasePolicy(selector, module.db_mode, module.scope))
+    policy = replace(existing, fixtures=fixtures,
+        db_mode=db_mode or existing.db_mode, scope=scope or existing.scope,
+        actors=actors if actors is not None else existing.actors)
+    MODULES[module_id] = replace(module, policies=tuple(p for p in module.policies if p.selector != selector) + (policy,))
+
+# Owner seed codecs are preparation inputs, not new product behavior selectors.
+for path, owner in (
+    ('crates/content-service/src/fixture.rs', 'content.http'),
+    ('crates/policy-postgres/src/fixture.rs', 'policy.persistence'),
+    ('crates/group-postgres/src/fixture.rs', 'group.generations'),
+    ('crates/resource-postgres/src/fixture.rs', 'resource.persistence'),
+    ('crates/execution-service/src/service/fixture.rs', 'execution.commands.windows'),
+):
+    module = MODULES[owner]
+    MODULES[owner] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs, path))))
+consume(('crates/app/tests/settings/first_use.rs',), 'agent.configurations')

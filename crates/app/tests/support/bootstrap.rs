@@ -259,7 +259,22 @@ async fn prepare_observed(
     let chain = super::pki::leaf(root, &csr, &subject, &[], now - 1, expiry)?;
     Ok(PreparedBootstrap {
         peer: BootstrapPeer {
-            app: app.clone(),
+            channel: crate::api::from_state(
+                app.clone(),
+                "mdm.example.test".into(),
+                super::runtime::monotonic(),
+            )
+            .listeners
+            .into_iter()
+            .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
+            .ok_or_else(|| anyhow::anyhow!("missing Agent listener"))?
+            .1,
+            audit: app.audit_store.clone(),
+            enrollment: app
+                .agent_enrollment
+                .as_ref()
+                .context("Agent enrollment")?
+                .clone(),
             chain,
             directory: temp,
         },
@@ -274,13 +289,7 @@ pub(crate) struct PreparedBootstrap {
 }
 impl PreparedBootstrap {
     pub(crate) async fn notify(mut self, router: &Router) -> Result<BootstrapPeer> {
-        let config = self
-            .peer
-            .app
-            .agent_enrollment
-            .as_ref()
-            .context("Agent enrollment")?
-            .bootstrap_configuration()?;
+        let config = self.peer.enrollment.bootstrap_configuration()?;
         self.request["x509Certificate"] = json!({"raw":STANDARD.encode(&self.peer.chain[0])});
         webhook(router, config, "notify", &self.request).await?;
         Ok(self.peer)
@@ -339,33 +348,25 @@ pub(crate) async fn webhook_response(
     Ok((status, serde_json::from_slice(&body)?))
 }
 pub(crate) struct BootstrapPeer {
-    app: Arc<crate::api::Assembly>,
+    channel: crate::native::ChannelRouter,
+    enrollment: Arc<rss_mdm_registration_service::agent::Service>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
     chain: Vec<Vec<u8>>,
     directory: tempfile::TempDir,
 }
-pub(crate) async fn grant(
-    router: &Router,
-    peer: &BootstrapPeer,
-    input: &Value,
-) -> Result<GrantResponse> {
-    grant_fault(router, peer, input, None).await
+pub(crate) async fn grant(peer: &BootstrapPeer, input: &Value) -> Result<GrantResponse> {
+    grant_fault(peer, input, None).await
 }
 pub(crate) async fn grant_fault(
-    _router: &Router,
     peer: &BootstrapPeer,
     input: &Value,
     fault: Option<rss_transactional_messaging_postgres::PgTransactionFault>,
 ) -> Result<GrantResponse> {
-    let routers = crate::api::from_state(
-        peer.app.clone(),
-        "mdm.example.test".into(),
-        super::runtime::monotonic(),
-    );
-    let (_, router) = routers
-        .listeners
-        .into_iter()
-        .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
-        .ok_or_else(|| anyhow::anyhow!("missing production Agent listener"))?;
+    let router = crate::native::ChannelRouter {
+        origins: peer.channel.origins.clone(),
+        router: peer.channel.router.clone(),
+        admission: peer.channel.admission.clone(),
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -376,8 +377,6 @@ pub(crate) async fn grant_fault(
         crate::test_support::gateway::registration(
             listener,
             router,
-            peer.app.audit_store.clone(),
-            case_tenant().into(),
             crate::native::ChannelKind::Agent,
         )
         .await?,
@@ -399,7 +398,7 @@ pub(crate) async fn grant_fault(
                 status == 401,
                 "bootstrap identity must not access daily Agent trust: {status}"
             );
-            peer.app.audit_store.inject_next_fault(fault);
+            peer.audit.inject_next_fault(fault);
         }
         let (status, body) = super::agent_http::agent_http(
             &mut io,

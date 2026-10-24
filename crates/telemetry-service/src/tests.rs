@@ -464,7 +464,7 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     let mut definitions = fields();
     let mut spec = profile(TelemetryProjection::Current).spec().clone();
     let seed = definitions[0].clone();
-    definitions = (0..32)
+    definitions = (0..16)
         .map(|index| {
             let mut field = seed.clone();
             field.key = d::FieldKey::parse(&format!("custom.large_{index}")).unwrap();
@@ -477,7 +477,7 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
             field
         })
         .collect();
-    spec.budget.resources = 32;
+    spec.budget.resources = 16;
     spec.budget.bytes = 4 * 1024 * 1024;
     spec.budget.output_bytes = 4 * 1024 * 1024;
     spec.fields = references(&definitions);
@@ -491,7 +491,7 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
             (
                 w::FieldKey::parse(f.key.as_str()).unwrap(),
                 w::TelemetryReading::Valid {
-                    value: w::Scalar::String("a".repeat(50_000)),
+                    value: w::Scalar::String("a".repeat(65536)),
                     interval_start: None,
                 },
             )
@@ -513,16 +513,16 @@ fn current_destination_encoding_is_bounded_even_when_the_wire_body_fits() {
     };
     assert!(accepted.history().unwrap().is_none());
     assert!(crate::current::prepare(&accepted).is_err());
-    let mut smaller = accepted.profile.spec().clone();
-    smaller.fields.truncate(16);
-    accepted.fields.truncate(16);
-    accepted.input.observations[0].values.retain(|key, _| {
-        smaller
-            .fields
-            .iter()
-            .any(|f| f.key.as_str() == key.as_str())
-    });
-    accepted.profile = TelemetryProfile::new(smaller).unwrap();
+    for reading in accepted.input.observations[0].values.values_mut() {
+        let w::TelemetryReading::Valid {
+            value: w::Scalar::String(text),
+            ..
+        } = reading
+        else {
+            unreachable!()
+        };
+        text.truncate(65024);
+    }
     assert_eq!(crate::current::prepare(&accepted).unwrap().1.len(), 1);
 }
 

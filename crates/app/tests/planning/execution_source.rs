@@ -54,12 +54,11 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
             let frozen = Frozen::Configuration { native: Protected::seal(&key, tenant, Owner::Policy { policy: id, version: policy.version }, &native)?, grants: std::collections::BTreeMap::from([("*".into(), vec![write.clone()])]), platform: rss_mdm_execution_service::action_contract::Platform::Windows, exit: rss_mdm_policy::Exit::Retain, resource_digest: version.digest().bytes() };
             publications.push(rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(serde_json::to_value(frozen)?), author: serde_json::to_value(proof.actor())?, at: 1 });
         }
-        let store = planning.policy_store.clone();
         let read = serde_json::to_value(read)?;
         planning.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
             rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await?;
             for publication in publications {
-                store.publish_in(tx, &publication).await?.map_err(|e| sqlx::Error::Protocol(format!("candidate seed: {e:?}")))?;
+                rss_mdm_policy_postgres::fixture::published_in(tx, &publication).await?;
                 let read = read.clone(); let version = publication.policy.version;
                 tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query("INSERT INTO mdm_planning.policy_source_grants(tenant_id,version,read_grant) VALUES($1::uuid,$2,$3)").bind(tenant.to_string()).bind(version).bind(read).execute(c).await?;

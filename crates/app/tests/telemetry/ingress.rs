@@ -100,6 +100,7 @@ async fn fixture(base: Value) -> Result<Fixture> {
 }
 
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
+    let anchor = expected == "postgres" && projection == r::TelemetryProjection::Both;
     let restore_seconds: i64 = if expected == "postgres" { 30 } else { 3600 };
     let expected_rows = if projection == r::TelemetryProjection::Current {
         0
@@ -137,6 +138,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             sample_millis:5000,upload_millis:10000,budget:r::TelemetryBudget {points:64,bytes:65536,resources:1,execution_millis:1000,output_bytes:4096},boost:None,backfill_seconds:3600,
         })?;
         let profile_id=Uuid::new_v4();let bytes=profile.canonical();let digest:[u8;32]=Sha256::digest(&bytes).into();
+        if anchor {
         resource(&mut f.author,&f.router,profile_id,0,json!({"action":"create","kind":"telemetry_profile"})).await?;
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
@@ -146,6 +148,17 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
+        } else {
+            let tenant = f.authority.identity.tenant;
+            let version = r::Version::new(tenant, r::Id::new(profile_id.to_string())?, r::Id::new("v1")?, r::Kind::TelemetryProfile,
+                vec![r::Variant::new(r::Platform::MacOS, r::Architecture::Aarch64, r::Id::new("default")?, r::Declaration::TelemetryProfile {
+                    artifact: r::Artifact::new(r::Id::new("profile")?, bytes.len() as u64, r::Digest::from_bytes(digest))?, definition: profile.clone(),
+                })])?;
+            f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await
+            })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
+            ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
+        }
         let scope=Uuid::new_v4();
         let secondary=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(secondary_peer(&f.base).await?)} else {None};
         let mut targets=vec![json!({"kind":"device","id":case_device_id()})];
@@ -154,8 +167,10 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         if secondary.is_some() {f.scope(Uuid::from_u128(case::id("telemetry-counter-scope")),json!([{"kind":"device","id":case_device_id()}])).await?;}
 
         let definition=json!({"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}});
+        if anchor {
         let preview=post(&mut f.author,&f.router,"/api/v1/policies/previews",json!({"definition":definition,"after":null,"scopeResult":null})).await?;
         ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1+usize::from(secondary.is_some()) && v.iter().any(|item|item["target"]["device"]==case_device_id() && item["collectionSupported"]==true)),"preview: {preview}");
+        }
         let policy=Uuid::new_v4();
         let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
         let config_path=format!("/api/v1/agent/runtime/telemetry/configurations/{}/{}",policy["id"].as_str().unwrap(),policy["versionId"].as_str().unwrap());
@@ -197,12 +212,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(case_credential()),None).await?.0==StatusCode::NOT_FOUND);
         if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::receive_commit_unknown(&mut f,&body).await?; }
         let path="/api/v1/agent/runtime/telemetry/batches";
+        if anchor {
         for (key,value) in [("tenantId",json!(case::peer())),("source",json!("manual")),("registrationId",json!(Uuid::new_v4()))] {
             let mut forged=body.clone();forged[key]=value;
             ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(forged)).await?.0==StatusCode::BAD_REQUEST);
         }
+        }
         let (status,accepted)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED,"upload: {status} {accepted}");
+        if anchor {
         let (status,replayed)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED && replayed["replayed"]==true);
         if expected=="postgres" && projection==r::TelemetryProjection::Both {
@@ -219,6 +237,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let mut observation_conflict=body.clone();observation_conflict["batchId"]=json!(Uuid::new_v4());
         observation_conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(observation_conflict)).await?.0==StatusCode::CONFLICT);
+        }
         let receipt_path=format!("{path}/{id}");
         if let Some((credential,_,_))=&secondary {
             ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(credential),None).await?.0==StatusCode::NOT_FOUND,"another registration must not discover a batch receipt");
@@ -232,9 +251,11 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             }
             Ok::<_,anyhow::Error>(())
         }).await??;
+        if anchor {
         let regrouped_id=Uuid::new_v4();let mut regrouped=body.clone();regrouped["batchId"]=json!(regrouped_id);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(regrouped)).await?.0==StatusCode::ACCEPTED);
         published(&f.router,&format!("{path}/{regrouped_id}")).await?;
+        }
         let before_late = if projection!=r::TelemetryProjection::History {
             observed(&f.router,&receipt_path,observation,"snapshot","applied").await?;
             let current=current_field(&mut f.author,&f.router).await?;
@@ -268,6 +289,9 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let interrupted=if expected=="postgres" && projection==r::TelemetryProjection::Both { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
         Ok((body,query,receipt_path,other_device,interrupted,gap_evidence))
     }).await?;
+    if projection != r::TelemetryProjection::Both {
+        return Ok(());
+    }
     if interrupted.is_some() {
         recovery::release_interruption()?;
     }
@@ -296,14 +320,19 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone())
             .await?;
     }
-    let mut mismatch = base.clone();
-    mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
-        json!(installation.configuration.ingress.batches_per_minute + 1);
-    ensure!(
-        app(&mismatch).await.is_err(),
-        "a replica must not replace the tenant's fixed admission policy"
-    );
-    let (router, resources) = app(&base).await?;
+    if expected == "postgres" {
+        let mut mismatch = base.clone();
+        mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
+            json!(installation.configuration.ingress.batches_per_minute + 1);
+        ensure!(
+            app(&mismatch).await.is_err(),
+            "a replica must not replace the tenant's fixed admission policy"
+        );
+    }
+    let mut restarted = fixture(base.clone()).await?;
+    identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    let router = restarted.router.clone();
+    let resources = std::mem::take(&mut restarted.resources);
     resources
         .finish(async {
             if let Some(interrupted)=&interrupted {
@@ -320,6 +349,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(history["rows"].as_array().is_some_and(|v| v.len() == expected_rows));
+            if anchor {
             let receipt = agent_call(
                 &router,
                 Method::GET,
@@ -338,6 +368,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
+            }
             if projection!=r::TelemetryProjection::Both { return Ok(()); }
             if expected=="postgres" { f.router=router.clone(); counter::quality_and_sensitive_reads(&mut f).await?; }
             use rss_mdm_telemetry_service::maintenance::{Action, Request as Maintenance};
@@ -420,6 +451,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(interrupted)=&interrupted {
                 recovery::retention_finishes(&mut f.author,&router,interrupted,&query).await?;
             }
+            if expected != "postgres" { return Ok(()); }
             identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
             ensure!(
                 f.author

@@ -5,16 +5,49 @@ use anyhow::Context;
 #[tokio::test]
 #[ignore = "MODULE=authorization.rules: real authorization contract"]
 async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
-    let Fixture {
-        resources,
-        base,
-        router,
-        mut admin,
-        mut member,
-        subject,
-        store,
-        ..
-    } = fixture().await?;
+    let mut authority = authority::Authority::open().await?;
+    let tenant = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
+    authority
+        .resources
+        .resource(InventoryFixtureResource(inventory.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit,
+        runtime,
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+    ));
+    let routes = Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::assets::routes()
+            .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                assets,
+            }))
+            .merge(rss_mdm_management_http::device_action_routes())
+            .into_axum(),
+    );
+    let router = authority.router(authority.authorization().merge(routes))?;
+    let mut admin = authority.browser("admin")?;
+    let mut member = authority.browser("other")?;
+    let subject = prepared_subject(&member)?;
+    let store = authority.authorization.clone();
+    let audit_store = authority.audit.clone();
+    let resources = authority.resources;
     resources.finish(async {
     ensure!(
         member
@@ -153,7 +186,9 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             .0
             == StatusCode::CONFLICT
     );
-    let (restarted, _, app_resources) = app_with_access(&base, database(&base).await?).await?;
+    let reopened = authority::Authority::open().await?;
+    let restarted = reopened.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_action_routes().into_axum()))?;
+    let app_resources = reopened.resources;
     app_resources.finish(async {
     ensure!(
         member
@@ -203,7 +238,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(store.authorization())
+    .load_authorization(&store)
     .await?;
     ensure!(
         put(
@@ -231,7 +266,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
     foreign_audit.finalize(None);
     stale.bind_audit(&audit).unwrap();
     let stale_key = Uuid::new_v4();
-    let rejected = crate::authorization::store::change_rule(store.audit_store_fixture(&crate::config::AuditConfig::Plain).await?.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
+    let rejected = crate::authorization::store::change_rule(audit_store.as_ref(), &stale, Uuid::new_v4(), crate::authorization::Change {
         operation_id:stale_key, expected_revision:0, value:Some(serde_json::from_value(json!({"subject":user(&subject),"grants":[grant("group_read",json!({"kind":"tenant"}))]}))?)
     }, &audit).await;
     audit.finalize(None);
@@ -289,83 +324,10 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
 #[tokio::test]
 #[ignore = "real Identity + PG with independently constructed capability routers"]
 async fn capability_routes_without_application_preserve_revocation_and_atomicity() -> Result<()> {
-    use crate::authorization::http::{AuthenticationState, HttpState};
-    use crate::enrollment::{EnrollmentService, credentials::Credentials};
-    use axum::middleware;
-    let config = crate::test_support::identity::config(case_tenant())?;
-    let (identity, identity_resources) =
-        crate::test_support::identity::identity(case_tenant()).await?;
-    let identity = Arc::new(identity);
-    identity_resources.finish(async {
-    let access =
-        Arc::new(crate::database::Database::connect(config.access_options()?).await?);
-    let monotonic: Arc<dyn rss_observation::Clock> = Arc::new(crate::Monotonic(|| {
-        rss_request_context::Clock::now(&crate::lifecycle::RuntimeTimer)
-    }));
-    let requests = Arc::new(tokio::sync::Semaphore::new(4));
-    let authentication = Arc::new(AuthenticationState {
-        identity: identity.browser(),
-        access: access.authorization_store(),
-        requests: requests.clone(),
-    });
-    let enrollment = Arc::new(crate::enrollment::http::HttpState {
-        channels: Arc::new(crate::test_support::authority::RegistrationChannels),
-        native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
-            sessions: Arc::new(
-                rss_mdm_authorization_service::session::SessionAuthority::new(
-                    identity.authority.clone(),
-                    identity.tenant,
-                ),
-            ),
-            windows: None,
-            apple: None,
-        }),
-        service: Arc::new(EnrollmentService::new(
-            access.registration(),
-            Arc::new(Credentials::new(monotonic.clone(), 16)),
-            access.audit_store_fixture(&config.audit).await?,
-        )),
-        devices: Arc::new(crate::device::DeviceService::new(
-            access.registration(),
-            case_tenant().into(),
-            access
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?,
-        )),
-        apple: false,
-        windows: true,
-    });
-    let protected = Router::new()
-        .nest(
-            "/api/v1",
-            crate::authorization::http::routes().with_state(Arc::new(HttpState {
-                audit_store: access.audit_store_fixture(&config.audit).await?,
-            })).into_axum(),
-        )
-        .nest(
-            "/api/v1",
-            crate::enrollment::http::routes().with_state(enrollment).into_axum(),
-        )
-        .route_layer(middleware::from_fn_with_state(
-            authentication,
-            crate::authorization::http::protect,
-        ));
-    let router = protected
-        .merge(identity.routes())
-        .layer(middleware::from_fn_with_state(
-            rss_mdm_management_http::boundary::Envelope {
-                admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                host: "mdm.example.test".into(),
-                clock: monotonic,
-                audit_store: access.audit_store_fixture(&config.audit).await?,
-                requests,
-                tenant: case_tenant().into(),
-            },
-            rss_mdm_management_http::boundary::admit,
-        ));
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
+    let authority = authority::Authority::open().await?;
+    let router = authority.router(authority.authorization().merge(authority.enrollment()))?;
+    let identity = authority.identity.clone();
+    authority.resources.finish(async {
     let mut anonymous = Browser::default();
     ensure!(
         anonymous
@@ -459,7 +421,6 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .0
             == StatusCode::FORBIDDEN
     );
-    access.close().await;
     Ok(())
     }).await
 }

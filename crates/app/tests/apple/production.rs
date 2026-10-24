@@ -3,64 +3,67 @@ use super::*;
 use crate::apple::push;
 use sqlx::{Connection, Row};
 impl Fixture {
-    pub async fn production(mut self) -> Result<()> {
-        let (device, der) = self.scep_leaf().await?;
-        let peer = lifecycle::Peer {
-            client: reqwest::Client::builder()
-                .no_proxy()
-                .timeout(Duration::from_secs(15))
-                .identity(device.identity(&der)?)
-                .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(
-                    self.root.join("ca.crt"),
-                )?)?)
-                .build()?,
-            origin: self.app.apple()?.config.management.origin.clone(),
-            topic: self.app.apple()?.channel.apns_topic().to_owned(),
-            pending_replies: Default::default(),
-            installed_trust: Default::default(),
-            oracle: oracle::Oracle::new(&der)?,
-        };
-        let reply = peer
-            .send(
-                "/checkin",
-                protocol::dictionary([
-                    ("MessageType", "Authenticate".into()),
-                    (
-                        "UDID",
-                        crate::test_support::case::name("rss-t2-apple").into(),
-                    ),
-                    ("Topic", peer.topic.clone().into()),
-                ]),
-            )
-            .await?;
-        ensure!(reply.0 == StatusCode::OK);
-        peer.token().await?;
-        self.native_context().await?;
-        crate::test_support::identity::change_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            Fixture::native_grants(&["device_control"])?,
-        )
-        .await?;
-        let operation = self.create_restart().await?;
+    pub async fn production() -> Result<()> {
+        use crate::test_support::{authority::Authority, identity};
+        let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+        let manage = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let origin = format!("https://localhost:{}", manage.local_addr()?.port());
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
-        let mut config = crate::test_support::identity::config(case_tenant())?;
-        let port = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        config.listen = port.local_addr()?;
-        drop(port);
-        config.native_protocols.windows = None;
-        let mut apple: config::Config =
-            serde_json::from_slice(&std::fs::read(self.root.join("apple.json"))?)?;
-        let native_address = config.listen;
-        config.trusted_gateway = "127.0.0.1".parse()?;
-        apple.management.origin = peer.origin.clone();
-        apple.trust_file = self.app.apple()?.config.trust_file.clone();
-        apple.test_push_transport = Some((participant.origin(), self.root.join("ca.crt")));
-        config.native_protocols.apple = Some(apple);
-        config.apple_material_roots = vec![self.root.join("apple-root.pem")];
-        seed_fixture_materials(&self.root, &self.app.protection).await?;
+        let mut config = identity::config(case_tenant())?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        config.listen = listener.local_addr()?;
+        drop(listener);
         let address = config.listen;
-        self.stop_services().await?;
+        let native_address = address;
+        config.trusted_gateway = "127.0.0.1".parse()?;
+        config.native_protocols.windows = None;
+        let mut apple_config: config::Config =
+            serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+        apple_config.management.origin = origin.clone();
+        let mut trust: rss_mdm_agent_wire::pki::Trust =
+            serde_json::from_slice(&std::fs::read(&apple_config.trust_file)?)?;
+        trust.origin = origin.clone();
+        let trust_file = root.join(format!("production-trust-{}.json", Uuid::new_v4()));
+        std::fs::write(&trust_file, serde_json::to_vec(&trust)?)?;
+        apple_config.trust_file = trust_file;
+        apple_config.test_push_transport = Some((participant.origin(), root.join("ca.crt")));
+        config.native_protocols.apple = Some(serde_json::from_value(serde_json::to_value(
+            &apple_config,
+        )?)?);
+        config
+            .native_protocols
+            .apple
+            .as_mut()
+            .unwrap()
+            .test_push_transport = Some((participant.origin(), root.join("ca.crt")));
+        config.apple_material_roots = vec![root.join("apple-root.pem")];
+        let protection = config.native_protector()?;
+        seed_fixture_materials(&root, &protection).await?;
+        let mut authority = Authority::open().await?;
+        let resources = std::mem::take(&mut authority.resources);
+        let peer = resources.finish(async {
+            identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+            let apple = Apple::load(protection, apple_config, fixture_materials(&root)?, crate::clock::SystemClock.unix_seconds()?,
+                (&config.product_origin, authority.identity.tenant), crate::device_pki::providers(&config.device_pki)?)?;
+            crate::test_support::pki::seed_trust(&authority.pool, &[apple.channel.device_trust().clone()]).await?;
+            let device = scep_client::Device::new(Uuid::new_v4(), Uuid::new_v4(), &crate::enrollment::random())?;
+            let der = device.local_leaf(&PathBuf::from(std::env::var("MDM_APPLE_PKI_FIXTURES")?))?;
+            let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+            let mut tx = authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            rss_mdm_apple_channel::enrollment::seed_current_peer_in(&mut tx, &apple.channel, &proof,
+                rss_mdm_apple_channel::enrollment::CurrentPeer { device: case_device(), udid: crate::test_support::case::name("rss-t2-apple"), csr: &device.csr, certificate: &der, now: crate::clock::SystemClock.unix_seconds()? }).await?;
+            let (registration, generation): (Uuid, i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active' AND purpose='primary'")
+                .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
+            apple.channel.prepare_context_fixture(&mut tx, case_tenant(), registration, generation).await?;
+            tx.commit().await?;
+            Ok(lifecycle::Peer {
+                client: reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(15)).identity(device.identity(&der)?)
+                    .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?).build()?,
+                origin: origin.clone(), topic: apple.channel.apns_topic().into(), pending_replies: Default::default(), installed_trust: Default::default(), oracle: oracle::Oracle::new(&der)?,
+            })
+        }).await?;
+        let mut browser = Authority::prepared_browser("admin")?;
         let mut ingress = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -68,15 +71,9 @@ impl Fixture {
         ingress
             .startup()?
             .stage_task_with_token(crate::test_support::gateway::proxy(
-                tokio::net::TcpListener::bind((
-                    "127.0.0.1",
-                    url::Url::parse(&peer.origin)?
-                        .port_or_known_default()
-                        .unwrap(),
-                ))
-                .await?,
+                manage,
                 native_address,
-                self.root.clone(),
+                root.clone(),
                 peer.origin.clone(),
                 "apple-tls.pk8",
             )?);
@@ -137,6 +134,25 @@ impl Fixture {
             )
             .await?;
         ensure!(reply.0 == StatusCode::OK);
+        peer.token().await?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-rss-public-origin", "https://mdm.example.test".parse()?);
+        headers.insert("x-forwarded-for", "127.0.0.1".parse()?);
+        browser.network = Some((
+            reqwest::Client::builder()
+                .no_proxy()
+                .default_headers(headers)
+                .timeout(Duration::from_secs(15))
+                .build()?,
+            format!("http://{address}"),
+        ));
+        let operation = Uuid::new_v4();
+        let (status, value) = browser.call(&Router::new(), Method::POST, &format!("/api/v1/devices/{}/operations", case_device()),
+            Some(json!({"operationId":operation,"action":{"kind":"restart"},"deadline":crate::clock::SystemClock.unix_seconds()?+300}))).await?;
+        ensure!(
+            status == StatusCode::ACCEPTED,
+            "production restart: {status} {value}"
+        );
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -147,7 +163,9 @@ impl Fixture {
             )
             .fetch_one(&mut pg)
             .await?;
-            if row.try_get::<Option<i32>, _>("push_status")? == Some(200)
+            let published: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=$2 AND status='published')").bind(case_tenant()).bind(operation.to_string()).fetch_one(&mut pg).await?;
+            if published
+                && row.try_get::<Option<i32>, _>("push_status")? == Some(200)
                 && row.try_get::<Option<String>, _>("push_outcome")?.as_deref() == Some("accepted")
             {
                 accepted = true;
@@ -159,7 +177,15 @@ impl Fixture {
             accepted,
             "production APNs worker never delivered pending work"
         );
-        ensure!(self.operation(operation).await?["commandStatus"] == "published");
+        let (status, value) = browser
+            .call(
+                &Router::new(),
+                Method::GET,
+                &format!("/api/v1/devices/{}/operations/{operation}", case_device()),
+                None,
+            )
+            .await?;
+        ensure!(status == StatusCode::OK && value["commandStatus"] == "published");
         crate::test_support::http::seed_management_grants(
             crate::test_support::case::admin(),
             json!(["runtime_diagnostics_read"]),
@@ -178,7 +204,7 @@ impl Fixture {
                 .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
-                    self.browser
+                    browser
                         .cookies
                         .iter()
                         .map(|(k, v)| format!("{k}={v}"))
@@ -215,7 +241,7 @@ impl Fixture {
                 .header("x-forwarded-for", "127.0.0.1")
                 .header(
                     "cookie",
-                    self.browser
+                    browser
                         .cookies
                         .iter()
                         .map(|(k, v)| format!("{k}={v}"))
@@ -261,15 +287,14 @@ impl Fixture {
             "native listener survived shutdown"
         );
         pg.close().await?;
-        self.close().await
+        Ok(())
     }
 }
 
 #[tokio::test]
 #[ignore = "MODULE=apple.host: production assembly, health and bounded shutdown"]
 async fn production_listeners_push_and_shutdown() -> Result<()> {
-    let f = Fixture::start().await?;
-    f.production().await
+    Fixture::production().await
 }
 
 #[test]
@@ -399,138 +424,160 @@ enum StartupFault {
 }
 
 async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
-    let mut fixture = Fixture::start().await?;
-    let (expected_state, expected_reason) = match fault {
-        StartupFault::MissingSelection => ("waiting", "material_not_selected"),
-        StartupFault::ProviderUnavailable => ("degraded", "dependency_unavailable"),
-        StartupFault::TrustConflict => ("degraded", "trust_conflict"),
-    };
-    let mut config = crate::test_support::identity::config(case_tenant())?;
-    let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = browser.local_addr()?;
-    drop(browser);
-    config.listen = address;
-    config.native_protocols.windows = None;
-    config.agent_pki = crate::agent_pki::Config::Disabled {};
-    let mut apple: config::Config =
-        serde_json::from_slice(&std::fs::read(fixture.root.join("apple.json"))?)?;
-    config.trusted_gateway = "127.0.0.1".parse()?;
-    if !matches!(fault, StartupFault::TrustConflict) {
-        apple.management.origin = fixture.app.apple()?.config.management.origin.clone();
-        apple.trust_file = fixture.app.apple()?.config.trust_file.clone();
-    }
-    if !matches!(fault, StartupFault::MissingSelection) {
-        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
-        for provider in &mut config.device_pki {
-            if matches!(fault, StartupFault::ProviderUnavailable)
-                && provider.purpose == rss_mdm_agent_wire::pki::Purpose::Apple
-            {
-                provider.origin = "https://localhost:1".into();
+    let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources
+        .finish(async {
+            let (expected_state, expected_reason) = match fault {
+                StartupFault::MissingSelection => ("waiting", "material_not_selected"),
+                StartupFault::ProviderUnavailable => ("degraded", "dependency_unavailable"),
+                StartupFault::TrustConflict => ("degraded", "trust_conflict"),
+            };
+            let mut config = crate::test_support::identity::config(case_tenant())?;
+            let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = browser.local_addr()?;
+            drop(browser);
+            config.listen = address;
+            config.native_protocols.windows = None;
+            config.agent_pki = crate::agent_pki::Config::Disabled {};
+            let mut apple: config::Config =
+                serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+            config.trusted_gateway = "127.0.0.1".parse()?;
+            let protection = config.native_protector()?;
+            let expected_trust: rss_mdm_agent_wire::pki::Trust =
+                serde_json::from_slice(&std::fs::read(&apple.trust_file)?)?;
+            let original_origin = expected_trust.origin.clone();
+            let loaded = Apple::load(
+                protection.clone(),
+                serde_json::from_value(serde_json::to_value(&apple)?)?,
+                fixture_materials(&root)?,
+                crate::clock::SystemClock.unix_seconds()?,
+                (&config.product_origin, authority.identity.tenant),
+                crate::device_pki::providers(&config.device_pki)?,
+            )?;
+            crate::test_support::pki::seed_trust(
+                &authority.pool,
+                &[loaded.channel.device_trust().clone()],
+            )
+            .await?;
+            if matches!(fault, StartupFault::TrustConflict) {
+                let mut changed = expected_trust;
+                changed.origin = "https://conflicting-apple.example.test".into();
+                apple.management.origin = changed.origin.clone();
+                apple.trust_file = root.join(format!("conflicting-trust-{}.json", Uuid::new_v4()));
+                std::fs::write(&apple.trust_file, serde_json::to_vec(&changed)?)?;
             }
-        }
-    } else {
-        apple.materials = Default::default();
-    }
-    crate::test_support::http::seed_management_grants(
-        crate::test_support::case::admin(),
-        json!(["runtime_diagnostics_read"]),
-    )
-    .await?;
-    config.native_protocols.apple = Some(apple);
-    config.apple_material_roots = vec![fixture.root.join("apple-root.pem")];
-    // Transfer tenant projection ownership before the production host starts.
-    fixture.stop_services().await?;
-    let stop = tokio_util::sync::CancellationToken::new();
-    let stopped = stop.clone();
-    let server = tokio::spawn(crate::lifecycle::serve(
-        config,
-        async move {
-            stopped.cancelled().await;
-            Ok(())
-        },
-        fixture_clock(),
-    ));
-    let result: Result<()> = async {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(2))
-            .build()?;
-        tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                if let Ok(response) = client
-                    .get(format!("http://{address}/readyz"))
+            if !matches!(fault, StartupFault::MissingSelection) {
+                seed_fixture_materials(&root, &protection).await?;
+                for provider in &mut config.device_pki {
+                    if matches!(fault, StartupFault::ProviderUnavailable)
+                        && provider.purpose == rss_mdm_agent_wire::pki::Purpose::Apple
+                    {
+                        provider.origin = "https://localhost:1".into();
+                    }
+                }
+            } else {
+                apple.materials = Default::default();
+            }
+            crate::test_support::http::seed_management_grants(
+                crate::test_support::case::admin(),
+                json!(["runtime_diagnostics_read"]),
+            )
+            .await?;
+            config.native_protocols.apple = Some(apple);
+            config.apple_material_roots = vec![root.join("apple-root.pem")];
+            let stop = tokio_util::sync::CancellationToken::new();
+            let stopped = stop.clone();
+            let server = tokio::spawn(crate::lifecycle::serve(
+                config,
+                async move {
+                    stopped.cancelled().await;
+                    Ok(())
+                },
+                fixture_clock(),
+            ));
+            let result: Result<()> = async {
+                let client = reqwest::Client::builder()
+                    .no_proxy()
+                    .timeout(Duration::from_secs(2))
+                    .build()?;
+                tokio::time::timeout(Duration::from_secs(20), async {
+                    loop {
+                        if let Ok(response) = client
+                            .get(format!("http://{address}/readyz"))
+                            .header("host", "mdm.example.test")
+                            .header("x-rss-public-origin", "https://mdm.example.test")
+                            .header("x-forwarded-for", "127.0.0.1")
+                            .send()
+                            .await
+                            && response.status() == StatusCode::OK
+                        {
+                            break;
+                        }
+                        ensure!(
+                            !server.is_finished(),
+                            "missing optional materials terminated the host"
+                        );
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await??;
+                let response = client
+                    .get(format!("http://{address}/api/v1/runtime/diagnostics"))
                     .header("host", "mdm.example.test")
                     .header("x-rss-public-origin", "https://mdm.example.test")
                     .header("x-forwarded-for", "127.0.0.1")
+                    .header(
+                        "cookie",
+                        crate::test_support::authority::Authority::prepared_browser("admin")?
+                            .cookies
+                            .iter()
+                            .map(|(k, v)| format!("{k}={v}"))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    )
                     .send()
-                    .await
-                    && response.status() == StatusCode::OK
-                {
-                    break;
-                }
+                    .await?;
                 ensure!(
-                    !server.is_finished(),
-                    "missing optional materials terminated the host"
+                    response.status() == StatusCode::OK,
+                    "authorized diagnostics unavailable"
                 );
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                let snapshot: serde_json::Value = response.json().await?;
+                let apple = snapshot["channels"]
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["name"] == "apple"))
+                    .ok_or_else(|| anyhow::anyhow!("missing Apple state"))?;
+                ensure!(
+                    apple["state"] == expected_state && apple["mounted"] == false,
+                    "{apple}"
+                );
+                ensure!(apple["reasons"] == json!([expected_reason]), "{apple}");
+                let mut tx = authority.pool.begin().await?;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                    .bind(case_tenant())
+                    .execute(&mut *tx)
+                    .await?;
+                let body: Vec<u8> = sqlx::query_scalar(
+                    "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='apple'",
+                )
+                .bind(case_tenant())
+                .fetch_one(&mut *tx)
+                .await?;
+                tx.rollback().await?;
+                let retained: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&body)?;
+                ensure!(retained.origin == original_origin);
+                Ok(())
             }
-            Ok::<_, anyhow::Error>(())
+            .await;
+            stop.cancel();
+            let closed = tokio::time::timeout(Duration::from_secs(45), server).await;
+            result?;
+            closed???;
+            Ok(())
         })
-        .await??;
-        let response = client
-            .get(format!("http://{address}/api/v1/runtime/diagnostics"))
-            .header("host", "mdm.example.test")
-            .header("x-rss-public-origin", "https://mdm.example.test")
-            .header("x-forwarded-for", "127.0.0.1")
-            .header(
-                "cookie",
-                fixture
-                    .browser
-                    .cookies
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            )
-            .send()
-            .await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "authorized diagnostics unavailable"
-        );
-        let snapshot: serde_json::Value = response.json().await?;
-        let apple = snapshot["channels"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["name"] == "apple"))
-            .ok_or_else(|| anyhow::anyhow!("missing Apple state"))?;
-        ensure!(
-            apple["state"] == expected_state && apple["mounted"] == false,
-            "{apple}"
-        );
-        ensure!(apple["reasons"] == json!([expected_reason]), "{apple}");
-        let mut tx = fixture.app.access.archive_pool().begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(case_tenant())
-            .execute(&mut *tx)
-            .await?;
-        let body: Vec<u8> = sqlx::query_scalar(
-            "SELECT body FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose='apple'",
-        )
-        .bind(case_tenant())
-        .fetch_one(&mut *tx)
-        .await?;
-        tx.rollback().await?;
-        let retained: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&body)?;
-        ensure!(retained.origin == fixture.app.apple()?.config.management.origin);
-        Ok(())
-    }
-    .await;
-    stop.cancel();
-    let closed = tokio::time::timeout(Duration::from_secs(45), server).await;
-    let fixture_closed = fixture.close().await;
-    result?;
-    closed???;
-    fixture_closed
+        .await
 }
 
 #[tokio::test]

@@ -99,7 +99,13 @@ async fn public_manual_cas_rollback_and_tenant_isolation() -> Result<(), Box<dyn
         }),
         max_items: 8,
     };
-    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
+        .bind(tenant.to_string())
+        .bind(field.key.as_str())
+        .bind(field.version as i64)
+        .bind(serde_json::to_value(&field)?)
+        .execute(&mut *tx)
+        .await?;
     let items = vec![
         Scalar::String("中文🙂".into()),
         Scalar::String("second".into()),
@@ -180,7 +186,13 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         .await?;
     pg::verify_collections(&mut tx).await?;
     let before = pg::watermark_in(&mut tx, tenant).await?;
-    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
+        .bind(tenant.to_string())
+        .bind(field.key.as_str())
+        .bind(field.version as i64)
+        .bind(serde_json::to_value(&field)?)
+        .execute(&mut *tx)
+        .await?;
     assert!(!pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
     assert!(
         pg::catalog_at_in(&mut tx, tenant, before)
@@ -206,7 +218,13 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
             .definition(field.key)
             .is_err()
     );
-    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
+        .bind(tenant.to_string())
+        .bind(field.key.as_str())
+        .bind(field.version as i64)
+        .bind(serde_json::to_value(&field)?)
+        .execute(&mut *tx)
+        .await?;
     let published = pg::watermark_in(&mut tx, tenant).await?;
     assert!(pg::retire_field_in(&mut tx, tenant, field.key, 1).await?);
     assert!(
@@ -238,7 +256,13 @@ async fn field_catalog_cas_history_and_rollback_are_atomic()
         .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
     assert_eq!(retired, 1025);
     field.key = rss_mdm_inventory::FieldKey::parse("custom.after_retirement")?;
-    assert!(pg::publish_field_in(&mut tx, tenant, 0, &field).await?);
+    sqlx::query("SELECT mdm.append_field_version($1::uuid,$2,$3,$4::jsonb)")
+        .bind(tenant.to_string())
+        .bind(field.key.as_str())
+        .bind(field.version as i64)
+        .bind(serde_json::to_value(&field)?)
+        .execute(&mut *tx)
+        .await?;
     assert_eq!(
         pg::catalog_in(&mut tx, tenant)
             .await?

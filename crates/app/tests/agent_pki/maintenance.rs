@@ -13,20 +13,15 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: slow publication and revoke queue with controlled clock"]
 async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> anyhow::Result<()> {
-    let s = service(deployment()).await?;
-    let p = admin(case_a(), "admin-a").await?;
-    let mut serials = Vec::new();
-    for _ in 0..2 {
-        let g = grant()?;
-        let r = authorize_request(&s, &p, &g, &audit()).await?;
-        let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
-        let certificate = x509_cert::Certificate::from_der(&chain(&candidate)?[0])?;
-        serials.push((
-            rss_mdm_device_trust::serial(certificate.tbs_certificate.serial_number.as_bytes()),
-            Uuid::new_v4(),
-        ));
-    }
-    let binding = s.trust().trust.clone();
+    let config: crate::agent_pki::Config = serde_json::from_value(deployment())?;
+    let crate::agent_pki::Config::StepCa { trust_file, .. } = config else {
+        anyhow::bail!("Agent trust fixture is disabled");
+    };
+    let binding = crate::device_pki::load(&trust_file, Purpose::Agent, now())?;
+    let serials = [
+        ("1001".to_owned(), Uuid::new_v4()),
+        ("1002".to_owned(), Uuid::new_v4()),
+    ];
     let trust = binding.public()?;
     let issuer = &trust.issuers[0];
     let start = now();
@@ -144,14 +139,8 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
             })
             .collect(),
     )?);
-    let db = Database::connect(options("mdm_access")?).await?;
-    let registry = Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-        vec![windows, binding],
-        providers,
-    );
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let registry = Registry::new(pool.clone(), audit, vec![windows, binding], providers);
     registry
         .admit(rss_request_context::TenantId::parse(case_a())?, start)
         .await?;
@@ -200,6 +189,7 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         );
     }
     pg.close().await?;
-    db.close().await;
+    source.close().await;
+    pool.close().await;
     Ok(())
 }

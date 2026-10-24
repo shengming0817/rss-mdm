@@ -161,13 +161,35 @@ class EnvironmentTests(unittest.TestCase):
                         env.reset()
                     self.assertTrue(marker.exists())
 
-    def test_runtime_volume_does_not_receive_operator_secrets(self):
-        source=(Path(__file__).resolve().parents[1]/'deployment/compose.yaml').read_text()
-        server=source.split('  server:',1)[1].split('  gateway:',1)[0]
-        self.assertIn('runtime:/run/mdm:ro',server)
-        self.assertNotIn('operator:',server)
-        self.assertIn('ingress: {ipv4_address:',server)
-        self.assertNotIn('network_mode:',server)
+    def test_rendered_mounts_keep_operator_secrets_out_of_runtime_services(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = Environment(Path(tmp))
+            model = json.loads(environment_run([
+                'docker', 'compose', '--env-file', '/dev/null',
+                '--project-directory', env.worktree, '-p', env.project,
+                '-f', env.compose_file, '--profile', 'product',
+                'config', '--format', 'json',
+            ], env=env.variables(gateway=False), capture_output=True).stdout)
+            server = model['services']['server']
+            runtime = [v for v in server['volumes'] if v['target'] == '/run/mdm']
+            self.assertEqual(len(runtime), 1)
+            self.assertEqual(runtime[0]['type'], 'volume')
+            self.assertEqual(runtime[0]['source'], 'runtime')
+            self.assertTrue(runtime[0]['read_only'])
+            self.assertFalse(any('operator' in v['source'] for v in server['volumes']))
+            self.assertIn('ingress', server['networks'])
+            self.assertNotIn('network_mode', server)
+            mounts = {v['target']: v for v in model['services']['postgres']['volumes']}
+            self.assertEqual(set(mounts), {
+                '/var/lib/postgresql/data', '/inputs/server.crt',
+                '/inputs/server.key', '/inputs/pg-password',
+            })
+            self.assertEqual(mounts['/var/lib/postgresql/data']['source'], 'pg')
+            for name in ('server.crt', 'server.key', 'pg-password'):
+                mount = mounts['/inputs/' + name]
+                self.assertEqual(mount['type'], 'bind')
+                self.assertTrue(mount['read_only'])
+                self.assertNotEqual(Path(mount['source']), env.root)
 
     def test_role_changes_require_reset_without_running_ddl(self):
         from unittest.mock import patch
@@ -194,11 +216,6 @@ class EnvironmentTests(unittest.TestCase):
             with patch.dict('os.environ',{'MDM_SERVER_IMAGE':'unreviewed','MDM_WEB_IMAGE':'unreviewed'}):
                 self.assertEqual(env.variables()['MDM_SERVER_IMAGE'],'sha256:reviewed')
                 self.assertEqual(env.variables()['MDM_WEB_IMAGE'],'sha256:web')
-
-    def test_postgres_has_no_environment_root_mount(self):
-        source=(Path(__file__).resolve().parents[1]/'deployment/compose.yaml').read_text().split('  idp-netns:',1)[0]
-        self.assertNotIn('${MDM_ENV_ROOT:?}:/',source)
-        self.assertIn('/pg/server.key:/inputs/server.key:ro',source)
 
     def test_same_name_unlabelled_resource_is_rejected(self):
         import json

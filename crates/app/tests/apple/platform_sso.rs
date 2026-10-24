@@ -47,14 +47,14 @@ pub(super) fn configuration(root: &std::path::Path) -> Result<config::PlatformSs
         signing_keys: [("active".into(), path)].into(),
     })
 }
-async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value)> {
+async fn call(router: &Router, path: &str, body: Value) -> Result<(StatusCode, Value)> {
     let request = Request::builder()
         .method(Method::POST)
         .uri(path)
         .header("host", "mdm.example.test")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body)?))?;
-    let response = f.router.clone().oneshot(request).await?;
+    let response = router.clone().oneshot(request).await?;
     let status = response.status();
     Ok((
         status,
@@ -64,35 +64,99 @@ async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=apple.platform_sso: real nonce storage, tenant boundary and authenticated registration HTTP"]
 async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
-    let f = Fixture::with_options(true, None, false, None, false, true).await?;
-    let result=async {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            authority.identity.tenant,
+        ),
+    );
+    let (execution, _, _) = crate::test_support::command::command_service(
+        authority.audit.clone(),
+        sessions.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    resources.resource(rss_mdm_execution_service::Resource(execution.clone()));
+    let root = tempfile::tempdir()?;
+    let state = Arc::new(rss_mdm_apple_channel::HttpState {
+        platform_sso: Some(
+            configuration(root.path())?.load(&config.product_origin, authority.identity.tenant)?,
+        ),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+            authority.audit.clone(),
+        )),
+        material_roots: Arc::new(vec![]),
+        account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
+        authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
+            authority: authority.identity.authority.clone(),
+            http: authority.identity.browser().http.clone(),
+            origin: config.product_origin.clone(),
+        },
+        mount: crate::device::ChannelMount::new(
+            authority.identity.tenant,
+            rss_mdm_inventory::ReportSource::MdmApple,
+            rss_mdm_registration_service::Purpose::Primary,
+        ),
+        audit_store: authority.audit.clone(),
+        access: Arc::new(rss_mdm_apple_channel::Store::from_pool(
+            authority.pool.clone(),
+            authority.registration.clone(),
+            authority.authorization.clone(),
+        )),
+        apple: None,
+        clock: Arc::new(crate::clock::InventoryClock(Arc::new(
+            crate::clock::SystemClock,
+        ))),
+        execution,
+        protection: config.native_protector()?,
+        credentials: authority.credentials.clone(),
+        devices: Arc::new(crate::device::DeviceService::new(
+            authority.registration.clone(),
+            case_tenant().into(),
+            authority.audit.clone(),
+        )),
+        identity: sessions,
+        requests: Arc::new(tokio::sync::Semaphore::new(32)),
+    });
+    let router = rss_mdm_apple_channel::boundary::wrap(
+        rss_mdm_apple_channel::platform_sso::browser_routes().with_state(state),
+        rss_mdm_apple_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            requests: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: fixture_clock(),
+            audit_store: authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
+    )
+    .into_axum();
+    resources.finish(async {
         let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
-        let response = f.router.clone().oneshot(association).await?;
+        let response = router.clone().oneshot(association).await?;
         ensure!(response.status()==StatusCode::OK);
         let association: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
         ensure!(association == json!({"authsrv":{"apps":["ABCDEFGHIJ.com.rss.psso"]}}));
         let base=format!("/api/v1/apple/platform-sso/{}",case_tenant());
-        let (status,value)=call(&f,&format!("{base}/nonce"),json!({})).await?;
+        let (status,value)=call(&router,&format!("{base}/nonce"),json!({})).await?;
         ensure!(status==StatusCode::OK,"nonce {status}: {value}");
         ensure!(crypto::decode(value["nonce"].as_str().context("nonce")?)?.len()==32);
         let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let (digest,context,seconds):(Vec<u8>,Value,i64)=sqlx::query_as("SELECT nonce_digest,context,expires_at-floor(extract(epoch FROM clock_timestamp()))::bigint FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND id=$2")
             .bind(case_tenant()).bind(serde_json::from_value::<Uuid>(value["id"].clone())?).fetch_one(&mut c).await?;
         ensure!(digest==crypto::digest(value["nonce"].as_str().unwrap())&&context==json!({})&&(1..=120).contains(&seconds));
-        ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",Uuid::new_v4()),json!({})).await?.0==StatusCode::UNAUTHORIZED);
+        ensure!(call(&router,&format!("/api/v1/apple/platform-sso/{}/nonce",Uuid::new_v4()),json!({})).await?.0==StatusCode::UNAUTHORIZED);
         let invalid=Request::builder().method(Method::POST).uri(format!("{base}/token")).header("host","mdm.example.test").header("content-type","application/x-www-form-urlencoded").body(Body::from("platform_sso_version=1.0&grant_type=refresh_token&assertion=opaque"))?;
-        ensure!(f.router.clone().oneshot(invalid).await?.status()==StatusCode::BAD_REQUEST);
-        ensure!(call(&f,&format!("{base}/browser/begin"),json!({"bindingId":Uuid::new_v4()})).await?.0==StatusCode::UNAUTHORIZED);
-        let protected=Request::builder().method(Method::POST).uri("/api/v1/agent/runtime/platform-sso/bootstrap").header("host","mdm.example.test:9445").header("content-type","application/json").body(Body::from(serde_json::to_vec(&json!({"operationId":Uuid::new_v4(),"kind":"device"}))?))?;
-        ensure!(f.router.clone().oneshot(protected).await?.status()==StatusCode::UNAUTHORIZED);
+        ensure!(router.clone().oneshot(invalid).await?.status()==StatusCode::BAD_REQUEST);
+        ensure!(call(&router,&format!("{base}/browser/begin"),json!({"bindingId":Uuid::new_v4()})).await?.0==StatusCode::UNAUTHORIZED);
         // Capacity is a tenant budget, not an unbounded public nonce allocator.
         sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
-        ensure!(call(&f,&format!("{base}/nonce"),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
+        ensure!(call(&router,&format!("{base}/nonce"),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         sqlx::query("DELETE FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut c).await?;
         c.close().await?;Ok(())
-    }.await;
-    f.close().await?;
-    result
+    }).await
 }
 
 async fn grants(_f: &Fixture) -> Result<()> {
@@ -349,7 +413,7 @@ async fn login_request(
     use rss_mdm_agent_wire::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
     let rt = f.ade.platform_sso.as_ref().context("PSSO")?;
     let (status, nonce) = call(
-        f,
+        &f.router,
         &format!("/api/v1/apple/platform-sso/{}/nonce", case_tenant()),
         json!({}),
     )
@@ -604,6 +668,11 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
     .await?;
     let worker = f.policy_worker().await?;
     let result=async {
+        if !mode {
+        let protected=Request::builder().method(Method::POST).uri("/api/v1/agent/runtime/platform-sso/bootstrap").header("host","mdm.example.test:9445").header("content-type","application/json").body(Body::from(serde_json::to_vec(&json!({"operationId":Uuid::new_v4(),"kind":"device"}))?))?;
+        ensure!(f.router.clone().oneshot(protected).await?.status()==StatusCode::UNAUTHORIZED);
+        }
+
         let (peer,_device)=f.ready_local_peer().await?;grants(&f).await?;
         let account=Uuid::new_v4();
         let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);

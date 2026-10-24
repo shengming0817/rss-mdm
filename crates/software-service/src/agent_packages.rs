@@ -176,11 +176,24 @@ async fn prepare<C: ManagementContentPort>(
         .verify(&version)
         .await
         .map_err(|_| invalid())?;
-    let def = definition(&version, i)?;
+    let (package, binding) = package_material(app.tenant, &version, i)?;
+    Ok(Prepared {
+        version,
+        package,
+        binding,
+        verified,
+    })
+}
+fn package_material(
+    tenant: TenantId,
+    version: &r::Version,
+    i: &Selection,
+) -> Result<(w::Package, Binding), Error> {
+    let def = definition(version, i)?;
     let native_format = format(def.spec().material.format)?;
     let package = w::Package {
         release_id: Uuid::new_v4(),
-        tenant_id: Uuid::parse_str(&app.tenant.to_string()).map_err(|_| invalid())?,
+        tenant_id: Uuid::parse_str(&tenant.to_string()).map_err(|_| invalid())?,
         target: i.target,
         version: def.spec().version.clone(),
         format: native_format,
@@ -202,13 +215,32 @@ async fn prepare<C: ManagementContentPort>(
             sha256: def.primary().digest().bytes(),
         },
     };
-    Ok(Prepared {
-        version,
-        package,
-        binding,
-        verified,
-    })
+    Ok((package, binding))
 }
+
+/// Prepare a current release from an already enabled, content-backed software version.
+/// Publication endpoints retain ownership of receipts, audit and installer admission proofs.
+#[cfg(feature = "integration")]
+pub async fn fixture_release_in(
+    tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
+    version: &r::Version,
+    target: w::Target,
+    variant: &str,
+) -> transaction::Result<w::Package> {
+    let selection = Selection {
+        resource: version.resource().as_str().to_owned(),
+        version: version.label().as_str().to_owned(),
+        variant: variant.into(),
+        target,
+    };
+    let (package, binding) = package_material(tx.tenant_id(), version, &selection)?;
+    if let Some(existing) = existing_in(tx, &package, &binding).await? {
+        return Ok(existing);
+    }
+    insert_in(tx, &package, &binding).await?;
+    Ok(package)
+}
+
 // Catalog/upload identities and content locations do not change executable material.
 // Preserve every execution field, including secondary artifacts and signature evidence.
 fn material(spec: &r::SoftwareSpec) -> Result<serde_json::Value, Error> {
@@ -250,10 +282,11 @@ fn material(spec: &r::SoftwareSpec) -> Result<serde_json::Value, Error> {
 
 async fn existing_in(
     tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
-    prepared: &Prepared,
+    package: &w::Package,
+    expected: &Binding,
 ) -> transaction::Result<Option<w::Package>> {
     let tenant = tx.tenant_id();
-    let package = prepared.package.clone();
+    let package = package.clone();
     let row = tx.with_connection(move |c| Box::pin(async move {
         sqlx::query("SELECT id,binding,state FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND platform=$2 AND architecture=$3 AND format=$4 AND product_version=$5")
             .bind(tenant.to_string())
@@ -265,7 +298,7 @@ async fn existing_in(
     let Some(row) = row else { return Ok(None) };
     let binding: Binding = serde_json::from_value(row.try_get("binding").map_err(|_| storage())?)
         .map_err(|_| storage())?;
-    if material(&binding.software)? != material(&prepared.binding.software)? {
+    if material(&binding.software)? != material(&expected.software)? {
         return Err(Error::Conflict.into());
     }
     if row.try_get::<String, _>("state").map_err(|_| storage())? != "published" {
@@ -430,7 +463,7 @@ pub async fn publish<C: ManagementContentPort>(
                     old
                 } else {
                     let prepared = prepared.as_mut().ok_or(Error::Conflict)?;
-                    let existing = existing_in(tx, prepared).await?;
+                    let existing = existing_in(tx, &prepared.package, &prepared.binding).await?;
                     let package = if let Some(existing) = existing {
                         existing
                     } else {

@@ -313,6 +313,7 @@ class RunFixtures:
                     self.preparation_helper(root, manifest, output / 'actors', database)
                 for member, path in zip(batch, paths):
                     root = Path(path).parent
+                    private(root / 'source-session', source)
                     context = validate(json.loads(Path(path).read_text()), ready=True)
                     self.case_contexts[member['job'].key] = context
                     for actor in context['actors']:

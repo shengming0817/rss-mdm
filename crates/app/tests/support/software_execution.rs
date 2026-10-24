@@ -212,8 +212,6 @@ impl Fixture {
             Platform::Windows => ("windows", "x86_64"),
         };
         let planning = &self.planning;
-        let router = &self.router;
-        let author = &self.author;
         let registered = json!({"snapshot":self.source_snapshot});
         let dependency = self.dependency;
         let dependency_bytes = &self.dependency_bytes;
@@ -236,18 +234,25 @@ impl Fixture {
             },
         )
         .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
+        let bytes = if platform == Platform::MacOs {
+            dependency_bytes.as_slice()
         } else {
-            upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
-        }
+            windows_dependency_bytes.as_slice()
+        };
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("dep-installer")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            self.content.as_deref().expect("software content"),
+            &artifact,
+            bytes.to_vec(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
         seed_enabled(
-            &planning,
+            &(&planning).runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -264,8 +269,6 @@ impl Fixture {
             Platform::Windows => ("windows", "x86_64"),
         };
         let planning = &self.planning;
-        let router = &self.router;
-        let author = &self.author;
         let registered = json!({"snapshot":self.source_snapshot});
         let resource = self.resource;
         let bytes = &self.bytes;
@@ -289,24 +292,30 @@ impl Fixture {
             },
         )
         .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
-            upload_fixture(&router, request).await?;
+        let materials: Vec<(&str, &[u8])> = if platform == Platform::MacOs {
+            vec![
+                ("installer", bytes.as_slice()),
+                ("remover", removal.as_slice()),
+            ]
         } else {
-            upload_windows(&author, &router, resource, &windows_bytes).await?;
+            vec![("win-installer", windows_bytes.as_slice())]
+        };
+        for (reference, bytes) in materials {
+            let artifact = rss_mdm_resource::Artifact::new(
+                rss_mdm_resource::Id::new(reference)?,
+                bytes.len() as u64,
+                rss_mdm_resource::Digest::of(bytes),
+            )?;
+            rss_mdm_content_service::fixture::artifact(
+                self.content.as_deref().expect("software content"),
+                &artifact,
+                bytes.to_vec(),
+                crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+            )
+            .await?;
         }
         seed_enabled(
-            &planning,
+            &(&planning).runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -574,15 +583,14 @@ pub(crate) async fn seed_resource(
     Ok(version)
 }
 pub(crate) async fn seed_enabled(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
     content: &rss_mdm_content_service::Store,
     version: &rss_mdm_resource::Version,
 ) -> Result<()> {
     use rss_mdm_software_service::catalog::ContentPort;
     let verified = content.verify(version).await?;
     let version = version.clone();
-    planning
-        .runtime
+    runtime
         .local_tx(version.tenant(), crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 rss_mdm_software_service::catalog::fixture::enabled_in(

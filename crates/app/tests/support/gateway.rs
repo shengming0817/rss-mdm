@@ -73,8 +73,6 @@ impl ConnectionTransport for Transport {
 pub(crate) async fn registration(
     listener: TcpListener,
     channel: crate::native::ChannelRouter,
-    _audit: Arc<rss_mdm_audit_integration::AuditStore>,
-    _tenant: String,
     kind: crate::native::ChannelKind,
 ) -> anyhow::Result<rss_runtime::ManagedTaskRegistration> {
     use crate::native::ChannelKind::*;

@@ -581,15 +581,9 @@ impl Host {
                 .pop()
                 .expect("additional management listener");
             launch.stage_task_with_token(
-                crate::test_support::gateway::registration(
-                    listener,
-                    router,
-                    self.app.audit_store.clone(),
-                    case_tenant().into(),
-                    kind,
-                )
-                .await?
-                .critical(),
+                crate::test_support::gateway::registration(listener, router, kind)
+                    .await?
+                    .critical(),
             );
         }
         for (listener, router, kind) in [
@@ -605,15 +599,9 @@ impl Host {
             ),
         ] {
             launch.stage_task_with_token(
-                crate::test_support::gateway::registration(
-                    listener,
-                    router,
-                    self.app.audit_store.clone(),
-                    case_tenant().into(),
-                    kind,
-                )
-                .await?
-                .critical(),
+                crate::test_support::gateway::registration(listener, router, kind)
+                    .await?
+                    .critical(),
             );
         }
         if crate::test_support::case::owns_worker() {

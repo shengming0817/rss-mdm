@@ -423,27 +423,11 @@ impl Fixture {
             let mut launch = startup.commit();
             launch.stage_task_with_token(notifications.registration().critical());
             launch.stage_task_with_token(
-                crate::test_support::gateway::registration(
-                    manage,
-                    native,
-                    access
-                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                        .await?,
-                    case_tenant().into(),
-                    crate::native::ChannelKind::AppleManagement,
-                ).await?
+                crate::test_support::gateway::registration(manage, native, crate::native::ChannelKind::AppleManagement).await?
                 .critical(),
             );
             launch.stage_task_with_token(
-                crate::test_support::gateway::registration(
-                    webhook,
-                    hooks,
-                    access
-                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                        .await?,
-                    case_tenant().into(),
-                    crate::native::ChannelKind::AppleWebhookFixture,
-                ).await?
+                crate::test_support::gateway::registration(webhook, hooks, crate::native::ChannelKind::AppleWebhookFixture).await?
                 .critical(),
             );
 
@@ -654,8 +638,6 @@ impl Fixture {
             crate::test_support::gateway::registration(
                 listener,
                 router,
-                self.app.audit_store.clone(),
-                case_tenant().into(),
                 native::ChannelKind::AppleWebhookFixture,
             )
             .await?
@@ -769,14 +751,6 @@ mod push;
 mod renewal;
 
 impl Fixture {
-    async fn stop_services(&mut self) -> Result<()> {
-        self.stop_execution_worker().await?;
-        if let Some(owner) = self.owner.take() {
-            let report = owner.shutdown().join().await?;
-            ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
-        }
-        Ok(())
-    }
     async fn stop_execution_worker(&mut self) -> Result<()> {
         crate::test_support::runtime::stop_worker(self.execution_owner.take()).await
     }
@@ -825,23 +799,7 @@ impl Fixture {
             })
             .await
     }
-    async fn scep_leaf(&mut self) -> Result<(scep_client::Device, Vec<u8>)> {
-        let (enrollment, attempt, password) = self.enrollment().await?;
-        let device = scep_client::Device::new(enrollment, attempt, &password)?;
-        let request = device.request(
-            &self.root.join("apple-issuer.pem"),
-            &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
-        )?;
-        let der = device
-            .enroll(
-                &self.client()?,
-                &self.app.apple()?.channel.scep_fixture()?.0,
-                &request,
-            )
-            .await?;
-        Ok((device, der))
-    }
+
     fn peer_identity(&self, device: &scep_client::Device, der: &[u8]) -> Result<lifecycle::Peer> {
         let apple = self.app.apple()?;
         let peer = lifecycle::Peer {
@@ -927,12 +885,6 @@ impl Fixture {
         }
         Ok((peer, device))
     }
-    async fn ready_scep_peer(&mut self) -> Result<(lifecycle::Peer, scep_client::Device)> {
-        let (device, der) = self.scep_leaf().await?;
-        let peer = self.authenticate_peer(&device, &der).await?;
-        peer.token().await?;
-        Ok((peer, device))
-    }
 }
 
 impl Fixture {
@@ -973,7 +925,8 @@ impl Fixture {
         let bytes = template.canonical();
         let id = Uuid::new_v4();
         crate::test_support::planning_http::seed_native_template(
-            &self.app.flow.planning,
+            &(&self.app.flow.planning).runtime,
+            (&self.app.flow.planning).tenant,
             id,
             rss_mdm_resource::Platform::MacOS,
             template,

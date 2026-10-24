@@ -122,10 +122,12 @@ impl Server {
     pub async fn service(
         &self,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        content: Arc<rss_mdm_content_service::Store>,
         config: SourceConfig,
     ) -> PublicationService {
         PublicationService::connect(
-            host(runtime, audit_store().await).await,
+            host(runtime, audit, content).await,
             tenant(),
             self.logical.clone(),
             config,
@@ -145,13 +147,6 @@ impl Server {
             format!("{}artifacts/x64.msi", self.base).into();
         v["Data"]["Versions"][0]["Installers"][0]["InstallerSha256"] =
             hex(&rel::Digest::of(b"abc").bytes()).into();
-        let mut arm = v["Data"]["Versions"][0]["Installers"][0].clone();
-        arm["Architecture"] = "arm64".into();
-        arm["InstallerUrl"] = format!("{}artifacts/arm64.msi", self.base).into();
-        v["Data"]["Versions"][0]["Installers"]
-            .as_array_mut()
-            .unwrap()
-            .push(arm);
         ExportDocument::Winget {
             manifest: v["Data"].clone(),
         }
@@ -279,17 +274,19 @@ pub fn request(c: &rel::Publication) -> ServiceRequest {
 }
 pub async fn seed(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
 ) -> PublishInput {
-    seed_version(runtime, server, document, true).await
+    seed_version(runtime, content, server, document, true).await
 }
 pub async fn seed_draft(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
 ) -> PublishInput {
-    seed_version(runtime, server, document, false).await
+    seed_version(runtime, content, server, document, false).await
 }
 #[allow(
     clippy::cognitive_complexity,
@@ -297,6 +294,7 @@ pub async fn seed_draft(
 )]
 async fn seed_version(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
     enabled: bool,
@@ -326,6 +324,29 @@ async fn seed_version(
         (resource::Architecture::X86_64, "x64"),
         (resource::Architecture::Aarch64, "arm64"),
     ] {
+        let selected = match &document {
+            ExportDocument::Winget { manifest } => manifest["Versions"][0]["Installers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["Architecture"] == keyname),
+            ExportDocument::Brew { recipe } => match &recipe.payload {
+                BrewPayload::Cask { artifacts, .. } => artifacts.iter().any(|v| {
+                    v.architecture
+                        == if arch == resource::Architecture::X86_64 {
+                            "x86_64"
+                        } else {
+                            "aarch64"
+                        }
+                }),
+                BrewPayload::Formula { bottles, .. } => bottles.iter().any(|v| {
+                    v.tag.starts_with("arm64_") == (arch == resource::Architecture::Aarch64)
+                }),
+            },
+        };
+        if !selected {
+            continue;
+        }
         variants.push(resource::Variant::new(
             platform,
             arch,
@@ -487,58 +508,29 @@ async fn seed_version(
         variants,
     )
     .unwrap();
-    let content = stored_content().await;
+    let mut uploaded = std::collections::BTreeSet::new();
     for v in version.variants() {
         let resource::Declaration::Software { definition } = v.declaration() else {
             unreachable!()
         };
         for artifact in definition.materials() {
-            let upload = uuid::Uuid::new_v4();
-            let actor = "publication-fixture";
-            let binding = rss_mdm_content_service::Binding {
-                purpose: rss_mdm_content_service::Purpose::Resource(
-                    rss_mdm_content_service::ResourceBinding {
-                        inspection: None,
-                        storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                        resource: key.as_str().into(),
-                        version: version.label().as_str().into(),
-                        variant: v.key().as_str().into(),
-                        platform: v.platform(),
-                        architecture: v.architecture(),
-                        resource_digest: version.digest().bytes(),
-                        source: Some(definition.spec().source.clone()),
-                        origin: artifact.origin.clone(),
-                    },
-                ),
-                reference: artifact.reference.clone(),
-                length: artifact.length,
-                sha256: artifact.sha256,
-                actor: actor.into(),
-            };
-            content
-                .begin(
-                    upload,
-                    binding,
-                    1700000000,
-                    content.upload_budget().unwrap(),
-                )
-                .await
-                .unwrap();
-            content
-                .append(
-                    actor,
-                    upload,
-                    0,
-                    1700000000,
-                    std::io::Cursor::new(b"abc".to_vec()),
-                    content.upload_budget().unwrap(),
-                )
-                .await
-                .unwrap();
-            content
-                .finish(actor, upload, 1700000000, content.upload_budget().unwrap())
-                .await
-                .unwrap();
+            if !uploaded.insert((artifact.sha256, artifact.length)) {
+                continue;
+            }
+            let material = resource::Artifact::new(
+                resource::Id::new(artifact.reference.clone()).unwrap(),
+                artifact.length,
+                resource::Digest::from_bytes(artifact.sha256),
+            )
+            .unwrap();
+            rss_mdm_content_service::fixture::artifact(
+                &content,
+                &material,
+                b"abc".to_vec(),
+                1700000000 + 86400,
+            )
+            .await
+            .unwrap();
         }
     }
     runtime
@@ -621,7 +613,7 @@ pub fn cask(server: &Server, package: &str, version: &str) -> ExportDocument {
             description: "Controlled app".into(),
             homepage: "https://example.com/".into(),
             payload: BrewPayload::Cask {
-                artifacts: [("x86_64", "x64"), ("aarch64", "arm64")]
+                artifacts: [("x86_64", "x64")]
                     .into_iter()
                     .map(|(arch, key)| BrewArtifact {
                         architecture: arch.into(),
@@ -660,7 +652,7 @@ pub fn formula(server: &Server) -> ExportDocument {
                     sha256: rel::Digest::of(b"abc").bytes(),
                 },
                 executable: "tool".into(),
-                bottles: [("sonoma", "x64"), ("arm64_sonoma", "arm64")]
+                bottles: [("sonoma", "x64")]
                     .into_iter()
                     .map(|(tag, key)| BottleInput {
                         cellar: "any_skip_relocation".into(),
@@ -713,13 +705,15 @@ pub fn software_definition(
 pub async fn host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Arc<rss_mdm_content_service::Store>,
 ) -> rss_mdm_software_service::Host {
-    try_host(runtime, audit).await.unwrap()
+    try_host(runtime, audit, content).await.unwrap()
 }
 
 pub async fn try_host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Arc<rss_mdm_content_service::Store>,
 ) -> std::result::Result<rss_mdm_software_service::Host, rss_mdm_audit_integration::Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
@@ -731,11 +725,11 @@ pub async fn try_host(
     Ok(rss_mdm_software_service::Host {
         runtime,
         audit: Arc::new(TestAudit(audit)),
-        content: stored_content().await,
+        content,
         credentials: Arc::new(TestCredentials),
     })
 }
-struct TestAudit(Arc<rss_mdm_audit_integration::AuditStore>);
+pub struct TestAudit(pub Arc<rss_mdm_audit_integration::AuditStore>);
 impl rss_mdm_software_service::AuditPort for TestAudit {
     fn bind_in<'a>(
         &'a self,
@@ -903,7 +897,7 @@ async fn seed_enabled_version(
 pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
     let audit = Arc::new(TestAudit(Arc::new(
@@ -981,6 +975,7 @@ pub async fn withdraw_version(input: &PublishInput) {
         .fold(Ok, Err, Err, Err, Err, Err)
         .unwrap();
     request.finalize(None);
+    audit_pool.close().await;
     runtime.close().await;
 }
 

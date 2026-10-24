@@ -1,7 +1,6 @@
 //! Approved controlled samples: these bytes prove server admission, not OS signing or installation.
 use super::{http::*, process::*, runtime::*, *};
-pub(crate) async fn grants(user: &Browser) -> Result<()> {
-    let subject = prepared_subject(user)?;
+pub(crate) fn installation_grants() -> Result<Vec<crate::authorization::Grant>> {
     let mut grants = identity::device_grants(
         None,
         &[
@@ -14,25 +13,20 @@ pub(crate) async fn grants(user: &Browser) -> Result<()> {
     )?;
     for name in [
         "resource_read",
-        "resource_write",
         "software_read",
         "software_write",
-        "release_publish",
         "software_withdraw",
         "policy_read",
         "policy_write",
         "scope_read",
         "scope_write",
-        "group_read",
-        "group_write",
-        "group_recompute",
     ] {
         grants.push(crate::authorization::Grant {
             operation: serde_json::from_value(json!(name))?,
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::seed_grants(case_tenant(), &subject, grants).await
+    Ok(grants)
 }
 pub(crate) async fn publish(
     user: &mut Browser,
@@ -74,7 +68,20 @@ async fn publish_format(
     let msix = format == "msix";
     use software::write;
     let planning = &app.flow.planning;
-    grants(user).await?;
+    let mut grants = installation_grants()?;
+    if !windows {
+        for operation in [
+            crate::authorization::Permission::GroupRead,
+            crate::authorization::Permission::GroupWrite,
+            crate::authorization::Permission::GroupRecompute,
+        ] {
+            grants.push(crate::authorization::Grant {
+                operation,
+                scope: crate::authorization::Scope::Tenant,
+            });
+        }
+    }
+    identity::seed_grants(case_tenant(), &prepared_subject(user)?, grants).await?;
     let package_bytes = match format {
         "msix" => installer_fixtures::msix(version, false),
         "exe" => installer_fixtures::exe(version),
@@ -98,69 +105,75 @@ async fn publish_format(
         behavior["layout"] = json!({"rss-agent.exe":"package"});
         behavior["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
     }
-    // Exercise the public upload/save bridge with a complete optional execution definition.
-    let (status, prepared) = user.call(router, Method::POST, "/api/v1/agent-packages/uploads", Some(json!({"operationId":Uuid::new_v4(),"filename":format!("agent.{}",if windows {format} else {"pkg"}),"length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}))).await?;
-    ensure!(status == StatusCode::OK, "prepare: {status} {prepared}");
-    let resource = prepared["packageId"].as_str().unwrap();
-    let href = prepared["href"].as_str().unwrap();
-    let request = Request::builder()
-        .method(Method::PATCH)
-        .uri(format!("{href}?offset=0"))
-        .header("host", "mdm.example.test")
-        .header("origin", "https://mdm.example.test")
-        .header("x-identity-request", "1")
-        .header("x-csrf-token", user.csrf.as_ref().unwrap())
-        .header(
-            "cookie",
-            user.cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-        .header("content-type", "application/octet-stream")
-        .body(Body::from(package_bytes))?;
-    {
-        let _guard = software::content_setup_guard().await?;
-        let response = router.clone().oneshot(request).await?;
-        ensure!(
-            response.status() == StatusCode::OK,
-            "upload: {:?}",
-            response.status()
-        );
-    }
-    let completed = user
-        .call(router, Method::POST, &format!("{href}/complete"), None)
-        .await?;
-    ensure!(
-        completed.0 == StatusCode::CREATED,
-        "complete: {completed:?}"
-    );
-    let save = json!({"operationId":Uuid::new_v4(),"packageId":resource,"version":version,"target":{"platform":platform,"architecture":arch},"behavior":behavior});
-    let saved = user
-        .call(
-            router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(save),
-        )
-        .await?;
-    ensure!(saved.0 == StatusCode::OK, "save: {saved:?}");
-    let (status, published) = user
-        .call(
-            router,
-            Method::POST,
-            "/api/v1/agent-packages",
-            Some(json!({"operationId":Uuid::new_v4(),"packageId":resource})),
-        )
-        .await?;
-    ensure!(
-        status == StatusCode::OK,
-        "Agent publication: {status} {published}"
-    );
+    let source = rss_mdm_software_service::catalog::SourceDefinition {
+        id: Uuid::new_v4().to_string(),
+        revision: "1".into(),
+        protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
+    };
+    let snapshot = planning
+        .runtime
+        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_software_service::catalog::fixture::source_in(tx, source)
+                    .await
+                    .map_err(|e| {
+                        rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                            e.to_string(),
+                        ))
+                    })
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    let resource = Uuid::new_v4();
+    let definition = json!({"material":{"format":if windows {format}else{"pkg"},"installer":"package"},"source":snapshot,"package":format!("Private.{resource}"),"version":version,"artifacts":{"package":{"reference":"package","length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}},"behavior":behavior,"reboot":"report","downgrade":"deny","dependencies":[],"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let stored = software_execution::seed_resource(
+        &planning.runtime,
+        planning.tenant,
+        resource,
+        platform,
+        arch,
+        definition,
+    )
+    .await?;
+    let content = app
+        .content_writer
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Agent package content absent"))?;
+    let artifact = rss_mdm_resource::Artifact::new(
+        rss_mdm_resource::Id::new("package")?,
+        package_bytes.len() as u64,
+        rss_mdm_resource::Digest::of(&package_bytes),
+    )?;
+    rss_mdm_content_service::fixture::artifact(
+        content,
+        &artifact,
+        package_bytes,
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+    )
+    .await?;
+    software_execution::seed_enabled(&(planning).runtime, content, &stored).await?;
+    let target = serde_json::from_value(json!({"platform":platform,"architecture":arch}))?;
+    let published = planning
+        .runtime
+        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_software_service::agent_packages::fixture_release_in(
+                    tx, &stored, target, "default",
+                )
+                .await
+                .map_err(|e| {
+                    rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                        e.to_string(),
+                    ))
+                })
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
 
     if format == "exe" || device.is_empty() {
-        return Ok(Uuid::parse_str(published["releaseId"].as_str().unwrap())?);
+        return Ok(published.release_id);
     }
     let scope = Uuid::new_v4();
     if windows {
@@ -172,7 +185,7 @@ async fn publish_format(
         write(user,router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
     }
     let policy = Uuid::new_v4();
-    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:published["releaseId"]},"runLifetimeSeconds":3600}}});
+    let mut input = json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{if windows{"windows_x86_64"}else{"macos_aarch64"}:published.release_id},"runLifetimeSeconds":3600}}});
     if let Some(until) = until {
         input["definition"]["action"]["schedule"] = json!({"trigger":{"kind":"check_in","minimumSeconds":60},"notBefore":0,"until":until,"jitterSeconds":0,"window":null,"misfire":{"kind":"coalesce_one"}});
     }

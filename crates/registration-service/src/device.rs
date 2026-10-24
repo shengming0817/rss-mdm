@@ -427,27 +427,29 @@ impl DeviceService {
         device: &str,
         channel: Channel,
     ) -> Result<Uuid, Error> {
-        let audit = RequestAudit::new(proof.tenant_id().into(), "enrollment_create");
-        proof.bind_audit(&audit)?;
-        audit.target_device(device);
-        let key = Uuid::new_v4();
-        audit.operation(key, "enrollment_create");
-        let receipt = crate::enrollment::store::create_enrollment(
-            &self.audit_store,
-            proof.enrollment(device)?,
-            &crate::enrollment::Password::new(crate::enrollment::random())?,
-            match channel {
-                Channel::Agent => ReportSource::AgentBuiltin,
-                Channel::Mdm => ReportSource::MdmWindows,
-            },
-            (channel == Channel::Mdm).then_some(crate::enrollment::WindowsProfile::Device),
-            Uuid::new_v4(),
-            key,
-            &audit,
-        )
-        .await?;
-        audit.finalize(None);
-        Ok(receipt.enrollment_id)
+        use crate::database::db;
+        proof.enrollment(device)?;
+        if proof.tenant_id() != self.tenant {
+            return Err(Error::Forbidden);
+        }
+        let source = match channel {
+            Channel::Agent => ReportSource::AgentBuiltin,
+            Channel::Mdm => ReportSource::MdmWindows,
+        };
+        let password = crate::enrollment::Password::new(crate::enrollment::random())?;
+        let digest = password.digest(proof.tenant_id(), device)?;
+        let mut tx = self.access.begin(proof.tenant_id()).await?;
+        let generation: i64 = sqlx::query_scalar("SELECT coalesce(max(generation),0) FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND purpose='primary'")
+            .bind(proof.tenant_id()).bind(device).bind(channel.as_str()).fetch_one(&mut *tx).await.map_err(db)?;
+        let request = Uuid::new_v4();
+        let grant = Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) SELECT $1::uuid,$2,$3,$4,$5,'enrollment','consumed',now,now+interval '300 seconds' FROM (SELECT clock_timestamp() AS now) t")
+            .bind(proof.tenant_id()).bind(grant).bind(proof.principal_id()).bind(proof.instance_id()).bind(device).execute(&mut *tx).await.map_err(db)?;
+        sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation,windows_profile) VALUES($1::uuid,$2,$3,'pending',$4,$5,$6,1,$7,clock_timestamp()+interval '300 seconds',$8,$9)")
+            .bind(proof.tenant_id()).bind(request).bind(grant).bind(source.as_str()).bind(generation).bind(digest).bind(Uuid::new_v4()).bind(Uuid::new_v4())
+            .bind((channel == Channel::Mdm).then_some(crate::enrollment::WindowsProfile::Device.as_str())).execute(&mut *tx).await.map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok(request)
     }
 }
 

@@ -73,7 +73,7 @@ impl Client {
         let (resources, (restarted, restarted_runtime)) =
             crate::test_support::runtime::Resources::build(move |resources| {
                 Box::pin(async move {
-                    let (restarted, _, runtime) = command_service(
+                    let (restarted, _, runtime) = crate::test_support::command::command_service(
                         audit,
                         sessions,
                         rss_device_command_postgres::CommandClock::Controlled(restart_clock),

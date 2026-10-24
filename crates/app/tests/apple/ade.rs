@@ -419,12 +419,11 @@ struct Control {
     owner: rss_runtime::ShutdownStack,
     organization: Uuid,
     profile: Uuid,
-    manufacturer: tempfile::TempDir,
+    manufacturer: Option<tempfile::TempDir>,
 }
 impl Control {
-    async fn start() -> Result<Self> {
+    async fn start(manufacturer: Option<tempfile::TempDir>) -> Result<Self> {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
-        let manufacturer = manufacturer(&root)?;
         let organization = Uuid::new_v4();
         let profile = Uuid::new_v4();
         let state = Arc::new(tokio::sync::Mutex::new(Remote {
@@ -499,8 +498,6 @@ impl Control {
             crate::test_support::gateway::registration(
                 listener,
                 tls,
-                f.app.audit_store.clone(),
-                case_tenant().into(),
                 native::ChannelKind::AppleWebhookFixture,
             )
             .await?
@@ -663,8 +660,20 @@ impl Control {
     }
     fn machine(&self) -> Result<Vec<u8>> {
         let signer = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
-            &std::fs::read(self.manufacturer.path().join("machine-chain.pem"))?,
-            &std::fs::read(self.manufacturer.path().join("machine.pk8"))?,
+            &std::fs::read(
+                self.manufacturer
+                    .as_ref()
+                    .expect("machine consumer owns manufacturer identity")
+                    .path()
+                    .join("machine-chain.pem"),
+            )?,
+            &std::fs::read(
+                self.manufacturer
+                    .as_ref()
+                    .expect("machine consumer owns manufacturer identity")
+                    .path()
+                    .join("machine.pk8"),
+            )?,
             self.f.app.clock.unix_seconds()?,
         )?;
         Ok(signer.sign(
@@ -737,7 +746,10 @@ impl Control {
 #[tokio::test]
 #[ignore = "MODULE=apple.ade: credential, page publication, organization native admission, SCEP and mTLS"]
 async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(Some(manufacturer(&PathBuf::from(std::env::var(
+        "MDM_APPLE_FIXTURES",
+    )?))?))
+    .await?;
     c.setup().await?;
     c.f.browser.operation = Some(Uuid::new_v4());
     let quota = c
@@ -822,7 +834,10 @@ async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<(
 #[tokio::test]
 #[ignore = "MODULE=apple.ade: unknown profile resolution and assignment invalidation"]
 async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission() -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(Some(manufacturer(&PathBuf::from(std::env::var(
+        "MDM_APPLE_FIXTURES",
+    )?))?))
+    .await?;
     c.prepared_directory().await?;
     let machine = c.machine()?;
     let signed = c.enroll(machine.clone()).await?;
@@ -940,7 +955,7 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
 #[ignore = "MODULE=apple.ade: checkpoint, cursor reset, stale HTTP fencing and read-only recovery"]
 async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publication()
 -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(None).await?;
     c.prepared_directory().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -1044,7 +1059,7 @@ async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publ
 #[ignore = "MODULE=apple.ade: definitive read recovery and per-device throttling"]
 async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pending_devices()
 -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(None).await?;
     c.prepared_directory().await?;
     let serial = crate::test_support::case::name("ade-serial");
     c.command(json!({"kind":"clear","devices":[serial]}))
@@ -1109,7 +1124,10 @@ async fn unapplied_effect_releases_the_barrier_and_throttling_retries_only_pendi
 #[tokio::test]
 #[ignore = "MODULE=apple.ade: incomplete observations cannot prove unassignment"]
 async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(Some(manufacturer(&PathBuf::from(std::env::var(
+        "MDM_APPLE_FIXTURES",
+    )?))?))
+    .await?;
     c.prepared_directory().await?;
     c.state.lock().await.drop_clear_once = true;
     let clear = c
@@ -1152,7 +1170,10 @@ async fn incomplete_observation_never_confirms_a_clear() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=apple.ade: full snapshot authority after incremental cursor reset"]
 async fn full_rebuild_replaces_newer_delta_state_and_revokes_stale_profile() -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(Some(manufacturer(&PathBuf::from(std::env::var(
+        "MDM_APPLE_FIXTURES",
+    )?))?))
+    .await?;
     c.prepared_directory().await?;
     let machine = c.machine()?;
     ensure!(c.enroll(machine.clone()).await?.0 == StatusCode::OK);
@@ -1230,7 +1251,10 @@ async fn full_rebuild_replaces_newer_delta_state_and_revokes_stale_profile() -> 
 #[tokio::test]
 #[ignore = "MODULE=apple.ade: empty delta freshness, terminal cursor and broken-chain refusal"]
 async fn unchanged_devices_remain_authoritative_until_the_directory_chain_breaks() -> Result<()> {
-    let mut c = Control::start().await?;
+    let mut c = Control::start(Some(manufacturer(&PathBuf::from(std::env::var(
+        "MDM_APPLE_FIXTURES",
+    )?))?))
+    .await?;
     c.prepared_directory().await?;
     let serial = crate::test_support::case::name("ade-serial");
     let machine = c.machine()?;

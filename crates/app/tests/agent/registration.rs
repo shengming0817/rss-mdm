@@ -7,12 +7,12 @@ use rss_mdm_audit_integration::RequestAudit;
 #[ignore = "MODULE=agent.registration"]
 async fn registration_binding_and_replay() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
-    let router = crate::test_support::agent::router(&mut fixture).await?;
+    let (router, service) = crate::test_support::agent::router(&mut fixture).await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     // Self enrollment requires a live identity, not an enrollment permission.
-    let agent = crate::test_support::agent::register(&router, &mut browser).await?;
+    let agent = crate::test_support::agent::register(&service, &router, &mut browser).await?;
     let replay = agent_call(
         &router,
         Method::POST,
@@ -163,12 +163,11 @@ async fn registration_binding_and_replay() -> Result<()> {
 #[ignore = "MODULE=agent.registration"]
 async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
-    let router = crate::test_support::agent::router(&mut fixture).await?;
+    let (router, service) = crate::test_support::agent::router(&mut fixture).await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let service = crate::test_support::agent::service(&fixture).await?;
     let mut browser = fixture.browser("other")?;
-    let agent = crate::test_support::agent::register(&router, &mut browser).await?;
+    let agent = crate::test_support::agent::register(&service, &router, &mut browser).await?;
     let quota_user = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
         fixture.registration.clone(),
@@ -346,7 +345,7 @@ async fn browser_authorization_quota_expiry_and_restart_are_durable() -> Result<
 #[ignore = "MODULE=agent.registration: paused first activation and retained candidate"]
 async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<()> {
     let mut f = authority::Authority::open().await?;
-    let router = crate::test_support::agent::router(&mut f).await?;
+    let (router, _) = crate::test_support::agent::router(&mut f).await?;
     let f_resources = std::mem::take(&mut f.resources);
     f_resources.finish(async {
     let service = crate::test_support::agent::service(&f).await?;

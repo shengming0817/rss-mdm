@@ -1,4 +1,4 @@
-use super::{process::*, runtime::*, *};
+use super::{runtime::*, *};
 use uuid::Uuid;
 pub(crate) fn request(revision: u64, input: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input})
@@ -34,14 +34,6 @@ pub(crate) async fn ok(
             .await?;
         ensure!(s == StatusCode::OK, "query result: {s} {page}");
         return Ok(page);
-    }
-    if let Some(task) = v["task"].as_str() {
-        let status = if let Some(url) = v["statusUrl"].as_str() {
-            url.to_owned()
-        } else {
-            format!("{path}/tasks/{task}")
-        };
-        await_task(browser, router, &status).await?;
     }
     Ok(v)
 }
@@ -219,11 +211,7 @@ pub(crate) async fn await_task(
     match settled {
         Ok(result) => result,
         Err(_) => {
-            let progress = pg(&format!(
-                "SELECT coalesce(jsonb_agg(p),'[]') FROM (SELECT j.id,j.kind,j.forwarded,j.failure,r.phase AS group_phase,r.object_count,s.phase AS scope_phase FROM mdm_automation.automation_jobs j LEFT JOIN mdm_group.member_runs r ON (r.tenant_id,r.id)=(j.tenant_id,j.id) LEFT JOIN mdm_planning.scope_runs s ON (s.tenant_id,s.id)=(j.tenant_id,j.id) WHERE j.tenant_id='{TENANT}' AND NOT j.completed ORDER BY j.id LIMIT 16)p",
-                TENANT = case_tenant()
-            ))?;
-            anyhow::bail!("task {path} exceeded fixture deadline; last {last}; pending {progress}")
+            anyhow::bail!("task {path} exceeded fixture deadline; last {last}")
         }
     }
 }

@@ -643,8 +643,9 @@ async fn native_inventory_case(
             unreachable!()
         };
         specs.push(template.spec().clone());
+        if all_failed { break; }
     }
-    if !macos {
+    if !macos && !all_failed {
         let r::blueprints::Definition::AgentCollection { template } =
             r::blueprints::get("windows.agent.identity", "1")
                 .unwrap()
@@ -654,7 +655,7 @@ async fn native_inventory_case(
         };
         specs.push(template.spec().clone());
     }
-    if !large_raw {
+    if !large_raw && !all_failed {
     for (id, name) in if macos {
         [("sys_security","macos.agent.gatekeeper"),("sys_accounts","macos.agent.accounts"),("sys_certificates","macos.agent.certificates_system"),("sys_updates","macos.agent.updates_available_local")]
     } else {
@@ -750,13 +751,32 @@ async fn native_inventory_case(
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
-    let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
+    let updates = if !map_software && !all_failed {
+        let mut spec = definition.spec().clone();
+        let mut plan = spec.plan.spec().clone();
+        plan.queries.retain(|id, _| id == "sys_updates");
+        spec.plan = w::NativeCollectionPlan::new(plan)?;
+        spec.mappings.retain(|_, mapping| mapping.query == "sys_updates");
+        let updates = r::AgentCollectionDefinition::new(spec)?;
+        let bytes = updates.canonical();
+        let artifact = r::Artifact::new(r::Id::new("native.json")?, bytes.len() as u64, r::Digest::of(&bytes))?;
+        let id = Uuid::new_v4();
+        let version = r::Version::new(f.authority.identity.tenant, r::Id::new(id.to_string())?, r::Id::new("v1")?, r::Kind::AgentCollection, vec![r::Variant::new(r::Platform::Windows, r::Architecture::X86_64, r::Id::new("default")?, r::Declaration::AgentCollection { artifact: artifact.clone(), definition: updates.clone() })])?;
+        f.plan_runtime.local_tx(f.authority.identity.tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).unwrap()).await
+        })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+        let store = f.content.as_ref().expect("native content");
+        rss_mdm_content_service::fixture::artifact(store, &artifact, bytes, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?+86400).await?;
+        Some((id, updates))
+    } else { None };
+    let policy_input = |resource_id| json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
     let mut prior_updates = Value::Null;
     for &stage in stages {
+        let (current_resource, current_definition) = if matches!(stage, 1 | 2) && let Some((id, updates)) = &updates { (*id, updates) } else { (resource_id, &definition) };
         let policy = Uuid::new_v4();
-        if !map_software && stage == 0 {
+        if !map_software && !all_failed && stage == 0 {
         let ordinary = f
             .grants
             .iter()
@@ -764,7 +784,7 @@ async fn native_inventory_case(
             .cloned()
             .collect();
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
-        let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}}))).await?;
+        let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(current_resource)}}))).await?;
         ensure!(
             denied.0 == StatusCode::FORBIDDEN,
             "raw evidence publication bypass: {denied:?}"
@@ -772,7 +792,7 @@ async fn native_inventory_case(
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         }
-        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input()}})).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(current_resource)}})).await?;
         if large_raw && stage == 0 {
         let unsupported = agent_call(
             &f.router,
@@ -814,7 +834,7 @@ async fn native_inventory_case(
         let w::TaskPayload::Collection(spec) = &task.payload else {
             anyhow::bail!("native policy issued another task family");
         };
-        ensure!(spec.mappings == definition.spec().mappings && spec.fields.len() == spec.mappings.len());
+        ensure!(spec.mappings == current_definition.spec().mappings && spec.fields.len() == spec.mappings.len());
         if macos {
             ensure!(spec.fields.iter().any(|f| f.key.as_str() == "custom.ship_memory" && f.version == 1));
             let verify = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, f.key.public_key().as_ref());
@@ -1067,6 +1087,16 @@ async fn native_inventory_case(
                 }
             }).await??;
             ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native'", case_tenant(), spec.registration_id))?.trim() == "0");
+        } else if !map_software && matches!(stage, 1 | 2) {
+            tokio::time::timeout(Duration::from_secs(20), async {
+                loop {
+                    if pg(&format!("SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t" {break Ok::<_,anyhow::Error>(());}
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }).await??;
+            let updates: Value = serde_json::from_str(&projected_value(spec.registration_id, "device.updates.available", None).await?)?;
+            if stage == 1 {ensure!(updates == prior_updates, "truncated update replaced prior complete discovery");}
+            else {ensure!(updates["value"] == json!([]), "complete empty updates did not clear prior list");}
         } else {
             tokio::time::timeout(Duration::from_secs(20),async{
             loop{let rows=pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.memory.bytes' AND value::jsonb->>'value'='{}'",case_tenant(),spec.registration_id,8192+stage))?;if rows.trim()=="1"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}

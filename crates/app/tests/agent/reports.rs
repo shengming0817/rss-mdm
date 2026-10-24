@@ -7,7 +7,7 @@ use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 #[ignore = "MODULE=agent.reports: durable intake, projection, capacity, retention and ACK recovery"]
 async fn durable_reports_and_projection() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
-    let owned_router = crate::test_support::agent::router(&mut fixture).await?;
+    let (owned_router, _) = crate::test_support::agent::router(&mut fixture).await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
     let router = &owned_router;

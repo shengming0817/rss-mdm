@@ -7,6 +7,8 @@ use rss_mdm_software_service::publication::SourceConfig;
 async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() -> Result<()> {
     let peer = p::Server::new().await;
     let runtime = p::pg::runtime().await;
+    let content = p::stored_content().await;
+    let (audit, audit_pool) = p::pg::audit_store(runtime.clone()).await;
     let (root, mut config) = p::brew_config();
     let SourceConfig::Brew(source) = &mut config else {
         unreachable!()
@@ -19,8 +21,11 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         "https://mdm.example.test/api/v1/software/native/sources/{}/artifacts/",
         peer.logical
     );
-    let service = Arc::new(peer.service(runtime.clone(), config).await);
-    let input = p::seed(runtime.clone(), &peer, p::formula(&peer)).await;
+    let service = Arc::new(
+        peer.service(runtime.clone(), audit.clone(), content.clone(), config)
+            .await,
+    );
+    let input = p::seed(runtime.clone(), &content, &peer, p::formula(&peer)).await;
     let publication = p::submit_publication(&service, &input).await;
     service
         .publish(publication.id(), 1, p::pg::at(10), p::pg::cutoff())
@@ -38,14 +43,14 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
             services: std::collections::BTreeMap::from([(peer.logical.clone(), service.clone())]),
             tenant: p::pg::tenant(),
             runtime: runtime.clone(),
-            audit_store: p::pg::audit_store().await,
+            audit_store: audit,
             clock: Arc::new(crate::clock::FlowClock(Arc::new(crate::clock::SystemClock))),
         },
     );
     let router = rss_mdm_management_http::software_native::routes().with_state(Arc::new(
         rss_mdm_management_http::software_native::StateData {
             directory,
-            content: Some(p::stored_content().await),
+            content: Some(content.clone()),
             requests: Arc::new(tokio::sync::Semaphore::new(8)),
         },
     ));
@@ -234,6 +239,8 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     // Withdrawal leaves bytes already cloned at the consumer; it revokes fresh hosted reads.
     ensure!(formula.exists());
     drop(server);
+    content.close().await;
+    audit_pool.close().await;
     runtime.close().await;
     Ok(())
 }

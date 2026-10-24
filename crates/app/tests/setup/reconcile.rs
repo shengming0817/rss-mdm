@@ -55,7 +55,7 @@ async fn reserve(
     let operation = Uuid::new_v4();
     let mut tx = c.begin().await?;
     scope(&mut tx, tenant).await?;
-    connections::prepare(
+    connections::pending_fixture_in(
         &mut tx,
         TenantId::parse(&tenant.to_string())?,
         operation,
@@ -64,7 +64,6 @@ async fn reserve(
             profile: profile.into(),
             source,
         },
-        "reconcile-fixture",
         protection,
     )
     .await?;

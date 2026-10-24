@@ -39,3 +39,6 @@ mod delta;
 mod history;
 
 mod memberships;
+
+#[cfg(feature = "integration")]
+pub mod fixture;

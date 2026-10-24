@@ -149,39 +149,74 @@ async fn durable_push_leases_receipts_and_health() -> Result<()> {
 #[ignore = "MODULE=apple.push: isolated deadline query permission fault"]
 async fn deadline_query_failure_is_not_healthy_idle() -> Result<()> {
     use sqlx::Executor;
-    let fixture = Fixture::start().await?;
-    let mut pg =
-        PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
-    pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
-        .await?;
-    let result = rss_mdm_apple_channel::push::cycle(
-        &fixture.app.apple()?.channel,
-        &fixture.app.execution,
-        &fixture.app.access.apple_store(),
-        &fixture.app.audit_store,
-        case_tenant(),
-    )
-    .await;
-    pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
-        .await?;
-    let restored = rss_mdm_apple_channel::push::cycle(
-        &fixture.app.apple()?.channel,
-        &fixture.app.execution,
-        &fixture.app.access.apple_store(),
-        &fixture.app.audit_store,
-        case_tenant(),
-    )
-    .await;
-    fixture.close().await?;
-    ensure!(
-        matches!(
-            result,
-            Err(rss_mdm_apple_channel::Error::Unavailable(
-                rss_mdm_apple_channel::Failure::Database
-            ))
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            authority.identity.tenant,
         ),
-        "deadline query failure became healthy idle"
     );
-    ensure!(matches!(restored, Ok((0, push::WakeHealth::Idle, None))));
-    Ok(())
+    let (execution, _, _) = crate::test_support::command::command_service(
+        authority.audit.clone(),
+        sessions,
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    resources.resource(rss_mdm_execution_service::Resource(execution.clone()));
+    let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+    let apple_config = serde_json::from_slice(&std::fs::read(root.join("apple.json"))?)?;
+    let apple = Apple::load(
+        config.native_protector()?,
+        apple_config,
+        fixture_materials(&root)?,
+        crate::clock::SystemClock.unix_seconds()?,
+        (&config.product_origin, authority.identity.tenant),
+        crate::device_pki::providers(&config.device_pki)?,
+    )?;
+    let access = rss_mdm_apple_channel::Store::from_pool(
+        authority.pool.clone(),
+        authority.registration.clone(),
+        authority.authorization.clone(),
+    );
+    resources
+        .finish(async {
+            let mut pg =
+                PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+                    .await?;
+            pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
+                .await?;
+            let result = rss_mdm_apple_channel::push::cycle(
+                &apple.channel,
+                &execution,
+                &access,
+                &authority.audit,
+                case_tenant(),
+            )
+            .await;
+            pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
+                .await?;
+            let restored = rss_mdm_apple_channel::push::cycle(
+                &apple.channel,
+                &execution,
+                &access,
+                &authority.audit,
+                case_tenant(),
+            )
+            .await;
+            ensure!(
+                matches!(
+                    result,
+                    Err(rss_mdm_apple_channel::Error::Unavailable(
+                        rss_mdm_apple_channel::Failure::Database
+                    ))
+                ),
+                "deadline query failure became healthy idle"
+            );
+            ensure!(matches!(restored, Ok((0, push::WakeHealth::Idle, None))));
+            pg.close().await?;
+            Ok(())
+        })
+        .await
 }

@@ -698,8 +698,6 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         crate::test_support::gateway::registration(
             listener,
             router,
-            host.app.audit_store.clone(),
-            case_a().into(),
             crate::native::ChannelKind::Agent,
         )
         .await?,

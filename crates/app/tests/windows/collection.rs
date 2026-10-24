@@ -240,7 +240,8 @@ async fn template_flow(
         post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     } else {
         crate::test_support::planning_http::seed_native_template(
-            &host.app.flow.planning,
+            &(&host.app.flow.planning).runtime,
+            (&host.app.flow.planning).tenant,
             id,
             rss_mdm_resource::Platform::Windows,
             template,

@@ -106,32 +106,21 @@ pub(super) async fn prepare_environment(root: &std::path::Path) -> Result<()> {
         .max_connections(2)
         .connect_with(value.access_options()?)
         .await?;
-    let tenant = rss_request_context::TenantId::parse(&value.identity.tenant_id)?;
-    let source_runtime = crate::identity::open_runtime(
-        &value.access_database,
-        &value.flow.storage.target,
-        &value.flow.storage.lineage,
-        &[(tenant, value.flow.storage.epoch)],
-    )
-    .await?;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = rss_mdm_audit_integration::AuditStore::new(
-        pool.clone(),
-        value.audit.integrity()?,
-        source_runtime.clone(),
-        tenant,
-        Default::default(),
-        &budget.control(),
-    )
-    .await?;
-    let result = crate::authorization::store::initialize_authorization(
-        &audit,
-        user(&value.identity.tenant_id, BOOTSTRAP),
-        uuid::Uuid::new_v4(),
-    )
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(&value.identity.tenant_id)
+            .execute(&mut *tx)
+            .await?;
+        crate::authorization::store::seed_initialization_in(
+            &mut tx,
+            user(&value.identity.tenant_id, BOOTSTRAP),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    }
     .await;
-    source_runtime.close().await;
     pool.close().await;
     result?;
     refresh_management(root).await
@@ -376,17 +365,31 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
         .into_iter()
         .map(serde_json::from_value::<Rule>)
         .collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(rules.len() == 3);
-    anyhow::ensure!(protected_management_rule(&rules[0]));
-    anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
-    anyhow::ensure!(
-        rules[1]
-            .grants
-            .iter()
-            .all(|g| g.operation == Permission::InventoryRead)
-    );
-    let mut mixed = rules[0].clone();
-    mixed.grants.extend(rules[1].grants.clone());
+    let management = rules
+        .iter()
+        .find(|r| protected_management_rule(r))
+        .ok_or_else(|| anyhow::anyhow!("management rule absent"))?;
+    let inventory = rules
+        .iter()
+        .find(|r| {
+            !r.grants.is_empty()
+                && r.grants
+                    .iter()
+                    .all(|g| g.operation == Permission::InventoryRead)
+        })
+        .ok_or_else(|| anyhow::anyhow!("inventory rule absent"))?;
+    anyhow::ensure!(!protected_management_rule(inventory));
+    let device = rules
+        .iter()
+        .find(|r| {
+            r.grants
+                .iter()
+                .any(|g| matches!(g.scope, crate::authorization::Scope::Device { .. }))
+        })
+        .ok_or_else(|| anyhow::anyhow!("device rule absent"))?;
+    anyhow::ensure!(!protected_management_rule(device));
+    let mut mixed = management.clone();
+    mixed.grants.extend(inventory.grants.clone());
     anyhow::ensure!(!protected_management_rule(&mixed));
     Ok(())
 }

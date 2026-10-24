@@ -279,33 +279,23 @@ async fn s3_product_http_contract() -> Result<()> {
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-            let (path, bytes, enable) =
-                super::http::upload_recovery(&fixture, 1024 * 1024 + 1).await?;
+            let bytes = vec![0x71; 1024 * 1024 + 1];
+            let definition = publication_support::private_definition(fixture.registered["snapshot"].clone(), &bytes);
+            let (resource, _) = crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
             let mut user = fixture.user.clone();
-            let enabled = user
-                .call(&fixture.router, Method::POST, &path, Some(enable))
-                .await?;
-            ensure!(enabled.0 == StatusCode::OK);
-            let download = super::http::download_contract(&fixture, &user, &path, &bytes).await?;
-            crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, vec![])
-                .await?;
-            let cookie = user
-                .cookies
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            ensure!(
-                fixture
-                    .client
-                    .get(download)
-                    .header("host", "mdm.example.test")
-                    .header("cookie", cookie)
-                    .send()
-                    .await?
-                    .status()
-                    == StatusCode::FORBIDDEN
-            );
+            let cookie = user.cookies.iter().map(|(k,v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+            let operation = Uuid::new_v4();
+            let response = fixture.client.post(format!("{}/api/v1/resources/{resource}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={operation}",fixture.origin))
+                .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+                .header("x-csrf-token",user.csrf.as_ref().unwrap()).header("cookie",&cookie).header("content-type","application/octet-stream").body(bytes.clone()).send().await?;
+            ensure!(response.status()==StatusCode::CREATED, "S3 upload: {}", response.text().await?);
+            let path = format!("/api/v1/software/resources/{resource}/versions/v1");
+            let enabled = user.call(&fixture.router, Method::POST, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}}))).await?;
+            ensure!(enabled.0==StatusCode::OK,"S3 enable: {enabled:?}");
+            let response = fixture.client.get(format!("{}{path}/content?platform=windows&architecture=x86_64&variant=default",fixture.origin))
+                .header("host","mdm.example.test").header("cookie",cookie).header("range",format!("bytes={}-",bytes.len()-3)).send().await?;
+            ensure!(response.status()==StatusCode::PARTIAL_CONTENT);
+            ensure!(response.bytes().await?.as_ref()==&bytes[bytes.len()-3..]);
             Ok(())
         })
         .await

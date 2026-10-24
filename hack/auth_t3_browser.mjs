@@ -3,6 +3,19 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
+import {fileURLToPath} from 'node:url';
+const assert=(ok,message)=>{if(!ok)throw new Error(message)};
+export async function keycloak(page,user,input){
+  await page.waitForURL(new URL(input.issuer).origin+'/**');
+  await page.locator('#username').waitFor();
+  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
+  trusted();await page.locator('#username').fill(user);
+  trusted();await page.locator('#password').fill(input.idpPassword);
+  trusted();
+  await page.locator('#kc-login').click();
+}
+
+export async function main(){
 const {chromium}=require(process.env.MDM_PLAYWRIGHT_MODULE || '/opt/playwright-core');
 const input=JSON.parse(fs.readFileSync(process.argv[2] || '/fixture/browser-input.json','utf8'));
 const origin=input.origin, other=input.otherOrigin;
@@ -11,7 +24,6 @@ const api=`/api/v1/identity/tenants/${input.tenant}`;
 const inventory='/api/v1/devices/device-1/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
-const assert=(ok,message)=>{if(!ok)throw new Error(message)};
 const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
@@ -37,7 +49,8 @@ async function login(page,user,password){
   await page.goto(origin+`/tenants/${input.tenant}/login`);
   await page.locator('#login-name').fill(user);await page.locator('#login-password').fill(password);
   await page.locator('form button[type=submit]').click();
-  await page.waitForURL('**/sessions');
+  await poll(async()=> (await request(page,api+'/session')).status===200);
+  await page.goto(origin+`/tenants/${input.tenant}/sessions`);
   const r=await request(page,api+'/session');assert(r.status===200,'UI login');return r.value;
 }
 async function logoutUI(page,all=false){
@@ -50,15 +63,6 @@ async function logoutUI(page,all=false){
 async function cloneSession(page,url=origin){const ctx=await browser.newContext({locale:'en-US'});const cookies=await page.context().cookies(origin);await ctx.addCookies(cookies.map(c=>({...c,domain:new URL(url).hostname})));const p=await ctx.newPage();await p.goto(url+'/');return p}
 async function restart(){docker(['restart','--time','45',input.server]);await poll(async()=> (await request(admin,'/readyz')).status===200)}
 function sql(statement){return docker(['exec','-i',input.pg,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test'],statement)}
-async function keycloak(page,user){
-  await page.waitForURL(new URL(input.issuer).origin+'/**');
-  await page.locator('#username').waitFor();
-  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
-  trusted();await page.locator('#username').fill(user);
-  trusted();await page.locator('#password').fill(input.idpPassword);
-  trusted();
-  await page.locator('#kc-login').click();
-}
 let admin,member;
 async function closeContexts(){
   const errors=[];
@@ -200,16 +204,16 @@ await localUsers();
   await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   await member.locator('#link-provider').selectOption(provider);await member.locator('#link-password').fill(input.memberPassword);
   await member.locator('form').filter({has:member.locator('#link-provider')}).locator('button').click();
-  await keycloak(member,'alice');await member.waitForURL('**/sessions');
+  await keycloak(member,'alice',input);await member.waitForURL(origin+'/**');await poll(async()=> (await request(member,api+'/session')).status===200);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'link changed subject');
   await logoutUI(member);await member.context().clearCookies();
   await member.goto(origin+`/tenants/${input.tenant}/login`);
-  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice');await member.waitForURL('**/sessions');
+  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice',input);await member.waitForURL(origin+'/**');await poll(async()=> (await request(member,api+'/session')).status===200);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'SSO subject binding');
   assert((await request(member,inventory)).status===200,'SSO authorized resource');
   assert((await request(member,api+'/accounts')).status===403,'SSO unauthorized resource');checks.enterprise=true;
 
-  stage='unknown_subject';const unknown=await pageAt();await unknown.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(unknown,'unknown');
+  stage='unknown_subject';const unknown=await pageAt();await unknown.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(unknown,'unknown',input);
   await unknown.waitForURL(origin+'/**');assert((await request(unknown,api+'/session')).status===401,'unknown subject');await unknown.context().close();checks.unknown_subject=true;
 
   stage='private_binding';const deniedSettings={...settings,clientId:'unapproved-client'};
@@ -272,3 +276,6 @@ await localUsers();
   });
   process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason,scenarios,checks}));process.exitCode=1;
 }
+
+}
+if(process.argv[1] && process.argv[1]===fileURLToPath(import.meta.url))await main();

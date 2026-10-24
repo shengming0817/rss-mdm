@@ -62,6 +62,12 @@ pub struct Services {
     pub windows: bool,
     pub apple: bool,
 }
+pub fn device_action_routes() -> Router {
+    Router::new().route(
+        "/devices/{id}/actions",
+        post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+    )
+}
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let broker = crate::enterprise_broker::routes(
         state.agent_enrollment.clone(),
@@ -162,10 +168,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             )),
         )
         .merge(crate::authorization::routes().with_state(authorization))
-        .route(
-            "/devices/{id}/actions",
-            post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        );
+        .merge(device_action_routes());
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes().with_state(planning.clone()))
@@ -222,10 +225,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(planning_routes)
         .merge(operations)
         .merge(resources)
-        .route(
-            "/mdm-candidate/workspace",
-            get(workspace).owned(&contracts::WORKSPACE, &[RouteOperation::Get]),
-        )
+        .merge(workspace_routes())
         .route_layer(middleware::from_fn_with_state(
             authentication_state,
             crate::authorization::http::protect,
@@ -240,6 +240,13 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         envelope,
     )
 }
+pub fn workspace_routes() -> Router {
+    Router::new().route(
+        "/mdm-candidate/workspace",
+        get(workspace).owned(&contracts::WORKSPACE, &[RouteOperation::Get]),
+    )
+}
+
 async fn workspace(
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<serde_json::Value>, Error> {

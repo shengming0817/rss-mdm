@@ -112,6 +112,15 @@ impl Config {
             .await
             .map_err(|_| invalid())?,
         );
+        let policy_store = Arc::new(
+            rss_mdm_policy_postgres::PolicyStore::new(
+                runtime.clone(),
+                tenant,
+                rss_mdm_flow_service::transaction::deadline(),
+            )
+            .await
+            .map_err(|_| invalid())?,
+        );
         match Planning::new(
             audit_store.clone(),
             runtime.clone(),
@@ -159,6 +168,7 @@ impl Config {
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
+                    policy_store,
                     catalog,
                     software_resources,
                     assets,
@@ -313,6 +323,7 @@ pub(crate) struct Flow {
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
+    pub(crate) policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,

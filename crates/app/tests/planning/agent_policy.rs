@@ -305,7 +305,8 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     let ordered_namespace = case::id("policy-scan") & !0xffff;
     let template_id = Uuid::from_u128(ordered_namespace | 1);
     post(author,router,&format!("/api/v1/policies/{template_id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
-    let template = fixture.planning.policy_store.get(template_id, crate::identity::deadline()).await?.unwrap();
+    let policy_store = rss_mdm_policy_postgres::PolicyStore::new(fixture.planning.runtime.clone(), fixture.planning.tenant, crate::identity::deadline()).await?;
+    let template = policy_store.get(template_id, crate::identity::deadline()).await?.unwrap();
     let frozen: Value = serde_json::from_str(&pg(&format!("SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'", case_tenant(), template.version))?)?;
     let at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let prepared: Vec<_> = (2..=64).map(|n| {
@@ -313,7 +314,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
             &rss_mdm_policy::Change::Put { definition: Box::new(template.definition.clone()), enabled: true }, Uuid::new_v4(), template.execution_binding).unwrap().policy;
         rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(frozen.clone()), author: json!({"subject":fixture.author_id}), at }
     }).collect();
-    fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&fixture.planning.policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
+    fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
         for publication in publications.iter() { store.publish_in(tx, publication).await?.unwrap(); }
         Ok(())
     })).await.fold(|_| (), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"));

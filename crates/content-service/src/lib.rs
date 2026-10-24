@@ -232,3 +232,6 @@ pub mod software;
 #[cfg(test)]
 #[path = "../tests/unit.rs"]
 mod tests;
+
+#[cfg(feature = "integration")]
+pub mod fixture;

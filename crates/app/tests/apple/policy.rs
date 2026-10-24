@@ -101,8 +101,9 @@ impl Fixture {
     ) -> Result<(Uuid, Uuid)> {
         let resource = Uuid::new_v4();
         crate::test_support::planning_http::native_configuration_resource(
-            &mut self.browser,
-            &self.router,
+            &(&self.app.flow.planning).runtime,
+            (&self.app.flow.planning).tenant,
+            self.app.content_writer.as_deref().expect("native content"),
             resource,
             "macos",
             "aarch64",
@@ -159,8 +160,7 @@ impl Fixture {
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
-        crate::test_support::planning_http::native_configuration_resource(
-            &mut self.browser, &self.router, resource, "macos", "aarch64",
+        crate::test_support::planning_http::native_configuration_resource(&(&self.app.flow.planning).runtime, (&self.app.flow.planning).tenant, self.app.content_writer.as_deref().expect("native content"), resource, "macos", "aarch64",
             json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();

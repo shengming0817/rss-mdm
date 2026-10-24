@@ -27,13 +27,9 @@ fn grant(operation: &str, scope: Value) -> Value {
 }
 
 struct Fixture {
-    base: Value,
-    config: Config,
     resources: Resources,
     router: Router,
     admin: Browser,
-    member: Browser,
-    subject: String,
     store: Arc<crate::Database>,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 }
@@ -42,23 +38,16 @@ async fn fixture() -> Result<Fixture> {
         Box::pin(async move {
             let base: Value =
                 serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-            let config: Config = serde_json::from_value(base.clone())?;
             let store = database(&base).await?;
             resources.resource(crate::lifecycle::AccessResource(store.clone()));
             let (router, audit_store, application_resources) =
                 app_with_access(&base, store.clone()).await?;
             resources.extend(application_resources);
             let admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
-            let member = crate::test_support::authority::Authority::prepared_browser("other")?;
-            let subject = prepared_subject(&member)?;
             Ok(Fixture {
                 resources: Default::default(),
-                base,
-                config,
                 router,
                 admin,
-                member,
-                subject,
                 store,
                 audit_store,
             })

@@ -490,7 +490,19 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let associations =
         rss_mdm_device_service::Associations::new(fixture.audit.clone(), tenant(), &[7; 32])?;
     associations.reconcile().await?;
-    let (router, app_resources) = app(&fixture.base).await?;
+        let tenant = fixture.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let mut app_resources = Resources::default();
+    app_resources.resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum();
+    let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let member = prepared_subject(&browser)?;

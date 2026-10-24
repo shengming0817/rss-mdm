@@ -135,6 +135,7 @@ pub(crate) struct Fixture {
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
+    pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub(crate) plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) author: Browser,
@@ -165,13 +166,14 @@ impl Fixture {
                         ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?)
                             .unwrap();
                     // Store startup recovery and fixture uploads share the content directory.
-                    let content_setup = super::software::content_setup_guard().await?;
                     let config: Config = serde_json::from_value(base.clone())?;
                     let mut authority = authority::Authority::from_config(base.clone()).await?;
                     resources.extend(std::mem::take(&mut authority.resources));
                     let tenant = authority.identity.tenant;
                     let protection = config.native_protector()?;
+                    let content_setup = super::software::content_setup_guard().await?;
                     let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
+                    drop(content_setup);
                     if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
                     let plan_runtime = crate::planning::test_support::runtime(tenant).await;
                     resources.resource(SourceResource(plan_runtime.clone()));
@@ -311,7 +313,7 @@ impl Fixture {
             },
         });
                     let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), plan_audit, tenant, planning.policy_store.clone(), inputs.clone()));
+                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), plan_audit, tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), inputs.clone()));
                     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
                     let routes = Router::new().nest("/api/v1",
                         rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum()
@@ -322,7 +324,6 @@ impl Fixture {
                         .merge(rss_mdm_management_http::execution::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState { execution: service.clone(), apple: false, windows: false })).into_axum()),
                     ).merge(authority.authorization()).merge(authority.enrollment());
                     let router = authority.router_with_public(routes, Router::new().nest("/api/v1/agent/runtime", native.into_axum()))?;
-                    drop(content_setup);
                     let author = crate::test_support::authority::Authority::prepared_browser("other")?;
                     let author_id = prepared_subject(&author)?;
                     let mut grants = crate::test_support::identity::device_grants(
@@ -378,6 +379,7 @@ impl Fixture {
                         command_runtime: runtime,
                         plan_runtime,
                         planning,
+                        inputs,
                         author,
                         access_authenticator: None,
                         author_id,
@@ -488,7 +490,18 @@ impl Fixture {
                 |_| Err(anyhow::anyhow!("resource fixture commit unconfirmed")),
                 |e| Err(anyhow::anyhow!(e)),
             )?;
-        ensure!(upload(&self.author, &self.router, id, bytes).await? == StatusCode::CREATED);
+        let artifact = Artifact::new(
+            Id::new("fixture-script")?,
+            bytes.len() as u64,
+            Digest::from_bytes(digest),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            self.content.as_deref().expect("script content"),
+            &artifact,
+            bytes.to_vec(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -549,7 +562,12 @@ pub(crate) async fn seed_scope(
         )
 }
 
-pub(crate) async fn seed_script_result(f: &Fixture, run: Uuid, canary: &str) -> Result<()> {
+pub(crate) async fn seed_script_result(
+    f: &Fixture,
+    run: Uuid,
+    output: Value,
+    canary: &str,
+) -> Result<()> {
     use rss_mdm_execution_service::actions::state::{Cancellation, Delivery, Execution, RunState};
     let result = rss_mdm_agent_wire::runtime::ScriptRunResult {
         collected_at: 1,
@@ -558,23 +576,110 @@ pub(crate) async fn seed_script_result(f: &Fixture, run: Uuid, canary: &str) -> 
         quality: rss_mdm_agent_wire::runtime::OutputQuality::Complete,
         schema_valid: true,
         budget_valid: true,
-        output: json!({"secret":canary}),
+        output,
         output_reference: None,
         diagnostics: serde_json::from_value(
             json!({"stdout":canary,"stderr":canary,"durationMs":1,"executedAt":1,"failure":null}),
         )?,
         trusted: true,
     };
-    let result = serde_json::to_value(result)?;
+    let mut result = serde_json::to_value(result)?;
     let tenant = f.authority.identity.tenant;
     f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
         tx.with_connection(move |c| Box::pin(async move {
-            let deadline: i64 = sqlx::query_scalar("SELECT deadline FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+            let (deadline, created): (i64, i64) = sqlx::query_as("SELECT deadline, created_at FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant.to_string()).bind(run).fetch_one(&mut *c).await?;
-            let state = RunState { delivery: Delivery::Received {attempt: Uuid::new_v4(), lease_until: deadline}, execution: Execution::Succeeded, cancellation: Cancellation::None, deadline, started_at: Some(1) };
+            result["collectedAt"] = json!(created);
+            result["receivedAt"] = json!(created + 1);
+            result["diagnostics"]["executedAt"] = json!(created);
+            let state = RunState { delivery: Delivery::Received {attempt: Uuid::new_v4(), lease_until: deadline}, execution: Execution::Succeeded, cancellation: Cancellation::None, deadline, started_at: Some(created) };
             sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4,gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(tenant.to_string()).bind(run).bind(serde_json::to_value(state).expect("run state")).bind(result).execute(c).await?;
             Ok(())
         })).await
     })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))
+}
+
+pub(crate) async fn seed_script_policy(f: &Fixture, resource: Uuid) -> Result<Uuid> {
+    use rss_mdm_execution_service::input_preparation::{PublicationAuthority, PublicationInput};
+    let id = Uuid::new_v4();
+    let change = rss_mdm_policy::Change::Put {
+        definition: Box::new(serde_json::from_value(policy_definition(
+            resource,
+            case_task_scope(),
+        ))?),
+        enabled: true,
+    };
+    let policy = rss_mdm_policy::Policy::apply(id, None, 0, &change, Uuid::new_v4(), None)?.policy;
+    let input = PublicationInput::try_from(&policy.definition.action)?;
+    let verified = f.inputs.prepare_resource(input.resource()).await?;
+    let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+    f.plan_runtime
+        .local_tx_with_context(
+            f.authority.identity.tenant,
+            crate::identity::deadline(),
+            (&f.inputs, &proof, &policy, &change, verified.as_ref()),
+            |(inputs, proof, policy, change, verified), tx| {
+                Box::pin(async move {
+                    let frozen = inputs
+                        .publish_in(
+                            tx,
+                            &PublicationInput::try_from(&policy.definition.action)
+                                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+                            *verified,
+                            &PublicationAuthority {
+                                proof,
+                                snapshot: proof
+                                    .authorization()
+                                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+                                owner: rss_mdm_execution_service::configuration::Owner::Policy {
+                                    policy: policy.id,
+                                    version: policy.version,
+                                },
+                                devices: None,
+                            },
+                        )
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    let publication = rss_mdm_policy_postgres::Publication {
+                        change: (*change).clone(),
+                        policy: (*policy).clone(),
+                        frozen: Some(serde_json::to_value(frozen).expect("frozen script")),
+                        author: serde_json::to_value(proof.actor()).expect("author"),
+                        at: 1,
+                    };
+                    rss_mdm_policy_postgres::fixture::published_in(tx, &publication).await
+                })
+            },
+        )
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    Ok(id)
+}
+
+pub(crate) async fn seed_script_run(f: &Fixture, policy: Uuid) -> Result<Uuid> {
+    let task_id = Uuid::new_v4();
+    let mut tx = f.authority.pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let object = f
+        .planning
+        .objects
+        .endpoint(&mut tx, f.authority.identity.tenant, case_device_id())
+        .await?;
+    tx.rollback().await?;
+    let source_objects = serde_json::to_value(vec![object])?;
+    let tenant = f.authority.identity.tenant;
+    f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            tx.with_connection(move |c| Box::pin(async move {
+                let state = rss_mdm_execution_service::actions::state::RunState::new(300, 1).expect("valid run horizon");
+                sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT p.tenant_id,$2,p.current_version,r.device,r.id,r.generation,'retained-sensitive-result',1,1,300,$4,true,$5,$6 FROM mdm_policy.policies p JOIN mdm_access.registrations r ON r.tenant_id=p.tenant_id AND r.device=$3 AND r.channel='agent' AND r.state='active' WHERE p.tenant_id=$1::uuid AND p.id=$7")
+                    .bind(tenant.to_string()).bind(task_id).bind(case_device_id()).bind(serde_json::to_value(state).expect("run state"))
+                    .bind(vec![7u8;32]).bind(source_objects).bind(policy).execute(c).await?;
+                Ok(())
+            })).await
+        })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
+    Ok(task_id)
 }

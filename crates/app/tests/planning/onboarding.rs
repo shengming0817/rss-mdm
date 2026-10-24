@@ -9,22 +9,17 @@ async fn fixture() -> Result<Fixture> {
         json!({"windows":"https://enroll.example.test","macos":"https://enroll.example.test/"});
     let (resources, mut f) = Resources::build(move |resources| {
         Box::pin(async move {
-    let mut f = Fixture::from_config(base).await?;
-    resources.extend(std::mem::take(&mut f.resources));
-    f.grants
-        .extend(identity::device_grants(None, &["enrollment"])?);
-    identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-    f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
-        .await?;
-    let setup = start_automation(&f.base).await?;
-    let group = Uuid::new_v4();
-    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"MDM missing","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
-    stop_worker(setup).await?;
-    f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
-        .await?;
-    Ok(f)
+            let mut f = Fixture::from_config(base).await?;
+            resources.extend(std::mem::take(&mut f.resources));
+            f.grants
+                .extend(identity::device_grants(None, &["enrollment"])?);
+            identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
+                .await?;
+            Ok(f)
+        })
     })
-    }).await?;
+    .await?;
     f.resources = resources;
     Ok(f)
 }
@@ -65,6 +60,12 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
 async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_identity()
 -> Result<()> {
     let mut f = fixture().await?;
+    let setup = start_automation(&f.base).await?;
+    let group = Uuid::new_v4();
+    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"MDM missing","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
+    stop_worker(setup).await?;
+    f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
+        .await?;
     let runtime = agent_runtime(&f.authority).await?;
     f.resources
         .resource(InventoryFixtureResource(runtime.clone()));
@@ -182,6 +183,11 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()> {
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
@@ -220,6 +226,11 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Result<()> {
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
@@ -301,6 +312,11 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
     use rss_mdm_registration_service::enrollment::native::{AgentPolicyAuthority, Coordinates};
     use sqlx::Connection;
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let automation = start_automation(&f.base).await?;
@@ -414,6 +430,11 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
     use crate::authorization::{OperationAuthority, Permission};
     use sqlx::{Connection, Row};
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let management = f.grants.iter().filter(|g| g.operation != Permission::InventoryRead).cloned().collect();

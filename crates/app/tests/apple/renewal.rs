@@ -350,7 +350,7 @@ impl Fixture {
 #[ignore = "MODULE=apple.renewal: native protocol and durable state"]
 async fn certificate_renewal_preserves_registration() -> Result<()> {
     let mut f = Fixture::start().await?;
-    let (peer, device) = f.ready_scep_peer().await?;
+    let (peer, device) = f.ready_local_peer().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
