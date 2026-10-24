@@ -921,6 +921,54 @@ async fn renew(
     certificate: &[u8],
     key: &std::path::Path,
 ) -> anyhow::Result<Renewed> {
+    let linked = issue
+        .header
+        .to
+        .as_deref()
+        .is_some_and(|value| value.ends_with("/LinkedEnrollment.svc"));
+    let prefix = if linked { "Linked" } else { "" };
+    for (fixture, operation, service) in [
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            soap::Operation::Discover,
+            "Discovery",
+        ),
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            soap::Operation::GetPolicies,
+            "Policy",
+        ),
+    ] {
+        let mut request = soap::decode(fixture, operation, &CodecLimits::default())?;
+        let path = format!(
+            "{}/EnrollmentServer/{prefix}{service}.svc",
+            host.app.windows()?.channel.management_origin
+        );
+        request.header.to = Some(path.clone());
+        request.header.security = None;
+        let reply = client
+            .post(path)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&request, &CodecLimits::default())?)
+            .send()
+            .await?;
+        ensure!(
+            reply.status() == StatusCode::OK,
+            "certificate renewal {service} failed"
+        );
+        let decoded =
+            soap::decode_response(&request, &reply.bytes().await?, &CodecLimits::default())?;
+        if let Body::DiscoverResponse(discovery) = decoded.body {
+            ensure!(discovery.auth_policy == soap::AuthPolicy::Certificate);
+            ensure!(
+                discovery.enrollment_url
+                    == format!(
+                        "{}/EnrollmentServer/{prefix}Enrollment.svc",
+                        host.app.windows()?.channel.management_origin
+                    )
+            );
+        }
+    }
     let temporary = tempfile::tempdir()?;
     let new_key = temporary.path().join("new.key");
     let csr = temporary.path().join("new.csr");

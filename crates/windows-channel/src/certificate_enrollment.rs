@@ -36,16 +36,27 @@ pub(crate) async fn discover(
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(endpoint): Extension<ManagementEndpoint>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
-    discovery(&app, peer, &endpoint.0, &headers, &bytes, Purpose::Primary).await
+    discovery(
+        &app,
+        peer,
+        &endpoint.0,
+        &headers,
+        &bytes,
+        Purpose::Primary,
+        &audit,
+    )
+    .await
 }
 
 pub(crate) async fn linked_discover(
     State(app): State<Arc<HttpState>>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(endpoint): Extension<ManagementEndpoint>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     bytes: Bytes,
 ) -> Response {
@@ -56,6 +67,7 @@ pub(crate) async fn linked_discover(
         &headers,
         &bytes,
         Purpose::WindowsDeclared,
+        &audit,
     )
     .await
 }
@@ -67,6 +79,7 @@ async fn discovery(
     headers: &HeaderMap,
     bytes: &[u8],
     purpose: Purpose,
+    audit: &RequestAudit,
 ) -> Response {
     let linked = purpose == Purpose::WindowsDeclared;
     let path = if linked {
@@ -79,7 +92,10 @@ async fn discovery(
         Err(error) => return fault(None, error),
     };
     let result = async {
-        principal(app, peer, purpose).await?;
+        let principal = principal(app, peer, purpose).await?;
+        audit.identify_device(principal.registration());
+        audit.registration(principal.registration());
+        audit.target_device(principal.device());
         let prefix = if linked { "Linked" } else { "" };
         response(
             Some(&message),
@@ -114,33 +130,47 @@ pub(crate) async fn policy(
         Ok(message) => message,
         Err(error) => return fault(None, error),
     };
-    let result = async {
-        validate_timestamp(
-            message.header.security.as_ref(),
-            app.clock
-                .unix_seconds()
-                .ok_or(Error::Unavailable(Failure::Clock))?,
-        )?;
-        let principal = principal(&app, peer, Purpose::Primary).await?;
-        audit.identify_device(principal.registration());
-        audit.registration(principal.registration());
-        audit.target_device(principal.device());
-        response(
-            Some(&message),
-            Body::GetPoliciesResponse(soap::Policy {
-                policy_id: "RSS-MDM".into(),
-                common_name: "RSS MDM Device".into(),
-                validity_seconds: 90 * 86400,
-                renewal_seconds: 7 * 86400,
-                minimum_key_length: 2048,
-                major_revision: 1,
-                minor_revision: 0,
-            }),
-            0,
-        )
-    }
-    .await;
-    result.unwrap_or_else(|error| fault(Some(&message), error))
+    policy_message(&app, peer, &audit, &message, Purpose::Primary)
+        .await
+        .unwrap_or_else(|error| fault(Some(&message), error))
+}
+
+pub(super) async fn policy_message(
+    app: &HttpState,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    audit: &RequestAudit,
+    message: &soap::Message,
+    purpose: Purpose,
+) -> Result<Response, Error> {
+    validate_timestamp(
+        message.header.security.as_ref(),
+        app.clock
+            .unix_seconds()
+            .ok_or(Error::Unavailable(Failure::Clock))?,
+    )?;
+    let principal = principal(app, peer, purpose).await?;
+    audit.identify_device(principal.registration());
+    audit.registration(principal.registration());
+    audit.target_device(principal.device());
+    let linked = purpose == Purpose::WindowsDeclared;
+    response(
+        Some(message),
+        Body::GetPoliciesResponse(soap::Policy {
+            policy_id: if linked { "" } else { "RSS-MDM" }.into(),
+            common_name: if linked {
+                "RSS MDM WinDC"
+            } else {
+                "RSS MDM Device"
+            }
+            .into(),
+            validity_seconds: 90 * 86400,
+            renewal_seconds: if linked { 30 } else { 7 } * 86400,
+            minimum_key_length: 2048,
+            major_revision: 1,
+            minor_revision: 0,
+        }),
+        0,
+    )
 }
 
 pub(crate) async fn issue(

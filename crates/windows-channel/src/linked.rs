@@ -69,6 +69,8 @@ pub(crate) async fn discover(
 }
 pub(crate) async fn policy(
     State(app): State<Arc<HttpState>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
     bytes: Bytes,
@@ -83,6 +85,23 @@ pub(crate) async fn policy(
         Ok(message) => message,
         Err(error) => return fault(None, error),
     };
+    if message
+        .header
+        .security
+        .as_ref()
+        .and_then(|security| security.binary_token.as_ref())
+        .is_none()
+    {
+        return certificate_enrollment::policy_message(
+            &app,
+            peer,
+            &audit,
+            &message,
+            Purpose::WindowsDeclared,
+        )
+        .await
+        .unwrap_or_else(|error| fault(Some(&message), error));
+    }
     let result = (|| {
         let security = message.header.security.as_ref().ok_or(Error::Malformed)?;
         if security.binary_token.is_none() || security.username.is_some() {
