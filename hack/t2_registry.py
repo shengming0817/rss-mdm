@@ -427,7 +427,7 @@ for name in ('enrollment.recovery','windows.issuance','windows.enrollment','wind
 for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users', 'ddm'):
     no_pg = part in ('cms', 'apns')
     fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
-    if part in ('profile', 'policy', 'ddm', 'onboarding'):
+    if part in ('profile', 'policy', 'ddm', 'onboarding', 'collection', 'identity'):
         fixtures += ('content',)
     if part in ('scep', 'renewal', 'identity', 'host'):
         fixtures += ('scep',)

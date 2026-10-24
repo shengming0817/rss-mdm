@@ -1,5 +1,31 @@
 use crate::applicability::*;
 
+#[test]
+fn macos_prerequisite_response_accepts_automatic_udid_without_widening_facts() {
+    // UTM macOS 26.6.2 returns UDID alongside the three requested facts.
+    let mut facts = plist::Dictionary::from_iter([
+        ("OSVersion", plist::Value::from("26.6.2")),
+        ("IsSupervised", true.into()),
+        ("IsAppleSilicon", true.into()),
+        ("UDID", "8A12E768-FE13-4F03-948B-AE5EE69E957B".into()),
+    ]);
+    let response = |facts: &plist::Dictionary| {
+        plist::Dictionary::from_iter([("QueryResponses", plist::Value::from(facts.clone()))])
+    };
+    let context = Context::from_reports(&response(&facts), None, Channel::Device).unwrap();
+    assert_eq!(context.version, Some(Version::parse("26.6.2").unwrap()));
+    assert_eq!(context.supervised, Some(true));
+    assert_eq!(context.apple_silicon, Some(true));
+    assert_eq!(context.automated_enrollment, None);
+    assert_eq!(context.user_approved, None);
+
+    facts.insert("UnexpectedFact".into(), true.into());
+    assert!(Context::from_reports(&response(&facts), None, Channel::Device).is_err());
+    facts.remove("UnexpectedFact");
+    facts.insert("OSVersion".into(), true.into());
+    assert!(Context::from_reports(&response(&facts), None, Channel::Device).is_err());
+}
+
 fn device(version: &str) -> Context {
     Context {
         version: Some(Version::parse(version).unwrap()),

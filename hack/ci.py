@@ -275,6 +275,8 @@ def verify_capability_boundaries(data):
         dependencies = {d['name'] for d in package['dependencies'] if d['kind'] != 'dev'}
         invalid = dependencies & denied
         if owner in {'certificate', 'apple-mdm'}:
+            # Apple PSSO consumes shared value contracts; verify_agent_wire separately
+            # rejects backend, OS execution and private-component dependencies.
             invalid |= {name for name in dependencies if name.startswith('rss-mdm-')
                         and not (owner == 'apple-mdm' and name == 'rss-mdm-agent-wire')}
         if owner in {'query', 'http-contract'}:
