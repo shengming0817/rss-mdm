@@ -575,8 +575,15 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"ACK is not observed readiness");
-        let payload=&profile.payloads[0];
-        let observed=plist::Value::Array(vec![protocol::dictionary([("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(vec![protocol::dictionary([("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),("PayloadVersion",1.into()),("PayloadType","com.apple.extensiblesso".into())]).into()]))]).into()]);
+        let payloads = profile.payloads.iter().map(|payload| Ok(protocol::dictionary([
+            ("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),
+            ("PayloadVersion",1.into()),("PayloadType",payload.payload_type()?.into())]).into())).collect::<Result<Vec<plist::Value>>>()?;
+        let report = |children: Vec<plist::Value>| plist::Value::Array(vec![protocol::dictionary([
+            ("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),
+            ("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(children))]).into()]);
+        let incomplete = protocol::dictionary([("ProfileList", report(payloads[..1].to_vec()))]);
+        ensure!(!profile.observed(&incomplete)?, "missing required associated domains cannot qualify");
+        let observed = report(payloads);
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
         let device=Key::new()?;let device_encryption=Key::new()?;let user=Key::new()?;let encryption=Key::new()?;

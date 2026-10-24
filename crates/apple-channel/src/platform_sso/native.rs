@@ -204,7 +204,7 @@ mod tests {
             );
         }
         let mut wrong_type = outer;
-        wrong_type["assertion"] = json!(user.sign(BRIDGE_TYPE, &inner).unwrap());
+        wrong_type["assertion"] = json!(user.sign("incorrect-purpose+jwt", &inner).unwrap());
         assert!(
             verify(
                 &rt,

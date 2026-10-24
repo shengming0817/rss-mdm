@@ -56,7 +56,22 @@ impl Runtime {
     }
     pub fn fingerprint(&self) -> Result<String, Error> {
         // Routine signing-key rotation does not revoke device registrations.
-        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints))
+        // Hash actual desired payload content using neutral object IDs, so changing a required
+        // payload invalidates retained profile qualification without a second format-version knob.
+        let (origin, tenant) = self
+            .endpoints
+            .base
+            .split_once("/api/v1/apple/platform-sso/")
+            .ok_or(Error::Malformed)?;
+        let tenant = uuid::Uuid::parse_str(tenant).map_err(|_| Error::Malformed)?;
+        let template = rss_mdm_apple_mdm::platform_sso::profile(
+            &self.configuration,
+            origin,
+            tenant,
+            uuid::Uuid::from_u128(1),
+            uuid::Uuid::from_u128(2),
+        )?;
+        let bytes = serde_json::to_vec(&(&self.configuration, &self.endpoints, template))
             .map_err(|_| Error::Malformed)?;
         use sha2::Digest;
         Ok(crypto::encode(&sha2::Sha256::digest(bytes)))

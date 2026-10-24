@@ -201,6 +201,7 @@ def render(root, publish_address='0.0.0.0'):
 '''
                 block += location('~ ^/api/v1/resources/[^/]+/(content|uploads/[^/]+)$', backend, budget='8g', streaming=True)
                 block += management(backend) + scep_locations(host)
+                block += location('= /.well-known/apple-app-site-association', backend)
                 block += '''        location = /api { return 404; }
         location ^~ /api/v1/public-agent/ { return 404; }
         location ^~ /software/native/ { default_type application/json; return 404 '{"code":"not_found"}'; }
