@@ -23,7 +23,7 @@ BEGIN
  END IF;
  v=mdm.record_asset_change(t,'collection',jsonb_build_object('run',r->>'id'),fields);
  IF TG_OP<>'DELETE' THEN
-  d=jsonb_build_object('id',r->>'id','result',r->>'result','attempts',r->>'attempts','delivery_pending',r->'delivery_pending');
+  d=jsonb_build_object('id',r->>'id','result',r->>'result','progress_version',r->>'progress_version','delivery_pending',r->'delivery_pending');
  END IF;
  INSERT INTO mdm_access.collection_history VALUES(t,(r->>'id')::uuid,r->>'scope',(r->>'sequence')::bigint,v,d);
  RETURN NULL;

@@ -130,7 +130,7 @@ impl SnapshotReader {
         .await
     }
 
-    async fn scoped_devices_on(
+    pub(super) async fn scoped_devices_on(
         &self,
         c: &mut sqlx::PgConnection,
         watermark: i64,
@@ -159,51 +159,30 @@ impl SnapshotReader {
                 )
             })
             .collect();
-        let tenant = self.tenant.to_string();
-        let selected = ids.to_vec();
-        let rows = crate::device::read::sources_at(c, tenant, selected, watermark).await?;
-        if rows.len() > 2000 {
-            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        let fields = catalog
+            .fields()
+            .filter(|f| fields::visible(f, sensitive))
+            .map(|f| f.key)
+            .collect::<Vec<_>>();
+        let selected_sources = self
+            .sources_on(c, watermark, ids, collection_scope, &fields)
+            .await?;
+        for (id, channels) in selected_sources.channels {
+            devices
+                .get_mut(&id)
+                .ok_or(Error::Unavailable(Failure::AssetsStorage))?
+                .channels = channels;
         }
-        let datasets = rss_mdm_inventory_postgres::datasets_in(c, self.tenant, collection_scope)
-            .await
-            .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
-        let mut scopes = Vec::new();
-        let mut subjects = BTreeMap::new();
-        for row in rows {
-            let device: String = row.try_get("device")?;
-            let source = stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?;
-            let channel: &str = row.try_get("channel")?;
-            if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
-                return Err(Error::Unavailable(Failure::InventoryQuery).into());
-            }
-            for dataset in datasets.get(&source).into_iter().flatten() {
-                let scope = crate::device::scope_dataset(
-                    self.tenant,
-                    stored(Uuid::parse_str(row.try_get("registration")?))?,
-                    source.as_str(),
-                    stored(Uuid::parse_str(row.try_get("epoch")?))?,
-                    dataset,
-                )?;
-                let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
-                devices
-                    .get_mut(&device)
-                    .ok_or(Error::Unavailable(Failure::AssetsStorage))?
-                    .channels
-                    .insert(channel.to_owned());
-                subjects.insert(stored(scope.encode())?, (device.clone(), generation));
-                scopes.push(scope);
-            }
-        }
+        let scopes = selected_sources.scopes;
+        let subjects = selected_sources.subjects;
         let tenant = self.tenant;
         let selected = ids.to_vec();
-        let fields = catalog.fields().map(|f| f.key).collect::<Vec<_>>();
         let observed =
             rss_mdm_inventory_postgres::read_at_in(c, tenant, &scopes, watermark, &fields)
                 .await
                 .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
         let manual = if matches!(collection_scope, rss_mdm_inventory::CollectionScope::Device) {
-            rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark)
+            rss_mdm_inventory_postgres::manual_at_in(c, tenant, &selected, watermark, &fields)
                 .await
                 .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?
         } else {
@@ -359,7 +338,7 @@ impl SnapshotReader {
                     let raw: Vec<String> = tx.with_connection(move |c| Box::pin(async move {
                     let sources = crate::device::read::sources_at(c, tenant.clone(), selected, watermark).await?;
                     let registrations: Vec<String> = sources.iter().map(|r| r.try_get("registration")).collect::<std::result::Result<_,sqlx::Error>>()?;
-                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h CROSS JOIN LATERAL jsonb_array_elements((h.document->>'attempts')::jsonb->'definition'->'fields') f WHERE tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
+                    sqlx::query_scalar("SELECT DISTINCT (f->'scope')::text AS scope FROM mdm_access.collection_history h JOIN mdm_access.collection_versions v ON v.tenant_id=h.tenant_id AND v.version=h.document->>'progress_version' CROSS JOIN LATERAL jsonb_array_elements(v.metadata->'definition'->'fields') f WHERE h.tenant_id=$1::uuid AND revision<=$2 AND h.scope::jsonb->>'registration'=ANY($3) AND ($4::text IS NULL OR ($5::text='macos' AND ((f->'scope'->>'kind' IN ('macos_applications','macos_brew') AND f->'scope'->>'uid'=$4) OR (f->'scope'->'owner'->>'kind'='macos' AND f->'scope'->'owner'->>'uid'=$4))) OR ($5::text='windows' AND f->'scope'->'owner'->>'kind'='windows' AND f->'scope'->'owner'->>'sid'=$4)) LIMIT 129")
                         .bind(tenant).bind(watermark).bind(registrations).bind(identity).bind(platform).fetch_all(c).await
                 })).await?;
                     if raw.len() > 128 {
@@ -455,6 +434,65 @@ impl SnapshotReader {
             contexts,
             coverage: rule.view().fields.keys().cloned().collect(),
             objects,
+        })
+    }
+}
+
+pub(super) struct SelectedSources {
+    pub scopes: Vec<rss_observation::Scope>,
+    pub subjects: BTreeMap<String, (String, u64)>,
+    pub channels: BTreeMap<String, BTreeSet<String>>,
+}
+impl SnapshotReader {
+    pub(super) async fn sources_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        watermark: i64,
+        ids: &[String],
+        collection_scope: &rss_mdm_inventory::CollectionScope,
+        fields: &[FieldKey],
+    ) -> Result<SelectedSources> {
+        let tenant = self.tenant.to_string();
+        let selected = ids.to_vec();
+        let rows = crate::device::read::sources_at(c, tenant, selected, watermark).await?;
+        if rows.len() > 2000 {
+            return Err(Error::Unavailable(Failure::AssetSourceLimit).into());
+        }
+        let datasets =
+            rss_mdm_inventory_postgres::datasets_in(c, self.tenant, collection_scope, fields)
+                .await
+                .map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
+        let mut channels = BTreeMap::new();
+        let mut scopes = Vec::new();
+        let mut subjects = BTreeMap::new();
+        for row in rows {
+            let device: String = row.try_get("device")?;
+            let source = stored(rss_mdm_inventory::Source::parse(row.try_get("source")?))?;
+            let channel: &str = row.try_get("channel")?;
+            if channel != source.channel().ok_or(Error::Malformed)?.as_str() {
+                return Err(Error::Unavailable(Failure::InventoryQuery).into());
+            }
+            for dataset in datasets.get(&source).into_iter().flatten() {
+                let scope = crate::device::scope_dataset(
+                    self.tenant,
+                    stored(Uuid::parse_str(row.try_get("registration")?))?,
+                    source.as_str(),
+                    stored(Uuid::parse_str(row.try_get("epoch")?))?,
+                    dataset,
+                )?;
+                let generation: u64 = stored(row.try_get::<&str, _>("generation")?.parse())?;
+                channels
+                    .entry(device.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(channel.to_owned());
+                subjects.insert(stored(scope.encode())?, (device.clone(), generation));
+                scopes.push(scope);
+            }
+        }
+        Ok(SelectedSources {
+            scopes,
+            subjects,
+            channels,
         })
     }
 }

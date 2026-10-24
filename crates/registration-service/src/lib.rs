@@ -45,3 +45,6 @@ pub const WINDOWS_ENTRA_POLICY_SQL: &str = include_str!("../schema/windows-entra
 pub const ADMISSION_SQL: &str = include_str!("../schema/admission.sql");
 
 mod webhook;
+
+/// Fixed read relation used by authorized same-database directory queries.
+pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");

@@ -164,10 +164,20 @@ pub async fn require_active_in(
     generation: i64,
 ) -> Result<Binding, Error> {
     let b = locked_in(c, tenant, id).await?;
-    if b.generation != generation || !b.accepts_login() {
+    if b.generation != generation || !accepts_login_in(c, &b).await? {
         return Err(Error::Forbidden);
     }
     Ok(b)
+}
+
+/// Read the same persisted readiness predicate used by bounded qualification projections.
+/// This borrows the caller's existing binding/lifecycle locks and never takes another lock.
+pub async fn accepts_login_in(c: &mut PgConnection, binding: &Binding) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT mdm_access.access_binding_ready($1)")
+        .bind(serde_json::to_value(binding).map_err(|_| Error::Corrupt)?)
+        .fetch_one(c)
+        .await
+        .map_err(db)
 }
 
 /// Called only after execution authenticates the task/attempt and its frozen definition.

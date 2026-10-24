@@ -45,6 +45,8 @@ pub(crate) struct Assembly {
     pub(crate) inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) apple: Option<Arc<crate::apple::Apple>>,
+    pub(crate) platform_configuration:
+        Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
@@ -551,6 +553,11 @@ pub(crate) async fn from_compiled(
     fixture_webhooks
         .set(webhooks.clone())
         .map_err(|_| Error::Conflict)?;
+    let platform_configuration = apple
+        .as_ref()
+        .and_then(|apple| apple.platform_sso.as_ref())
+        .map(|runtime| runtime.qualification_configuration())
+        .transpose()?;
     let state = Arc::new(Assembly {
         channels,
         telemetry,
@@ -576,6 +583,7 @@ pub(crate) async fn from_compiled(
         audit_store,
         audit_projection_health,
         apple,
+        platform_configuration,
         execution,
         flow: planning,
         windows,
@@ -846,6 +854,7 @@ pub(crate) fn from_state(
             certificate_archive: state.certificate_archive.clone(),
             timeline: state.timeline.clone(),
             associations: state.associations.clone(),
+            platform_configuration: state.platform_configuration.clone(),
             diagnostics: diagnostics.clone(),
             identity: state.identity.browser(),
             authorization: state.access.authorization_store(),

@@ -1,5 +1,5 @@
 use super::*;
-use rss_mdm_inventory::{Evidence, SourceFact, State};
+use rss_mdm_inventory::{Evidence, State};
 use sqlx::Row;
 impl AssetService {
     pub(super) async fn assign_asset(
@@ -27,19 +27,6 @@ impl AssetService {
         if !exists {
             return Err(Error::NotFound.into());
         }
-        let tenant = self.tenant;
-        let ids = vec![device.to_owned()];
-        let prior = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    rss_mdm_inventory_postgres::manual_in(c, tenant, &ids)
-                        .await
-                        .map_err(|_| sqlx::Error::Protocol("manual read failed".into()))
-                })
-            })
-            .await
-            .map_err(|_| Error::Unavailable(Failure::ManualQuery))?;
-        let old = prior.into_iter().find(|a| a.field == field);
         let state = match &change.input {
             ManualChange::Set { value } => {
                 checked_input(definition.validate_scalar(value))?;
@@ -60,32 +47,21 @@ impl AssetService {
             received_at: at.unix_seconds(),
             actor: Some(format!("{}:{}", owner.instance, owner.principal)),
         };
-        let last_known = if let State::Known(v) = &state {
-            Some(rss_mdm_inventory::KnownValue {
-                value: v.clone(),
-                evidence: evidence.clone(),
-            })
-        } else {
-            old.and_then(|a| a.fact.last_known)
-        };
-        let fact = SourceFact {
-            state,
-            last_known,
-            evidence,
-        };
         let tenant = self.tenant;
         let id = device.to_owned();
         let expected = change.expected_revision as i64;
         let revision = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_inventory_postgres::assign_in(c, tenant, &id, field, expected, &fact)
-                        .await
-                        .map_err(|error| {
-                            error.downcast::<sqlx::Error>().unwrap_or_else(|_| {
-                                sqlx::Error::Protocol("manual write failed".into())
-                            })
-                        })
+                    rss_mdm_inventory_postgres::assign_in(
+                        c, tenant, &id, field, expected, &state, &evidence,
+                    )
+                    .await
+                    .map_err(|error| {
+                        error
+                            .downcast::<sqlx::Error>()
+                            .unwrap_or_else(|_| sqlx::Error::Protocol("manual write failed".into()))
+                    })
                 })
             })
             .await?

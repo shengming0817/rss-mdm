@@ -89,8 +89,23 @@ struct Cursor {
     kind: Option<Kind>,
     relation: String,
     authority: String,
-    view: Vec<u8>,
+    view: String,
+    instance: String,
+    principal: String,
+    expires_at: i64,
     after: (Kind, Uuid, Relation),
+}
+pub struct PageRequest {
+    pub kind: Option<Kind>,
+    pub relation: String,
+    pub allowed: Vec<Kind>,
+    pub after: Option<(Kind, Uuid, Relation)>,
+    pub limit: usize,
+}
+pub struct Page {
+    pub items: Vec<Entry>,
+    pub generation: String,
+    pub blocked: bool,
 }
 impl Groups {
     pub async fn references(
@@ -128,7 +143,7 @@ impl Groups {
             rss_mdm_audit_integration::TargetKind::Group,
             &id.to_string(),
         );
-        crate::transaction::inspect(&self.runtime,self.tenant,(self,proof,q,audit,flow,cursor),|ctx,tx|Box::pin(async move {
+        crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,q,audit,flow,cursor),|ctx,tx|Box::pin(async move {
             let (s,p,q,audit,flow,cursor)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let authority=tx.with_connection(move|c|Box::pin(async move {
@@ -140,22 +155,21 @@ impl Groups {
             crate::transaction::lock(tx).await?;
             let gid=checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
             group_checked(s.groups.lock_reference_target_in(tx,gid).await?)?;
-            let entries=flow.references(tx,id).await?;
-            let blocked=entries.iter().any(|e|e.blocks_deletion);
-            let mut visible:Vec<_>=entries.into_iter().filter(|e|q.kind.is_none_or(|kind|kind==e.source.kind))
-                .filter(|e|q.relation=="all"||matches!((q.relation.as_str(),e.relation),("direct",Relation::Direct)|("indirect",Relation::Indirect)))
-                .filter(|e|std::iter::once(&e.source).chain(&e.via).all(|o|authority.require(p,o.kind.permission(),None).is_ok())).collect();
-            visible.sort_by_key(Entry::key);
             let binding=authority.query_binding(p)?;
-            let view=fingerprint(&(blocked,&visible))?;
+            let now=s.clock.unix_seconds().ok_or(Error::Unavailable(Failure::Clock))?;
             let after=if let Some(c)=cursor {
-                if c.tenant!=s.tenant.to_string()||c.root!=id||c.kind!=q.kind||c.relation!=q.relation||c.authority!=binding||c.view!=view {return Err(Error::Conflict.into());}
+                if c.tenant!=s.tenant.to_string()||c.root!=id||c.kind!=q.kind||c.relation!=q.relation||c.authority!=binding||c.instance!=p.instance_id()||c.principal!=p.principal_id()||now>=c.expires_at {return Err(Error::Conflict.into());}
                 Some(c.after)
             }else{None};
-            visible.retain(|e|after.is_none_or(|key|e.key()>key));
+            let allowed=[Kind::Group,Kind::Scope,Kind::Policy,Kind::ComplianceRule].into_iter().filter(|kind|authority.require(p,kind.permission(),None).is_ok()).collect();
+            let page=flow.references(tx,id,PageRequest{kind:q.kind,relation:q.relation.clone(),allowed,after,limit:q.limit+1}).await?;
+            if cursor.as_ref().is_some_and(|c|c.view!=page.generation) {return Err(Error::Conflict.into());}
+            let blocked=page.blocked;
+            let mut visible=page.items;
             let more=visible.len()>q.limit;visible.truncate(q.limit);
             let next=if more {
-                let mut bytes=checked_input(serde_json::to_vec(&Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view,after:visible.last().ok_or(Error::Conflict)?.key()}))?;
+                let expires_at=cursor.as_ref().map_or(now+60,|c|c.expires_at);
+                let mut bytes=checked_input(serde_json::to_vec(&Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view:page.generation,instance:p.instance_id().into(),principal:p.principal_id().into(),expires_at,after:visible.last().ok_or(Error::Conflict)?.key()}))?;
                 bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
             }else{None};
             p.check_live()?;audit.require_request_settlement();

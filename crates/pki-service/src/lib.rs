@@ -4,6 +4,7 @@ pub mod certificates;
 pub mod maintenance;
 pub mod mutation;
 pub mod providers;
+mod qualification;
 pub mod recovery;
 pub mod registry;
 pub mod scep;

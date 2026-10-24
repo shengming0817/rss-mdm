@@ -169,7 +169,25 @@ impl ExecutionService {
         if selected.version != binding.policy_version || !selected.configuration.enabled {
             return Err(AccessError::Forbidden);
         }
-        Ok(binding)
+        let selection: serde_json::Value = sqlx::query_scalar(
+            "SELECT mdm_commands.active_access_binding($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint)",
+        )
+        .bind(id)
+        .bind(generation)
+        .fetch_one(c)
+        .await
+        .map_err(|_| AccessError::Storage)?;
+        match selection["state"].as_str() {
+            Some("eligible") => {
+                let current: access::Binding = serde_json::from_value(selection["binding"].clone())
+                    .map_err(|_| AccessError::Corrupt)?;
+                current.validate().map_err(|_| AccessError::Corrupt)?;
+                Ok(current)
+            }
+            Some("pending") => Err(AccessError::Storage),
+            Some("excluded") => Err(AccessError::Forbidden),
+            _ => Err(AccessError::Corrupt),
+        }
     }
     pub async fn record_access_recovery_use(
         &self,
@@ -259,7 +277,7 @@ pub(crate) async fn policy_on(
         serde_json::from_value(row.try_get("frozen").map_err(|_| AccessError::Corrupt)?)
             .map_err(|_| AccessError::Corrupt)?;
     let crate::frozen::Frozen::DeviceAccess {
-        configuration,
+        configuration: _,
         grant,
     } = frozen
     else {
@@ -291,13 +309,27 @@ pub(crate) async fn policy_on(
         crate::source_authority::ScopeAdmission::Excluded => return Err(AccessError::Forbidden),
         crate::source_authority::ScopeAdmission::Pending => return Err(AccessError::Storage),
     }
-    Ok(access::PolicySelection {
-        policy,
-        version: row
-            .try_get("current_version")
-            .map_err(|_| AccessError::Corrupt)?,
-        configuration,
-    })
+    // Locked and read-only consumers resolve the same current qualification.
+    let selection: serde_json::Value =
+        sqlx::query_scalar("SELECT mdm_commands.access_policy($1,$2,$3)")
+            .bind(policy)
+            .bind(device)
+            .bind(now)
+            .fetch_one(c)
+            .await
+            .map_err(|_| AccessError::Storage)?;
+    match selection["state"].as_str() {
+        Some("pending") => Err(AccessError::Storage),
+        Some("excluded") => Err(AccessError::Forbidden),
+        Some("eligible") => Ok(access::PolicySelection {
+            policy,
+            version: serde_json::from_value(selection["version"].clone())
+                .map_err(|_| AccessError::Corrupt)?,
+            configuration: serde_json::from_value(selection["configuration"].clone())
+                .map_err(|_| AccessError::Corrupt)?,
+        }),
+        _ => Err(AccessError::Corrupt),
+    }
 }
 
 pub struct Plan {

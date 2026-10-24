@@ -90,6 +90,7 @@ impl Credentials {
                             .with_connection_context(context, |context, c| {
                                 Box::pin(async move {
                                     let (service, principal, device, id, version, _, _) = context;
+                                    lock_publication(c, principal.tenant_id()).await?;
                                     authorize(c, principal, device, Permission::Credentials)
                                         .await?;
                                     let (material, key, sealed) = read_locked(
@@ -169,6 +170,7 @@ impl Credentials {
             &budget.source_control(),(self,principal,device,id,version,audit,fact),|context,tx|Box::pin(async move {
             let material=tx.with_connection_context(context,|context,c|Box::pin(async move {
                 let (_,principal,device,id,version,_,_)=context;
+                lock_publication(c, principal.tenant_id()).await?;
                 // Read metadata first, then acquire authorization and registration before material locks.
                 let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.device=$2 AND e.id=$3 AND v.version=$4")).bind(principal.tenant_id()).bind(*device).bind(*id).bind(*version).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
                 let material=storage::decode(&row)?;
@@ -191,6 +193,16 @@ async fn configure(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','4000',true),set_config('lock_timeout','1000',true)").bind(tenant).execute(c).await?;
     Ok(())
 }
+// Registration revalidation later takes this publication fence. It must precede
+// authorization, matching the background recovery owner and enrollment paths.
+async fn lock_publication(c: &mut PgConnection, tenant: &str) -> Result<(), Error> {
+    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
+        .bind(tenant)
+        .execute(c)
+        .await?;
+    Ok(())
+}
+
 async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,

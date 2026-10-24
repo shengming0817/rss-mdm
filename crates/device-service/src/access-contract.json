@@ -112,6 +112,10 @@
     {
       "name": "mdm.lock_asset_watermark",
       "search_path": "search_path=pg_catalog, mdm"
+    },
+    {
+      "name": "mdm_devices.object_current",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [

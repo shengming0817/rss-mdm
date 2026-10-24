@@ -275,7 +275,9 @@ impl Fixture {
             execution.channels.mounted(crate::channel_status::ChannelName::Agent)?;
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
+        let platform_configuration = apple.platform_sso.as_ref().map(|rt| rt.qualification_configuration()).transpose()?;
         let app = Arc::new(Assembly {
+            platform_configuration,
             audit_projection_health: Default::default(),
             channels: execution.channels.clone(),
             telemetry: None,
@@ -486,6 +488,10 @@ impl Fixture {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(case_tenant())
+            .execute(&mut pg)
+            .await?;
         // Advance only the durable read retry clock; request, receipt and eligibility remain intact.
         let count = sqlx::query("UPDATE mdm_apple.attempts SET next_attempt=clock_timestamp() WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe'")
             .bind(case_tenant()).bind(operation).execute(&mut pg).await?.rows_affected();

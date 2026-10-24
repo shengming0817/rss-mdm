@@ -105,7 +105,13 @@ impl FrozenCredential {
                         || b.registration != target.registration
                         || b.registration_generation != target.generation
                         || b.generation != *binding_generation
-                        || !b.accepts_login()
+                        || !rss_mdm_registration_service::device_access::storage::accepts_login_in(
+                            c, &b,
+                        )
+                        .await
+                        .map_err(|_| {
+                            sqlx::Error::Protocol("RSS recovery readiness unavailable".into())
+                        })?
                         || !matches!(&b.account,Some(wire::AccessAccount::Windows{sid:s}) if s==sid)
                     {
                         return Ok(false);

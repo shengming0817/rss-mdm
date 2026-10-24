@@ -19,6 +19,7 @@ pub struct Services {
     pub webhooks: Arc<dyn crate::webhooks::Source>,
     pub registration_channels: Arc<dyn crate::enrollment::channels::Source>,
     pub associations: Arc<rss_mdm_device_service::Associations>,
+    pub platform_configuration: Option<rss_mdm_device_service::personnel::PlatformConfiguration>,
     pub windows_entra: Option<Arc<rss_mdm_registration_service::windows_entra::Management>>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
@@ -178,7 +179,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::enrollment::directory::routes().with_state(directory))
         .merge(crate::timeline::routes().with_state(state.timeline))
         .merge(
-            crate::device_views::routes(sessions, directory_identity)
+            crate::device_views::routes(sessions, directory_identity, state.platform_configuration)
                 .with_state(state.associations),
         );
     let host_context = Router::new()

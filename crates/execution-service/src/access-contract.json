@@ -56,6 +56,14 @@
     {
       "name": "mdm_commands.windows_pending_operations",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.access_policy",
+      "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.active_access_binding",
+      "search_path": "search_path=pg_catalog"
     }
   ],
   "external_relations": [],

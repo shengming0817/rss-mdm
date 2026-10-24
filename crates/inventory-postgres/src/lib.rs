@@ -8,12 +8,16 @@
 //! [`read_in`] borrows the host's tenant transaction. Resource authorization,
 //! scheduling, migration execution and recovery policy remain with the product.
 mod admission;
+pub mod arrays;
 mod inventory;
 pub use admission::{verify as verify_admission, verify_collections};
 pub use inventory::{Inventory, definition, projection_scope};
 /// Owner-executed Inventory table, identity and tenant-isolation migration SQL.
 /// Embedding the SQL does not apply it; runtime credentials must not own the schema.
-pub const MIGRATION_SQL: &str = include_str!("../migrations/install.sql");
+pub const MIGRATION_SQL: &str = concat!(
+    include_str!("../migrations/install.sql"),
+    include_str!("../migrations/arrays.sql")
+);
 
 mod reader;
 pub use reader::{InventoryField, InventoryReader, field_in, read_in};

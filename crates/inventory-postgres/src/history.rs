@@ -2,7 +2,7 @@
 use anyhow::{Result, ensure};
 use rss_observation::Scope;
 use rss_request_context::TenantId;
-use sqlx::{PgConnection, Row};
+use sqlx::PgConnection;
 
 /// Read the last committed asset watermark in the host's tenant transaction.
 pub async fn watermark_in(c: &mut PgConnection, tenant: TenantId) -> Result<i64> {
@@ -25,6 +25,17 @@ pub async fn read_at_in(
     watermark: i64,
     fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<Vec<crate::InventoryField>> {
+    let rows = rows_at_in(c, tenant, scopes, watermark, fields).await?;
+    crate::reader::decode_rows(c, tenant, rows).await
+}
+
+pub(crate) async fn rows_at_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scopes: &[Scope],
+    watermark: i64,
+    fields: &[rss_mdm_inventory::FieldKey],
+) -> Result<Vec<sqlx::postgres::PgRow>> {
     ensure!(
         watermark >= 0 && scopes.len() <= 2000 && fields.len() <= 1024,
         "invalid history page"
@@ -65,9 +76,9 @@ pub async fn read_at_in(
     .bind(scopes)
     .bind(watermark)
     .bind(fields.iter().map(|f|f.as_str()).collect::<Vec<_>>())
-    .fetch_all(c)
+    .fetch_all(&mut *c)
     .await?;
-    crate::reader::decode_rows(rows)
+    Ok(rows)
 }
 
 /// Read Manual values and tombstones at the same watermark as collected facts.
@@ -76,9 +87,10 @@ pub async fn manual_at_in(
     tenant: TenantId,
     devices: &[String],
     watermark: i64,
+    fields: &[rss_mdm_inventory::FieldKey],
 ) -> Result<Vec<crate::Assignment>> {
     ensure!(
-        watermark >= 0 && devices.len() <= 1000,
+        watermark >= 0 && devices.len() <= 1000 && fields.len() <= 1024,
         "invalid manual history page"
     );
     crate::reader::assert_tenant(c, tenant).await?;
@@ -86,9 +98,9 @@ pub async fn manual_at_in(
         r#"
       WITH latest AS (
         SELECT DISTINCT ON(device,field) document FROM mdm.manual_history
-        WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3
+        WHERE tenant_id=$1::uuid AND device=ANY($2) AND revision<=$3 AND field=ANY($4)
         ORDER BY device,field,revision DESC
-      ) SELECT r.device,r.field,r.revision,r.fact::text FROM latest h
+      ) SELECT r.device,r.field,r.revision,r.fact,r.value_version,r.last_known_version FROM latest h
         CROSS JOIN LATERAL jsonb_populate_record(NULL::mdm.manual_assignments,h.document) r
         WHERE h.document IS NOT NULL ORDER BY r.device,r.field
     "#,
@@ -96,16 +108,8 @@ pub async fn manual_at_in(
     .bind(tenant.to_string())
     .bind(devices)
     .bind(watermark)
-    .fetch_all(c)
+    .bind(fields.iter().map(|f| f.as_str()).collect::<Vec<_>>())
+    .fetch_all(&mut *c)
     .await?;
-    rows.into_iter()
-        .map(|r| {
-            Ok(crate::Assignment {
-                device: r.try_get("device")?,
-                field: rss_mdm_inventory::FieldKey::parse(r.try_get("field")?)?,
-                revision: r.try_get("revision")?,
-                fact: serde_json::from_str(r.try_get("fact")?)?,
-            })
-        })
-        .collect()
+    crate::manual::decode(c, tenant, rows).await
 }

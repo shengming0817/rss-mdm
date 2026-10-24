@@ -1,6 +1,7 @@
 //! Re-encrypt existing Apple owner rows without changing protocol identities or replay MACs.
 use crate::{Error, database::db};
 use rss_mdm_native_protection::{DerivedAad, Protector};
+use sha2::{Digest, Sha256};
 use sqlx::{PgConnection, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -121,14 +122,31 @@ pub async fn run(c: &mut PgConnection, tenant: &str, protection: &Protector) -> 
             .fetch_all(&mut *c)
             .await
             .map_err(db)?;
+        let mut qualifications = Vec::<Uuid>::new();
         for row in rows {
             let sealed: Vec<u8> = row.try_get(column).map_err(db)?;
             let value = protection
                 .rewrap_bytes(&sealed, &aad(tenant, table, column, &row)?)
                 .map_err(|_| Error::Conflict)?;
             let row_id: String = row.try_get("maintenance_row").map_err(db)?;
+            let extra = if table == "profiles" {
+                let plain = protection
+                    .open_bytes(&sealed, &aad(tenant, table, column, &row)?)
+                    .map_err(|_| Error::Conflict)?;
+                if row
+                    .try_get::<Option<Vec<u8>>, _>("manifest_digest")
+                    .map_err(db)?
+                    .as_deref()
+                    != Some(Sha256::digest(plain.expose()).as_slice())
+                {
+                    return Err(Error::Conflict);
+                }
+                ",manifest_cipher_digest=sha256($3)"
+            } else {
+                ""
+            };
             let update = format!(
-                "UPDATE mdm_apple.{table} SET {column}=$3 WHERE tenant_id=$1::uuid AND ctid=$2::tid"
+                "UPDATE mdm_apple.{table} SET {column}=$3{extra} WHERE tenant_id=$1::uuid AND ctid=$2::tid"
             );
             let count = sqlx::query(sqlx::AssertSqlSafe(update))
                 .bind(tenant)
@@ -141,7 +159,17 @@ pub async fn run(c: &mut PgConnection, tenant: &str, protection: &Protector) -> 
             if count != 1 {
                 return Err(Error::Conflict);
             }
+            if table == "attempts"
+                && column == "response"
+                && let Some(operation) = row.try_get::<Option<Uuid>, _>("operation").map_err(db)?
+            {
+                qualifications.push(operation);
+            }
             changed += count;
+        }
+        // Qualification UPDATEs may move profile ctids. Finish this selected batch first.
+        for id in qualifications {
+            crate::profiles::qualify_latest(c, protection, tenant, id).await?;
         }
     }
     Ok(changed)

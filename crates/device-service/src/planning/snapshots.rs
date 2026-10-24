@@ -346,45 +346,24 @@ pub(super) async fn validate(
     }
     if matches!(input.object, ObjectRef::Association(_)) {
         rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
-        let snapshot:Option<Uuid>=sqlx::query_scalar("SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1").bind(tenant.to_string()).fetch_optional(&mut *c).await?;
-        let Some(snapshot) = snapshot else {
-            return Ok(None);
-        };
-        let live:Option<serde_json::Value>=sqlx::query_scalar("SELECT input FROM mdm_devices.input_objects WHERE tenant_id=$1::uuid AND snapshot=$2 AND object=$3").bind(tenant.to_string()).bind(snapshot).bind(input.object.key()).fetch_optional(&mut *c).await?;
-        let Some(live) = live else {
-            return Ok(None);
-        };
-        let live: DeviceObject = decode(live)?;
-        if !live.verified
-            || live.association_version != input.association_version
-            || live.members != input.members
-        {
-            return Ok(None);
-        }
     }
+    // Keep the existing lifecycle/channel lock order outside the shared read kernel.
     let mut members: Vec<_> = input.members.iter().collect();
     members.sort_by(|a, b| (&a.device, a.channel.as_str()).cmp(&(&b.device, b.channel.as_str())));
-    let mut selected = None;
     for member in members {
         endpoints::lock_in(c, &tenant.to_string(), &member.device, member.channel)
             .await
             .map_err(storage)?;
-        if endpoints::current_in(c, &tenant.to_string(), &member.device, member.channel)
-            .await
-            .map_err(storage)?
-            .as_ref()
-            != Some(member)
-        {
-            return Ok(None);
-        }
-        if member.channel == channel {
-            if selected.is_some() {
-                return Err(sqlx::Error::Protocol("ambiguous execution channel".into()));
-            }
-            selected = Some(member.clone());
-        }
     }
-    Ok(selected)
+    let value: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT mdm_devices.object_current($1,$2)")
+            .bind(serde_json::to_value(input).map_err(storage)?)
+            .bind(channel.as_str())
+            .fetch_one(c)
+            .await?;
+    value
+        .map(|value| serde_json::from_value(value).map_err(storage))
+        .transpose()
 }
 pub(super) async fn page(
     c: &mut PgConnection,

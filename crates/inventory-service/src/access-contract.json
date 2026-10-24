@@ -30,6 +30,22 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "collection_versions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "collection_items",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
@@ -42,8 +58,11 @@
     "mdm.field_versions",
     "mdm.collection_definitions",
     "mdm.collection_results",
+    "mdm_assets.directory_fields",
     "mdm_assets.directory_sources",
-    "mdm_assets.hardware_keys"
+    "mdm_assets.hardware_keys",
+    "mdm.array_versions",
+    "mdm.array_items"
   ],
   "verified_schemas": []
 }

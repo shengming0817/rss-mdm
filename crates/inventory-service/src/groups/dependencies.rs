@@ -18,6 +18,14 @@ pub async fn graph_in(tx: &mut PgTransaction<'_>) -> Result<Graph> {
     }
     Ok(graph)
 }
+pub async fn used_in(tx: &mut PgTransaction<'_>, group: Uuid) -> Result<bool> {
+    let tenant = tx.tenant_id().to_string();
+    Ok(tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id=$1::uuid AND NOT g.deleted AND s.group_ids @> ARRAY[$2::uuid])")
+            .bind(tenant).bind(group).fetch_one(c).await
+    })).await?)
+}
+
 fn visit(graph: &Graph, id: Uuid, path: &mut BTreeSet<Uuid>, visited: &mut usize) -> Result<usize> {
     if path.len() >= MAX_DEPTH {
         return Err(Error::Malformed.into());

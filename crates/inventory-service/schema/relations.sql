@@ -255,4 +255,9 @@ GRANT SELECT,INSERT ON mdm.collection_definitions TO mdm_access,mdm_command_runt
 GRANT SELECT,INSERT ON mdm.collection_results TO mdm_access,mdm_command_runtime,mdm_flow_runtime;
 GRANT EXECUTE ON FUNCTION mdm.record_asset_change(uuid,text,jsonb,text[]) TO mdm_flow_runtime;
 GRANT UPDATE(evidence) ON mdm_access.collection_runs TO mdm_access,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm.array_versions,mdm.array_items TO mdm_flow_runtime;
+GRANT SELECT ON mdm.array_versions,mdm.array_items TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(value_version,last_known_version) ON mdm.manual_assignments TO mdm_flow_runtime;
 COMMIT;
+
+GRANT SELECT ON mdm_access.collection_versions,mdm_access.collection_items TO mdm_access,mdm_flow_runtime,mdm_command_runtime;

@@ -5,6 +5,7 @@ pub mod declarative;
 pub mod enterprise;
 pub mod native;
 pub mod read;
+pub(crate) mod summary;
 pub mod telemetry;
 use crate::{Error, Failure};
 pub use rss_mdm_inventory::{CollectionProgress as Attempts, FieldAttempt, NativeValue, Quality};

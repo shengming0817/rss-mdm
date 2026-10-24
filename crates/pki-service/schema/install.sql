@@ -14,12 +14,18 @@ ALTER TABLE mdm_pki.signing FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.signing USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.signing TO mdm_access;
 GRANT UPDATE(state,chain) ON mdm_pki.signing TO mdm_access;
-CREATE TABLE mdm_pki.certificates (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768), PRIMARY KEY(tenant_id,purpose,fingerprint), UNIQUE(tenant_id,purpose,issuer,serial));
+CREATE TABLE mdm_pki.certificates (tenant_id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), fingerprint bytea NOT NULL CHECK(octet_length(fingerprint)=32), issuer text NOT NULL CHECK(issuer ~ '^[0-9a-f]{64}$'), serial text NOT NULL CHECK(serial ~ '^[1-9][0-9]*$'), registration uuid, not_after bigint NOT NULL, certificate bytea NOT NULL CHECK(octet_length(certificate) BETWEEN 1 AND 32768),
+ verification_version integer NOT NULL CHECK(verification_version=1),
+ verification_trust bytea NOT NULL CHECK(octet_length(verification_trust)=32),
+ verification_start bigint CHECK(verification_start>0),
+ verification_end bigint CHECK(verification_end>verification_start AND verification_end<=not_after+1),
+ CHECK((verification_start IS NULL)=(verification_end IS NULL)),
+ CHECK(fingerprint=sha256(certificate)), PRIMARY KEY(tenant_id,purpose,fingerprint), UNIQUE(tenant_id,purpose,issuer,serial));
 ALTER TABLE mdm_pki.certificates ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.certificates FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_pki.certificates USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_pki.certificates TO mdm_access;
-GRANT UPDATE(registration) ON mdm_pki.certificates TO mdm_access;
+GRANT UPDATE(registration,verification_version,verification_trust,verification_start,verification_end) ON mdm_pki.certificates TO mdm_access;
 CREATE TABLE mdm_pki.rotations (tenant_id uuid NOT NULL, id uuid NOT NULL, purpose text NOT NULL CHECK(purpose IN ('windows','apple','agent','agent_bootstrap')), previous text NOT NULL, candidate text NOT NULL, revision bigint NOT NULL CHECK(revision>0), state text NOT NULL CHECK(state IN ('distributing','activated','retired')), PRIMARY KEY(tenant_id,id));
 ALTER TABLE mdm_pki.rotations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_pki.rotations FORCE ROW LEVEL SECURITY;
@@ -116,4 +122,22 @@ GRANT SELECT,INSERT ON mdm_pki.installations,mdm_pki.acknowledgements,mdm_window
 GRANT UPDATE(revision,digest,body,confirmed_at) ON mdm_pki.installations TO mdm_command_runtime;
 GRANT UPDATE(revision,digest,confirmed_at) ON mdm_pki.acknowledgements TO mdm_command_runtime;
 GRANT UPDATE(results,confirmed) ON mdm_windows.trust_deliveries TO mdm_command_runtime;
+
+-- Fixed tenant-scoped presentation relation. Exact trust publication and certificate
+-- qualification commit together; queued revocations take effect immediately.
+CREATE VIEW mdm_pki.current_certificates WITH (security_barrier=true) AS
+WITH current_trust AS MATERIALIZED (
+ SELECT tenant_id,purpose,sha256(body) AS digest FROM mdm_pki.trust
+ WHERE tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid
+)
+SELECT c.tenant_id,c.purpose,c.fingerprint,c.verification_end AS valid_until
+FROM mdm_pki.certificates c JOIN current_trust t USING(tenant_id,purpose)
+WHERE c.tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid
+ AND c.verification_version=1 AND c.verification_trust=t.digest
+ AND c.verification_start<=floor(extract(epoch FROM statement_timestamp()))::bigint
+ AND c.verification_end>floor(extract(epoch FROM statement_timestamp()))::bigint
+ AND NOT EXISTS(SELECT FROM mdm_pki.revocations r
+  WHERE (r.tenant_id,r.purpose,r.issuer,r.serial)=(c.tenant_id,c.purpose,c.issuer,c.serial));
+REVOKE ALL ON mdm_pki.current_certificates FROM PUBLIC;
+GRANT SELECT ON mdm_pki.current_certificates TO mdm_access;
 COMMIT;

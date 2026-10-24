@@ -2,6 +2,7 @@
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction ownership).
 mod changes;
 mod cursor;
+mod directory;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
@@ -20,7 +21,11 @@ use rss_mdm_audit_integration::AuditStore;
 use rss_request_context::TenantId;
 use std::sync::Arc;
 
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/object-qualification.sql")
+);
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 
 /// App-owned service, borrowing the existing Audit transaction owner.
@@ -45,3 +50,6 @@ impl Associations {
         })
     }
 }
+
+/// Product query revisions and narrow same-database read grants.
+pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");

@@ -296,7 +296,15 @@
       "delete_policy": null
     }
   ],
-  "functions": [],
-  "external_relations": [],
+  "functions": [
+    {
+      "name": "mdm_access.access_binding_ready",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
+  "external_relations": [
+    "mdm_access.directory_endpoints",
+    "mdm_access.directory_users"
+  ],
   "verified_schemas": []
 }

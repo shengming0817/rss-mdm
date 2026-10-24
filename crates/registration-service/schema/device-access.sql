@@ -67,3 +67,19 @@ GRANT SELECT ON mdm_access.device_access_bindings,mdm_access.device_access_resul
 GRANT INSERT ON mdm_access.device_access_results TO mdm_command_runtime;
 GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON mdm_access.device_access_bindings TO mdm_command_runtime;
 COMMIT;
+
+-- Persisted login-readiness predicate. The pure Binding model remains usable without PostgreSQL;
+-- every persistent credential consumer evaluates this same owner function.
+CREATE FUNCTION mdm_access.access_binding_ready(document jsonb) RETURNS boolean
+ LANGUAGE sql IMMUTABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT coalesce(document->>'state'='active' AND document#>>'{configuration,enabled}'='true'
+  AND document->'account' IS NOT NULL AND document->'account'<>'null'::jsonb
+  AND (document->>'appliedRevision')::bigint=(document->>'revision')::bigint
+  AND CASE document#>>'{effect,state}'
+   WHEN 'unbound' THEN true
+   WHEN 'applied' THEN document#>'{effect,mac}' IS NULL OR document#>'{effect,mac}'='null'::jsonb
+    OR document#>>'{effect,mac,secureToken}'='present'
+   ELSE false END,false)
+$$;
+REVOKE ALL ON FUNCTION mdm_access.access_binding_ready(jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_access.access_binding_ready(jsonb) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;

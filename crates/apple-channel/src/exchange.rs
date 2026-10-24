@@ -195,6 +195,11 @@ impl ports::AppleAttempt for CommandAttempt {
                 .settle(c, self.status, accepted)
                 .await
                 .map_err(ports::Rejection::from)?;
+            if profile {
+                crate::profiles::qualify_latest(c, &self.key, &target.tenant, command.operation)
+                    .await
+                    .map_err(ports::Rejection::from)?;
+            }
             if !accepted {
                 return Ok(S::Waiting);
             }

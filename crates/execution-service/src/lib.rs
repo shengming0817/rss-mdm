@@ -343,7 +343,11 @@ impl Inputs {
 mod agent_preparation;
 pub mod enrollment_preparation;
 
-pub const INSTALL_SQL: &str = include_str!("../schema/install.sql");
+pub const INSTALL_SQL: &str = concat!(
+    include_str!("../schema/install.sql"),
+    "\n",
+    include_str!("../schema/device-access-qualification.sql")
+);
 pub const RELATIONS_SQL: &str = include_str!("../schema/relations.sql");
 
 mod collection_eligibility;
