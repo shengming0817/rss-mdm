@@ -1230,7 +1230,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         crate::test_support::software_execution::Platform::MacOs,
     );
     context["interactiveUser"] =
-        json!({"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
+        json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
     let registration = crate::test_support::agent::seed_profile(&f.base, f.execution.clone(), case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
@@ -1295,7 +1295,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
         context["revision"] = json!(stage + 2);
         context["interactiveUser"] =
-            json!({"generatedUid":format!("00000000-0000-0000-0000-{:012}",uid.parse::<u32>().unwrap()),"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
+            json!({"windowsAuthority":null,"generatedUid":format!("00000000-0000-0000-0000-{:012}",uid.parse::<u32>().unwrap()),"identity":uid,"sessionId":Uuid::new_v4(),"administrator":false});
         let policy = Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"runLifetimeSeconds":300}}}})).await?;
         let task = tokio::time::timeout(Duration::from_secs(30), async {
@@ -1506,7 +1506,7 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
             let n=if stage==2 {502}else{501};
             let uid=n.to_string();let sid=format!("S-1-5-21-1-2-3-{n}");let guid=format!("00000000-0000-0000-0000-{n:012}");
             context["revision"]=json!(stage+2);
-            context["interactiveUser"]=json!({"identity":if macos {&uid}else{&sid},"generatedUid":if macos {Some(&guid)}else{None},"sessionId":Uuid::new_v4(),"administrator":false});
+            context["interactiveUser"]=json!({"identity":if macos {&uid}else{&sid},"windowsAuthority":null,"generatedUid":if macos {Some(&guid)}else{None},"sessionId":Uuid::new_v4(),"administrator":false});
             let blueprint=if macos {if user {"macos.agent.certificates_login"}else if stage==3 {"macos.agent.certificates_system_roots"}else{"macos.agent.certificates_system"}}else if stage==0 {"windows.agent.certificates_device_my"}else if stage==3 {"windows.agent.certificates_user_root"}else{"windows.agent.certificates_user_my"};
             let r::blueprints::Definition::AgentCollection {template:definition}=r::blueprints::get(blueprint,"1").unwrap().definition else {unreachable!()};
             let engines=definition.spec().plan.requirements();
@@ -1884,9 +1884,9 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy=Uuid::new_v4();
-        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","selfEnrollment":true,"role":null}}}})).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;
         let binding=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",case_device_id());
-        let associated=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","sid":sid}}}}))).await?;
+        let associated=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid}}}}))).await?;
         ensure!(associated.0==StatusCode::OK,"associate {associated:?}");
         let claim=tokio::time::timeout(Duration::from_secs(30),async {loop {
             let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
@@ -1928,7 +1928,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         ensure!(reply.0==StatusCode::OK,"initial escrow {reply:?}");
         let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
         let receipt=ack.credentials().first().context("initial custody receipt")?;
-        let event=json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":access.definition_digest,"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null,"windows":{"factorGeneration":access.factor_generation,"recovery":receipt}}});
+        let event=json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":access.definition_digest,"effect":{"state":"applied","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid},"role":"standard","mac":null,"windows":{"factorGeneration":access.factor_generation,"recovery":receipt}}});
         let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",access.task_id),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":access.attempt_id,"executionContext":context,"event":event}))).await?;
         ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
         credential_policy(&mut f,json!({"kind":"rotate_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;
@@ -1954,16 +1954,18 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let list=format!("/api/v1/devices/{}/recovery-credentials",case_device_id());
         let materials=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(materials.0==StatusCode::OK,"materials {materials:?}");
-        let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
-        let secret_path=format!("{list}/{}/versions/{}/secret",material["id"].as_str().context("material id")?,material["version"]);
-        let disclosed=f.author.call(&f.router,Method::GET,&secret_path,None).await?;
+        let material=materials.1["items"].as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
+        let access_path=format!("/api/v1/devices/{}/device-access/materials/{}/versions/{}",case_device_id(),material["id"].as_str().context("material id")?,material["version"]);
+        let disclosure=json!({"operationId":Uuid::new_v4()});
+        ensure!(f.access_authorize(&access_path,Some(disclosure.clone())).await?.is_none());
+        let disclosed=f.author.call(&f.router,Method::POST,&format!("{access_path}/secret"),Some(disclosure.clone())).await?;
         ensure!(disclosed.0==StatusCode::OK && disclosed.1["secret"]==secret,"disclose {disclosed:?}");
         let used=json!({"operationId":Uuid::new_v4(),"material":material["id"],"version":material["version"],"usedAt":crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?});
         for _ in 0..2 {let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/device-access/recovery-uses",Some(case_credential()),Some(used.clone())).await?;ensure!(response.0==StatusCode::OK,"use {response:?}");}
         ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.rss_login_uses WHERE tenant_id='{}'",case_tenant()))?.trim()=="1");
-        let unbound=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+        let unbound=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(unbound.0==StatusCode::OK);
-        ensure!(!f.author.call(&f.router,Method::GET,&secret_path,None).await?.0.is_success());
+        ensure!(!f.author.call(&f.router,Method::POST,&format!("{access_path}/secret"),Some(disclosure)).await?.0.is_success());
         let late=credential_event(&f,&context,&original,json!({"kind":"start"})).await?;
         ensure!(!late.0.is_success());
         Ok(())

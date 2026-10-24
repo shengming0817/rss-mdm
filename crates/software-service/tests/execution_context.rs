@@ -9,6 +9,7 @@ fn context() -> SoftwareExecutionContext {
         user_helper: true,
         system_broker: true,
         interactive_user: Some(SoftwareInteractiveUser {
+            windows_authority: None,
             generated_uid: None,
             identity: "S-1-5-21-1-2-3-1001".into(),
             session_id: Uuid::new_v4(),

@@ -1,7 +1,7 @@
 use crate::Error;
 use axum::{
     Extension, Json,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, RawQuery, State},
     http::HeaderMap,
     response::Response,
 };
@@ -23,10 +23,12 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
         .route(
             "/device-access",
-            get(access_directory).owned(
-                &contracts::PROTOCOL_AGENT_CHANNEL,
-                &[RouteOperation::Action],
-            ),
+            get(access_directory)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .windowed(&rss_mdm_registration_service::device_access::DISCOVERY),
         )
         .route(
             "/device-access/begin",
@@ -534,7 +536,7 @@ async fn access_begin(
         let p=authenticate_for(&app,&headers,peer.as_ref().map(|v|&v.0),&audit,false).await?;
         let employee=employee(&app,&headers,&audit).await?.ok_or(Error::Unauthorized)?;
         let input=body(input)?;
-        let value=app.enrollment.begin_device_access(&p,&employee,&input,app.execution.as_ref(),&app.identity,&audit).await.map_err(Error::from)?;
+        let value=app.enrollment.begin_device_access(&p,&employee,&input,app.execution.as_ref(),&audit).await.map_err(Error::from)?;
         use axum::response::IntoResponse;
         let mut response=Json(serde_json::json!({"id":value.id,"nonce":value.nonce,"expiresAt":value.expires_at,"localSession":value.local_session})).into_response();
         response.headers_mut().insert(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store"));
@@ -557,14 +559,7 @@ async fn access_confirm(
         let input = body(input)?;
         let value = app
             .enrollment
-            .confirm_device_access(
-                &p,
-                &employee,
-                &input,
-                app.execution.as_ref(),
-                &app.identity,
-                &audit,
-            )
+            .confirm_device_access(&p, &employee, &input, app.execution.as_ref(), &audit)
             .await
             .map_err(Error::from)?;
         Ok(Json(value.status()))
@@ -591,20 +586,18 @@ async fn access_recovery_use(
     .await
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AccessPage {
-    after: Option<Uuid>,
-}
 async fn access_directory(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
-    Query(page): Query<AccessPage>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Response, crate::AgentError> {
     crate::bounded(async {
         use axum::response::IntoResponse;
+        let (page, _) = rss_mdm_registration_service::device_access::DISCOVERY
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
         let employee = employee(&app, &headers, &audit)
@@ -612,13 +605,7 @@ async fn access_directory(
             .ok_or(Error::Unauthorized)?;
         let value = app
             .enrollment
-            .device_access_directory(
-                &p,
-                &employee,
-                page.after,
-                app.execution.as_ref(),
-                &app.identity,
-            )
+            .device_access_directory(&p, &employee, &page, app.execution.as_ref(), &app.identity)
             .await
             .map_err(Error::from)?;
         let mut response = Json(value).into_response();

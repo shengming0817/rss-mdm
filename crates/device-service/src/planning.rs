@@ -16,7 +16,6 @@ impl PlanningObjects {
     /// Current verified paired object for a device-bound authentication ceremony. The input
     /// projection is read under the same watermark fence and revalidated by this owner.
     pub async fn paired_in(
-        &self,
         c: &mut PgConnection,
         tenant: TenantId,
         device: &str,
@@ -34,12 +33,10 @@ impl PlanningObjects {
         )
         .map_err(storage)?;
         if input.members.len() != 2
-            || self
-                .validate(c, tenant, &input, rss_mdm_inventory::Channel::Agent)
+            || snapshots::validate(c, tenant, &input, rss_mdm_inventory::Channel::Agent)
                 .await?
                 .is_none()
-            || self
-                .validate(c, tenant, &input, rss_mdm_inventory::Channel::Mdm)
+            || snapshots::validate(c, tenant, &input, rss_mdm_inventory::Channel::Mdm)
                 .await?
                 .is_none()
         {

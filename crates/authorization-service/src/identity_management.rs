@@ -66,6 +66,21 @@ impl rss_identity_postgres::ManagementPolicy for IdentityManagementPolicy {
             {
                 return Err(ManagementDenied);
             }
+            // Identity verifies freshness and consumes operation-bound proofs for self-service.
+            // HostRecovery is not an administrator-selected bypass of that ceremony.
+            if context.operation() == Op::AuthorizeWebauthnRecovery {
+                return Err(ManagementDenied);
+            }
+            if matches!(
+                context.operation(),
+                Op::RegisterWebauthn | Op::RemoveWebauthn | Op::RecoverWebauthn
+            ) {
+                return if context.target() == Some(context.actor()) {
+                    Ok(Auth::None)
+                } else {
+                    Err(ManagementDenied)
+                };
+            }
             if context.operation() == Op::ChangeOwnPassword {
                 return if context.target() == Some(context.actor()) {
                     Ok(Auth::Recent(std::time::Duration::from_secs(300)))

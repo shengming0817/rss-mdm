@@ -35,6 +35,7 @@ pub(super) fn configuration(root: &std::path::Path) -> Result<config::PlatformSs
     std::fs::write(&path, key.private.private_key_to_pem_pkcs8()?)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     Ok(config::PlatformSso {
+        password_providers: Vec::new(),
         configuration: Configuration {
             team_id: "ABCDEFGHIJ".into(),
             extension_id: "com.rss.psso.extension".into(),
@@ -384,11 +385,11 @@ async fn token(f: &Fixture, assertion: &str) -> Result<(StatusCode, String)> {
     ))
 }
 
-async fn binding(f: &mut Fixture, device: &str) -> Result<Uuid> {
+async fn binding_with_configuration(f: &mut Fixture, device: &str, login: Value) -> Result<Uuid> {
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
     let policy = Uuid::new_v4();
-    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","selfEnrollment":true,"role":null}}})).await?;
+    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":login,"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}})).await?;
     // Policy publication starts scope reconciliation; first association requires its current result.
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -448,6 +449,50 @@ async fn binding(f: &mut Fixture, device: &str) -> Result<Uuid> {
     );
     Ok(serde_json::from_value(receipt["id"].clone())?)
 }
+async fn mac_policy_capacity(
+    binding: Uuid,
+    device: &str,
+    expected: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+) -> Result<()> {
+    use rss_mdm_registration_service::{Error, device_access::storage::mac_configuration_in};
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let policy:Uuid=sqlx::query_scalar("SELECT (document->>'policy')::uuid FROM mdm_access.device_access_bindings WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(binding).fetch_one(&mut *tx).await?;
+    // Valid publications with Windows-only configuration or a no-longer-resolvable scope.
+    sqlx::query("CREATE TEMP TABLE mac_policy_copies ON COMMIT DROP AS SELECT gen_random_uuid() id,gen_random_uuid() version,n FROM generate_series(1,128) n").execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.policies SELECT p.tenant_id,x.id,p.revision,x.version,p.version_number,p.execution_binding,p.state,CASE WHEN x.n<=64 THEN p.definition ELSE jsonb_set(p.definition,'{scope}',to_jsonb(gen_random_uuid())) END,p.author,p.updated_at FROM mdm_policy.policies p CROSS JOIN mac_policy_copies x WHERE p.tenant_id=$1::uuid AND p.id=$2").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_policy.versions SELECT v.tenant_id,x.version,x.id,v.number,v.action_kind,v.resource,v.resource_version,CASE WHEN x.n<=64 THEN jsonb_set(v.frozen,'{configuration,mac}','null'::jsonb) ELSE v.frozen END,v.fingerprint FROM mdm_policy.versions v JOIN mdm_policy.policies p ON (p.tenant_id,p.current_version)=(v.tenant_id,v.id) CROSS JOIN mac_policy_copies x WHERE p.tenant_id=$1::uuid AND p.id=$2").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_access")
+        .execute(&mut *tx)
+        .await?;
+    let tenant = Uuid::parse_str(case_tenant())?;
+    ensure!(
+        &mac_configuration_in(&mut tx, tenant, device).await? == expected,
+        "unrelated publications must not exhaust Mac candidate capacity"
+    );
+    sqlx::query("RESET ROLE").execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_policy.policies p SET definition=original.definition FROM mdm_policy.policies original,mac_policy_copies x WHERE p.tenant_id=$1::uuid AND original.tenant_id=p.tenant_id AND original.id=$2 AND p.id=x.id").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("UPDATE mdm_policy.versions v SET frozen=original.frozen FROM mdm_policy.versions original,mdm_policy.policies p,mac_policy_copies x WHERE v.tenant_id=$1::uuid AND original.tenant_id=v.tenant_id AND p.tenant_id=v.tenant_id AND p.id=$2 AND original.id=p.current_version AND v.id=x.version").bind(case_tenant()).bind(policy).execute(&mut *tx).await?;
+    sqlx::query("SET LOCAL ROLE mdm_access")
+        .execute(&mut *tx)
+        .await?;
+    ensure!(
+        matches!(
+            mac_configuration_in(&mut tx, tenant, device).await,
+            Err(Error::Capacity)
+        ),
+        "129 eligible Mac policies must still enforce the budget"
+    );
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
+}
 async fn applied_binding(id: Uuid) -> Result<()> {
     use rss_mdm_agent_wire::runtime::{
         AccessEffect, AccessMacFacts, AccessObservation, AccessRole,
@@ -471,6 +516,8 @@ async fn applied_binding(id: Uuid) -> Result<()> {
         account: b.account.clone().context("local account")?,
         role: AccessRole::Standard,
         mac: Some(AccessMacFacts {
+            password_sync: AccessObservation::Present,
+            keychain_sync: AccessObservation::Present,
             secure_token: AccessObservation::Present,
             volume_owner: AccessObservation::Unknown,
             filevault_unlock: AccessObservation::Unknown,
@@ -541,19 +588,37 @@ async fn browser_exchange(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.platform_sso: native double signature/JWE, pending registration, P2 browser session and key revocation"]
 async fn native_registration_login_browser_bridge_and_revocation() -> Result<()> {
-    let mut f = Fixture::with_options(None, None, false, None, false, true).await?;
+    native_registration_scenario(None).await
+}
+async fn native_registration_scenario(password: Option<password::Fixture>) -> Result<()> {
+    let mode = password.is_some();
+    let mut f = Fixture::with_platform_configuration(
+        None,
+        None,
+        false,
+        None,
+        false,
+        true,
+        password.as_ref().map(|p| p.configuration()).transpose()?,
+    )
+    .await?;
     let worker = f.policy_worker().await?;
     let result=async {
         let (peer,_device)=f.ready_local_peer().await?;grants(&f).await?;
         let account=Uuid::new_v4();
         let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
-        context["interactiveUser"]=json!({"identity":"501","generatedUid":account,"sessionId":Uuid::new_v4(),"administrator":false});
+        context["osVersion"]=json!([26,4,0,0]);
+        context["interactiveUser"]=json!({"windowsAuthority":null,"identity":"501","generatedUid":account,"sessionId":Uuid::new_v4(),"administrator":false});
         let agent_receipt=crate::test_support::agent::seed_service(f.app.agent_enrollment.as_ref().context("Agent service")?,agent_label(),crate::test_support::case::name("psso-agent-device"),json!({"executionContext":context,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","device_access.v1"]})).await?;
         let agent_registration:Uuid=serde_json::from_value(agent_receipt["registrationId"].clone())?;
         let agent_device=agent_receipt["deviceId"].as_str().context("Agent device")?;
         let mdm=pair(&f,agent_device).await?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"application/profile observations are required");
-        let profile=f.ade.platform_sso.as_ref().unwrap().profile()?;
+        let login=if let Some(p)=&password{p.login()}else{Default::default()};
+        let binding=binding_with_configuration(&mut f,agent_device,serde_json::to_value(&login)?).await?;
+        if let Some(p)=&password{p.mapping(binding).await?;}
+        if !mode {mac_policy_capacity(binding,agent_device,&login).await?;}
+        let profile=f.ade.platform_sso.as_ref().unwrap().profile(&login)?;
         let (_,operation)=f.configuration_policy(json!({"platform":"macos","request":{"kind":"install_profile","profile":profile}}),None,"retain").await?;
         let (security,_) = peer.next("SecurityInfo").await?;
         let waiting = peer.manage("Acknowledged",Some(security),Some(("SecurityInfo",protocol::dictionary([("ManagementStatus",protocol::dictionary([("EnrolledViaDEP",false.into()),("UserApprovedEnrollment",true.into()),("IsUserEnrollment",false.into())]).into())]).into()))).await?;
@@ -586,19 +651,22 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let observed = report(payloads);
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
-        let device=Key::new()?;let device_encryption=Key::new()?;let user=Key::new()?;let encryption=Key::new()?;
+        let device=Key::new()?;let device_encryption=Key::new()?;let mut user=if mode{password::copy_key(&device)?}else{Key::new()?};let encryption=Key::new()?;
         let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
         ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",case_tenant()),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         let registered_device=register_key(&f,"device",None,agent_registration,&device,&device_encryption).await?;
-        let binding=binding(&mut f,agent_device).await?;
-        let registered=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
+
+        let registered=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
         sqlx::query("DELETE FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND purpose='login'").bind(case_tenant()).execute(&mut c).await?;
         c.close().await?;
-        let pending=login_request(&f,&device,&user,&encryption,&registered["sourceId"]).await?;
-        ensure!(token(&f,&pending).await?.0==StatusCode::BAD_REQUEST,"pending binding cannot log in");
+        let pending=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
+        let pending_response=token(&f,&pending).await?;
+        ensure!(pending_response.0==if mode {StatusCode::OK}else{StatusCode::BAD_REQUEST},"Password bootstrap may synchronize a pending binding; key login requires applied binding");
+        if mode {let pending_tokens=decrypt(&encryption,&pending_response.1)?;ensure!(browser_exchange(&f,binding,&user,&registered,pending_tokens["access_token"].as_str().context("pending token")?).await?.0==StatusCode::UNAUTHORIZED,"password verification does not prove local synchronization");}
         applied_binding(binding).await?;
-        let assertion=login_request(&f,&device,&user,&encryption,&registered["sourceId"]).await?;
+        if let Some(provider)=&password {password::capacity(&f,&device,&encryption,&registered["sourceId"]).await?;password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
+        let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
         let (one,two)=(one?,two?);
         let (success,replay)=if one.0==StatusCode::OK {(one,two)}else{(two,one)};
@@ -621,6 +689,7 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
                 .bind(case_tenant()).bind(agent_registration).bind(&reference).execute(&mut pg).await?;
         }
         directory_session(&mut f,agent_device,true).await?;
+        if let Some(p)=&password{p.revision_fence(&f,serde_json::from_value(registered["sourceId"].clone())?).await?;}
         // A local lookup must not evaluate an unrelated source, even if its document is corrupt.
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
@@ -645,20 +714,21 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
             sqlx::query("UPDATE mdm_apple.attempts SET response=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(observe).bind(cipher).execute(&mut pg).await?;
         }
         directory_session(&mut f,agent_device,true).await?;
-        let fresh=login_request(&f,&device,&user,&encryption,&registered["sourceId"]).await?;
+        let fresh=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&fresh).await?.0==StatusCode::OK,"fresh SE renewal");
         ensure!(browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().unwrap()).await?.0==StatusCode::UNAUTHORIZED,"renewal replaces the native access token");
         let replacement=Key::new()?;
         let replaced=register_key(&f,"device",None,agent_registration,&replacement,&device_encryption).await?;
         ensure!(replaced["sourceId"]==registered_device["sourceId"]&&replaced["sourceVersion"]==2);
         directory_session(&mut f,agent_device,false).await?;
-        let stale=login_request(&f,&replacement,&user,&encryption,&registered["sourceId"]).await?;
+        let stale=password::login(&f,mode,&replacement,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
-        let repaired=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
+        if mode {user=password::copy_key(&replacement)?;}
+        let repaired=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
         ensure!(repaired["sourceVersion"]==2);
         let path=format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap());
         ensure!(agent(&f,&path,json!({"sourceVersion":1})).await?.0==StatusCode::CONFLICT,"delayed teardown must not revoke the replacement");
-        let valid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
+        let valid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
         let (status,response)=token(&f,&valid).await?;ensure!(status==StatusCode::OK);
         let current_tokens=decrypt(&encryption,&response)?;
         let current_access=current_tokens["access_token"].as_str().context("current native token")?;
@@ -667,7 +737,7 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true&&revoked.1["sourceVersion"]==3);
         let repeated=agent(&f,&path,json!({"sourceVersion":2})).await?;
         ensure!(repeated.0==StatusCode::OK&&repeated.1["sourceVersion"]==3,"same retirement is idempotent");
-        let invalid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
+        let invalid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::UNAUTHORIZED);
         Ok(())
     }.await;
@@ -701,6 +771,7 @@ async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
         };
         let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
             &configuration,
+            &Default::default(),
             "https://vendor.example",
             Uuid::parse_str(case_tenant())?,
             Uuid::new_v4(),
@@ -772,3 +843,6 @@ async fn directory_session(f: &mut Fixture, device: &str, active: bool) -> Resul
     ensure!(found == active, "SSO search {page}");
     Ok(())
 }
+
+#[path = "platform_sso/password.rs"]
+mod password;

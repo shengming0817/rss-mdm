@@ -99,15 +99,16 @@ pub trait NativeAdmission: Send + Sync {
     ) -> Pending<'a, ()>;
 }
 pub struct Service {
-    cursor: rss_mdm_query::cursor::CursorCodec,
+    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) tenant: rss_request_context::TenantId,
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
+    pub(crate) access_audit: Arc<AuditStore>,
     issuer: Arc<AgentIssuer>,
     clock: Arc<dyn Clock>,
     binding: Arc<dyn RuntimeBinding>,
     native: Arc<dyn NativeAdmission>,
-    protection: Arc<rss_mdm_native_protection::Protector>,
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     installations: Arc<dyn configurations::InstallationAdmission>,
     bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
@@ -116,6 +117,7 @@ pub struct Assembly {
     pub tenant: rss_request_context::TenantId,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
+    pub access_audit: Arc<AuditStore>,
     pub issuer: Arc<AgentIssuer>,
     pub clock: Arc<dyn Clock>,
     pub binding: Arc<dyn RuntimeBinding>,
@@ -136,6 +138,7 @@ impl Service {
             cursor: a.cursor,
             store: a.store,
             audit: a.audit,
+            access_audit: a.access_audit,
             issuer: a.issuer,
             clock: a.clock,
             binding: a.binding,
@@ -172,22 +175,45 @@ impl Service {
         context: C,
         f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
     ) -> Result<R, Error> {
+        self.write_admitted(
+            &self.audit,
+            a,
+            context,
+            |_, _| Box::pin(async { Ok(()) }),
+            f,
+        )
+        .await
+    }
+    /// One settlement implementation. Identity admission precedes every product lock.
+    pub(crate) async fn write_admitted<C: Send, R: Send>(
+        &self,
+        source: &AuditStore,
+        a: &RequestAudit,
+        context: C,
+        before: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, ()> + Send,
+        f: impl for<'a> FnOnce(&'a mut C, &'a mut PgConnection) -> Pending<'a, Change<R>> + Send,
+    ) -> Result<R, Error> {
         if a.tenant() != self.tenant.to_string() {
             return Err(Error::Forbidden);
         }
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let out = self
-            .audit
+        let out = source
             .write(
                 self.tenant,
                 &budget.source_control(),
-                (&self.audit, a, (self.tenant.to_string(), context, Some(f))),
+                (
+                    source,
+                    a,
+                    (self.tenant.to_string(), context, Some(f), Some(before)),
+                ),
                 |ctx, tx| {
                     Box::pin(async move {
                         let (store, a, context) = ctx;
                         let change = tx
                             .with_connection_context(context, |ctx, c| {
                                 Box::pin(async move {
+                                    let before = ctx.3.take().ok_or(Error::Corrupt)?;
+                                    before(&mut ctx.1, c).await?;
                                     crate::admission::lock_in(c, &ctx.0).await?;
                                     let f = ctx.2.take().ok_or(Error::Corrupt)?;
                                     f(&mut ctx.1, c).await

@@ -53,14 +53,20 @@
       "type": "string"
     },
     "signingKey": {
-      "$ref": "#/$defs/PublicKey",
-      "description": "Public key whose possession is proved."
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PublicKey"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Device or SE user key; Password users explicitly supply no user signing key."
     }
   },
   "required": [
     "operationId",
     "challengeId",
-    "signingKey",
     "encryptionKey",
     "proof"
   ],

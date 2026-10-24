@@ -366,11 +366,12 @@ impl Host {
             crate::device_pki::providers(&config.device_pki)?,
             config.agent_pki.bootstrap_materials(&config.identity.instance_id,crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
         )?;
+        let access_audit=Arc::new(agent_audit.on_runtime(identity.runtime.clone(),identity.tenant,&rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5)).control()).await?);
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
                 crate::test_support::agent::application_service(
-                    pki,
+                    access_audit.clone(),                    pki,
                     &store,
                     agent_audit.clone(),
                     execution.service.clone(),
@@ -464,6 +465,7 @@ impl Host {
             execution.channels.installation(agent.clone(), pki.clone())?;
         }
         let app = Arc::new(Assembly {
+            access_audit: Some(access_audit),
             platform_configuration: None,
             audit_projection_health: Default::default(),
             channels: execution.channels.clone(),

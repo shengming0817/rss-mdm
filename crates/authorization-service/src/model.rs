@@ -19,6 +19,8 @@ pub enum Permission {
     TenantAdministratorCreate,
     IdentityAccountsManage,
     IdentityProvidersManage,
+    EnterpriseApplicationsRead,
+    EnterpriseApplicationsWrite,
     CertificateArchiveRead,
     CertificateArchiveWrite,
     CertificateArchiveUnlock,
@@ -141,6 +143,8 @@ impl Permission {
             | Self::TenantDelete
             | Self::TenantAdministratorCreate
             | Self::IdentityAccountsManage
+            | Self::EnterpriseApplicationsRead
+            | Self::EnterpriseApplicationsWrite
             | Self::IdentityProvidersManage
             | Self::AgentEnrollmentRead
             | Self::AgentEnrollmentWrite
@@ -407,6 +411,8 @@ pub fn tenant_administrator_rule(user: User) -> Rule {
         Permission::WebhookReplay,
         Permission::IdentityAccountsManage,
         Permission::IdentityProvidersManage,
+        Permission::EnterpriseApplicationsRead,
+        Permission::EnterpriseApplicationsWrite,
         Permission::CertificateArchiveRead,
         Permission::CertificateArchiveWrite,
         Permission::CertificateArchiveUnlock,

@@ -23,3 +23,6 @@ pub use collection_environment::CollectionEnvironment;
 
 /// Platform SSO registration and native-client contracts.
 pub mod platform_sso;
+
+/// Native proofs and RP Broker interaction contracts.
+pub mod enterprise;

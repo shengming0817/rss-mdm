@@ -22,7 +22,12 @@ pub(super) struct Source {
     pub version: i64,
     pub revoked: bool,
     pub configuration: String,
-    pub signing: PublicKey,
+    pub login_configuration: rss_mdm_agent_wire::platform_sso::LoginConfiguration,
+    pub profile_uuid: Uuid,
+    pub password_provider_revision: Option<u64>,
+    pub password_provider_fingerprint: Option<String>,
+    pub password_identity: Option<rss_mdm_registration_service::enterprise::Subject>,
+    pub signing: Option<PublicKey>,
     pub encryption: PublicKey,
     pub subject: Option<rss_identity_postgres::platform::PlatformBinding>,
     pub subject_version: Option<rss_identity_postgres::platform::PlatformSubjectVersion>,
@@ -54,7 +59,7 @@ pub(super) async fn source(c: &mut PgConnection, tenant: &str, id: Uuid) -> Resu
 }
 pub(super) async fn put(c: &mut PgConnection, tenant: &str, s: &Source) -> Result<(), Error> {
     sqlx::query("INSERT INTO mdm_apple.psso_sources(tenant_id,id,kind,registration,binding,parent,version,revoked,signing_kid,document) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET registration=excluded.registration,parent=excluded.parent,version=excluded.version,revoked=excluded.revoked,signing_kid=excluded.signing_kid,document=excluded.document")
-        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(s.registration).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(crypto::kid(&s.signing)?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
+        .bind(tenant).bind(s.id).bind(s.kind.as_str()).bind(s.registration).bind(s.binding).bind(s.parent).bind(s.version).bind(s.revoked).bind(s.signing.as_ref().map(crypto::kid).transpose()?).bind(serde_json::to_value(s).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
     Ok(())
 }
 pub(super) async fn current_object(
@@ -97,6 +102,18 @@ pub(super) async fn current_user(
         return Err(Error::Unauthorized);
     }
     current_object(app, c, &user.object, user.registration).await?;
+    let desired = super::deployment::configuration_for_object(c, app.tenant, &user.object).await?;
+    if desired.authentication == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password {
+        app.runtime()?
+            .password_provider(&desired)?
+            .check_on(c, app.tenant)
+            .await?;
+    }
+    if user.login_configuration != desired
+        || user.profile_uuid != app.runtime()?.profile(&desired)?.uuid
+    {
+        return Err(Error::Unauthorized);
+    }
     if login {
         let now = now(c).await?;
         super::deployment::ready(app, c, &user.object, now).await?;
@@ -108,6 +125,8 @@ pub(super) async fn current_user(
         || device.registration != user.registration
         || device.object != user.object
         || device.configuration != user.configuration
+        || device.login_configuration != user.login_configuration
+        || device.profile_uuid != user.profile_uuid
     {
         return Err(Error::Unauthorized);
     }
@@ -134,6 +153,40 @@ pub(super) async fn current_user(
                 && m.generation == binding.registration_generation
                 && m.device == binding.device
         })
+    {
+        return Err(Error::Unauthorized);
+    }
+    if user.login_configuration.authentication
+        == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password
+    {
+        let provider = user
+            .login_configuration
+            .password_provider
+            .ok_or(Error::Unauthorized)?;
+        let identity = rss_mdm_registration_service::enterprise::subject_on(
+            c,
+            binding.tenant,
+            provider,
+            &binding.person,
+        )
+        .await?;
+        if user.password_identity.as_ref() != Some(&identity) {
+            return Err(Error::Unauthorized);
+        }
+    } else if user.password_identity.is_some() {
+        return Err(Error::Unauthorized);
+    }
+    let selected = rss_mdm_registration_service::device_access::Admission::policy(
+        app.execution.as_ref(),
+        c,
+        Uuid::parse_str(&tenant).map_err(|_| Error::Malformed)?,
+        &binding.device,
+        binding.policy,
+    )
+    .await?;
+    if selected.version != binding.policy_version
+        || selected.configuration != binding.configuration
+        || !selected.configuration.enabled
     {
         return Err(Error::Unauthorized);
     }

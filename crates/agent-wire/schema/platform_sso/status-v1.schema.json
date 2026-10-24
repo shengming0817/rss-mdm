@@ -1,5 +1,55 @@
 {
   "$defs": {
+    "PasswordExchangeState": {
+      "description": "A server-side Password exchange result, independent from OS application facts.",
+      "oneOf": [
+        {
+          "const": "verifying",
+          "description": "Nonce consumed; external verification has not settled locally.",
+          "type": "string"
+        },
+        {
+          "const": "succeeded",
+          "description": "Server token issuance committed; no claim about local account or volume changes.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "The submitted credentials or bound authority were rejected.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "No native token was issued because the dependency was unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "An interrupted exchange has no confirmed local outcome before its deadline.",
+          "type": "string"
+        }
+      ]
+    },
+    "PasswordExchangeStatus": {
+      "additionalProperties": false,
+      "description": "Bounded diagnostic coordinates; contains no password, proof or token.",
+      "properties": {
+        "attemptId": {
+          "description": "Original server nonce identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/PasswordExchangeState",
+          "description": "Confirmed local state of this attempt."
+        }
+      },
+      "required": [
+        "attemptId",
+        "state"
+      ],
+      "type": "object"
+    },
     "PublicKey": {
       "additionalProperties": false,
       "description": "Public key only. The verifier validates the curve, point and Apple's derived key id.",
@@ -57,8 +107,15 @@
           "type": "boolean"
         },
         "signingKey": {
-          "$ref": "#/$defs/PublicKey",
-          "description": "Accepted signing public key."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PublicKey"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Accepted device/SE signing key; absent for a Password user."
         },
         "version": {
           "description": "Accepted registration version.",
@@ -70,7 +127,6 @@
         "id",
         "version",
         "revoked",
-        "signingKey",
         "encryptionKey"
       ],
       "type": "object"
@@ -106,6 +162,17 @@
     "loginReady": {
       "description": "Server admission currently permits native login.",
       "type": "boolean"
+    },
+    "passwordExchange": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PasswordExchangeStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Latest exchange for this exact registered user source; not a local password effect."
     },
     "profileObserved": {
       "description": "Current MDM profile inventory matches.",

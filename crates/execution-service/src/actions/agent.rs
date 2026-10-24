@@ -196,10 +196,12 @@ impl ExecutionService {
                     crate::device_access::provisioning::prepared(tx,&run,input,value).await?;
                 }
                 wire::TaskEvent::DeviceAccessResult(value) => {
+                    let db::ScheduledPolicy::DeviceAccess(access_plan) = &plan else { return Err(Error::Forbidden.into()); };
+                    let access_complete = value.effect.complete(&access_plan.binding.configuration);
                     if !matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
                     crate::device_access::finish_in(tx,&run,input,value,effect_allowed).await?;
-                    if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. }) || value.effect.complete())).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !value.effect.complete() {run.state.uncertain_result(input.attempt_id())?;}
-                    else {run.state.result(input.attempt_id(),value.effect.complete())?;}
+                    if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. }) || access_complete)).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !access_complete {run.state.uncertain_result(input.attempt_id())?;}
+                    else {run.state.result(input.attempt_id(),access_complete)?;}
                     run.result=Some(checked_input(serde_json::to_value(value))?);
                 }
                 wire::TaskEvent::CredentialEscrow(value) => {

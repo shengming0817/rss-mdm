@@ -18,6 +18,7 @@ impl Admission for ExecutionService {
         tenant: Uuid,
         device: &'a str,
         after: Option<Uuid>,
+        limit: u16,
     ) -> rss_mdm_registration_service::agent::Pending<
         'a,
         (Vec<wire::AccessPolicyOption>, Option<Uuid>),
@@ -26,13 +27,11 @@ impl Admission for ExecutionService {
             if tenant.to_string() != self.tenant.to_string() {
                 return Err(AccessError::Forbidden);
             }
-            let ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64")
-                .bind(tenant).bind(after).fetch_all(&mut *c).await.map_err(|_| AccessError::Storage)?;
-            let after = if ids.len() == 64 {
-                ids.last().copied()
-            } else {
-                None
-            };
+            let mut ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT $3")
+                .bind(tenant).bind(after).bind(i64::from(limit)+1).fetch_all(&mut *c).await.map_err(|_| AccessError::Storage)?;
+            let more = ids.len() > usize::from(limit);
+            ids.truncate(usize::from(limit));
+            let after = if more { ids.last().copied() } else { None };
             let mut values = Vec::new();
             for id in ids {
                 match self.policy(c, tenant, device, id).await {
@@ -67,6 +66,30 @@ impl Admission for ExecutionService {
         ))
     }
 
+    fn binding_session<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: Uuid,
+        binding: &'a access::Binding,
+    ) -> rss_mdm_registration_service::agent::Pending<'a, wire::AccessLocalSession> {
+        Box::pin(async move {
+            if tenant.to_string() != self.tenant.to_string() || binding.tenant != tenant {
+                return Err(AccessError::Forbidden);
+            }
+            let native = self
+                .agent_store
+                .binding(c, self.tenant.to_string(), binding.registration)
+                .await
+                .map_err(|_| AccessError::Storage)?
+                .ok_or(AccessError::Forbidden)?;
+            let session = native_local_session(native)?;
+            if binding.account.as_ref() != Some(&session.account) {
+                return Err(AccessError::Forbidden);
+            }
+            Ok(session)
+        })
+    }
+
     fn local_session<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -82,41 +105,72 @@ impl Admission for ExecutionService {
                 .await
                 .map_err(|_| AccessError::Storage)?
                 .ok_or(AccessError::Forbidden)?;
-            if !binding
-                .capabilities
-                .contains(&wire::Capability::DeviceAccessV1)
-            {
-                return Err(AccessError::Forbidden);
-            }
-            let user = binding
-                .execution_context
-                .interactive_user
-                .ok_or(AccessError::Forbidden)?;
-            let account = match binding.platform.as_str() {
-                "windows" if user.generated_uid.is_none() => {
-                    wire::AccessAccount::Windows { sid: user.identity }
-                }
-                "macos" => wire::AccessAccount::Macos {
-                    generated_uid: Uuid::parse_str(
-                        user.generated_uid
-                            .as_deref()
-                            .ok_or(AccessError::Forbidden)?,
-                    )
-                    .map_err(|_| AccessError::Forbidden)?,
-                },
-                _ => return Err(AccessError::Forbidden),
-            };
-            let value = wire::AccessLocalSession {
-                account,
-                session_id: user.session_id,
-            };
-            value.validate().map_err(|_| AccessError::Forbidden)?;
-            Ok(value)
+            native_local_session(binding)
         })
     }
 }
 
+fn native_local_session(
+    binding: crate::channels::AgentBinding,
+) -> std::result::Result<wire::AccessLocalSession, AccessError> {
+    if !binding
+        .capabilities
+        .contains(&wire::Capability::DeviceAccessV1)
+    {
+        return Err(AccessError::Forbidden);
+    }
+    let user = binding
+        .execution_context
+        .interactive_user
+        .ok_or(AccessError::Forbidden)?;
+    let account = match binding.platform.as_str() {
+        "windows" if user.generated_uid.is_none() => wire::AccessAccount::Windows {
+            sid: user.identity,
+            authority: user.windows_authority.ok_or(AccessError::Forbidden)?,
+        },
+        "macos" => wire::AccessAccount::Macos {
+            generated_uid: Uuid::parse_str(
+                user.generated_uid
+                    .as_deref()
+                    .ok_or(AccessError::Forbidden)?,
+            )
+            .map_err(|_| AccessError::Forbidden)?,
+        },
+        _ => return Err(AccessError::Forbidden),
+    };
+    let value = wire::AccessLocalSession {
+        account,
+        session_id: user.session_id,
+    };
+    value.validate().map_err(|_| AccessError::Forbidden)?;
+    Ok(value)
+}
+
 impl ExecutionService {
+    /// Current native runtime baseline for PSSO 1.0 Password and hardening policies.
+    /// App/profile installation remains an independent Apple qualification.
+    pub async fn platform_sso_supported_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        registration: Uuid,
+    ) -> std::result::Result<bool, AccessError> {
+        let Some(binding) = self
+            .agent_store
+            .binding(c, self.tenant.to_string(), registration)
+            .await
+            .map_err(|_| AccessError::Storage)?
+        else {
+            return Ok(false);
+        };
+        Ok(binding.platform == "macos"
+            && binding.architecture == "aarch64"
+            && binding
+                .capabilities
+                .contains(&wire::Capability::DeviceAccessV1)
+            && binding.execution_context.os_version >= [26, 4, 0, 0]
+            && binding.execution_context.user_helper
+            && binding.execution_context.system_broker)
+    }
     /// Bootstrap may precede the native integration's Applied receipt. It still requires an
     /// authorized current binding and the exact native local account; never admits a login.
     pub async fn registration_access_binding_on(
@@ -424,6 +478,7 @@ impl Plan {
         let b = &self.binding;
         let action = if b.state == access::State::Revoked {
             wire::AccessAction::Unbind {
+                disposition: b.account_disposition,
                 account: b.account.clone().ok_or(Error::Conflict)?,
             }
         } else {
@@ -746,7 +801,7 @@ pub async fn finish_in(
                 let applied =
                     access::storage::result_in(c, tenant, run, attempt, event, &value, project)
                         .await?;
-                if applied && matches!(value.effect, wire::AccessEffect::Unbound) {
+                if applied && matches!(value.effect, wire::AccessEffect::Unbound { .. }) {
                     rss_mdm_recovery_credentials::storage::access_unbound_in(
                         c,
                         tenant,

@@ -5,20 +5,25 @@
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "description": "Windows account, with provenance reported by the authenticated native session.",
           "properties": {
+            "authority": {
+              "$ref": "#/$defs/AccessWindowsAuthority",
+              "description": "Local machine, AD domain or Entra tenant authority; never inferred from a name."
+            },
             "platform": {
               "const": "windows",
               "type": "string"
             },
             "sid": {
-              "description": "SID returned by the authenticated native account operation.",
+              "description": "SID returned by the native account operation.",
               "type": "string"
             }
           },
           "required": [
             "platform",
-            "sid"
+            "sid",
+            "authority"
           ],
           "type": "object"
         },
@@ -41,6 +46,26 @@
             "generatedUid"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "AccessAccountDisposition": {
+      "description": "Explicit OS account handling when removing RSS integration. Data is always retained.",
+      "oneOf": [
+        {
+          "const": "keep",
+          "description": "Preserve the account's enabled state and privilege.",
+          "type": "string"
+        },
+        {
+          "const": "disable",
+          "description": "Disable interactive login without deleting the account.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Remove administrator privilege while preserving login.",
+          "type": "string"
         }
       ]
     },
@@ -95,15 +120,20 @@
         },
         {
           "additionalProperties": false,
-          "description": "The integration was removed, preserving the OS account and its data.",
+          "description": "Integration removal and the requested OS disposition were independently read back.",
           "properties": {
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Verified account handling; account data is retained."
+            },
             "state": {
               "const": "unbound",
               "type": "string"
             }
           },
           "required": [
-            "state"
+            "state",
+            "disposition"
           ],
           "type": "object"
         },
@@ -185,6 +215,14 @@
           "$ref": "#/$defs/AccessObservation",
           "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
         },
+        "keychainSync": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Native login keychain synchronization, independent of account password success."
+        },
+        "passwordSync": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Native account password synchronization, never inferred from the IdP exchange."
+        },
         "secureToken": {
           "$ref": "#/$defs/AccessObservation",
           "description": "The account's Secure Token status, not Bootstrap Token custody."
@@ -195,6 +233,8 @@
         }
       },
       "required": [
+        "passwordSync",
+        "keychainSync",
         "secureToken",
         "volumeOwner",
         "filevaultUnlock"
@@ -238,6 +278,70 @@
           "const": "administrator",
           "description": "Local administrator, requiring explicit RSS device-account authorization.",
           "type": "string"
+        }
+      ]
+    },
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -1170,9 +1274,21 @@
           },
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
+        },
+        "windowsAuthority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessWindowsAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Native Windows account authority when known; required for Device Access admission."
         }
       },
       "required": [
+        "windowsAuthority",
         "generatedUid",
         "identity",
         "sessionId",

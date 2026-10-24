@@ -260,7 +260,7 @@ fn windows_sid_and_macos_generated_uid_bind_the_current_session() {
         ),
     ] {
         let p = plan(query(recipe));
-        let context:SoftwareExecutionContext=serde_json::from_value(json!({"revision":1,"osVersion":[15,0,0,0],"systemBroker":true,"userHelper":true,"interactiveUser":{"identity":identity,"generatedUid":guid,"sessionId":uuid::Uuid::new_v4(),"administrator":false},"msixSideload":false,"msixUnsigned":false,"sourceCredentials":[]})).unwrap();
+        let context:SoftwareExecutionContext=serde_json::from_value(json!({"revision":1,"osVersion":[15,0,0,0],"systemBroker":true,"userHelper":true,"interactiveUser":{"windowsAuthority":null,"identity":identity,"generatedUid":guid,"sessionId":uuid::Uuid::new_v4(),"administrator":false},"msixSideload":false,"msixUnsigned":false,"sourceCredentials":[]})).unwrap();
         let binding = NativeExecutionBinding::bind(&p, &context).unwrap();
         if platform == TaskPlatform::Windows {
             for sid in ["S-1-5-18", "S-1-5-19", "S-1-5-20"] {

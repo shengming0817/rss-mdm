@@ -82,10 +82,10 @@ rss-mdm-scope = { path = "crates/scope" }
 rss-mdm-policy = { path = "crates/policy" }
 rss-mdm-group = { path = "crates/group" }
 rss-mdm-app = { path = "crates/app" }
-rss-identity-core = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b19938dc586744cbacfe00a6bf92d738628c6800" }
-rss-identity-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b19938dc586744cbacfe00a6bf92d738628c6800" }
-rss-identity-http-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b19938dc586744cbacfe00a6bf92d738628c6800" }
-rss-identity-oidc = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "b19938dc586744cbacfe00a6bf92d738628c6800" }
+rss-identity-core = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "a376eb9d18b61f0f466e1dcbc3fea001e07250f2" }
+rss-identity-postgres = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "a376eb9d18b61f0f466e1dcbc3fea001e07250f2" }
+rss-identity-http-axum = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "a376eb9d18b61f0f466e1dcbc3fea001e07250f2" }
+rss-identity-oidc = { git = "https://dev.azure.com/shengming0923/rss/_git/rss-identity", rev = "a376eb9d18b61f0f466e1dcbc3fea001e07250f2" }
 axum = { version = "=0.8.9", features = ["json", "query"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "http2"] }
 url = "2.5"

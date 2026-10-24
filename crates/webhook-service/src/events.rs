@@ -118,8 +118,20 @@ pub(crate) async fn emit_derived_on(
 ) -> Result<(), Error> {
     event.validate()?;
     let body = serde_json::to_vec(event)?;
-    let inserted=sqlx::query("INSERT INTO mdm_webhook.events(tenant_id,id,document,body,created_at) VALUES($1,$2,$3,$4,CASE WHEN $5::uuid IS NULL THEN clock_timestamp() ELSE (SELECT created_at FROM mdm_webhook.compliance_sources WHERE tenant_id=$1 AND id=$5) END) ON CONFLICT(tenant_id,id) DO NOTHING")
-        .bind(event.tenant_id).bind(event.event_id).bind(serde_json::to_value(event)?).bind(&body).bind(origin).execute(&mut *c).await?.rows_affected();
+    let insert = if origin.is_some() {
+        "INSERT INTO mdm_webhook.events(tenant_id,id,document,body,created_at) VALUES($1,$2,$3,$4,(SELECT created_at FROM mdm_webhook.compliance_sources WHERE tenant_id=$1 AND id=$5)) ON CONFLICT(tenant_id,id) DO NOTHING"
+    } else {
+        "INSERT INTO mdm_webhook.events(tenant_id,id,document,body,created_at) SELECT $1,$2,$3,$4,clock_timestamp() WHERE $5::uuid IS NULL ON CONFLICT(tenant_id,id) DO NOTHING"
+    };
+    let inserted = sqlx::query(insert)
+        .bind(event.tenant_id)
+        .bind(event.event_id)
+        .bind(serde_json::to_value(event)?)
+        .bind(&body)
+        .bind(origin)
+        .execute(&mut *c)
+        .await?
+        .rows_affected();
     if inserted == 0 {
         let old: Vec<u8> =
             sqlx::query_scalar("SELECT body FROM mdm_webhook.events WHERE tenant_id=$1 AND id=$2")

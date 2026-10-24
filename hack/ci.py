@@ -105,7 +105,7 @@ def identity_pin(manifest):
     return next(iter(pairs))
 
 def verify_policy(policy, manifest):
-    require(policy['advisories']['ignore']==['RUSTSEC-2023-0071'], 'unapproved advisory exception')
+    require(policy['advisories']['ignore']==[], 'unapproved advisory exception')
     require(policy['advisories']['unused-ignored-advisory']=='deny', 'expired advisory exception must fail')
     require(policy['sources']['unknown-git']=='deny' and policy['sources']['unknown-registry']=='deny', 'unknown sources must fail')
     urls={rss_pin(manifest)[0],identity_pin(manifest)[0],audit_pin(manifest)[0]}
@@ -323,12 +323,9 @@ def verify_metadata(data, root, mode, pin):
             if any(k.get('kind') != 'dev' for k in dep.get('dep_kinds', [{'kind':None}])): todo.append(dep['pkg'])
     require(not any(packages[p] == 'rss-mdm-examples' for p in visited), 'production application depends on fixtures')
 
-    # Public-verification closure scoped by #2365; source/root/version drift needs renewed review.
-    for name, version, parent in [('rsa','0.9.10','openidconnect'),('openidconnect','4.0.1','rss-identity-oidc')]:
-        found = [p for p in data['packages'] if p['name'] == name]
-        require(len(found) == 1 and found[0]['version'] == version and found[0]['source'] == 'registry+https://github.com/rust-lang/crates.io-index', 'OIDC public-verification source drift')
-        parents = {packages[n['id']] for n in data['resolve']['nodes'] if any(d['pkg'] == found[0]['id'] for d in n['deps'])}
-        require(parents == {parent}, 'OIDC public-verification root drift')
+    # Identity #2984 removed the vulnerable OIDC closure; reject reintroduction.
+    require(not any(p['name'] in {'rsa', 'openidconnect'} for p in data['packages']),
+            'retired vulnerable OIDC dependency reintroduced')
     return sorted(p["name"] for p in data["packages"] if p["name"].startswith("rss-") and p["name"] not in LOCAL_PACKAGES and p["name"] not in IDENTITY_PACKAGES)
 
 def dependency_graphs(pin):

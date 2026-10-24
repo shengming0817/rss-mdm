@@ -7,18 +7,22 @@ use crate::{
         profiles::{PayloadInput, ProfileInput},
     },
 };
-use rss_mdm_agent_wire::platform_sso::{Configuration, Endpoints};
+use rss_mdm_agent_wire::platform_sso::{
+    AuthenticationMode, Configuration, Endpoints, LoginConfiguration, LoginPolicy,
+};
 use uuid::Uuid;
 
 /// Uses the existing native schema/compiler; this is not evidence of installation.
 pub fn profile(
     configuration: &Configuration,
+    login: &LoginConfiguration,
     origin: &str,
     tenant: Uuid,
     id: Uuid,
     payload_id: Uuid,
 ) -> Result<ProfileInput, Error> {
     configuration.validate().map_err(|_| Error::Malformed)?;
+    login.validate().map_err(|_| Error::Malformed)?;
     let endpoints = Endpoints::new(origin, tenant).map_err(|_| Error::Malformed)?;
     if id.is_nil() || payload_id.is_nil() || payload_id == id {
         return Err(Error::Malformed);
@@ -38,7 +42,62 @@ pub fn profile(
         plist::Value::Array(vec![format!("{}/browser/", endpoints.base).into()]),
     );
     let mut platform = plist::Dictionary::new();
-    platform.insert("AuthenticationMethod".into(), "UserSecureEnclaveKey".into());
+    platform.insert(
+        "AuthenticationMethod".into(),
+        match login.authentication {
+            AuthenticationMode::SecureEnclave => "UserSecureEnclaveKey",
+            AuthenticationMode::Password => "Password",
+        }
+        .into(),
+    );
+    for (name, policy) in [
+        ("LoginPolicy", login.login),
+        ("UnlockPolicy", login.unlock),
+        ("FileVaultPolicy", login.filevault),
+    ] {
+        let primary = match policy {
+            LoginPolicy::Local => continue,
+            LoginPolicy::Attempt => "AttemptAuthentication",
+            LoginPolicy::Require => "RequireAuthentication",
+        };
+        let mut values = vec![plist::Value::String(primary.into())];
+        if policy == LoginPolicy::Require {
+            if login.offline_grace_seconds.is_some() {
+                values.push("AllowOfflineGracePeriod".into());
+            }
+            if login.registration_grace_seconds.is_some() {
+                values.push("AllowAuthenticationGracePeriod".into());
+            }
+        }
+        platform.insert(name.into(), plist::Value::Array(values));
+    }
+    for (name, seconds) in [
+        ("OfflineGracePeriod", login.offline_grace_seconds),
+        (
+            "AuthenticationGracePeriod",
+            login.registration_grace_seconds,
+        ),
+    ] {
+        if let Some(seconds) = seconds {
+            platform.insert(
+                name.into(),
+                plist::Value::Integer(u64::from(seconds).into()),
+            );
+        }
+    }
+    if !login.maintenance_accounts.is_empty() {
+        platform.insert(
+            "NonPlatformSSOAccounts".into(),
+            plist::Value::Array(
+                login
+                    .maintenance_accounts
+                    .iter()
+                    .cloned()
+                    .map(plist::Value::String)
+                    .collect(),
+            ),
+        );
+    }
     platform.insert("UseSharedDeviceKeys".into(), true.into());
     fields.insert("PlatformSSO".into(), platform.into());
     let host = url::Url::parse(origin).map_err(|_| Error::Malformed)?;
@@ -104,6 +163,7 @@ mod tests {
         };
         let profile = profile(
             &config,
+            &LoginConfiguration::default(),
             "https://mdm.example",
             Uuid::new_v4(),
             Uuid::new_v4(),

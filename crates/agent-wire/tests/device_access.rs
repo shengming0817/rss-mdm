@@ -25,8 +25,11 @@ fn task() -> AccessTaskSpec {
         action: AccessAction::Apply {
             account: AccessAccount::Windows {
                 sid: "S-1-5-21-100-200-300-1001".into(),
+                authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local,
             },
             configuration: AccessConfiguration {
+                mac: Some(Default::default()),
+                windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
                 self_enrollment: true,
                 enabled: true,
                 role: None,
@@ -66,8 +69,11 @@ fn access_signature_binds_account_generation_and_configuration() {
             action: AccessAction::Apply {
                 account: AccessAccount::Windows {
                     sid: "S-1-5-21-100-200-300-1002".into(),
+                    authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local,
                 },
                 configuration: AccessConfiguration {
+                    mac: Some(Default::default()),
+                    windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
                     self_enrollment: true,
                     enabled: true,
                     role: Some(AccessRole::Administrator),
@@ -93,9 +99,12 @@ fn invalid_native_identity_and_cross_platform_tasks_are_rejected() {
         "S-1-5-21-100-200-300-4294967296",
     ] {
         assert!(
-            AccessAccount::Windows { sid: sid.into() }
-                .validate()
-                .is_err()
+            AccessAccount::Windows {
+                sid: sid.into(),
+                authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local
+            }
+            .validate()
+            .is_err()
         );
     }
     let mut value = task();
@@ -105,6 +114,8 @@ fn invalid_native_identity_and_cross_platform_tasks_are_rejected() {
     value.action = AccessAction::Create {
         name: "../existing".into(),
         configuration: AccessConfiguration {
+            mac: Some(Default::default()),
+            windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
             self_enrollment: false,
             enabled: true,
             role: None,
@@ -115,6 +126,8 @@ fn invalid_native_identity_and_cross_platform_tasks_are_rejected() {
     value.action = AccessAction::Create {
         name: "employee".into(),
         configuration: AccessConfiguration {
+            mac: Some(Default::default()),
+            windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
             self_enrollment: false,
             enabled: true,
             role: None,
@@ -145,16 +158,21 @@ fn mac_application_requires_its_own_secure_token_observation() {
             role: AccessRole::Standard,
             windows: None,
             mac: Some(AccessMacFacts {
+                password_sync: AccessObservation::Unknown,
+                keychain_sync: AccessObservation::Unknown,
                 secure_token: state,
                 volume_owner: AccessObservation::Unknown,
                 filevault_unlock: AccessObservation::Unknown,
             }),
         };
         assert!(value.validate_for(TaskPlatform::Macos).is_ok());
-        assert_eq!(value.complete(), state == AccessObservation::Present);
+        assert_eq!(
+            value.complete(&configuration()),
+            state == AccessObservation::Present
+        );
         assert!(value.validate_for(TaskPlatform::Windows).is_err());
     }
-    assert!(!AccessEffect::Unknown.complete());
+    assert!(!AccessEffect::Unknown.complete(&configuration()));
 }
 
 #[test]
@@ -201,8 +219,10 @@ fn initialization_aad_fences_every_generation_and_native_account() {
     missing.windows = None;
     assert!(missing.validate().is_err());
     missing.action = AccessAction::Unbind {
+        disposition: AccessAccountDisposition::Keep,
         account: AccessAccount::Windows {
             sid: "S-1-5-21-100-200-300-1001".into(),
+            authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local,
         },
     };
     assert!(missing.validate().is_ok());
@@ -224,4 +244,163 @@ fn escrow_ack_preserves_exact_coordinates_and_rejects_old_shape() {
     assert_eq!(decoded.credentials(), &[receipt]);
     json.as_object_mut().unwrap().remove("credentials");
     assert!(serde_json::from_value::<TaskEventAck>(json).is_err());
+}
+
+#[test]
+fn windows_authority_is_explicit_and_bound_to_native_identity() {
+    let local = AccessAccount::Windows {
+        sid: "S-1-5-21-100-200-300-1001".into(),
+        authority: AccessWindowsAuthority::Local,
+    };
+    let domain = AccessAccount::Windows {
+        sid: "S-1-5-21-100-200-300-1001".into(),
+        authority: AccessWindowsAuthority::ActiveDirectory {
+            domain_sid: "S-1-5-21-100-200-300".into(),
+        },
+    };
+    assert!(local.validate().is_ok());
+    assert!(domain.validate().is_ok());
+    assert_ne!(local, domain);
+    assert!(
+        AccessAccount::Windows {
+            sid: "S-1-5-21-100-200-300-1001".into(),
+            authority: AccessWindowsAuthority::ActiveDirectory {
+                domain_sid: "S-1-5-21-900-200-300".into()
+            },
+        }
+        .validate()
+        .is_err()
+    );
+    let cloud = AccessAccount::Windows {
+        sid: "S-1-12-1-100-200-300-400".into(),
+        authority: AccessWindowsAuthority::Entra {
+            tenant_id: Uuid::from_u128(10),
+            object_id: Uuid::from_u128(20),
+        },
+    };
+    assert!(cloud.validate().is_ok());
+    assert!(
+        AccessAccount::Windows {
+            sid: "S-1-12-1-100-200-300-400".into(),
+            authority: AccessWindowsAuthority::Local,
+        }
+        .validate()
+        .is_err()
+    );
+    let mut old = serde_json::to_value(local).unwrap();
+    old.as_object_mut().unwrap().remove("authority");
+    assert!(serde_json::from_value::<AccessAccount>(old).is_err());
+}
+
+fn configuration() -> AccessConfiguration {
+    AccessConfiguration {
+        self_enrollment: true,
+        enabled: true,
+        role: None,
+        mac: Some(Default::default()),
+        windows_accounts: vec![AccessWindowsKind::Local],
+    }
+}
+
+#[test]
+fn unbind_signature_binds_explicit_account_disposition() {
+    let mut value = task();
+    value.windows = None;
+    let account = AccessAccount::Windows {
+        sid: "S-1-5-21-100-200-300-1001".into(),
+        authority: AccessWindowsAuthority::Local,
+    };
+    let mut signed = std::collections::BTreeSet::new();
+    for disposition in [
+        AccessAccountDisposition::Keep,
+        AccessAccountDisposition::Disable,
+        AccessAccountDisposition::Standard,
+    ] {
+        value.action = AccessAction::Unbind {
+            account: account.clone(),
+            disposition,
+        };
+        assert!(signed.insert(value.signing_bytes("key").unwrap()));
+        let receipt = AccessEffect::Unbound { disposition };
+        assert!(receipt.validate_for(TaskPlatform::Windows).is_ok());
+        assert_eq!(
+            serde_json::from_value::<AccessEffect>(serde_json::to_value(&receipt).unwrap())
+                .unwrap(),
+            receipt
+        );
+    }
+    assert!(
+        serde_json::from_value::<AccessEffect>(serde_json::json!({"state":"unbound"})).is_err()
+    );
+}
+
+#[test]
+fn password_application_requires_independent_password_keychain_and_volume_facts() {
+    use rss_mdm_agent_wire::platform_sso::{AuthenticationMode, LoginPolicy};
+    let mut config = configuration();
+    let login = config.mac.as_mut().unwrap();
+    login.authentication = AuthenticationMode::Password;
+    login.password_provider = Some(Uuid::from_u128(77));
+    login.filevault = LoginPolicy::Require;
+    login.maintenance_accounts = vec!["maintenance".into()];
+    assert!(config.validate().is_ok());
+    for missing in 0..5 {
+        let effect = AccessEffect::Applied {
+            account: AccessAccount::Macos {
+                generated_uid: Uuid::from_u128(20),
+            },
+            role: AccessRole::Standard,
+            windows: None,
+            mac: Some(AccessMacFacts {
+                secure_token: AccessObservation::Present,
+                volume_owner: if missing == 3 {
+                    AccessObservation::Unknown
+                } else {
+                    AccessObservation::Present
+                },
+                password_sync: if missing == 0 {
+                    AccessObservation::Unknown
+                } else {
+                    AccessObservation::Present
+                },
+                keychain_sync: if missing == 1 {
+                    AccessObservation::Unknown
+                } else {
+                    AccessObservation::Present
+                },
+                filevault_unlock: if missing == 2 {
+                    AccessObservation::Unknown
+                } else {
+                    AccessObservation::Present
+                },
+            }),
+        };
+        assert_eq!(effect.complete(&config), missing == 4);
+    }
+}
+
+#[test]
+fn mac_hardening_requires_password_provider_and_maintenance_path() {
+    use rss_mdm_agent_wire::platform_sso::{AuthenticationMode, LoginConfiguration, LoginPolicy};
+    let mut login = LoginConfiguration::default();
+    assert!(login.validate().is_ok());
+    login.login = LoginPolicy::Require;
+    assert!(login.validate().is_err());
+    login.authentication = AuthenticationMode::Password;
+    assert!(login.validate().is_err());
+    login.password_provider = Some(Uuid::from_u128(12));
+    assert!(login.validate().is_err());
+    login.maintenance_accounts = vec!["maintenance".into()];
+    assert!(login.validate().is_ok());
+    login.offline_grace_seconds = Some(0);
+    assert!(login.validate().is_err());
+    login.offline_grace_seconds = Some(300);
+    assert!(login.validate().is_ok());
+    login.login = LoginPolicy::Local;
+    assert!(login.validate().is_err());
+    login.offline_grace_seconds = None;
+    login.unlock = LoginPolicy::Attempt;
+    assert!(login.validate().is_ok());
+    login.maintenance_accounts.push("maintenance".into());
+    assert!(login.validate().is_err());
 }

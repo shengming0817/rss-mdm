@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-query.workspace = true
+rss-mdm-query-postgres.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-native-protection.workspace = true
 rss-mdm-registration-service.workspace = true
@@ -25,6 +27,9 @@ thiserror.workspace = true
 openssl.workspace = true
 base64.workspace = true
 ring.workspace = true
+rss-identity-core.workspace = true
+rss-identity-postgres.workspace = true
+sha2.workspace = true
 subtle.workspace = true
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
 

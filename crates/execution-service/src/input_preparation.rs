@@ -52,14 +52,18 @@ impl Inputs {
     ) -> Result<Frozen> {
         let mut frozen = match input {
             PublicationInput::DeviceAccess {
+                mac,
+                windows_accounts,
                 self_enrollment,
                 role,
             } => {
                 if !self.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
-                Frozen::DeviceAccess {
+                let frozen = Frozen::DeviceAccess {
                     configuration: rss_mdm_agent_wire::runtime::AccessConfiguration {
+                        mac: (*mac).clone(),
+                        windows_accounts: (*windows_accounts).clone(),
                         self_enrollment: *self_enrollment,
                         enabled: true,
                         role: role.map(|r| match r {
@@ -76,7 +80,11 @@ impl Inputs {
                         authority.proof,
                         Permission::AccountWrite,
                     )?,
+                };
+                if let Frozen::DeviceAccess { configuration, .. } = &frozen {
+                    configuration.validate().map_err(|_| Error::Malformed)?;
                 }
+                frozen
             }
             PublicationInput::Unmanage { schedule, lifetime } => Frozen::UnmanageDevice {
                 schedule: (*schedule).clone(),

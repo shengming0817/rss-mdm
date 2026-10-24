@@ -62,7 +62,7 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/installation.sql"),
         ),
         (
-            "identity-authority-v16",
+            "identity-authority-v17",
             rss_identity_postgres::MIGRATION_SQL,
         ),
         (
@@ -210,6 +210,10 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_registration_service::AGENT_BOOTSTRAP_SQL,
         ),
         ("apple-ade-channel-v1", rss_mdm_apple_channel::ADE_SQL),
+        (
+            "enterprise-access-v1",
+            rss_mdm_registration_service::enterprise::INSTALL_SQL,
+        ),
         (
             "apple-platform-sso-v1",
             rss_mdm_apple_channel::platform_sso::INSTALL_SQL,

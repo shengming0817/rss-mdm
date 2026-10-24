@@ -52,6 +52,14 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "disclosures",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [],

@@ -202,22 +202,7 @@ describe!(
 );
 pub static COMPLIANCE_RULES: Description = Description::QueryOwner;
 pub static DEVICES: Description = Description::QueryOwner;
-describe!(
-    DEVICE_ACCESS,
-    "crates/registration-service/src/device_access/storage.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(100),
-        Some(100),
-        None,
-        None
-    ),
-    &["id"],
-    None,
-    false,
-    "device path binds authority; top-level array without lookahead or continuation"
-);
+pub static DEVICE_ACCESS: Description = Description::QueryOwner;
 pub static DEVICE_ASSOCIATIONS: Description = Description::QueryOwner;
 describe!(
     DEVICE_TIMELINE,
@@ -257,22 +242,7 @@ describe!(
 );
 pub static PUBLICATIONS: Description = Description::QueryOwner;
 pub static PUBLICATION_TARGETS: Description = Description::QueryOwner;
-describe!(
-    RECOVERY_CREDENTIALS,
-    "crates/recovery-credentials/src/service.rs",
-    page(
-        Paging::Keyset,
-        &[f("afterId", "uuid"), f("afterVersion", "i64")],
-        Some(100),
-        Some(100),
-        None,
-        None
-    ),
-    &["id", "version"],
-    None,
-    false,
-    "both after values required together; version >0; array without lookahead/continuation; no secret"
-);
+pub static RECOVERY_CREDENTIALS: Description = Description::QueryOwner;
 pub static SAVED_QUERIES: Description = Description::QueryOwner;
 pub static SCOPES: Description = Description::QueryOwner;
 pub static SOFTWARE_SOURCES: Description = Description::QueryOwner;
@@ -423,3 +393,5 @@ pub fn valid(resource: &crate::Resource, gaps: &[crate::Gap]) -> bool {
         | QueryPolicy::Protocol => false,
     }
 }
+
+pub static ENTERPRISE_CONFIGURATION: Description = Description::QueryOwner;

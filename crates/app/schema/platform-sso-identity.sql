@@ -10,4 +10,12 @@ GRANT EXECUTE ON FUNCTION mdm_access.access_binding_ready(jsonb),mdm_devices.obj
  mdm_planning.scope_state(uuid,text),mdm_planning.channel_admission(uuid,text,text),
  mdm_commands.access_policy(uuid,text,bigint),mdm_commands.active_access_binding(uuid,bigint,bigint)
  TO mdm_identity_runtime;
+-- DA consumes Identity's proof on the existing Identity runtime. The access role is unchanged.
+GRANT SELECT,INSERT ON mdm_access.registration_operations TO mdm_identity_runtime;
+GRANT INSERT ON mdm_access.device_access_bindings TO mdm_identity_runtime;
+GRANT UPDATE(instance,principal,generation,revision,state,account,document) ON mdm_access.device_access_bindings TO mdm_identity_runtime;
+GRANT USAGE ON SCHEMA mdm_agent TO mdm_identity_runtime;
+GRANT SELECT ON mdm_agent.bindings,mdm_access.agent_issuances TO mdm_identity_runtime;
+GRANT SELECT,INSERT,DELETE ON mdm_access.device_access_ceremonies TO mdm_identity_runtime;
+GRANT UPDATE(consumed) ON mdm_access.device_access_ceremonies TO mdm_identity_runtime;
 COMMIT;

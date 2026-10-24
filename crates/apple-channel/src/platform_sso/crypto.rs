@@ -232,7 +232,29 @@ pub fn unverified(token: &str) -> Result<(String, Value), Error> {
     Ok((header.kid, json_unique(&decode(parts[1])?)?))
 }
 pub fn verify(token: &str, key: &PublicKey, typ: &str) -> Result<Value, Error> {
-    let (_, claims) = unverified(token)?;
+    json_unique(&verified_payload(token, key, typ)?)
+}
+/// Parse only the public JOSE header before choosing a verification key.
+pub fn signing_key_id(token: &str) -> Result<String, Error> {
+    if token.len() > 65536 || token.split('.').count() != 3 {
+        return Err(Error::Malformed);
+    }
+    let header: Header = serde_json::from_value(json_unique(&decode(
+        token.split('.').next().ok_or(Error::Malformed)?,
+    )?)?)
+    .map_err(invalid)?;
+    if header.alg != "ES256" {
+        return Err(Error::Unauthorized);
+    }
+    Ok(header.kid)
+}
+/// Verify before decoding confidential claims. The temporary plaintext is zeroized on drop.
+pub fn verified_payload(
+    token: &str,
+    key: &PublicKey,
+    typ: &str,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
+    signing_key_id(token)?;
     let (input, signature) = token.rsplit_once('.').ok_or(Error::Malformed)?;
     let header: Header = serde_json::from_value(json_unique(&decode(
         input.split('.').next().ok_or(Error::Malformed)?,
@@ -259,7 +281,8 @@ pub fn verify(token: &str, key: &PublicKey, typ: &str) -> Result<Value, Error> {
     {
         return Err(Error::Unauthorized);
     }
-    Ok(claims)
+    let encoded = input.split('.').nth(1).ok_or(Error::Malformed)?;
+    Ok(zeroize::Zeroizing::new(decode(encoded)?))
 }
 pub fn text<'a>(v: &'a Value, k: &str) -> Result<&'a str, Error> {
     v.get(k)
