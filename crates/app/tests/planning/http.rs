@@ -198,15 +198,17 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         format!("http://{address}"),
     ));
     for descending in [false, true] {
-        let mut path = format!("/api/v1/devices?limit=1&descending={descending}");
+        let sort=if descending{"-id"}else{"id"};
+        let mut path = format!("/api/v1/devices?limit=1&sort={sort}");
         let mut ids = Vec::new();
         loop {
             let (status, page) = browser.call(&router, Method::GET, &path, None).await?;
             ensure!(status == StatusCode::OK, "directory page: {status} {page}");
+            let(_,statistics)=browser.call(&router,Method::GET,"/api/v1/devices/statistics",None).await?;
             ensure!(
-                page["statistics"]["total"] == 3
-                    && page["statistics"]["pending"] == 1
-                    && page["statistics"]["revoked"] == 1,
+                statistics["statistics"]["total"] == 3
+                    && statistics["statistics"]["pending"] == 1
+                    && statistics["statistics"]["revoked"] == 1,
                 "inconsistent or cross-tenant statistics: {page}"
             );
             for item in page["items"].as_array().unwrap() {
@@ -216,7 +218,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
             let Some(after) = page["nextCursor"].as_str() else {
                 break;
             };
-            path = format!("/api/v1/devices?limit=1&descending={descending}&after={after}");
+            path = format!("/api/v1/devices?limit=1&sort={sort}&cursor={after}");
             ensure!(ids.len() <= 3, "directory repeated page");
         }
         let mut expected = vec![pending, revoked, registered];
@@ -239,7 +241,8 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let (_, page) = browser
         .call(&router, Method::GET, "/api/v1/devices?limit=1", None)
         .await?;
-    ensure!(page["statistics"]["total"] == 1 && page["items"][0]["id"] == pending);
+    let(_,statistics)=browser.call(&router,Method::GET,"/api/v1/devices/statistics",None).await?;
+    ensure!(statistics["statistics"]["total"] == 1 && page["items"][0]["id"] == pending);
     for id in [revoked, case::name("absent")] {
         ensure!(
             browser
@@ -891,7 +894,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                         .memberships(
                             &proof,
                             "not-present",
-                            &rss_mdm_inventory_service::groups::memberships::Query {
+                            &rss_mdm_query::window::Query {
                                 limit: 1,
                                 cursor: None,
                             },

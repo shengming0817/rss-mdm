@@ -753,7 +753,7 @@ async fn directory_session(f: &mut Fixture, device: &str, active: bool) -> Resul
             &f.router,
             Method::GET,
             &format!(
-                "/api/v1/device-views?limit=1&search={}",
+                "/api/v1/device-views?limit=1&filter=search=icontains={}",
                 crate::test_support::case::admin()
             ),
             None,

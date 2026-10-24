@@ -51,12 +51,18 @@ struct Bindings {
 }
 impl<'ast> Visit<'ast> for Bindings {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        if node.method == "queried" {
+        if matches!(
+            node.method.to_string().as_str(),
+            "queried" | "windowed" | "catalog_queried"
+        ) {
             let syn::Expr::MethodCall(owner) = node.receiver.as_ref() else {
                 panic!("query must bind owned List")
             };
             assert_eq!(owner.method, "owned");
-            assert!(operations(&owner.args[1]).contains(&Operation::List));
+            assert!(operations(&owner.args[1]).iter().any(|op| matches!(
+                op,
+                Operation::List | Operation::Action | Operation::Query | Operation::Create
+            )));
             self.queried
                 .insert(path_name(&owner.args[0]).to_lowercase());
         }
@@ -173,7 +179,9 @@ impl<'ast> Visit<'ast> for Inventory {
             );
             for endpoint in &bindings.endpoints {
                 if endpoint.resource.query == rss_mdm_http_contract::QueryPolicy::Unified
-                    && endpoint.operations.contains(&Operation::List)
+                    && (endpoint.operations.contains(&Operation::List)
+                        || (endpoint.resource.collection.is_none()
+                            && endpoint.operations.contains(&Operation::Create)))
                 {
                     assert!(
                         bindings.queried.contains(endpoint.resource.id),

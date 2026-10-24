@@ -42,7 +42,8 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     grants.extend(identity::device_grants(None, &["operation_read"])?);
     identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
     for descending in [false, true] {
-        let mut path = format!("/api/v1/operations?limit=1&descending={descending}");
+        let sort = if descending { "-id,-kind" } else { "id,kind" };
+        let mut path = format!("/api/v1/operations?limit=1&sort={sort}");
         let mut kinds = Vec::new();
         loop {
             let (status, page) = fixture
@@ -50,10 +51,19 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
                 .call(&fixture.router, Method::GET, &path, None)
                 .await?;
             ensure!(status == StatusCode::OK, "mixed directory: {status} {page}");
+            let (_, statistics) = fixture
+                .author
+                .call(
+                    &fixture.router,
+                    Method::GET,
+                    "/api/v1/operations/statistics",
+                    None,
+                )
+                .await?;
             ensure!(
-                page["statistics"]["total"] == 2
-                    && page["statistics"]["commands"] == 1
-                    && page["statistics"]["actionRuns"] == 1,
+                statistics["statistics"]["total"] == 2
+                    && statistics["statistics"]["commands"] == 1
+                    && statistics["statistics"]["actionRuns"] == 1,
                 "mixed statistics: {page}"
             );
             let item = &page["items"][0];
@@ -91,14 +101,10 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
                 "unusable execution detail URL {detail_path}: {:?}",
                 detail
             );
-            let Some(cursor) = page["nextCursor"].as_object() else {
+            let Some(cursor) = page["nextCursor"].as_str() else {
                 break;
             };
-            path = format!(
-                "/api/v1/operations?limit=1&descending={descending}&after={}&afterKind={}",
-                cursor["id"].as_str().unwrap(),
-                cursor["kind"].as_str().unwrap()
-            );
+            path = format!("/api/v1/operations?limit=1&sort={sort}&cursor={cursor}");
             ensure!(kinds.len() <= 2, "cursor repeated: {kinds:?}");
         }
         let expected = if descending {
@@ -118,10 +124,19 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             None,
         )
         .await?;
+    let (_, statistics) = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            "/api/v1/operations/statistics",
+            None,
+        )
+        .await?;
     ensure!(
         status == StatusCode::OK
-            && page["statistics"]["total"] == 1
-            && page["statistics"]["commands"] == 0
+            && statistics["statistics"]["total"] == 1
+            && statistics["statistics"]["commands"] == 0
             && page["items"][0]["kind"] == "action_run"
             && page["nextCursor"].is_null(),
         "hidden command affected count or cursor: {page}"
@@ -131,15 +146,11 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .call(
             &fixture.router,
             Method::GET,
-            &format!("/api/v1/operations?device={}", case_device()),
+            &format!("/api/v1/operations?filter=device=={}", case_device()),
             None,
         )
         .await?;
-    ensure!(
-        hidden.0 == StatusCode::OK
-            && hidden.1["statistics"]["total"] == 0
-            && hidden.1["items"] == json!([])
-    );
+    ensure!(hidden.0 == StatusCode::OK && hidden.1["items"] == json!([]));
     host.close().await?;
     Ok(())
 }

@@ -95,7 +95,7 @@ async fn collection_matrix(
             router,
             Method::POST,
             "/api/v1/device-queries",
-            Some(json!({"criteria":criteria})),
+            Some(rsql_query(criteria.clone())),
         )
         .await?;
         ensure!(
@@ -138,7 +138,7 @@ async fn collection_matrix(
         router,
         Method::POST,
         "/api/v1/device-queries",
-        Some(json!({"criteria":criteria})),
+        Some(rsql_query(criteria.clone())),
     )
     .await?;
     ensure!(
@@ -252,7 +252,7 @@ async fn projected_script_fact_is_queryable_group_input() -> Result<()> {
         &fixture.router,
         Method::POST,
         "/api/v1/device-queries",
-        Some(json!({"criteria":criteria})),
+        Some(rsql_query(criteria.clone())),
     )
     .await?;
     ensure!(query["asset"]["summary"]["matched"] == 1);

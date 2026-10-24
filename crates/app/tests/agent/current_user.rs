@@ -139,7 +139,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         let login=call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?;
         ensure!(login.0==StatusCode::OK,"login {login:?}");
         f.author=manager;
-        let search=format!("/api/v1/device-views?search={}",f.author_id);
+        let search=format!("/api/v1/device-views?filter=search=icontains={}",f.author_id);
         let owner_before=owner(&mut f,None).await?;
         // Hide ownership so a current-user search cannot pass by matching the same owner.
         let mut grants=crate::test_support::identity::device_grants(Some(device),&["inventory_read"])?;
@@ -230,7 +230,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let mut hold=root.begin().await?;
             let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
             sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
-            let query=rss_mdm_device_service::ViewQuery{search:None,platform:None,cursor:None,limit:64,descending:false,status:None,channel:None,source:None,asset_state:None};
+            let query=rss_mdm_device_service::directory::parse("limit=64")?;
             let directory_identity=authority.identity.authority.clone();
             let task=tokio::spawn(async move {
                 let timer=rss_mdm_audit_integration::budget::RuntimeTimer;

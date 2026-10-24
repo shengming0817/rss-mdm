@@ -18,7 +18,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         )),
     )
     .await?;
-    let query = json!({"sort":{"field":"custom.office_floor"},"select":["custom.office_floor"]});
+    let query = json!({"sort":[{"field":"custom.office_floor"}],"fields":["custom.office_floor"]});
     let result = ok(
         &mut browser,
         router,
@@ -60,7 +60,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     let saved_path = format!("/api/v1/saved-queries/{saved}");
     let put = request(
         0,
-        json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}}),
+        json!({"action":"put","definition":{"name":"Floor 3","query":{"filter":"custom.office_floor==3"}}}),
     );
     let receipt = ok(
         &mut browser,
@@ -94,7 +94,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     );
 
     let second_saved = Uuid::new_v4();
-    ok(&mut browser,router,Method::PUT,&format!("/api/v1/saved-queries/{second_saved}"),Some(request(0,json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}})))).await?;
+    ok(&mut browser,router,Method::PUT,&format!("/api/v1/saved-queries/{second_saved}"),Some(request(0,json!({"action":"put","definition":{"name":"Floor 3","query":{"filter":"custom.office_floor==3"}}})))).await?;
     let mut ids = [saved, second_saved];
     ids.sort();
     let base = "/api/v1/saved-queries?filter=name==%22Floor%203%22&sort=name&fields=id&limit=1";
@@ -226,8 +226,14 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     )
     .await?;
     ensure!(old["asset"]["items"] == frozen);
-    let fresh = ok(&mut browser, router, Method::POST, "/api/v1/device-queries",
-        Some(json!({"criteria":predicate("custom.office_floor","integer",json!(4)),"select":["custom.office_floor"]}))).await?;
+    let fresh = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(json!({"filter":"custom.office_floor==4","fields":["custom.office_floor"]})),
+    )
+    .await?;
     ensure!(fresh["asset"]["items"].as_array().unwrap().len() == 1);
     ensure!(fresh["asset"]["items"][0]["device"] == "asset-a");
     ensure!(
@@ -276,7 +282,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         .await?;
     }
     for descending in [false, true] {
-        let query = json!({"criteria":predicate("custom.office_floor","integer",json!(99)),"sort":{"field":"custom.office_floor","descending":descending}});
+        let query = json!({"filter":"custom.office_floor==99","sort":[{"field":"custom.office_floor","descending":descending}]});
         let result = ok(
             &mut browser,
             router,

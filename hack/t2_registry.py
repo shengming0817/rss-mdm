@@ -2202,7 +2202,7 @@ consume(('crates/authorization-service/schema/authority.sql','crates/device-serv
 
 
 # Resource query execution and common ingress composition have distinct proof owners.
-consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries compliance.http settings.user_profiles software.http software.catalog agent.configurations')
+consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries assets.http assets.sources device.views device.associations device.binding execution.agent.history execution.commands.windows apple.ddm compliance.http settings.user_profiles software.http software.catalog agent.configurations')
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
 consume(('crates/flow-service/src/action_admission.rs',), 'planning.http planning.policy')
 consume(('crates/http-contract/src/*',),
@@ -2264,3 +2264,8 @@ if __name__ == '__main__':
     parser.add_argument('--module-ids', action='store_true', required=True)
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
+
+# QUERY-05: page bounds, source evidence batching and continuation owners.
+consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')
+consume(('crates/execution-service/src/query_generation.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')
+consume(('crates/inventory-service/src/assets/rsql.rs','crates/inventory-service/src/assets/field_directory.rs','crates/inventory-service/src/assets/windows.rs'), 'assets.http assets.queries assets.sources')

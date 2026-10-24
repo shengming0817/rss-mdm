@@ -83,22 +83,40 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             );
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
-        let mut path=format!("/api/v1/operations?kind=action_run&policy={plan}&limit=3&descending=true");
+        let mut path=format!("/api/v1/operations?filter=kind==action_run;policy=={plan}&limit=3&sort=-id,-kind");
         let mut directory_ids=Vec::new();
         loop {
             let (status,page)=author.call(router,Method::GET,&path,None).await?;
             ensure!(status==StatusCode::OK,"cross-device directory: {status} {page}");
-            ensure!(page["statistics"]["total"]==26 && page["statistics"]["actionRuns"]==26);
+            let(_,statistics)=author.call(router,Method::GET,&format!("/api/v1/operations/statistics?filter=kind==action_run;policy=={plan}"),None).await?;
+            ensure!(statistics["statistics"]["total"]==26 && statistics["statistics"]["actionRuns"]==26);
             for item in page["items"].as_array().context("directory items")? {
                 ensure!(item["evidence"]["result"].get("output").is_none());
                 ensure!(item["evidence"]["result"]["diagnostics"].get("stdout").is_none());
                 directory_ids.push(item["id"].as_str().context("directory id")?.to_owned());
             }
-            let Some(cursor)=page["nextCursor"].as_object() else{break};
-            path=format!("/api/v1/operations?kind=action_run&policy={plan}&limit=3&descending=true&after={}&afterKind={}",cursor["id"].as_str().unwrap(),cursor["kind"].as_str().unwrap());
+            let Some(cursor)=page["nextCursor"].as_str() else{break};
+            path=format!("/api/v1/operations?filter=kind==action_run;policy=={plan}&limit=3&sort=-id,-kind&cursor={cursor}");
             ensure!(directory_ids.len()<=26,"directory repeated pages");
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
+        // A projected page never needs the large run result; its cursor still binds
+        // the projection and the committed execution generation.
+        let projected = format!("/api/v1/operations?filter=kind==action_run;policy=={plan}&limit=1&fields=id,kind");
+        let (status, page) = author.call(router, Method::GET, &projected, None).await?;
+        ensure!(status == StatusCode::OK, "projected directory: {status} {page}");
+        ensure!(page["items"][0].get("evidence").is_none());
+        ensure!(page.get("statistics").is_none());
+        let cursor = page["nextCursor"].as_str().context("projected cursor")?;
+        let continuation = format!("{projected}&cursor={cursor}");
+        let replay = continuation.replace("fields=id,kind", "fields=id,kind,status");
+        ensure!(author.call(router, Method::GET, &replay, None).await?.0 == StatusCode::CONFLICT);
+        let revision = pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")?;
+        pg(&format!("SAVEPOINT reverted; UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{effect}}','\"query-test\"') WHERE id='{task}'; ROLLBACK TO reverted"))?;
+        ensure!(pg("SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid")? == revision, "rolled-back evidence changed directory generation");
+        ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::OK);
+        pg(&format!("UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{effect}}','\"query-test\"') WHERE id='{task}'"))?;
+        ensure!(author.call(router, Method::GET, &continuation, None).await?.0 == StatusCode::CONFLICT, "committed evidence did not invalidate the cursor");
         let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?filter=action==execution;resource=={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
