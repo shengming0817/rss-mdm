@@ -12,6 +12,8 @@ Rust 服务端支持设备和用户通道，使用外部 step-ca v0.30.2 完成 
 
 复用现有材料申请、导入、选择与撤销 API。选择后仍须 prepare-hosts、受控重建 server，并通过当前进程的加载版本与通道状态确认实际生效。进程健康、Apple 就绪、真实 APNs 唤醒和 Mac 管理成功是不同证据。部署不包含旧端口兼容、迁移或升级流程。
 
+复用现有 APNs 私钥、准备满足 Fleet 约束的 CSR、在线签署和 Apple 门户发证，见 [Fleet APNs CSR 操作指南](202610240734-001-fleet-apns-csr.md)。
+
 ## 注册与凭据
 
 管理员在线登录并拥有目标设备的 `enrollment` 权限后，调用 `POST /api/v1/enrollments`，提交 `deviceId`、`source:"mdm.apple"`、256 位随机 `password`，以及非零 UUID `Idempotency-Key`。返回 HTTP 200 的 pending 授权。注册生命周期管理入口统一使用 V1；Windows 原生注册使用 `mdm.windows`，不接受请求 `channel`。
