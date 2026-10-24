@@ -4,48 +4,7 @@ use rss_mdm_device_service::{Confirm, ViewRef};
 use serde_json::json;
 #[path = "personnel.rs"]
 mod personnel;
-#[derive(Clone, Default)]
-struct QueryReadCounts {
-    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    rows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryReadCounts {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-        if event.metadata().target() != "rss_mdm.query_read" {
-            return;
-        }
-        #[derive(Default)]
-        struct Measurement {
-            stage: String,
-            rows: u64,
-            bytes: u64,
-        }
-        impl tracing::field::Visit for Measurement {
-            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
-            fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
-                if f.name() == "stage" {
-                    self.stage = v.into();
-                }
-            }
-            fn record_u64(&mut self, f: &tracing::field::Field, v: u64) {
-                match f.name() {
-                    "rows" => self.rows = v,
-                    "payload_bytes" => self.bytes = v,
-                    _ => {}
-                }
-            }
-        }
-        let mut m = Measurement::default();
-        event.record(&mut m);
-        if m.stage == "device.identity" {
-            use std::sync::atomic::Ordering::Relaxed;
-            self.calls.fetch_add(1, Relaxed);
-            self.rows.fetch_add(m.rows as usize, Relaxed);
-            self.bytes.fetch_add(m.bytes as usize, Relaxed);
-        }
-    }
-}
+use crate::test_support::query_reads::QueryReadCounts;
 // Hold the same publication fence as an association writer and observe the real
 // reader/mutation waiting there. Its authorization lock must remain available.
 pub(super) async fn publication_first<T>(
@@ -483,7 +442,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::layer::SubscriberExt;
         use std::sync::atomic::Ordering::Relaxed;
-        let counts=QueryReadCounts::default();
+        let counts=QueryReadCounts::new("device.identity");
         let observer=tracing_subscriber::registry().with(counts.clone());
         let found=s.views(&admin,&filter,&people(&authority)?).with_subscriber(observer).await?;
         assert_eq!(counts.calls.load(Relaxed),1,"one batch hydrates the selected endpoint");
@@ -493,6 +452,21 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let plan=registration.directory_plan(&admin,&identity_query).await?;
         println!("QUERY-05 identity rows={} payload_bytes={} plan={}",counts.rows.load(Relaxed),bytes,plan);
         assert!(plan[0]["Plan"]["Actual Rows"].as_u64().is_some_and(|n|n<=2));
+        // Explain the production device candidate relation and page selection.
+        // Identity boundaries are covered above; this plan isolates product SQL
+        // with no upstream personnel/session rows.
+        let plan_sql=concat!("EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) WITH platform_configuration AS (SELECT $7::jsonb AS config), platform_sessions AS (SELECT NULL::uuid AS instance_id,NULL::uuid AS tenant_id,NULL::uuid AS principal_id,NULL::uuid AS session_id,NULL::text AS credential_kind,NULL::bigint AS platform_valid_until WHERE false), people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+            include_str!("../../../device-service/src/directory_relation.sql"),
+            include_str!("../../../device-service/src/directory.sql"));
+        let plan:serde_json::Value=sqlx::query_scalar(plan_sql).bind(case_a()).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind(None::<Vec<String>>).bind("($.search[*] like_regex \"search-NEEDLE\" flag \"i\") && ($.platform[*] == \"windows\")").bind(admin.instance_id()).bind(json!(null)).bind(true).bind(4096_i64).bind(None::<String>).bind(false).bind(2_i64).fetch_one(&mut c).await?;
+        fn work(node:&serde_json::Value)->u64 {
+            node["Actual Rows"].as_u64().unwrap_or(0)*node["Actual Loops"].as_u64().unwrap_or(0)
+                +node["Plans"].as_array().map_or(0,|p|p.iter().map(work).sum::<u64>())
+        }
+        let processed=work(&plan[0]["Plan"]);
+        let buffers=plan[0]["Plan"]["Shared Hit Blocks"].as_u64().unwrap_or(0)+plan[0]["Plan"]["Shared Read Blocks"].as_u64().unwrap_or(0);
+        println!("QUERY-05 device candidates processed={processed} buffers={buffers} plan={plan}");
+        assert!(processed<500000 && buffers<250000,"candidate processing grew beyond the fixture work budget");
         assert_eq!(s.statistics(&admin,&filter,&people(&authority)?).await?["statistics"],json!({"endpointCount":1,"deviceViewCount":1}));
         assert_eq!(found["items"][0]["endpoints"][0]["id"],needle);
         assert_eq!(found["items"][0]["endpoints"][0]["registrationUser"]["user"]["principalId"],admin.principal_id());
@@ -573,6 +547,8 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let malformed=parameters(1,Some("search=icontains=' '"),None);
         assert!(matches!(s.views(&admin,&malformed,&people(&authority)?).await,Err(rss_mdm_device_service::Error::Malformed)));
+        sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-budget-'||n FROM generate_series(1,4096) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
+        assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await,Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
         let _=first;
         access.close().await;Ok(())
     }).await

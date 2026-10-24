@@ -1257,7 +1257,8 @@ T1_INPUTS = (
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service', 'device-trust')) + (
     'crates/app/tests/agent/unit.rs',
     'crates/app/tests/apple/webhook_unit.rs',
-    'crates/app/tests/assets/query_sort_unit.rs',
+    'crates/inventory-service/tests/assets/query_sort_unit.rs',
+    'crates/inventory-service/tests/assets/rsql_unit.rs',
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
     'crates/audit-integration/tests/budget/unit.rs',
@@ -2269,3 +2270,6 @@ if __name__ == '__main__':
 consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')
 consume(('crates/execution-service/src/query_generation.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')
 consume(('crates/inventory-service/src/assets/rsql.rs','crates/inventory-service/src/assets/field_directory.rs','crates/inventory-service/src/assets/windows.rs'), 'assets.http assets.queries assets.sources')
+
+for name in ('device.views', 'execution.commands.windows'):
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/support/query_reads.rs',))

@@ -1,6 +1,7 @@
 use crate::execution::test_support::*;
 use anyhow::ensure;
 use axum::http::{Method, StatusCode};
+use rss_mdm_audit_integration::RequestAudit;
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -114,6 +115,103 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         };
         ensure!(kinds == expected, "mixed cursor lost an owner: {kinds:?}");
     }
+    use crate::test_support::query_reads::QueryReadCounts;
+    use std::sync::atomic::Ordering::Relaxed;
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+    // An unrelated protected input larger than the entire hydration budget must
+    // never be transferred or decrypted when selecting another command.
+    let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
+    let before = crate::test_support::process::pg(revision_sql)?;
+    let rejected = Uuid::new_v4();
+    client
+        .app
+        .execution
+        .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
+    ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(
+        crate::test_support::process::pg(revision_sql)? == before,
+        "rolled-back command advanced query generation"
+    );
+    ensure!(
+        crate::test_support::process::pg(&format!(
+            "SELECT count(*) FROM rss_device_command.commands WHERE command_id='{rejected}'"
+        ))?
+        .trim()
+            == "0",
+        "command rollback leaked state"
+    );
+    let large = Uuid::new_v4();
+    ensure!(client.call(Method::POST, "", Some(json!({"operationId":large,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0 == StatusCode::ACCEPTED);
+    crate::test_support::process::pg(&format!(
+        "UPDATE mdm_commands.operations SET request=convert_to(repeat('x',20000000),'UTF8') WHERE id='{large}'"
+    ))?;
+    let measured = QueryReadCounts::new("execution.");
+    let observer = tracing_subscriber::registry().with(measured.clone());
+    let selected = format!("/api/v1/operations?limit=1&filter=id=={id}&sort=-id,-kind");
+    let response = fixture
+        .author
+        .call(&fixture.router, Method::GET, &selected, None)
+        .with_subscriber(observer)
+        .await?;
+    ensure!(
+        response.0 == StatusCode::OK,
+        "bounded selected evidence: {response:?}"
+    );
+    ensure!(measured.calls.load(Relaxed) <= 5 && measured.rows.load(Relaxed) <= 16);
+    ensure!(
+        measured.bytes.load(Relaxed) > 0 && measured.bytes.load(Relaxed) < 65536,
+        "off-page protected input was read"
+    );
+    let cursor = response.1["nextCursor"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("mixed continuation"))?;
+    let continuation = format!("{selected}&cursor={cursor}");
+    let audit = RequestAudit::new(case_tenant().into(), "management_read");
+    client.app.execution.recover_operation(id, &audit).await?;
+    audit.finalize(None);
+    ensure!(
+        fixture
+            .author
+            .call(&fixture.router, Method::GET, &continuation, None)
+            .await?
+            .0
+            == StatusCode::OK,
+        "no-op recovery invalidated a cursor"
+    );
+    let skipped = QueryReadCounts::new("execution.");
+    let observer = tracing_subscriber::registry().with(skipped.clone());
+    let response = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            "/api/v1/operations?filter=kind==command&fields=id,kind&limit=100",
+            None,
+        )
+        .with_subscriber(observer)
+        .await?;
+    ensure!(
+        response.0 == StatusCode::OK,
+        "metadata projection read protected payload: {response:?}"
+    );
+    ensure!(
+        skipped.calls.load(Relaxed) == 0,
+        "unrequested evidence reached a provider read"
+    );
+    let oversized = fixture
+        .author
+        .call(
+            &fixture.router,
+            Method::GET,
+            &format!("/api/v1/operations?filter=id=={large}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        oversized.0 == StatusCode::SERVICE_UNAVAILABLE,
+        "budget overflow became conflict: {oversized:?}"
+    );
     identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let (status, page) = fixture
         .author

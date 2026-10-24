@@ -1,5 +1,10 @@
-visible AS (
- SELECT tenant_id,id,status FROM mdm_access.directory_metadata WHERE tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2))
+candidate_input AS MATERIALIZED (
+ SELECT tenant_id,id,status FROM mdm_access.directory_metadata WHERE tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2)) LIMIT ($9::bigint+1)
+), candidate_budget AS MATERIALIZED (
+ SELECT count(*) AS rows,coalesce(sum(octet_length(id)+octet_length(status)+16),0)::bigint AS bytes,
+ count(*)<=$9 AND coalesce(sum(octet_length(id)+octet_length(status)+16),0)<=$9*512 AS ok FROM candidate_input
+), visible AS (
+ SELECT c.* FROM candidate_input c WHERE (SELECT ok FROM candidate_budget)
 ), paired AS (
  SELECT a.id,array_agg(m.device ORDER BY m.channel) AS devices
  FROM mdm_devices.associations a JOIN mdm_devices.members m ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id)

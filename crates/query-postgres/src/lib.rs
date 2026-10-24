@@ -202,3 +202,20 @@ pub fn observe_rows(
     tracing::debug!(target:"rss_mdm.query_read",stage,rows=rows.len(),payload_bytes=bytes,"bounded query payload");
     Ok(bytes)
 }
+
+/// Record a provider's narrow work/input measurement, without values or identities.
+/// Owners choose independent limits and translate rejection to their capacity error.
+pub fn within_budget(
+    stage: &'static str,
+    rows: u64,
+    bytes: u64,
+    max_rows: u64,
+    max_bytes: u64,
+) -> bool {
+    let accepted = rows <= max_rows && bytes <= max_bytes;
+    tracing::debug!(target: "rss_mdm.query_budget", stage, rows, payload_bytes=bytes, max_rows, max_bytes, accepted);
+    if !accepted {
+        tracing::warn!(target: "rss_mdm.query_budget", stage, rows, payload_bytes=bytes, max_rows, max_bytes, "query budget exceeded");
+    }
+    accepted
+}

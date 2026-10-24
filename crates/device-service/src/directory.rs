@@ -175,6 +175,8 @@ impl Associations {
         arg!(proof.instance_id().to_owned());
         arg!(personnel.platform_configuration()?);
         arg!(query.mentions("search"));
+        let candidate_limit: i64 = if statistics { 16384 } else { 4096 };
+        arg!(candidate_limit);
         if !statistics {
             arg!(after);
             arg!(descending);
@@ -194,6 +196,20 @@ impl Associations {
             )
             .await?;
         let value: Value = rows.first().ok_or(Error::Storage)?.try_get("value")?;
+        let measured = &value["budget"];
+        if !rss_mdm_query_postgres::within_budget(
+            if statistics {
+                "device.statistics.candidates"
+            } else {
+                "device.views.candidates"
+            },
+            measured["rows"].as_u64().ok_or(Error::Storage)?,
+            measured["bytes"].as_u64().ok_or(Error::Storage)?,
+            candidate_limit as u64,
+            candidate_limit as u64 * 512,
+        ) {
+            return Err(Error::Capacity);
+        }
         let generation = json!([
             value["watermark"],
             value["relationRevision"],

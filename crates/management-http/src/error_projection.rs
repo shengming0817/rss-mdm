@@ -496,6 +496,7 @@ impl From<rss_mdm_device_service::Error> for Error {
     fn from(e: rss_mdm_device_service::Error) -> Self {
         use rss_mdm_device_service::Error as E;
         match e {
+            E::Capacity => Self::Unavailable(Failure::Capacity),
             E::Malformed => Self::Malformed,
             E::Unauthorized => Self::Unauthorized,
             E::Forbidden => Self::Forbidden,
