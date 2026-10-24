@@ -184,7 +184,7 @@ async fn prepare(
         input.final_message &= package == PackageState::Complete;
         input
             .commands
-            .retain(|c| !matches!(c, Command::Alert { .. }));
+            .retain(|c| !matches!(c, Command::Alert { .. } | Command::DevInfo { .. }));
         let _ = syncml::correlate(expected, &input, &CodecLimits::default())
             .map_err(|_| Error::Conflict)?;
     }

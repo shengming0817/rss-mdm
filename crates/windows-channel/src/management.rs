@@ -293,7 +293,7 @@ fn authenticate_server(
             if !server_authenticated {
                 nonce = next_nonce.clone();
             }
-        } else if row.try_get::<String, _>("state").map_err(db)? != "collecting" {
+        } else if !server_authenticated {
             return Err(Error::Unauthorized);
         }
     }
