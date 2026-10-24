@@ -550,7 +550,9 @@ MODULES['assets.http'] = replace(MODULES['assets.http'], db_mode='fresh', scope=
 ))
 MODULES['assets.queries'] = replace(MODULES['assets.queries'], db_mode='reuse', scope='tenant')
 MODULES['assets.sources'] = replace(MODULES['assets.sources'], db_mode='reuse', scope='tenant')
-MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], db_mode='reuse', scope='tenant')
+MODULES['assets.group_input'] = replace(MODULES['assets.group_input'], db_mode='reuse', scope='tenant', policies=(
+    CasePolicy('assets::t2::group_input::typed_and_collected_facts_become_group_input', 'reuse', 'tenant', ('identity','local_worker')),
+))
 MODULES['group.persistence'] = replace(MODULES['group.persistence'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('admission_rejects_catalog_and_security_drift', 'instance', 'objects'),
     CasePolicy('atomic_event_failure_rls_and_large_member_ids', 'fresh', 'objects'),
@@ -572,7 +574,11 @@ MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], db_mode='re
     CasePolicy('planning::t2::recovery::management_admission_rejects_schema_and_privilege_drift', 'instance', 'objects'),
     CasePolicy('planning::t2::recovery::rss_exhaustion_records_failed_task_and_atomic_audit', 'fresh', 'objects'),
 ))
-MODULES['planning.http'] = replace(MODULES['planning.http'], db_mode='fresh', scope='objects')
+MODULES['planning.http'] = replace(MODULES['planning.http'], db_mode='fresh', scope='objects', policies=(
+    CasePolicy('planning::t2::http::collection_blueprints_instantiate_replay_and_keep_tenant_versions', 'fresh', 'objects', ('identity','content','task_signing')),
+    CasePolicy('planning::t2::http::nested_groups_sources_references_and_authorized_pages', 'fresh', 'objects', ('identity','content','task_signing')),
+    CasePolicy('planning::t2::http::planning_routes_and_derived_result_authorization', 'fresh', 'objects', ('identity','content','task_signing')),
+))
 MODULES['planning.agent_policy'] = replace(MODULES['planning.agent_policy'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('planning::t2::agent_policy::policy_scan_reaches_late_match', 'reuse', 'tenant'),
     CasePolicy('planning::t2::agent_policy::preview_publish_authorization_and_commit_replay', 'reuse', 'tenant'),

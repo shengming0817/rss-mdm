@@ -335,10 +335,7 @@ impl Host {
         let command_audit = store
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
-        let content = {
-            let _guard = crate::test_support::software::content_setup_guard().await?;
-            crate::execution_assembly::open_content(&config, config.native_protector()?).await?
-        };
+        let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
         if let Some(content) = &content {
             resources.resource(crate::execution_assembly::ContentResource(content.clone()));
         }
