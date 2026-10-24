@@ -230,7 +230,9 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     let task = claim(router).await?;
     belongs_to(&task, registration)?;
     complete(router, &task).await?;
-    let (restarted, _, app_resources) = app_with_access(base, database(base).await?).await?;
+    let mut rebuilt = crate::test_support::agent_execution::Fixture::from_config(base.clone()).await?;
+    let restarted = rebuilt.router.clone();
+    let app_resources = std::mem::take(&mut rebuilt.resources);
     app_resources.finish(async {
     no_repeat(&restarted, registration, 1).await?;
     disable(author, router, registration).await?;

@@ -189,19 +189,6 @@ pub fn routers(
 ) -> (Router, Router) {
     let enrollment = Router::new()
         .route(
-            "/EnrollmentServer/Discovery.svc",
-            rss_mdm_http_contract::routing::get(discovery_probe)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .post(discover)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-        )
-        .route(
             "/EnrollmentServer/Policy.svc",
             post(policy).owned(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
@@ -255,6 +242,25 @@ pub fn routers(
         boundary::wrap(
             enrollment
                 .with_state(app.clone())
+                .merge(discovery_routes(
+                    app.windows
+                        .as_ref()
+                        .map(|w| w.enrollment_origin.clone())
+                        .unwrap_or_default(),
+                    app.windows.as_ref().map(|w| soap::DiscoverResponse {
+                        auth_policy: if w.entra.is_some() {
+                            soap::AuthPolicy::Federated
+                        } else {
+                            soap::AuthPolicy::OnPremise
+                        },
+                        enrollment_version: "4.0".into(),
+                        policy_url: format!("{}/EnrollmentServer/Policy.svc", w.enrollment_origin),
+                        enrollment_url: format!(
+                            "{}/EnrollmentServer/Enrollment.svc",
+                            w.enrollment_origin
+                        ),
+                    }),
+                ))
                 .layer(DefaultBodyLimit::max(512 * 1024)),
             enrollment_boundary,
         ),
@@ -274,7 +280,7 @@ fn decode(
     bytes: &[u8],
     headers: &HeaderMap,
     op: Operation,
-    app: &HttpState,
+    origin: Result<&str, Error>,
     path: &str,
 ) -> Result<soap::Message, Error> {
     if headers.get_all("content-type").iter().count() != 1
@@ -290,9 +296,7 @@ fn decode(
         return Err(Error::Malformed);
     }
     let message = soap::decode(bytes, op, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
-    if message.header.to.as_deref()
-        != Some(format!("{}{path}", app.windows()?.enrollment_origin).as_str())
-    {
+    if message.header.to.as_deref() != Some(format!("{}{path}", origin?).as_str()) {
         return Err(Error::Malformed);
     }
     Ok(message)
@@ -362,40 +366,45 @@ async fn discovery_probe() -> impl IntoResponse {
         "",
     )
 }
-async fn discover(State(app): State<Arc<HttpState>>, headers: HeaderMap, bytes: Bytes) -> Response {
-    let windows = match app.windows() {
-        Ok(windows) => windows,
-        Err(e) => return fault(None, e),
+pub fn discovery_routes(origin: String, response: Option<soap::DiscoverResponse>) -> Router {
+    Router::new()
+        .route(
+            "/EnrollmentServer/Discovery.svc",
+            rss_mdm_http_contract::routing::get(discovery_probe)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .post(discover)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+        )
+        .with_state((origin, response))
+}
+async fn discover(
+    State((origin, discovery)): State<(String, Option<soap::DiscoverResponse>)>,
+    headers: HeaderMap,
+    bytes: Bytes,
+) -> Response {
+    let Some(discovery) = discovery else {
+        return fault(None, Error::Unsupported);
     };
     let message = match decode(
         &bytes,
         &headers,
         Operation::Discover,
-        &app,
+        Ok(&origin),
         "/EnrollmentServer/Discovery.svc",
     ) {
-        Ok(m) => m,
-        Err(e) => return fault(None, e),
+        Ok(message) => message,
+        Err(error) => return fault(None, error),
     };
-    response(
-        Some(&message),
-        Body::DiscoverResponse(soap::DiscoverResponse {
-            auth_policy: if windows.entra.is_some() {
-                soap::AuthPolicy::Federated
-            } else {
-                soap::AuthPolicy::OnPremise
-            },
-            enrollment_version: "4.0".into(),
-            policy_url: format!("{}/EnrollmentServer/Policy.svc", windows.enrollment_origin),
-            enrollment_url: format!(
-                "{}/EnrollmentServer/Enrollment.svc",
-                windows.enrollment_origin
-            ),
-        }),
-        0,
-    )
-    .unwrap_or_else(|e| fault(Some(&message), e))
+    response(Some(&message), Body::DiscoverResponse(discovery), 0)
+        .unwrap_or_else(|error| fault(Some(&message), error))
 }
+
 async fn policy(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
@@ -426,7 +435,13 @@ async fn enrollment(
     } else {
         (Operation::GetPolicies, "/EnrollmentServer/Policy.svc")
     };
-    let message = match decode(&bytes, &headers, op, &app, path) {
+    let message = match decode(
+        &bytes,
+        &headers,
+        op,
+        app.windows().map(|w| w.enrollment_origin.as_str()),
+        path,
+    ) {
         Ok(m) => m,
         Err(e) => return fault(None, e),
     };

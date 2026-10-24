@@ -1,12 +1,9 @@
 //! Pinned CA, durable grant/issuance state and real TLS possession.
 mod maintenance;
+use crate::clock::{Clock, SystemClock};
 use crate::device::test_support::{admin, case_a, case_b, options};
 use crate::test_support::agent_http::{agent_http, connect_agent};
 use crate::test_support::agent_tls::peer;
-use crate::{
-    Database,
-    clock::{Clock, SystemClock},
-};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_agent_wire::{enroll as wire, runtime};
 use rss_mdm_audit_integration::RequestAudit;
@@ -62,17 +59,19 @@ impl NativeAdmission for NoNative {
         Box::pin(async { Err(rss_mdm_registration_service::Error::Forbidden) })
     }
 }
-pub(crate) async fn service(value: serde_json::Value) -> anyhow::Result<Arc<Service>> {
-    service_with_provider(value, None).await
+pub(crate) async fn service(
+    value: serde_json::Value,
+    pool: sqlx::PgPool,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> anyhow::Result<Arc<Service>> {
+    service_with_provider(value, None, pool, audit).await
 }
 async fn service_with_provider(
     value: serde_json::Value,
     kid: Option<&str>,
+    pool: sqlx::PgPool,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> anyhow::Result<Arc<Service>> {
-    let db = Database::connect(options("mdm_access")?).await?;
-    let audit = db
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
     let providers = if let Some(kid) = kid {
         let mut config: Vec<crate::device_pki::Provider> = serde_json::from_slice(&std::fs::read(
             root()
@@ -102,7 +101,7 @@ async fn service_with_provider(
         )?
         .unwrap();
     let registry = rss_mdm_pki_service::registry::Registry::new(
-        db.archive_pool(),
+        pool.clone(),
         audit.clone(),
         vec![pki.issuer.trust().trust.clone()],
         fixture_providers()?,
@@ -113,7 +112,10 @@ async fn service_with_provider(
     Ok(Arc::new(Service::new(Assembly {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
         tenant: rss_request_context::TenantId::parse(case_a())?,
-        store: db.registration(),
+        store: Arc::new(rss_mdm_registration_service::Store::from_pool(
+            pool,
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
         access_audit: audit.clone(),
         audit,
         issuer: pki.issuer.clone(),
@@ -163,6 +165,16 @@ pub(crate) fn chain(c: &wire::Candidate) -> anyhow::Result<Vec<Vec<u8>>> {
 #[ignore = "make t2 MODULE=agent.pki: renewal grant response lost before predecessor expiry"]
 async fn renewal_grant_lookup_survives_expired_identity_without_writing_authority()
 -> anyhow::Result<()> {
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    let registration = Arc::new(rss_mdm_registration_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+    ));
+    resources.finish(async {
+
     use axum::{
         Router,
         body::Body,
@@ -195,11 +207,8 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
             serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?,
         ))
     }
-    let original = service(deployment()).await?;
-    let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
+    let original = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+    let audit_store = fixture_audit.clone();
     let pki = serde_json::from_value::<crate::agent_pki::Config>(deployment())?
         .load(
             crate::test_support::identity::INSTANCE,
@@ -214,7 +223,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
         Ok(Arc::new(Service::new(Assembly {
             cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
             tenant: rss_request_context::TenantId::parse(tenant)?,
-            store: db.registration(),
+            store: registration.clone(),
             audit: audit_store.clone(),
             access_audit: audit_store.clone(),
             issuer: pki.issuer.clone(),
@@ -280,7 +289,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     );
     let router = Router::new().nest(
         "/api/v1/agent/enroll",
-        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test").await?)
+        rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test", fixture_audit.clone()))
             .into_axum(),
     );
     let request = wire::RenewalStatusRequest {
@@ -359,122 +368,141 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     assert_eq!(expired.1["state"], "expired");
     assert_eq!(snapshot()?, before);
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn explicit_development_limit_and_unknown_result_remain_auditable() -> anyhow::Result<()> {
-    let p = admin(case_a(), "admin-a").await?;
-    let mut value = deployment();
-    value["lifetime"] = serde_json::json!({"mode":"development","days":3650});
-    let s = service(value.clone()).await?;
-    let g = grant()?;
-    let r = authorize_request(&s, &p, &g, &audit()).await?;
-    let c = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
-    let evidence = peer(s.trust(), &chain(&c)?, &root()).await?;
-    let metadata = s.trust().verify_peer(&evidence, now())?;
-    assert_eq!(
-        metadata.metadata().not_after - metadata.metadata().not_before,
-        3650 * 86400
-    );
-    let production = service(deployment()).await?;
-    assert!(matches!(
-        production.trust().verify_peer(&evidence, now()),
-        Err(rss_mdm_certificate::Error::Unauthorized)
-    ));
-    let control = grant()?;
-    let authorized = authorize_request(&production, &p, &control, &audit()).await?;
-    let signed = production
-        .issue(&signing(&control, authorized.grant_id)?, &audit())
-        .await?;
-    let accepted = peer(production.trust(), &chain(&signed)?, &root()).await?;
-    production.trust().verify_peer(&accepted, now())?;
-    let value = deployment();
-    let unknown = service_with_provider(value, Some("absent-agent-key")).await?;
-    let g = grant()?;
-    let r = authorize_request(&unknown, &p, &g, &audit()).await?;
-    let input = signing(&g, r.grant_id)?;
-    use axum::{Router, body::Body, http::Request};
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-    let router = Router::new().nest(
-        "/api/v1/agent/enroll",
-        rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?)
-            .into_axum(),
-    );
-    let mut failures = Vec::new();
-    let mut owner =
-        <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
-    for _ in 0..2 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::post("/api/v1/agent/enroll/certificates")
-                    .header("host", "mdm.example.test")
-                    .header("content-type", "application/json")
-                    .body(Body::from(serde_json::to_vec(&input)?))?,
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources
+        .finish(async {
+            let p = admin(case_a(), "admin-a").await?;
+            let mut value = deployment();
+            value["lifetime"] = serde_json::json!({"mode":"development","days":3650});
+            let s = service(value.clone(), pool.clone(), fixture_audit.clone()).await?;
+            let g = grant()?;
+            let r = authorize_request(&s, &p, &g, &audit()).await?;
+            let c = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
+            let evidence = peer(s.trust(), &chain(&c)?, &root()).await?;
+            let metadata = s.trust().verify_peer(&evidence, now())?;
+            assert_eq!(
+                metadata.metadata().not_after - metadata.metadata().not_before,
+                3650 * 86400
+            );
+            let production = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            assert!(matches!(
+                production.trust().verify_peer(&evidence, now()),
+                Err(rss_mdm_certificate::Error::Unauthorized)
+            ));
+            let control = grant()?;
+            let authorized = authorize_request(&production, &p, &control, &audit()).await?;
+            let signed = production
+                .issue(&signing(&control, authorized.grant_id)?, &audit())
+                .await?;
+            let accepted = peer(production.trust(), &chain(&signed)?, &root()).await?;
+            production.trust().verify_peer(&accepted, now())?;
+            let value = deployment();
+            let unknown = service_with_provider(
+                value,
+                Some("absent-agent-key"),
+                pool.clone(),
+                fixture_audit.clone(),
             )
             .await?;
-        assert_eq!(response.status(), 503);
-        let id = response.headers()["x-request-id"].to_str()?.to_owned();
-        failures.push(serde_json::from_slice::<wire::ErrorBody>(
-            &response.into_body().collect().await?.to_bytes(),
-        )?);
-        let records = crate::audit_test_support::read(&mut owner).await?;
-        let facts: Vec<_> = records
-            .iter()
-            .filter(|r| r.request() == Some(id.as_str()))
-            .collect();
-        let settlements: Vec<_> = facts
-            .iter()
-            .filter(|r| r.source() == "mdm.request")
-            .collect();
-        assert_eq!(settlements.len(), 1);
-        assert_eq!(settlements[0].status(), 503);
-        assert_eq!(settlements[0].result(), "failed");
-        if failures.len() == 1 {
-            assert!(
-                records.iter().any(|r| r.source() == "mdm.business"
-                    && r.operation() == Some(input.operation_id.to_string().as_str())
-                    && r.status() == 200),
-                "durable claim fact must survive final CA failure settlement"
+            let g = grant()?;
+            let r = authorize_request(&unknown, &p, &g, &audit()).await?;
+            let input = signing(&g, r.grant_id)?;
+            use axum::{Router, body::Body, http::Request};
+            use http_body_util::BodyExt;
+            use tower::ServiceExt;
+            let router = Router::new().nest(
+                "/api/v1/agent/enroll",
+                rss_mdm_agent_channel::enroll::router(
+                    unknown.clone(),
+                    envelope("mdm.example.test", fixture_audit.clone()),
+                )
+                .into_axum(),
             );
-        }
-    }
-    let first = &failures[0];
-    let retry = &failures[1];
-    assert_eq!(first.code, wire::ErrorCode::IssuanceUnknown);
-    assert_eq!(first.issuance_id, retry.issuance_id);
-    let restarted = service(deployment()).await?;
-    let recovered = restarted
-        .recover_issuance(
-            &p,
-            first.issuance_id.unwrap(),
-            &wire::RecoverIssuance {
-                wire_version: 1,
-                operation_id: Uuid::new_v4(),
-                certificate_chain: vec![],
-            },
-            &audit(),
-        )
+            let mut failures = Vec::new();
+            let mut owner =
+                <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?)
+                    .await?;
+            for _ in 0..2 {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::post("/api/v1/agent/enroll/certificates")
+                            .header("host", "mdm.example.test")
+                            .header("content-type", "application/json")
+                            .body(Body::from(serde_json::to_vec(&input)?))?,
+                    )
+                    .await?;
+                assert_eq!(response.status(), 503);
+                let id = response.headers()["x-request-id"].to_str()?.to_owned();
+                failures.push(serde_json::from_slice::<wire::ErrorBody>(
+                    &response.into_body().collect().await?.to_bytes(),
+                )?);
+                let records = crate::audit_test_support::read(&mut owner).await?;
+                let facts: Vec<_> = records
+                    .iter()
+                    .filter(|r| r.request() == Some(id.as_str()))
+                    .collect();
+                let settlements: Vec<_> = facts
+                    .iter()
+                    .filter(|r| r.source() == "mdm.request")
+                    .collect();
+                assert_eq!(settlements.len(), 1);
+                assert_eq!(settlements[0].status(), 503);
+                assert_eq!(settlements[0].result(), "failed");
+                if failures.len() == 1 {
+                    assert!(
+                        records.iter().any(|r| r.source() == "mdm.business"
+                            && r.operation() == Some(input.operation_id.to_string().as_str())
+                            && r.status() == 200),
+                        "durable claim fact must survive final CA failure settlement"
+                    );
+                }
+            }
+            let first = &failures[0];
+            let retry = &failures[1];
+            assert_eq!(first.code, wire::ErrorCode::IssuanceUnknown);
+            assert_eq!(first.issuance_id, retry.issuance_id);
+            let restarted = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            let recovered = restarted
+                .recover_issuance(
+                    &p,
+                    first.issuance_id.unwrap(),
+                    &wire::RecoverIssuance {
+                        wire_version: 1,
+                        operation_id: Uuid::new_v4(),
+                        certificate_chain: vec![],
+                    },
+                    &audit(),
+                )
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(
+                recovered.code,
+                wire::ErrorCode::MalformedRequest,
+                "empty recovery chains fail before adopting any signing result"
+            );
+            let still_unknown = restarted.issue(&input, &audit()).await.unwrap_err();
+            assert_eq!(still_unknown.code, wire::ErrorCode::IssuanceUnknown);
+            assert_eq!(still_unknown.issuance_id, first.issuance_id);
+            let mut changed = input.clone();
+            changed.operation_id = Uuid::new_v4();
+            assert_eq!(
+                unknown.issue(&changed, &audit()).await.unwrap_err().code,
+                wire::ErrorCode::OperationConflict
+            );
+            Ok(())
+        })
         .await
-        .err()
-        .unwrap();
-    assert_eq!(
-        recovered.code,
-        wire::ErrorCode::MalformedRequest,
-        "empty recovery chains fail before adopting any signing result"
-    );
-    let still_unknown = restarted.issue(&input, &audit()).await.unwrap_err();
-    assert_eq!(still_unknown.code, wire::ErrorCode::IssuanceUnknown);
-    assert_eq!(still_unknown.issuance_id, first.issuance_id);
-    let mut changed = input.clone();
-    changed.operation_id = Uuid::new_v4();
-    assert_eq!(
-        unknown.issue(&changed, &audit()).await.unwrap_err().code,
-        wire::ErrorCode::OperationConflict
-    );
-    Ok(())
 }
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
@@ -547,130 +575,141 @@ async fn provisioner_rejects_substituted_csr_and_consumed_token() -> anyhow::Res
     Ok(())
 }
 
-async fn envelope(host: &str) -> anyhow::Result<rss_mdm_agent_channel::boundary::Envelope> {
-    let db = Database::connect(options("mdm_access")?).await?;
-    Ok(rss_mdm_agent_channel::boundary::Envelope {
+fn envelope(
+    host: &str,
+    audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> rss_mdm_agent_channel::boundary::Envelope {
+    rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: host.into(),
         clock: crate::test_support::runtime::monotonic(),
-        audit_store: db
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        audit_store,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         tenant: case_a().into(),
-    })
+    }
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<()> {
-    use axum::{body::Body, http::Request, middleware};
-    use rss_mdm_http_contract::{Operation, Router, catalog::PROTOCOL_AGENT_CHANNEL, routing::get};
-    use tokio::sync::{Barrier, mpsc};
-    use tower::ServiceExt;
-    let envelope = envelope("mdm.example.test").await?;
-    let requests = envelope.requests.clone();
-    let admission = crate::native::admission::Admission::new(
-        envelope.clock.clone(),
-        requests.clone(),
-        "mdm-agent",
-    );
-    let first = admission.gate("127.0.0.1".parse()?).unwrap();
-    let second = admission.gate("127.0.0.2".parse()?).unwrap();
-    let third = admission.gate("127.0.0.3".parse()?).unwrap();
-    let release = Arc::new(Barrier::new(5));
-    let (entered, mut entries) = mpsc::channel(4);
-    let handler_release = release.clone();
-    let ready_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let ready_counter = ready_calls.clone();
-    let held = get(move || {
-        let entered = entered.clone();
-        let release = handler_release.clone();
-        async move {
-            entered.send(()).await.unwrap();
-            release.wait().await;
-            "done"
-        }
-    })
-    .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]);
-    let router = rss_mdm_agent_channel::boundary::wrap(
-        Router::new().route("/held", held).route(
-            "/ready",
-            get(move || {
-                let calls = ready_counter.clone();
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources
+        .finish(async {
+            use axum::{body::Body, http::Request, middleware};
+            use rss_mdm_http_contract::{
+                Operation, Router, catalog::PROTOCOL_AGENT_CHANNEL, routing::get,
+            };
+            use tokio::sync::{Barrier, mpsc};
+            use tower::ServiceExt;
+            let envelope = envelope("mdm.example.test", fixture_audit.clone());
+            let requests = envelope.requests.clone();
+            let admission = crate::native::admission::Admission::new(
+                envelope.clock.clone(),
+                requests.clone(),
+                "mdm-agent",
+            );
+            let first = admission.gate("127.0.0.1".parse()?).unwrap();
+            let second = admission.gate("127.0.0.2".parse()?).unwrap();
+            let third = admission.gate("127.0.0.3".parse()?).unwrap();
+            let release = Arc::new(Barrier::new(5));
+            let (entered, mut entries) = mpsc::channel(4);
+            let handler_release = release.clone();
+            let ready_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let ready_counter = ready_calls.clone();
+            let held = get(move || {
+                let entered = entered.clone();
+                let release = handler_release.clone();
                 async move {
-                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    axum::http::StatusCode::NO_CONTENT
+                    entered.send(()).await.unwrap();
+                    release.wait().await;
+                    "done"
                 }
             })
-            .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
-        ),
-        envelope,
-    )
-    .layer(middleware::from_fn(crate::native::admission::admit_agent))
-    .into_axum();
-    let mut running = Vec::new();
-    for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
-        let request = Request::get("/held")
-            .header("host", "mdm.example.test")
-            .extension(gate)
-            .body(Body::empty())?;
-        let router = router.clone();
-        running.push(tokio::spawn(async move { router.oneshot(request).await }));
-    }
-    tokio::time::timeout(Duration::from_secs(5), async {
-        for _ in 0..4 {
-            entries.recv().await.unwrap();
-        }
-    })
-    .await?;
-    assert_eq!(requests.available_permits(), 0);
-    let response = router
-        .clone()
-        .oneshot(
-            Request::get("/ready")
-                .header("host", "mdm.example.test")
-                .extension(third.clone())
-                .body(Body::empty())?,
-        )
-        .await?;
-    assert_eq!(
-        response.status(),
-        503,
-        "fifth peer reaches the global body budget"
-    );
-    assert_eq!(ready_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-    release.wait().await;
-    let mut completed = Vec::new();
-    for task in running {
-        let response = task.await??;
-        assert_eq!(response.status(), 200);
-        completed.push(response.headers()["x-request-id"].to_str()?.to_owned());
-    }
-    let mut observer =
-        <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
-    let records = crate::audit_test_support::read(&mut observer).await?;
-    for id in completed {
-        assert_eq!(
-            records
-                .iter()
-                .filter(|r| r.request() == Some(id.as_str()) && r.status() == 200)
-                .count(),
-            1
-        );
-    }
-    observer.close().await?;
-    assert_eq!(requests.available_permits(), 4);
-    let response = router
-        .oneshot(
-            Request::get("/ready")
-                .header("host", "mdm.example.test")
-                .extension(third.clone())
-                .body(Body::empty())?,
-        )
-        .await?;
-    assert_eq!(response.status(), 204);
-    Ok(())
+            .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]);
+            let router = rss_mdm_agent_channel::boundary::wrap(
+                Router::new().route("/held", held).route(
+                    "/ready",
+                    get(move || {
+                        let calls = ready_counter.clone();
+                        async move {
+                            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            axum::http::StatusCode::NO_CONTENT
+                        }
+                    })
+                    .owned(&PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
+                ),
+                envelope,
+            )
+            .layer(middleware::from_fn(crate::native::admission::admit_agent))
+            .into_axum();
+            let mut running = Vec::new();
+            for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
+                let request = Request::get("/held")
+                    .header("host", "mdm.example.test")
+                    .extension(gate)
+                    .body(Body::empty())?;
+                let router = router.clone();
+                running.push(tokio::spawn(async move { router.oneshot(request).await }));
+            }
+            tokio::time::timeout(Duration::from_secs(5), async {
+                for _ in 0..4 {
+                    entries.recv().await.unwrap();
+                }
+            })
+            .await?;
+            assert_eq!(requests.available_permits(), 0);
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get("/ready")
+                        .header("host", "mdm.example.test")
+                        .extension(third.clone())
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(
+                response.status(),
+                503,
+                "fifth peer reaches the global body budget"
+            );
+            assert_eq!(ready_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            release.wait().await;
+            let mut completed = Vec::new();
+            for task in running {
+                let response = task.await??;
+                assert_eq!(response.status(), 200);
+                completed.push(response.headers()["x-request-id"].to_str()?.to_owned());
+            }
+            let mut observer =
+                <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?)
+                    .await?;
+            let records = crate::audit_test_support::read(&mut observer).await?;
+            for id in completed {
+                assert_eq!(
+                    records
+                        .iter()
+                        .filter(|r| r.request() == Some(id.as_str()) && r.status() == 200)
+                        .count(),
+                    1
+                );
+            }
+            observer.close().await?;
+            assert_eq!(requests.available_permits(), 4);
+            let response = router
+                .oneshot(
+                    Request::get("/ready")
+                        .header("host", "mdm.example.test")
+                        .extension(third.clone())
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(response.status(), 204);
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
@@ -1028,9 +1067,19 @@ fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::providers::Pro
 #[ignore = "make t2 MODULE=agent.pki: actual second CA, TLS ACK and durable rotation"]
 async fn rotation_requires_installed_trust_and_published_revocation_before_retirement()
 -> anyhow::Result<()> {
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    let registration = Arc::new(rss_mdm_registration_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+    ));
+    resources.finish(async {
+
     use rss_mdm_agent_wire::pki::{Acknowledgement, Mode, Purpose, Trust};
     use rss_mdm_pki_service::registry::{Action, Registry, Rotation, RotationState, Transition};
-    let s = service(deployment()).await?;
+    let s = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
     let r = authorize_request(&s, &p, &g, &audit()).await?;
@@ -1043,13 +1092,10 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         operation_id: Uuid::new_v4(),
     };
     let receipt = s.activate(&evidence, &activation, &audit()).await?;
-    let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
+    let audit_store = fixture_audit.clone();
     let binding = s.trust().trust.clone();
     let registry = Registry::new(
-        db.archive_pool(),
+        pool.clone(),
         audit_store.clone(),
         vec![binding.clone()],
         fixture_providers()?,
@@ -1150,7 +1196,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     };
     for entries in [vec![], vec![misbound]] {
         let unavailable = Registry::new(
-            db.archive_pool(),
+            pool.clone(),
             audit_store.clone(),
             vec![binding.clone()],
             Arc::new(rss_mdm_pki_service::providers::Providers::new(entries)?),
@@ -1191,7 +1237,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     };
     // Keep the production ACK write uncommitted while activation reads from a different transaction.
     s.authenticate(&evidence).await?;
-    let mut pending_ack = db.archive_pool().begin().await?;
+    let mut pending_ack = pool.clone().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_a())
         .execute(&mut *pending_ack)
@@ -1313,7 +1359,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     );
     assert_eq!(crate::test_support::process::pg(&format!("SELECT count(*) FROM mdm_pki.certificates WHERE tenant_id='{}' AND issuer='{}' AND registration='{}' AND not_after>{}",case_a(),previous.issuers[0].digest,receipt.runtime.registration_id,now()))?.trim(), "1");
     let devices =
-        crate::device::DeviceService::new(db.registration(), case_a().into(), audit_store.clone());
+        crate::device::DeviceService::new(registration.clone(), case_a().into(), audit_store.clone());
     devices
         .revoke(
             &p,
@@ -1357,12 +1403,12 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
     let final_trust = registry.trust(Purpose::Agent)?;
     assert_eq!(final_trust.issuers.len(), 1);
     assert_eq!(final_trust.issuers[0].digest, new_digest);
-    let restarted = service(deployment()).await?;
+    let restarted = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
     assert_eq!(restarted.trust().trust.public()?, final_trust);
 
     // A management replay returns the original receipt after restart, never a new rotation.
     let restored = Registry::new(
-        db.archive_pool(),
+        pool.clone(),
         audit_store,
         vec![restarted.trust().trust.clone()],
         fixture_providers()?,
@@ -1401,8 +1447,8 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
         ),
         "cached authorization must not permit replay after Credentials is revoked"
     );
-    db.close().await;
     Ok(())
+    }).await
 }
 
 // Only signed publication fixtures use the disposable CA keys; positive issuance uses step-ca.
@@ -1497,101 +1543,111 @@ async fn publication_fixture(
 #[ignore = "make t2 MODULE=agent.pki: actual offline root signature and durable CRL"]
 async fn root_revocation_is_accepted_durably_and_denies_live_issuer_without_erasing_history()
 -> anyhow::Result<()> {
-    use rss_mdm_agent_wire::pki::Purpose;
-    use rss_mdm_pki_service::{
-        maintenance::{Publication, PublicationSet},
-        registry::Registry,
-    };
-    let s = service(deployment()).await?;
-    let p = admin(case_a(), "admin-a").await?;
-    let g = grant()?;
-    let r = authorize_request(&s, &p, &g, &audit()).await?;
-    let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
-    let bytes = chain(&candidate)?;
-    let db = Database::connect(options("mdm_access")?).await?;
-    let registry = Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-        vec![s.trust().trust.clone()],
-        fixture_providers()?,
-    );
-    let trust = registry.trust(Purpose::Agent)?;
-    let issuer = &trust.issuers[0];
-    let certificate = x509_cert::Certificate::from_der(&STANDARD.decode(&issuer.certificate)?)?;
-    let crl = publication_fixture(
-        &root(),
-        &issuer.root_crl,
-        true,
-        now(),
-        Some(
-            certificate
-                .tbs_certificate
-                .serial_number
-                .as_bytes()
-                .to_vec(),
-        ),
-    )
-    .await?;
-    registry
-        .publish(
-            &p,
-            &PublicationSet {
-                operation: Uuid::new_v4(),
-                purpose: Purpose::Agent,
-                publications: vec![Publication {
-                    issuer: issuer.digest.clone(),
-                    crl: issuer.crl.clone(),
-                    root_crl: crl.clone(),
-                }],
-            },
-            &audit(),
-            now(),
-        )
-        .await?;
-    assert_eq!(registry.trust(Purpose::Agent)?.issuers[0].root_crl, crl);
-    assert!(matches!(
-        s.trust().trust.active(),
-        Err(rss_mdm_device_trust::Error::Revoked)
-    ));
-    assert!(matches!(
-        s.trust().trust.verify(
-            &bytes
-                .iter()
-                .cloned()
-                .map(tokio_rustls::rustls::pki_types::CertificateDer::from)
-                .collect::<Vec<_>>(),
-            now()
-        ),
-        Err(rss_mdm_device_trust::Error::Revoked)
-    ));
-    s.trust().trust.verify_history(&bytes[0], &issuer.digest)?;
-    let restart = service(deployment()).await?;
-    assert_eq!(restart.trust().trust.public()?.issuers[0].root_crl, crl);
-    assert!(matches!(
-        restart.trust().trust.active(),
-        Err(rss_mdm_device_trust::Error::Revoked)
-    ));
-    db.close().await;
-    Ok(())
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources
+        .finish(async {
+            use rss_mdm_agent_wire::pki::Purpose;
+            use rss_mdm_pki_service::{
+                maintenance::{Publication, PublicationSet},
+                registry::Registry,
+            };
+            let s = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            let p = admin(case_a(), "admin-a").await?;
+            let g = grant()?;
+            let r = authorize_request(&s, &p, &g, &audit()).await?;
+            let candidate = s.issue(&signing(&g, r.grant_id)?, &audit()).await?;
+            let bytes = chain(&candidate)?;
+            let registry = Registry::new(
+                pool.clone(),
+                fixture_audit.clone(),
+                vec![s.trust().trust.clone()],
+                fixture_providers()?,
+            );
+            let trust = registry.trust(Purpose::Agent)?;
+            let issuer = &trust.issuers[0];
+            let certificate =
+                x509_cert::Certificate::from_der(&STANDARD.decode(&issuer.certificate)?)?;
+            let crl = publication_fixture(
+                &root(),
+                &issuer.root_crl,
+                true,
+                now(),
+                Some(
+                    certificate
+                        .tbs_certificate
+                        .serial_number
+                        .as_bytes()
+                        .to_vec(),
+                ),
+            )
+            .await?;
+            registry
+                .publish(
+                    &p,
+                    &PublicationSet {
+                        operation: Uuid::new_v4(),
+                        purpose: Purpose::Agent,
+                        publications: vec![Publication {
+                            issuer: issuer.digest.clone(),
+                            crl: issuer.crl.clone(),
+                            root_crl: crl.clone(),
+                        }],
+                    },
+                    &audit(),
+                    now(),
+                )
+                .await?;
+            assert_eq!(registry.trust(Purpose::Agent)?.issuers[0].root_crl, crl);
+            assert!(matches!(
+                s.trust().trust.active(),
+                Err(rss_mdm_device_trust::Error::Revoked)
+            ));
+            assert!(matches!(
+                s.trust().trust.verify(
+                    &bytes
+                        .iter()
+                        .cloned()
+                        .map(tokio_rustls::rustls::pki_types::CertificateDer::from)
+                        .collect::<Vec<_>>(),
+                    now()
+                ),
+                Err(rss_mdm_device_trust::Error::Revoked)
+            ));
+            s.trust().trust.verify_history(&bytes[0], &issuer.digest)?;
+            let restart = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            assert_eq!(restart.trust().trust.public()?.issuers[0].root_crl, crl);
+            assert!(matches!(
+                restart.trust().trust.active(),
+                Err(rss_mdm_device_trust::Error::Revoked)
+            ));
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: multiple expired offline publications recover atomically"]
 async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly()
 -> anyhow::Result<()> {
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources.finish(async {
+
     use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
     use rss_mdm_pki_service::{
         maintenance::{Publication, PublicationSet},
         registry::{Registry, Rotation},
     };
-    let s = service(deployment()).await?;
+    let s = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
     let p = admin(case_a(), "admin-a").await?;
-    let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        pool.clone(),
+        fixture_audit.clone(),
         vec![s.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -1667,9 +1723,8 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     ))?)?;
     assert_eq!(durable, accepted);
     let registry = Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        pool.clone(),
+        fixture_audit.clone(),
         vec![rss_mdm_device_trust::DeviceTrust::restore(
             durable,
             Purpose::Agent,
@@ -1681,16 +1736,22 @@ async fn multiple_expired_publications_require_one_atomic_set_and_replay_exactly
     input.publications.reverse();
     registry.publish(&p, &input, &audit(), later).await?;
     assert_eq!(registry.trust(Purpose::Agent)?, accepted);
-    db.close().await;
     Ok(())
+    }).await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: real rejected CA dispatch retains unknown retirement fence"]
 async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow::Result<()> {
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources.finish(async {
+
     use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
     use rss_mdm_pki_service::registry::{Action, Registry, Rotation, Transition};
-    let s = service_with_provider(deployment(), Some("unapproved-token-key")).await?;
+    let s = service_with_provider(deployment(), Some("unapproved-token-key"), pool.clone(), fixture_audit.clone()).await?;
     let p = admin(case_a(), "admin-a").await?;
     let g = grant()?;
     let receipt = authorize_request(&s, &p, &g, &audit()).await?;
@@ -1702,11 +1763,9 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
             .code,
         wire::ErrorCode::IssuanceUnknown
     );
-    let db = Database::connect(options("mdm_access")?).await?;
     let registry = Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        pool.clone(),
+        fixture_audit.clone(),
         vec![s.trust().trust.clone()],
         fixture_providers()?,
     );
@@ -1781,8 +1840,8 @@ async fn unknown_original_ca_result_blocks_retirement_after_rotation() -> anyhow
         ))?,
         durable_before
     );
-    db.close().await;
     Ok(())
+    }).await
 }
 
 pub(crate) async fn authorize_request(
@@ -1934,125 +1993,132 @@ async fn bootstrap_sources_select_current_issuer_and_reject_missing_application(
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: original CA dispatch after direct rotation"]
 async fn frozen_signing_uses_original_issuer_after_direct_activation() -> anyhow::Result<()> {
-    use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
-    use rss_mdm_pki_service::{
-        Sign,
-        registry::{Action, Registry, Rotation, Transition},
-        signing::{SigningStore, authorize_in, require_active_in},
-    };
-    let s = service(deployment()).await?;
-    let p = admin(case_a(), "admin-a").await?;
-    let db = Database::connect(options("mdm_access")?).await?;
-    let audit_store = db
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
-    let providers = fixture_providers()?;
-    let binding = s.trust().trust.clone();
-    let registry = Registry::new(
-        db.archive_pool(),
-        audit_store.clone(),
-        vec![binding.clone()],
-        providers.clone(),
-    );
-    let previous = registry.trust(Purpose::Agent)?;
-    let old = &previous.issuers[0].digest;
-    let provider = providers.get(Purpose::Agent, old)?;
-    let tenant = Uuid::parse_str(case_a())?;
-    let csr = VerifiedAgentCsr::verify(&std::fs::read(root().join("agent.der"))?)?;
-    let pem = csr.pem()?;
-    let digest = csr.digest();
-    let identities = [rss_mdm_certificate::agent::identity(
-        tenant,
-        "frozen-rotation",
-    )?];
-    let start = now();
-    let intent = Sign {
-        attempt: Uuid::new_v4(),
-        csr_pem: &pem,
-        csr_digest: &digest,
-        subject: "rss-mdm-agent",
-        sans: &identities,
-        start,
-        end: start + 3600,
-        deadline: start + 60,
-    };
-    // Minimum legitimate precondition: use the production authorization seam in a real transaction.
-    let mut tx = db.archive_pool().begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_a())
-        .execute(&mut *tx)
-        .await?;
-    authorize_in(&mut tx, tenant, "agent", old, provider, intent).await?;
-    tx.commit().await?;
-    let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
-    let next: Trust = serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
-    let mut proposal = previous.clone();
-    proposal.revision += 1;
-    let mut added = next.issuers[0].clone();
-    added.mode = Mode::Prepared;
-    proposal.issuers.push(added);
-    let id = Uuid::new_v4();
-    registry
-        .prepare(
-            &p,
-            &Rotation {
-                id,
-                purpose: Purpose::Agent,
-                expected_revision: previous.revision,
-                candidate: proposal,
-            },
-            &audit(),
-            now(),
-        )
-        .await?;
-    registry
-        .transition(
-            &p,
-            Purpose::Agent,
-            &Transition {
-                id,
-                expected_revision: previous.revision + 1,
-                action: Action::Activate,
-            },
-            &audit(),
-            now(),
-        )
-        .await?;
-    let mut tx = db.archive_pool().begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_a())
-        .execute(&mut *tx)
-        .await?;
-    assert!(
-        matches!(
-            require_active_in(&mut tx, tenant, "agent", old).await,
-            Err(rss_mdm_pki_service::Error::Conflict)
-        ),
-        "new authorization must reject the old issuer"
-    );
-    tx.rollback().await?;
-    let signing = SigningStore::new(audit_store);
-    let validate = |chain: &[Vec<u8>]| {
-        let chain = chain
-            .iter()
-            .map(|der| tokio_rustls::rustls::pki_types::CertificateDer::from(der.as_slice()))
-            .collect::<Vec<_>>();
-        binding
-            .verify(&chain, now())
-            .is_ok_and(|issuer| issuer.digest == *old)
-    };
-    let chain = signing
-        .issue(tenant, ("agent", old), provider, intent, now(), validate)
-        .await?;
-    assert_eq!(
-        signing
-            .issue(tenant, ("agent", old), provider, intent, now(), validate)
-            .await?,
-        chain
-    );
-    assert_eq!(binding.active()?.digest, next.issuers[0].digest);
-    db.close().await;
-    Ok(())
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources
+        .finish(async {
+            use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
+            use rss_mdm_pki_service::{
+                Sign,
+                registry::{Action, Registry, Rotation, Transition},
+                signing::{SigningStore, authorize_in, require_active_in},
+            };
+            let s = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            let p = admin(case_a(), "admin-a").await?;
+            let audit_store = fixture_audit.clone();
+            let providers = fixture_providers()?;
+            let binding = s.trust().trust.clone();
+            let registry = Registry::new(
+                pool.clone(),
+                audit_store.clone(),
+                vec![binding.clone()],
+                providers.clone(),
+            );
+            let previous = registry.trust(Purpose::Agent)?;
+            let old = &previous.issuers[0].digest;
+            let provider = providers.get(Purpose::Agent, old)?;
+            let tenant = Uuid::parse_str(case_a())?;
+            let csr = VerifiedAgentCsr::verify(&std::fs::read(root().join("agent.der"))?)?;
+            let pem = csr.pem()?;
+            let digest = csr.digest();
+            let identities = [rss_mdm_certificate::agent::identity(
+                tenant,
+                "frozen-rotation",
+            )?];
+            let start = now();
+            let intent = Sign {
+                attempt: Uuid::new_v4(),
+                csr_pem: &pem,
+                csr_digest: &digest,
+                subject: "rss-mdm-agent",
+                sans: &identities,
+                start,
+                end: start + 3600,
+                deadline: start + 60,
+            };
+            // Minimum legitimate precondition: use the production authorization seam in a real transaction.
+            let mut tx = pool.clone().begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_a())
+                .execute(&mut *tx)
+                .await?;
+            authorize_in(&mut tx, tenant, "agent", old, provider, intent).await?;
+            tx.commit().await?;
+            let next_root = PathBuf::from(std::env::var("MDM_AGENT_PKI_CANDIDATE_FIXTURES")?);
+            let next: Trust =
+                serde_json::from_slice(&std::fs::read(next_root.join("agent-trust.json"))?)?;
+            let mut proposal = previous.clone();
+            proposal.revision += 1;
+            let mut added = next.issuers[0].clone();
+            added.mode = Mode::Prepared;
+            proposal.issuers.push(added);
+            let id = Uuid::new_v4();
+            registry
+                .prepare(
+                    &p,
+                    &Rotation {
+                        id,
+                        purpose: Purpose::Agent,
+                        expected_revision: previous.revision,
+                        candidate: proposal,
+                    },
+                    &audit(),
+                    now(),
+                )
+                .await?;
+            registry
+                .transition(
+                    &p,
+                    Purpose::Agent,
+                    &Transition {
+                        id,
+                        expected_revision: previous.revision + 1,
+                        action: Action::Activate,
+                    },
+                    &audit(),
+                    now(),
+                )
+                .await?;
+            let mut tx = pool.clone().begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+                .bind(case_a())
+                .execute(&mut *tx)
+                .await?;
+            assert!(
+                matches!(
+                    require_active_in(&mut tx, tenant, "agent", old).await,
+                    Err(rss_mdm_pki_service::Error::Conflict)
+                ),
+                "new authorization must reject the old issuer"
+            );
+            tx.rollback().await?;
+            let signing = SigningStore::new(audit_store);
+            let validate = |chain: &[Vec<u8>]| {
+                let chain = chain
+                    .iter()
+                    .map(|der| {
+                        tokio_rustls::rustls::pki_types::CertificateDer::from(der.as_slice())
+                    })
+                    .collect::<Vec<_>>();
+                binding
+                    .verify(&chain, now())
+                    .is_ok_and(|issuer| issuer.digest == *old)
+            };
+            let chain = signing
+                .issue(tenant, ("agent", old), provider, intent, now(), validate)
+                .await?;
+            assert_eq!(
+                signing
+                    .issue(tenant, ("agent", old), provider, intent, now(), validate)
+                    .await?,
+                chain
+            );
+            assert_eq!(binding.active()?.digest, next.issuers[0].digest);
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
@@ -2158,145 +2224,164 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki: persisted trust corruption cannot become a closed optional channel"]
 async fn corrupt_persisted_root_crl_is_fatal_to_admission() -> anyhow::Result<()> {
-    use rss_mdm_agent_wire::pki::Purpose;
-    let service = service(deployment()).await?;
-    let db = Database::connect(options("mdm_access")?).await?;
-    let registry = rss_mdm_pki_service::registry::Registry::new(
-        db.archive_pool(),
-        db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-        vec![service.trust().trust.clone()],
-        fixture_providers()?,
-    );
-    let tenant = rss_request_context::TenantId::parse(case_a())?;
-    let mut trust = registry.trust(Purpose::Agent)?;
-    trust.issuers[0].root_crl = "corrupt".into();
-    let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(tenant.to_string())
-        .execute(&mut c)
-        .await?;
-    sqlx::query("UPDATE mdm_pki.trust SET body=$2 WHERE tenant_id=$1::uuid AND purpose='agent'")
-        .bind(tenant.to_string())
-        .bind(serde_json::to_vec(&trust)?)
-        .execute(&mut c)
-        .await?;
-    anyhow::ensure!(matches!(
-        registry.admit_purpose(tenant, now(), Purpose::Agent).await,
-        Err(rss_mdm_pki_service::Error::Storage)
-    ));
-    db.close().await;
-    Ok(())
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
+    resources
+        .finish(async {
+            use rss_mdm_agent_wire::pki::Purpose;
+            let service = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            let registry = rss_mdm_pki_service::registry::Registry::new(
+                pool.clone(),
+                fixture_audit.clone(),
+                vec![service.trust().trust.clone()],
+                fixture_providers()?,
+            );
+            let tenant = rss_request_context::TenantId::parse(case_a())?;
+            let mut trust = registry.trust(Purpose::Agent)?;
+            trust.issuers[0].root_crl = "corrupt".into();
+            let mut c = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(tenant.to_string())
+                .execute(&mut c)
+                .await?;
+            sqlx::query(
+                "UPDATE mdm_pki.trust SET body=$2 WHERE tenant_id=$1::uuid AND purpose='agent'",
+            )
+            .bind(tenant.to_string())
+            .bind(serde_json::to_vec(&trust)?)
+            .execute(&mut c)
+            .await?;
+            anyhow::ensure!(matches!(
+                registry.admit_purpose(tenant, now(), Purpose::Agent).await,
+                Err(rss_mdm_pki_service::Error::Storage)
+            ));
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -> anyhow::Result<()>
 {
-    let s = service(deployment()).await?;
-    let p = admin(case_a(), "admin-a").await?;
-    // A supported RSA-8192 leaf makes the Candidate exceed the small operation-receipt budget.
-    let csr_file = root().join("recovery-long.der");
-    let mut g = grant()?;
-    g.csr = STANDARD.encode(std::fs::read(csr_file)?);
-    let authorized = authorize_request(&s, &p, &g, &audit()).await?;
-    let candidate = s
-        .issue(&signing(&g, authorized.grant_id)?, &audit())
-        .await?;
-    assert!(serde_json::to_string(&candidate)?.len() > 2048);
-    let input = wire::RecoverIssuance {
-        wire_version: 1,
-        operation_id: Uuid::new_v4(),
-        certificate_chain: candidate.certificate_chain.clone(),
-    };
-    for _ in 0..2 {
-        let result = s
-            .recover_issuance(&p, candidate.issuance_id, &input, &audit())
-            .await?;
-        assert_eq!(
-            serde_json::to_value(result)?,
-            serde_json::to_value(&candidate)?
-        );
-    }
-    let mut owner = <sqlx::PgConnection as Connection>::connect_with(&options("postgres")?).await?;
-    let records = crate::audit_test_support::read(&mut owner).await?;
-    assert_eq!(
-        records
-            .iter()
-            .filter(|r| r.source() == "mdm.business"
-                && r.operation() == Some(input.operation_id.to_string().as_str()))
-            .count(),
-        1
-    );
-    // The administrator's original receipt is also available through authenticated HTTP.
-    let mut authority = crate::test_support::authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let (pool, source, fixture_audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    resources.resource(crate::test_support::runtime::SourceResource(source));
     resources
         .finish(async {
-            use crate::test_support::{Method, Router, StatusCode, http::Browser};
-            let mut browser: Browser = authority.browser("admin")?;
-            let router = authority.router(Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())).into_axum(),
-            ))?;
-            let path = format!(
-                "/api/v1/agent-issuances/{}/recovery-operations/{}",
-                candidate.issuance_id, input.operation_id
+            let s = service(deployment(), pool.clone(), fixture_audit.clone()).await?;
+            let p = admin(case_a(), "admin-a").await?;
+            // A supported RSA-8192 leaf makes the Candidate exceed the small operation-receipt budget.
+            let csr_file = root().join("recovery-long.der");
+            let mut g = grant()?;
+            g.csr = STANDARD.encode(std::fs::read(csr_file)?);
+            let authorized = authorize_request(&s, &p, &g, &audit()).await?;
+            let candidate = s
+                .issue(&signing(&g, authorized.grant_id)?, &audit())
+                .await?;
+            assert!(serde_json::to_string(&candidate)?.len() > 2048);
+            let input = wire::RecoverIssuance {
+                wire_version: 1,
+                operation_id: Uuid::new_v4(),
+                certificate_chain: candidate.certificate_chain.clone(),
+            };
+            for _ in 0..2 {
+                let result = s
+                    .recover_issuance(&p, candidate.issuance_id, &input, &audit())
+                    .await?;
+                assert_eq!(
+                    serde_json::to_value(result)?,
+                    serde_json::to_value(&candidate)?
+                );
+            }
+            let mut owner =
+                <sqlx::PgConnection as Connection>::connect_with(&options("postgres")?).await?;
+            let records = crate::audit_test_support::read(&mut owner).await?;
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|r| r.source() == "mdm.business"
+                        && r.operation() == Some(input.operation_id.to_string().as_str()))
+                    .count(),
+                1
             );
-            let result = browser.call(&router, Method::GET, &path, None).await?;
-            anyhow::ensure!(
-                result == (StatusCode::OK, serde_json::to_value(&candidate)?),
-                "HTTP original recovery {result:?}"
-            );
-            let unknown = browser
-                .call(
-                    &router,
-                    Method::GET,
-                    &format!(
+            // The administrator's original receipt is also available through authenticated HTTP.
+            let mut authority = crate::test_support::authority::Authority::open().await?;
+            let resources = std::mem::take(&mut authority.resources);
+            resources
+                .finish(async {
+                    use crate::test_support::{Method, Router, StatusCode, http::Browser};
+                    let mut browser: Browser = authority.browser("admin")?;
+                    let router = authority.router(
+                        Router::new().nest(
+                            "/api/v1",
+                            rss_mdm_management_http::agent_enrollment::routes(Some(s.clone()))
+                                .into_axum(),
+                        ),
+                    )?;
+                    let path = format!(
                         "/api/v1/agent-issuances/{}/recovery-operations/{}",
-                        candidate.issuance_id,
-                        Uuid::new_v4()
-                    ),
-                    None,
-                )
+                        candidate.issuance_id, input.operation_id
+                    );
+                    let result = browser.call(&router, Method::GET, &path, None).await?;
+                    anyhow::ensure!(
+                        result == (StatusCode::OK, serde_json::to_value(&candidate)?),
+                        "HTTP original recovery {result:?}"
+                    );
+                    let unknown = browser
+                        .call(
+                            &router,
+                            Method::GET,
+                            &format!(
+                                "/api/v1/agent-issuances/{}/recovery-operations/{}",
+                                candidate.issuance_id,
+                                Uuid::new_v4()
+                            ),
+                            None,
+                        )
+                        .await?;
+                    anyhow::ensure!(unknown == (StatusCode::OK, serde_json::Value::Null));
+                    let replay = browser
+                        .call(
+                            &router,
+                            Method::POST,
+                            &format!("/api/v1/agent-issuances/{}/recover", candidate.issuance_id),
+                            Some(serde_json::to_value(&input)?),
+                        )
+                        .await?;
+                    anyhow::ensure!(replay == result, "HTTP original recovery replay");
+                    anyhow::Ok(())
+                })
                 .await?;
-            anyhow::ensure!(unknown == (StatusCode::OK, serde_json::Value::Null));
-            let replay = browser
-                .call(
-                    &router,
-                    Method::POST,
-                    &format!("/api/v1/agent-issuances/{}/recover", candidate.issuance_id),
-                    Some(serde_json::to_value(&input)?),
-                )
+            let next_grant = grant()?;
+            let next_authorized = authorize_request(&s, &p, &next_grant, &audit()).await?;
+            let next = s
+                .issue(&signing(&next_grant, next_authorized.grant_id)?, &audit())
                 .await?;
-            anyhow::ensure!(replay == result, "HTTP original recovery replay");
-            anyhow::Ok(())
+            let rebound = wire::RecoverIssuance {
+                certificate_chain: next.certificate_chain.clone(),
+                ..input.clone()
+            };
+            assert_eq!(
+                s.recover_issuance(&p, next.issuance_id, &rebound, &audit())
+                    .await
+                    .unwrap_err()
+                    .code,
+                wire::ErrorCode::OperationConflict
+            );
+            let mut fresh = input.clone();
+            fresh.operation_id = Uuid::new_v4();
+            let result = s
+                .recover_issuance(&p, candidate.issuance_id, &fresh, &audit())
+                .await?;
+            assert_eq!(
+                serde_json::to_value(result)?,
+                serde_json::to_value(&candidate)?
+            );
+            Ok(())
         })
-        .await?;
-    let next_grant = grant()?;
-    let next_authorized = authorize_request(&s, &p, &next_grant, &audit()).await?;
-    let next = s
-        .issue(&signing(&next_grant, next_authorized.grant_id)?, &audit())
-        .await?;
-    let rebound = wire::RecoverIssuance {
-        certificate_chain: next.certificate_chain.clone(),
-        ..input.clone()
-    };
-    assert_eq!(
-        s.recover_issuance(&p, next.issuance_id, &rebound, &audit())
-            .await
-            .unwrap_err()
-            .code,
-        wire::ErrorCode::OperationConflict
-    );
-    let mut fresh = input.clone();
-    fresh.operation_id = Uuid::new_v4();
-    let result = s
-        .recover_issuance(&p, candidate.issuance_id, &fresh, &audit())
-        .await?;
-    assert_eq!(
-        serde_json::to_value(result)?,
-        serde_json::to_value(&candidate)?
-    );
-    Ok(())
+        .await
 }

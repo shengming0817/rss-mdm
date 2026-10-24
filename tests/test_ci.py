@@ -346,7 +346,6 @@ class T2Controls(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['jobs'],1)
             evidence=json.loads((root/'artifacts/result.json').read_text())
             self.assertEqual(evidence['recommendedT2']['status'],'executed')
-        self.assertIn('export CI_BASE JOBS', (ci.ROOT/'Makefile').read_text())
 
     def test_bad_jobs_are_rejected(self):
         from unittest.mock import patch

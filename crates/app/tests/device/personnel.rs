@@ -28,7 +28,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
     let mut authority = Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
-        let (access, service, admin, mut pg) = setup().await?;
+        let (access, service, admin, mut pg, _audit_store) = setup().await?;
         let mut grants = identity::device_grants(None, &["inventory_read", "enrollment"])?;
         grants.extend([crate::authorization::Permission::InventorySensitiveRead, crate::authorization::Permission::UserProfilesRead, crate::authorization::Permission::IdentityAccountsManage].map(|operation|crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant}));
         identity::seed_grants(case_a(), admin.principal_id(), grants.clone()).await?;
@@ -54,7 +54,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         let last = crate::test_support::case::name("zzz-personnel");
         seed(first, "mdm", "personnel-first")?;
         seed(last, "mdm", "personnel-last")?;
-        let registration = DeviceService::new(access.registration(), case_a().into(), authority.audit.clone());
+        let registration = DeviceService::new(authority.registration.clone(), case_a().into(), authority.audit.clone());
         registration.assign_registration_user(&admin, last, &rss_mdm_registration_service::device::registration_user::RegistrationUserChange {
             expected_revision:0,
             user:Some(crate::authorization::User {tenant_id:case_a().into(),instance_id:identity::INSTANCE.into(),principal_id:principal.into()}),
@@ -81,7 +81,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         // Middleware proof predates revocation, while both product reads start afterwards.
         // Keep Enrollment and Identity read permissions so only the sensitive fence can hide names.
         let credential=rss_mdm_authorization_service::credential::RequestCredential::Cookie(rss_identity_core::session::SessionSecret::parse(reader.cookies["__Host-identity-session"].clone())?);
-        let stale=sessions.authenticate(access.authorization(),credential.duplicate()?).await?;
+        let stale=sessions.authenticate(&authority.authorization,credential.duplicate()?).await?;
         stale.require(crate::authorization::Permission::InventorySensitiveRead,None)?;
         identity::change_grants(case_a(),viewer_id,grants.iter().filter(|g|g.operation!=crate::authorization::Permission::InventorySensitiveRead).cloned().collect()).await?;
         let people=people(&authority)?;
@@ -129,7 +129,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         ok(&mut browser,&router,Method::POST,&format!("{accounts}/{principal}/enabled"),Some(json!({"enabled":false}))).await?;
         ensure!(ok(&mut reader,&router,Method::GET,&path,None).await?["endpoints"][0]["registrationUser"]["display"].is_null());
         // Source-page responses retain their own DTO; personnel enriches endpoints only.
-        access.close().await;
+        access.finish(async { Ok(()) }).await?;
         Ok(())
     }).await
 }

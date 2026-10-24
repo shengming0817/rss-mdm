@@ -5,12 +5,22 @@ use rss_mdm_registration_service::device::endpoints::{self, PrimaryRegistration}
 use serde_json::json;
 
 pub(crate) async fn setup() -> anyhow::Result<(
-    Arc<Database>,
+    crate::test_support::runtime::Resources,
     Associations,
     AuthorizedPrincipal,
     PgConnection,
+    Arc<rss_mdm_audit_integration::AuditStore>,
 )> {
-    let (access, _, admin, root) = fixture().await?;
+    let admin = admin(case_a(), "admin-a").await?;
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let mut access = crate::test_support::runtime::Resources::default();
+    access.resource(crate::test_support::runtime::PoolResource(pool));
+    access.resource(crate::test_support::runtime::SourceResource(source));
+    let mut root = PgConnection::connect_with(&options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_a())
+        .execute(&mut root)
+        .await?;
     crate::test_support::identity::seed_grants(
         case_a(),
         admin.principal_id(),
@@ -25,14 +35,8 @@ pub(crate) async fn setup() -> anyhow::Result<(
         )?,
     )
     .await?;
-    let service = Associations::new(
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-        TenantId::parse(case_a())?,
-        &[7; 32],
-    )?;
-    Ok((access, service, admin, root))
+    let service = Associations::new(audit.clone(), TenantId::parse(case_a())?, &[7; 32])?;
+    Ok((access, service, admin, root, audit))
 }
 pub(super) fn query(limit: usize) -> rss_mdm_query::directory::Query {
     parameters(limit, None, None)
@@ -127,7 +131,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     let mut authority = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
-    let (access, s, admin, mut c) = setup().await?;
+    let (access, s, admin, mut c, _audit_store) = setup().await?;
     let mdm = crate::test_support::case::name("association-mdm");
     let agent = crate::test_support::case::name("association-agent");
     seed(mdm, "mdm", " 00-test.serial ")?;
@@ -199,7 +203,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
             .await,
         Err(rss_mdm_device_service::Error::Conflict)
     ));
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 
     }).await
@@ -212,7 +216,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let mut authority = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
-    let (access, s, admin, mut c) = setup().await?;
+    let (access, s, admin, mut c, _audit_store) = setup().await?;
     let mdm = crate::test_support::case::name("generation-mdm");
     let agent = crate::test_support::case::name("generation-agent");
     seed(mdm, "mdm", "generation-serial")?;
@@ -256,7 +260,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
             .any(|m| m.registration_id == new && m.generation == 2)
     );
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 
     }).await
@@ -265,7 +269,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
 #[tokio::test]
 #[ignore = "MODULE=device.associations: concurrent membership claims settle atomically"]
 async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> anyhow::Result<()> {
-    let (access, s, admin, mut c) = setup().await?;
+    let (access, s, admin, mut c, _audit_store) = setup().await?;
     let mdm = crate::test_support::case::name("race-mdm");
     let one = crate::test_support::case::name("race-agent-one");
     let two = crate::test_support::case::name("race-agent-two");
@@ -360,7 +364,7 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
         }
     }
     assert_eq!(found, 1);
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 
@@ -368,10 +372,8 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
 #[ignore = "MODULE=device.associations: recovery preserves association, membership, receipt and audit"]
 async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts()
 -> anyhow::Result<()> {
-    let (access, _, admin, mut c) = setup().await?;
-    let store = access
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
+    let (access, _, admin, mut c, audit_store) = setup().await?;
+    let store = audit_store.clone();
     let s = Associations::new(store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
     let mdm = crate::test_support::case::name("recovery-mdm");
     let agent = crate::test_support::case::name("recovery-agent");
@@ -464,14 +466,14 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         }
     }
     assert_eq!(found, 2);
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device.associations: signed checkpoints span empty and frozen audit windows"]
 async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Result<()> {
-    let (access, service, admin, mut c) = setup().await?;
+    let (access, service, admin, mut c, audit_store) = setup().await?;
     async fn drain(
         service: &Associations,
         admin: &AuthorizedPrincipal,
@@ -570,13 +572,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     let last = items.last().context("last event")?["position"]
         .as_u64()
         .context("position")?;
-    let restarted = Associations::new(
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-        TenantId::parse(case_a())?,
-        &[7; 32],
-    )?;
+    let restarted = Associations::new(audit_store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
     crate::audit_test_support::projection::drain(
         TenantId::parse(case_a())?,
         rss_audit_postgres::Integrity::Plain,
@@ -626,7 +622,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
             .await?["items"],
         json!([])
     );
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 
@@ -635,7 +631,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
 async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> anyhow::Result<()> {
     use rss_mdm_device_service::lifecycle::{self, Acceptance};
     use rss_mdm_inventory_service::objects::{ObjectReader, ObjectRef, SnapshotProgress};
-    let (access, s, principal, mut c) = setup().await?;
+    let (access, s, principal, mut c, audit_store) = setup().await?;
     crate::test_support::identity::seed_grants(
         case_a(),
         principal.principal_id(),
@@ -661,11 +657,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
     let association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(mdm).fetch_one(&mut c).await?;
     let other_association:Uuid=sqlx::query_scalar("SELECT association_id FROM mdm_devices.members WHERE tenant_id=$1::uuid AND device=$2 AND NOT released").bind(case_a()).bind(other_mdm).fetch_one(&mut c).await?;
     let tenant = TenantId::parse(case_a())?;
-    let reader = rss_mdm_device_service::planning::PlanningObjects::new(
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    );
+    let reader = rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone());
     let snapshot = reader.freeze(&mut c, tenant).await?;
     for _ in 0..32 {
         if reader.advance(&mut c, tenant, &snapshot).await? == SnapshotProgress::Ready {
@@ -803,6 +795,6 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
                 && c.effect == lifecycle::Effect::Unknown
                 && c.reason.as_deref() == Some("forced_revoke_cleanup_unconfirmed"))
     );
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }

@@ -104,7 +104,13 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
                 .is_success()
         );
     }
-    let parent_cert = sign_certificate(&w.ca, &peer.intent).await?;
+    let parent_cert = sign_certificate(
+        &host.store.archive_pool(),
+        host.app.audit_store.clone(),
+        &w.ca,
+        &peer.intent,
+    )
+    .await?;
     let at = now();
     let format_time = |at| {
         time::OffsetDateTime::from_unix_timestamp(at)
@@ -1073,7 +1079,13 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(ca, &parent.intent).await?;
+    let certificate = sign_certificate(
+        &host.store.archive_pool(),
+        host.app.audit_store.clone(),
+        ca,
+        &parent.intent,
+    )
+    .await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     authenticate_child(&child.mutual, &child.url, &child.message, &parent.ack).await?;
     let renewed_child = renew(
@@ -1366,7 +1378,13 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(ca, &parent.intent).await?;
+    let certificate = sign_certificate(
+        &host.store.archive_pool(),
+        host.app.audit_store.clone(),
+        ca,
+        &parent.intent,
+    )
+    .await?;
     let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let mut grants = [
         "resource_read",
@@ -1689,7 +1707,13 @@ async fn primary_commands_are_independent_of_declared_child_readiness() -> anyho
         "Primary depended on child: {primary:?}"
     );
     let ca = &host.app.windows()?.channel.ca;
-    let certificate = sign_certificate(ca, &parent.intent).await?;
+    let certificate = sign_certificate(
+        &host.store.archive_pool(),
+        host.app.audit_store.clone(),
+        ca,
+        &parent.intent,
+    )
+    .await?;
     let child = linked_peer(&host, &parent, &certificate, &host.root.join("device.key")).await?;
     let unready = client.call(Method::POST, "", Some(ordinary())).await?;
     ensure!(unready.0 == StatusCode::ACCEPTED);

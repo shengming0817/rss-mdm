@@ -7,15 +7,9 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let server = publication_support::Server::new().await;
-    let cfg = publication_http::configuration(&fixture.base, &server);
-    let base = &cfg;
-
     let session = &fixture.browser("other")?;
     let id = uuid::Uuid::new_v4();
-    let source = base["flow"]["publication"]["sources"][0]["name"]
-        .as_str()
-        .unwrap();
+    let source = "missing-source";
     let release = format!("/api/v1/software/publications/{id}");
     let op = |input: Value| {
         Some(json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":999,"input":input}))
@@ -113,7 +107,50 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     };
     // Exercise every permission change against the same running service. Rebuilding
     // full applications per grant needlessly multiplies component connection pools.
-    let (router, app_resources) = app(base).await?;
+        let config: Config = serde_json::from_value(fixture.base.clone())?;
+    let tenant = fixture.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let mut app_resources = Resources::default();
+    app_resources.resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum();
+    let content = None;
+    let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
+    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
+        runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+    });
+    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })).into_axum());
+    let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+    app_resources.resource(SourceResource(command_runtime.clone()));
+    let protection = config.native_protector()?;
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(rss_mdm_execution_service::InputDependencies {
+        software_distribution: config.software_distribution, product_origin: config.product_origin.clone(), recovery_enabled: config.recovery_credentials.is_some(), protection: protection.clone(),
+        software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(rss_mdm_software_service::catalog::Reader::new(tenant), Default::default())),
+        bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
+        agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
+    }));
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
+        policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
+    }));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
+    let publications = Arc::new(rss_mdm_software_service::management::publication::service::PublicationDirectory {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&key)?, services: Default::default(), tenant,
+        runtime: runtime.clone(), audit_store: audit, clock: Arc::new(crate::clock::FlowClock(clock)),
+    });
+    let routes = routes.merge(rss_mdm_management_http::software_publication::http::routes()
+        .with_state(Arc::new(rss_mdm_management_http::software_publication::http::HttpState { publications, access: fixture.authorization.clone() })).into_axum());
+    let router = fixture.router(Router::new().nest("/api/v1", routes))?;
+
     app_resources.finish(async {
     let member = prepared_subject(session)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -159,6 +196,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             ("policy_read", _) => (StatusCode::NOT_FOUND, "policy_not_found"),
             ("resource_read", _) => (StatusCode::NOT_FOUND, "resource_not_found"),
             ("release_read" | "release_withdraw" | "release_recover", _) => (StatusCode::NOT_FOUND, "software_publication_not_found"),
+            ("release_publish", _) => (StatusCode::NOT_FOUND, "software_source_not_found"),
             _ => (StatusCode::CONFLICT, "operation_conflict"),
         };
         ensure!(accepted.0 == status && accepted.1["code"] == code, "{needed} wrong domain result: {accepted:?}");

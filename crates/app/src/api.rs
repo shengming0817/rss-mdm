@@ -1212,7 +1212,7 @@ pub(crate) fn software_access(
 }
 
 /// Compose the Apple business owner's settlement class with the common HTTP boundary.
-async fn apple_management_settlement(
+pub(crate) async fn apple_management_settlement(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {

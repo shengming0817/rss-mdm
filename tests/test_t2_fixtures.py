@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hack'))
 from t2_database import Costs, DatabasePool, measure
 from t2_execution import Case, Invocation
 from t2_fixtures import RunFixtures
+from verification_result import DependencyBlocked
 from t2_registry import MODULES
 
 
@@ -265,26 +266,56 @@ class PreparationTests(unittest.TestCase):
     def test_instance_only_does_not_start_normal_pg(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = self.fixture(Path(tmp))
-            module = MODULES['identity.local']
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = replace(MODULES['identity.local'], fixtures=(), actors=())
             job = Invocation(module, Case(module.build, 'test', '/test', 'identity'))
-            try:
-                fixture.prepare([job])
-                fixture.normal.database.assert_not_called()
-                fixture.fault.database.assert_not_called()
-            finally:
-                fixture.cert_directory.cleanup()
+            fixture.fault.generation = 1
+            fixture.fault.owner.root = Path(tmp) / 'fault'
+            fixture.fault.owner.root.mkdir()
+            for name in ('ca.crt', 'server.crt', 'server.key'):
+                (fixture.fault.owner.root / name).write_text(name)
+            fixture.fault.owner.port.return_value = 5432
+            fixture.fault.config.return_value = {'database': 'isolated'}
+            phases = []
+            @contextmanager
+            def database(*args):
+                phases.append('enter')
+                try:
+                    yield 'isolated'
+                finally:
+                    phases.append('exit')
+            fixture.fault.database.side_effect = database
+            fixture.prepare([job])
+            receipt = {'environment': fixture.evidence(job)}
+            with fixture.scenario(job, Path(tmp), receipt) as context:
+                self.assertIs(context.owner, fixture.fault.owner)
+                self.assertEqual(context.database, 'isolated')
+                self.assertEqual(phases, ['enter'])
+            self.assertEqual(phases, ['enter', 'exit'])
+            fixture.fault.database.assert_called_once_with(module.profile, module.db_mode)
+            fixture.normal.database.assert_not_called()
+            self.assertIn('cleaned', receipt)
 
     def test_no_pg_starts_no_database(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = self.fixture(Path(tmp))
-            try:
-                module = MODULES['publication.artifact']
-                fixture.certificates = Mock()
-                fixture.prepare([Invocation(module, Case(module.build, 'test', '/test', 'artifact'))])
-                fixture.normal.database.assert_not_called()
-                fixture.fault.database.assert_not_called()
-            finally:
-                fixture.cert_directory.cleanup()
+            self.addCleanup(fixture.cert_directory.cleanup)
+            module = MODULES['publication.artifact']
+            job = Invocation(module, Case(module.build, 'test', '/test', 'artifact'))
+            fixture.certificates = Mock(root=Path(tmp) / 'tls')
+            fixture.certificates.root.mkdir()
+            for name in ('ca.crt', 'server.crt', 'server.key'):
+                (fixture.certificates.root / name).write_text(name)
+            fixture.prepare([job])
+            receipt = {'environment': fixture.evidence(job)}
+            with patch('source_fixtures.tls_environment', return_value={'SOURCE_TLS': 'prepared'}) as tls:
+                with fixture.scenario(job, Path(tmp), receipt) as context:
+                    self.assertIsNone(context.database)
+                    self.assertEqual(context.env['SOURCE_TLS'], 'prepared')
+                tls.assert_called_once()
+            fixture.normal.database.assert_not_called()
+            fixture.fault.database.assert_not_called()
+            self.assertIn('cleaned', receipt)
 
     def test_identity_environment_initialization_and_refresh_are_single_flight(self):
         from concurrent.futures import ThreadPoolExecutor
@@ -379,12 +410,15 @@ class PreparationTests(unittest.TestCase):
             pool.generation = 1
             pool.owner.root = Path(tmp)
             (pool.owner.root / 'ca.crt').write_text('fixture CA')
-            pool.owner.sql.side_effect = RuntimeError('original database failure')
+            failure = RuntimeError('original database failure')
+            failure.root_cause = str(Path(tmp) / 'first-pg.log')
+            pool.owner.sql.side_effect = failure
             with self.assertRaisesRegex(RuntimeError, 'original database failure'):
                 fixture.identity_environment(pool, 'shared', Path(tmp))
-            with self.assertRaisesRegex(RuntimeError, 'previously failed') as caught:
+            with self.assertRaises(DependencyBlocked) as caught:
                 fixture.identity_environment(pool, 'shared', Path(tmp))
-            self.assertEqual(str(caught.exception.__cause__), 'original database failure')
+            self.assertIs(caught.exception.__cause__, failure)
+            self.assertEqual(caught.exception.root_cause, failure.root_cause)
             pool.owner.sql.assert_called_once()
 
     def test_helper_failure_keeps_its_log_for_later_blocked_cases(self):
@@ -406,7 +440,7 @@ class PreparationTests(unittest.TestCase):
             output = Path(tmp) / 'first' / 'identity-setup'
             with self.assertRaisesRegex(RuntimeError, 'helper SQL failed') as first:
                 fixture.identity_environment(pool, 'shared', output)
-            with self.assertRaisesRegex(RuntimeError, 'previously failed') as blocked:
+            with self.assertRaises(DependencyBlocked) as blocked:
                 fixture.identity_environment(pool, 'shared', Path(tmp) / 'second' / 'identity-setup')
             expected = output / 'refresh' / 'test.log'
             self.assertEqual(first.exception.root_cause, str(expected))
@@ -531,11 +565,13 @@ class PreparationBatchTests(unittest.TestCase):
             fixture.prepare(jobs)
             entered = threading.Event()
             release = threading.Event()
+            failure = RuntimeError('original host failure')
+            failure.root_cause = str(Path(tmp) / 'host.log')
             def start(*args):
                 entered.set()
                 if not release.wait(3):
                     raise TimeoutError('test stalled')
-                raise RuntimeError('original host failure')
+                raise failure
             def run(job):
                 with fixture.workers(job, 'db', 'config'):
                     self.fail('failed host was published')
@@ -547,9 +583,13 @@ class PreparationBatchTests(unittest.TestCase):
                     fixture.lock.release()
                     second = executor.submit(run, jobs[1])
                     release.set()
-                    for result in (first, second):
-                        with self.assertRaises(RuntimeError):
-                            result.result(timeout=3)
+                    with self.assertRaises(RuntimeError) as original:
+                        first.result(timeout=3)
+                    self.assertIs(original.exception, failure)
+                    with self.assertRaises(DependencyBlocked) as blocked:
+                        second.result(timeout=3)
+                    self.assertIs(blocked.exception.__cause__, failure)
+                    self.assertEqual(blocked.exception.root_cause, failure.root_cause)
                 self.assertEqual(host.call_count, 1)
 
 
@@ -624,7 +664,7 @@ class HostOwnershipTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'unexpected exit'):
                     with fixture.workers(jobs[1], 'db', 'changed'):
                         self.fail('dead host was replaced')
-                with self.assertRaisesRegex(RuntimeError, 'previously failed') as blocked:
+                with self.assertRaises(DependencyBlocked) as blocked:
                     with fixture.workers(jobs[2], 'db', 'third'):
                         self.fail('failed generation was reused')
                 start.assert_called_once()

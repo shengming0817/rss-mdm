@@ -1,6 +1,6 @@
 //! Real PG failure/role/concurrency tests, called by the native Windows T2 scenario.
 use crate::windows::test_support::*;
-use crate::{Database, device::test_support::options};
+use crate::device::test_support::options;
 use anyhow::ensure;
 use axum::http::StatusCode;
 use rss_mdm_windows_mdm::{CodecLimits, syncml};
@@ -229,12 +229,20 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         .await?
             == live
     );
-    // Policy weakening is rejected at startup, even though tenant isolation remains installed.
-    pg.execute("ALTER POLICY expired_only ON mdm_access.management_sessions USING(true)")
-        .await?;
-    ensure!(Database::connect(options("mdm_access")?).await.is_err());
-    pg.execute("ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())").await?;
-    let restarted = Arc::new(Database::connect(options("mdm_access")?).await?);
+    let (pool, source, audit_store) = crate::audit_test_support::request_store().await?;
+    let registration_store = Arc::new(rss_mdm_registration_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+    ));
+    let authorization_store = Arc::new(rss_mdm_authorization_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    ));
+    let restarted = Arc::new(rss_mdm_windows_channel::Store::from_pool(
+        pool.clone(),
+        registration_store,
+        authorization_store,
+    ));
     // Start with future work: startup cannot prune it, and the five-second fallback
     // is too late for this assertion. The production task must use nearest expiry.
     schedule(&mut pg, tenant, registration, "1000", 1000, false).await?;
@@ -246,10 +254,8 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     let mut launch = startup.commit();
     launch.stage_task_with_token(
         rss_mdm_windows_channel::retention::registration(
-            restarted.windows_store(),
-            restarted
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?,
+            restarted.clone(),
+            audit_store.clone(),
             tenant.to_owned(),
             host.notifications
                 .signals
@@ -282,7 +288,8 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         history(&mut pg, tenant).await? == before,
         "retention changed authoritative facts"
     );
-    restarted.close().await;
+    source.close().await;
+    pool.close().await;
     pg.close().await?;
     host.close().await?;
     Ok(())

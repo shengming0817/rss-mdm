@@ -72,17 +72,15 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::CommitUnknown)
     ));
-    let restart_access = Arc::new(
-        Database::connect(options("mdm_access")?)
-            .await
-            .context("access store admission")?,
-    );
+    let (restart_pool, restart_source, restart_audit) =
+        crate::audit_test_support::request_store().await?;
     let restart = DeviceService::new(
-        restart_access.registration(),
+        Arc::new(rss_mdm_registration_service::Store::from_pool(
+            restart_pool.clone(),
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
         case_a().into(),
-        restart_access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        restart_audit,
     );
     let receipt = restart
         .revoke(
@@ -149,13 +147,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let third_proof = proof(case_a(), Channel::Mdm, 3);
     let pending = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(
-            &access,
-            &admin_a,
-            crate::test_support::case::name("same-serial"),
-            Channel::Mdm,
-        )
-        .await?,
+        request_id: service
+            .fixture_request(
+                &admin_a,
+                crate::test_support::case::name("same-serial"),
+                Channel::Mdm,
+            )
+            .await?,
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
@@ -220,13 +218,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     // Failed replacement must leave the existing generation/credential/source fully active.
     let replace = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(
-            &access,
-            &admin_a,
-            crate::test_support::case::name("same-serial"),
-            Channel::Mdm,
-        )
-        .await?,
+        request_id: service
+            .fixture_request(
+                &admin_a,
+                crate::test_support::case::name("same-serial"),
+                Channel::Mdm,
+            )
+            .await?,
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
@@ -301,13 +299,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     for retired in [&mdm, &newer] {
         let retry = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(
-                &access,
-                &admin_a,
-                crate::test_support::case::name("same-serial"),
-                Channel::Mdm,
-            )
-            .await?,
+            request_id: service
+                .fixture_request(
+                    &admin_a,
+                    crate::test_support::case::name("same-serial"),
+                    Channel::Mdm,
+                )
+                .await?,
             expected_generation: 4,
             source: ReportSource::MdmWindows,
         };
@@ -325,8 +323,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         );
     }
     root.close().await?;
-    restart_access.close().await;
-    access.close().await;
+    restart_source.close().await;
+    restart_pool.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 async fn commit_deadlines(
@@ -408,6 +407,6 @@ async fn bind_and_revoke_settlement_classification() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
     root.close().await?;
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }

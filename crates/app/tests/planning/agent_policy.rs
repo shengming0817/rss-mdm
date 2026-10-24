@@ -78,7 +78,6 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .await?;
     let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
-    let access = database(&fixture.base).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -91,7 +90,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(access.authorization())
+    .load_authorization(&fixture.authority.authorization)
     .await?;
     for permission in [
         crate::authorization::Permission::PolicyRead,
@@ -133,7 +132,6 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             "cached preview proof admitted revoked {permission:?}"
         );
     }
-    access.close().await;
     let router = fixture.router;
     let plan_runtime = fixture.plan_runtime;
     let mut author = fixture.author;

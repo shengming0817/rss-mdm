@@ -31,9 +31,10 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     let (identity, resources) = identity::identity(&tenant.to_string()).await?;
     resources.finish(async {
         let config = identity::config(&tenant.to_string())?;
-        let access = crate::Database::connect(config.access_options()?).await?;
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_with(config.access_options()?).await?;
+        let access = rss_mdm_authorization_service::Store::from_pool(pool.clone(), Arc::new(crate::lifecycle::RuntimeTimer));
         let proof = crate::authorization::context::AuthorizedPrincipal::new(identity.authority.inspect_session(tenant, identity::credential_for(&tenant.to_string(), "admin")?, crate::identity::deadline()).await?)?
-            .load_authorization(access.authorization()).await?;
+            .load_authorization(&access).await?;
         let snapshot = proof.authorization()?;
         let read = crate::authorization::OperationAuthority::all_devices(snapshot, &proof, crate::authorization::Permission::InventoryRead)?;
         let write = crate::authorization::OperationAuthority::all_devices(snapshot, &proof, crate::authorization::Permission::ConfigurationWrite)?;
@@ -77,7 +78,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
         ensure!(next.items.len() == 1 && next.items[0].policy == Uuid::from_u128(17) && next.items[0].scope == included && matches!(next.items[0].admission, ScopeAdmission::Eligible { .. }) && !next.has_more && next.scanned_after == Uuid::from_u128(17));
         tx.rollback().await?;
         connection.close().await?;
-        access.close().await;
+        pool.close().await;
         Ok(())
     }).await?;
     planning.runtime.close().await;

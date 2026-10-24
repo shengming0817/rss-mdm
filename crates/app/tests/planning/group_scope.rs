@@ -514,14 +514,20 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         crate::test_support::identity::identity(&tenant().to_string())
             .await
             .unwrap();
-    let access = crate::Database::connect(
-        crate::test_support::identity::config(&tenant().to_string())
-            .unwrap()
-            .access_options()
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            crate::test_support::identity::config(&tenant().to_string())
+                .unwrap()
+                .access_options()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let access = rss_mdm_authorization_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    );
     let proof = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -535,7 +541,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             .unwrap(),
     )
     .unwrap()
-    .load_authorization(access.authorization())
+    .load_authorization(&access)
     .await
     .unwrap();
 
@@ -1601,16 +1607,22 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     );
     launch.finish();
     let access_config = crate::test_support::identity::config(&t.to_string()).unwrap();
-    let access = crate::Database::connect(access_config.access_options().unwrap())
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(access_config.access_options().unwrap())
         .await
         .unwrap();
+    let access = rss_mdm_authorization_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    );
     let mut windows_group = None;
     for (selector, count) in [
         (rss_mdm_group_postgres::SystemSelector::Windows, 1001),
         (rss_mdm_group_postgres::SystemSelector::Macos, 1),
     ] {
         let group = Uuid::new_v4();
-        let mut conn = access.archive_pool().acquire().await.unwrap();
+        let mut conn = pool.clone().acquire().await.unwrap();
         let mut tx = (*conn).begin().await.unwrap();
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(t.to_string())
@@ -1627,10 +1639,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .unwrap();
         tx.commit().await.unwrap();
         drop(conn);
-        let proof = capability
-            .principal(&access.authorization_store())
-            .await
-            .unwrap();
+        let proof = capability.principal(&access).await.unwrap();
         let audit = RequestAudit::new(t.to_string(), "baseline_initialize");
         proof.bind_audit(&audit).unwrap();
         let command = GroupCommand::Group {
@@ -1753,6 +1762,6 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     .expect("credential lifecycle delta removes system membership");
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
-    access.close().await;
+    pool.close().await;
     service.runtime.close().await;
 }

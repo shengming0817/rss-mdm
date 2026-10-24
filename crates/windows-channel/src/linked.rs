@@ -75,7 +75,7 @@ pub(crate) async fn policy(
         &bytes,
         &headers,
         Operation::GetPolicies,
-        &app,
+        app.windows().map(|w| w.enrollment_origin.as_str()),
         "/EnrollmentServer/LinkedPolicy.svc",
     ) {
         Ok(message) => message,
@@ -124,7 +124,7 @@ pub(crate) async fn issue(
         &bytes,
         &headers,
         Operation::Issue,
-        &app,
+        app.windows().map(|w| w.enrollment_origin.as_str()),
         "/EnrollmentServer/LinkedEnrollment.svc",
     ) {
         Ok(message) => message,

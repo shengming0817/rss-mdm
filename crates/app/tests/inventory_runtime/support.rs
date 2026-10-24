@@ -245,15 +245,16 @@ pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run)
     Ok(())
 }
 
-pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>> {
+pub(super) async fn open(
+    inventory: Arc<rss_mdm_inventory_service::Store>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> Result<Arc<InventoryRuntime>> {
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
-        access.inventory(),
+        inventory,
         TenantId::parse(case_a())?,
         clock(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        audit,
     )
     .await?)
 }

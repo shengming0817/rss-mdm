@@ -26,13 +26,7 @@ struct Jwt {
 impl Jwt {
     fn new(profile: EntraTokenProfile) -> anyhow::Result<(Self, Value)> {
         let root = root()?;
-        let output = std::process::Command::new("openssl")
-            .args(["rsa", "-in"])
-            .arg(root.join("device.key"))
-            .args(["-traditional", "-outform", "DER"])
-            .output()?;
-        ensure!(output.status.success(), "fixture RSA conversion failed");
-        let key = ring::signature::RsaKeyPair::from_der(&output.stdout)
+        let key = ring::signature::RsaKeyPair::from_pkcs8(&std::fs::read(root.join("device.pk8"))?)
             .map_err(|_| anyhow::anyhow!("fixture RSA"))?;
         use ring::signature::KeyPair;
         let mut reader = SliceReader::new(key.public_key().as_ref())?;

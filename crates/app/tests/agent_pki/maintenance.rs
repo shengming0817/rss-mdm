@@ -18,10 +18,6 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         anyhow::bail!("Agent trust fixture is disabled");
     };
     let binding = crate::device_pki::load(&trust_file, Purpose::Agent, now())?;
-    let serials = [
-        ("1001".to_owned(), Uuid::new_v4()),
-        ("1002".to_owned(), Uuid::new_v4()),
-    ];
     let trust = binding.public()?;
     let issuer = &trust.issuers[0];
     let start = now();
@@ -150,6 +146,33 @@ async fn sweep_uses_response_and_dispatch_times_without_changing_attempts() -> a
         .bind(case_a())
         .execute(&mut pg)
         .await?;
+    let mut serials = Vec::new();
+    let csr = std::fs::read(root().join("agent.der"))?;
+    for name in ["sweep-first", "sweep-second"] {
+        let identity = rss_mdm_certificate::agent::identity(Uuid::parse_str(case_a())?, name)?;
+        let chain = crate::test_support::pki::leaf(
+            &root(),
+            &csr,
+            "rss-mdm-agent",
+            &[identity],
+            start,
+            start + 86400,
+        )?;
+        rss_mdm_pki_service::certificates::record_candidate_in(
+            &mut pg,
+            case_a(),
+            "agent",
+            None,
+            &issuer.digest,
+            &chain[0],
+        )
+        .await?;
+        let leaf = x509_cert::Certificate::from_der(&chain[0])?;
+        serials.push((
+            rss_mdm_device_trust::serial(leaf.tbs_certificate.serial_number.as_bytes()),
+            Uuid::new_v4(),
+        ));
+    }
     for (serial, attempt) in &serials {
         sqlx::query("INSERT INTO mdm_pki.revocations(tenant_id,purpose,issuer,serial,attempt,state) VALUES($1::uuid,'agent',$2,$3,$4,'pending')")
             .bind(case_a()).bind(&issuer.digest).bind(serial).bind(attempt).execute(&mut pg).await?;

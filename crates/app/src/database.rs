@@ -48,11 +48,6 @@ impl Database {
         self.registration.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn authorization(&self) -> &rss_mdm_authorization_service::Store {
-        &self.authorization
-    }
-
     pub async fn connect(options: PgConnectOptions) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)

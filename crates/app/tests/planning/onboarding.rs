@@ -251,24 +251,13 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             )
             .await?;
             stop_worker(workers).await?;
-            let access = database(&f.base).await?;
-            let (router, execution, _, _, resources) = crate::api::application_fixture(
-                serde_json::from_value(f.base.clone())?,
-                Arc::new(crate::clock::SystemClock),
-                monotonic(),
-                access.clone(),
-                None,
-                access
-                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                    .await?,
-            )
-            .await?;
+            let mut rebuilt =
+                crate::test_support::agent_execution::Fixture::from_config(f.base.clone()).await?;
+            let resources = std::mem::take(&mut rebuilt.resources);
             resources
                 .finish(async {
-                    let execution = execution.service;
-                    let router = router.browser.layer(axum::Extension(
-                        rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
-                    ));
+                    let execution = rebuilt.execution.clone();
+                    let router = rebuilt.router.clone();
                     execution.recover_action_fixture(id).await?;
                     let empty = claim_request(&router, Uuid::new_v4()).await?;
                     ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
@@ -372,9 +361,8 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
         f.execution.current(&mut tx, &coordinates).await?;
         tx.rollback().await?;
-        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
         let admission = rss_mdm_registration_service::enrollment::native::agent_policy(
-            &access.registration(), case_tenant(), coordinates.id, Some(&credential("employee-mdm")), f.execution.clone(),
+            &f.authority.registration, case_tenant(), coordinates.id, Some(&credential("employee-mdm")), f.execution.clone(),
         ).await?;
         // Hold the execution watermark first. Native authentication must wait there,
         // without holding the registration lock needed by an in-flight handoff.
@@ -407,7 +395,7 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         let (authenticated, released) = tokio::join!(admission.current_request(&mut native_tx), release);
         released?; authenticated?;
         native_tx.rollback().await?;
-        blocker.close().await?; observer.close().await?; access.close().await;
+        blocker.close().await?; observer.close().await?;
 
         definition["selfService"]["published"] = json!(false);
         post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":policy["revision"],
@@ -457,8 +445,7 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         ensure!(native.0 == StatusCode::OK, "{native:?}");
         task_event(&f.router, &task, json!({"kind":"enrollment_result","outcome":"opened"})).await?;
         let request = Uuid::parse_str(native.1["enrollmentId"].as_str().unwrap())?;
-        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
-        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&access.registration(), case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
+        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&f.authority.registration, case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
         let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
         let mut tx = c.begin().await?;
@@ -478,7 +465,6 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         tx.rollback().await?;
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");
         c.close().await?;
-        access.close().await;
         stop_worker(workers).await?;
         stop_worker(automation).await?;
         Ok(())

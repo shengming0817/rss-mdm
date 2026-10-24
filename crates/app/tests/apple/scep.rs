@@ -24,6 +24,8 @@ async fn stale_issuer_rejects_new_profiles_but_preserves_frozen_attempts() -> Re
     use serde_json::json;
     use tower::ServiceExt;
     let mut f = Fixture::start().await?;
+    crate::test_support::runtime::stop_worker(f.execution_owner.take()).await?;
+    crate::test_support::runtime::stop_worker(f.owner.take()).await?;
     let (enrollment, attempt, password) = f.enrollment().await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)

@@ -47,6 +47,6 @@ async fn revocation_wins_waiting_report_authorization() -> anyhow::Result<()> {
     committed?;
     assert!(matches!(result, Err(Error::Unauthorized)));
     root.close().await?;
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }

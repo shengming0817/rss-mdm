@@ -739,7 +739,7 @@ impl Host {
             })?
         } else {
             crate::enrollment::test_support::create_windows(
-                &self.store,
+                &self.app.audit_store,
                 &proof,
                 crate::test_support::case::name("tls-device"),
                 &password,
@@ -985,7 +985,13 @@ impl Host {
                     now(),
                 )
                 .await?;
-                let cert = sign_certificate(&app.windows()?.channel.ca, &intent).await?;
+                let cert = sign_certificate(
+                    &self.store.archive_pool(),
+                    self.app.audit_store.clone(),
+                    &app.windows()?.channel.ca,
+                    &intent,
+                )
+                .await?;
                 (intent, cert)
             };
             (intent, cert, result.provisioning.0)
@@ -1083,7 +1089,7 @@ impl Host {
         let plain = crate::enrollment::random();
         let password = Password::new(plain.clone())?;
         let next = crate::enrollment::test_support::create_windows(
-            &self.store,
+            &self.app.audit_store,
             &peer.proof,
             crate::test_support::case::name("tls-device"),
             &password,
@@ -1169,16 +1175,14 @@ pub(crate) fn fixture_providers() -> anyhow::Result<Arc<rss_mdm_pki_service::pro
 }
 /// Positive issuance always crosses the real pinned CA transport and persistent attempt store.
 pub(crate) async fn sign_certificate(
+    pool: &sqlx::PgPool,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
     ca: &rss_mdm_device_trust::windows::WindowsDeviceTrust,
     intent: &issuance::Intent,
 ) -> anyhow::Result<Vec<u8>> {
-    let access = Database::connect(options("mdm_access")?).await?;
-    let audit = access
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
     let providers = fixture_providers()?;
     let registry = rss_mdm_pki_service::registry::Registry::new(
-        access.archive_pool(),
+        pool.clone(),
         audit.clone(),
         vec![ca.trust.clone()],
         providers.clone(),
@@ -1193,7 +1197,7 @@ pub(crate) async fn sign_certificate(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let mut tx = access.archive_pool().begin().await?;
+    let mut tx = pool.clone().begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
@@ -1259,7 +1263,6 @@ pub(crate) async fn sign_certificate(
             },
         )
         .await?;
-    access.close().await;
     Ok(chain[0].clone())
 }
 

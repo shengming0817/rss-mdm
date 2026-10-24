@@ -44,7 +44,7 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
-            let (access, s, admin, mut c) = setup().await?;
+            let (access, s, admin, mut c, _audit_store) = setup().await?;
             let mdm = crate::test_support::case::name("view-mdm");
             let agent = crate::test_support::case::name("view-agent");
             let other = crate::test_support::case::name("view-other");
@@ -156,7 +156,7 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                     .unwrap()
                     .is_empty()
             );
-            access.close().await;
+            access.finish(async { Ok(()) }).await?;
             Ok(())
         })
         .await
@@ -173,7 +173,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     use rss_mdm_inventory::{
         Evidence, FieldDefinition, FieldKey, Scalar, Source, SourceFact, State,
     };
-    let (access, s, admin, mut c) = setup().await?;
+    let (access, s, admin, mut c, _audit_store) = setup().await?;
     let mdm = crate::test_support::case::name("http-mdm");
     let agent = crate::test_support::case::name("http-agent");
     seed(mdm, "mdm", "HTTP-SERIAL")?;
@@ -304,7 +304,7 @@ async fn http_lists_manual_conflicts_and_signed_source_pagination() -> anyhow::R
     assert_eq!(status, StatusCode::CONFLICT, "{error}");
     assert!(serde_json::to_string(&error)?.contains("device_view_cursor_invalidated"));
     assert!(FieldKey::parse(key).is_ok());
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 
     }).await
@@ -316,14 +316,12 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     let mut authority = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
-    let (access, s, admin, mut c) = setup().await?;
+    let (access, s, admin, mut c, _audit_store) = setup().await?;
     let device = crate::test_support::case::name("pending-view");
     let registration = DeviceService::new(
-        access.registration(),
+        authority.registration.clone(),
         case_a().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     );
     let request = registration
         .fixture_request(&admin, device, Channel::Mdm)
@@ -408,7 +406,7 @@ async fn pending_targets_filter_by_source_and_child_never_replaces_primary() -> 
     // The original endpoint directory consumes the same projection.
     let endpoint = registration.directory_device(&admin, registered).await?;
     assert_eq!(endpoint["channels"], updated["endpoints"][0]["channels"]);
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 
     }).await
@@ -420,7 +418,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
     let mut authority = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
-        let (access,s,admin,mut c)=setup().await?;
+        let (access,s,admin,mut c, _audit_store) = setup().await?;
         let needle=crate::test_support::case::name("zzz-directory-needle");
         let peer=crate::test_support::case::name("zzz-directory-peer");
         let hidden=crate::test_support::case::name("zzz-directory-hidden");
@@ -436,7 +434,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let secret=seed(hidden,"mdm","Hidden-Serial")?;
         let prefix=crate::test_support::case::name("aaa-directory-filler");
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-'||lpad(n::text,4,'0') FROM generate_series(1,255) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
-        let registration=DeviceService::new(access.registration(),case_a().into(),authority.audit.clone());
+        let registration=DeviceService::new(authority.registration.clone(),case_a().into(),authority.audit.clone());
         let owned=registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:0,user:Some(admin.user()?)},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await?;
         let mut filter=parameters(1,Some("search=icontains=search-NEEDLE;platform==windows"),None);
         use tracing::instrument::WithSubscriber;
@@ -557,7 +555,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-budget-'||n FROM generate_series(1,4096) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&query(1),&people(&authority)?).await,Err(rss_mdm_device_service::Error::Capacity)),"candidate overflow returned a truncated page");
         let _=first;
-        access.close().await;Ok(())
+        access.finish(async { Ok(()) }).await?;Ok(())
     }).await
 }
 

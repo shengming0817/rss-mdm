@@ -1,5 +1,6 @@
 use super::*;
 use crate::audit_test_support::audit_count;
+use sqlx::Connection;
 async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Value) -> Result<()> {
     // Drain setup writes before creating the held input: their legitimate dispatch must
     // not race with the task-count assertion that detects work without new input.
@@ -110,8 +111,65 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     let router = &fixture.router;
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
-    let (_, path, _) = fixture.rule().await?;
-    assign(&mut browser, router, "compliance-a", 0, true).await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = owner.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),mdm.lock_asset_watermark($1::uuid)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    let id = Uuid::new_v4();
+    let path = format!("/api/v1/compliance-rules/{id}");
+    let initial_definition: rss_mdm_inventory_service::compliance::Definition =
+        serde_json::from_value(definition(json!({"kind":"all"})))?;
+    ensure!(
+        rss_mdm_compliance_postgres::put(
+            &mut tx,
+            tenant,
+            &rss_mdm_compliance_postgres::Rule {
+                id,
+                revision: 1,
+                enabled: true,
+                desired: None,
+                current_run: None,
+                definition: initial_definition,
+            },
+            &["custom.is_loaner".into()],
+            &[]
+        )
+        .await?
+    );
+    let field = rss_mdm_inventory::builtin::IS_LOANER;
+    let value = rss_mdm_inventory::Scalar::Boolean(true);
+    let evidence = rss_mdm_inventory::Evidence {
+        scope: rss_mdm_inventory::CollectionScope::Device,
+        source: rss_mdm_inventory::Source::Manual,
+        dataset: None,
+        registration: None,
+        registration_generation: None,
+        epoch: None,
+        snapshot_id: Uuid::new_v4().to_string(),
+        observed_at: 1,
+        received_at: 2,
+        actor: Some(case_admin().into()),
+    };
+    ensure!(
+        rss_mdm_inventory_postgres::assign_in(
+            &mut tx,
+            tenant,
+            "compliance-a",
+            field,
+            0,
+            &rss_mdm_inventory::State::Known(value),
+            &evidence
+        )
+        .await?
+            == Some(1)
+    );
+    tx.commit().await?;
+    owner.close().await?;
     let automation = start_automation(base).await?;
     status(&mut browser, router, "compliance-a", "non_compliant").await?;
     let group = Uuid::new_v4();
@@ -226,18 +284,53 @@ async fn pending_group_input_does_not_spin_or_starve_other_rules() -> Result<()>
     let router = &fixture.router;
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
-    assign(&mut browser, router, "compliance-a", 0, false).await?;
-    ok(
-        &mut browser,
-        router,
-        Method::PUT,
-        "/api/v1/devices/compliance-a/manual-fields/custom.office_floor",
-        Some(request(
-            0,
-            json!({"action":"set","value":{"kind":"integer","value":1}}),
-        )),
-    )
-    .await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut tx = owner.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true),mdm.lock_asset_watermark($1::uuid)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    for (field, value) in [
+        (
+            rss_mdm_inventory::builtin::IS_LOANER,
+            rss_mdm_inventory::Scalar::Boolean(false),
+        ),
+        (
+            rss_mdm_inventory::builtin::OFFICE_FLOOR,
+            rss_mdm_inventory::Scalar::Integer(1),
+        ),
+    ] {
+        let evidence = rss_mdm_inventory::Evidence {
+            scope: rss_mdm_inventory::CollectionScope::Device,
+            source: rss_mdm_inventory::Source::Manual,
+            dataset: None,
+            registration: None,
+            registration_generation: None,
+            epoch: None,
+            snapshot_id: Uuid::new_v4().to_string(),
+            observed_at: 1,
+            received_at: 2,
+            actor: Some(case_admin().into()),
+        };
+        ensure!(
+            rss_mdm_inventory_postgres::assign_in(
+                &mut tx,
+                tenant,
+                "compliance-a",
+                field,
+                0,
+                &rss_mdm_inventory::State::Known(value),
+                &evidence
+            )
+            .await?
+                == Some(1)
+        );
+    }
+    tx.commit().await?;
+    owner.close().await?;
     waiting_group_does_not_spin(&mut browser, router, base).await?;
     fixture.close().await;
     Ok(())

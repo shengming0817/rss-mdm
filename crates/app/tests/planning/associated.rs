@@ -8,7 +8,8 @@ use rss_mdm_inventory_service::objects::ObjectRef;
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: associated sources, fixed snapshots and channel admission"]
 async fn associated_context_maps_before_exclusions_and_missing_channels_recover() {
-    let (access, associations, admin, _) = crate::device::t2::associations::setup().await.unwrap();
+    let (access, associations, admin, _, _audit_store) =
+        crate::device::t2::associations::setup().await.unwrap();
     let mdm = crate::test_support::case::name("associated-mdm");
     let agent = crate::test_support::case::name("associated-agent");
     let alone = crate::test_support::case::name("associated-alone");
@@ -453,7 +454,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     );
     running.stop().await;
     service.runtime.close().await;
-    access.close().await;
+    access.finish(async { Ok(()) }).await.unwrap();
 }
 
 #[tokio::test]

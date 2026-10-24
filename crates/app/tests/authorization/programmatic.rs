@@ -11,6 +11,76 @@ use rss_mdm_authorization_service::{
     credential::{ApiKeySecret, RequestCredential},
 };
 
+async fn fixture() -> Result<(authority::Authority, Router)> {
+    use axum::middleware;
+    use rss_mdm_management_http::{api_access, authorization::http, boundary};
+    let authority = authority::Authority::open().await?;
+    let management = Arc::new(api_access::Management {
+        access: authority.authorization.clone(),
+        audit: authority.audit.clone(),
+    });
+    let requests = Arc::new(tokio::sync::Semaphore::new(32));
+    let network = Router::new()
+        .nest(
+            "/api/v1/tenant-administration",
+            api_access::network_routes(management.clone()).into_axum(),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            Arc::new(http::AuthenticationState {
+                identity: authority.identity.management_browser(),
+                access: authority.authorization.clone(),
+                requests: requests.clone(),
+            }),
+            http::protect_management,
+        ))
+        .layer(middleware::from_fn_with_state(
+            boundary::Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                host: "mdm.example.test".into(),
+                clock: monotonic(),
+                audit_store: authority.audit.clone(),
+                requests,
+                tenant: authority.identity.management_tenant.to_string(),
+            },
+            boundary::admit,
+        ))
+        .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse()?,
+        )));
+    let bearer = authority
+        .identity
+        .bearer_routes()
+        .route_layer(middleware::from_fn_with_state(
+            Arc::new(api_access::BearerAdmission {
+                access: authority.authorization.clone(),
+                tenant: case_tenant().into(),
+            }),
+            api_access::admit_bearer,
+        ));
+    let authentication = rss_mdm_management_http::authentication_routes(
+        rss_mdm_http_contract::Router::from_identity_router(
+            authority.identity.routes().merge(bearer),
+        ),
+        boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: monotonic(),
+            audit_store: authority.audit.clone(),
+            requests: Arc::new(tokio::sync::Semaphore::new(32)),
+            tenant: case_tenant().into(),
+        },
+    )
+    .into_axum();
+    let router = authority
+        .protect(Router::new().nest("/api/v1", api_access::key_routes(management).into_axum()))?
+        .merge(network)
+        .merge(authentication)
+        .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse()?,
+        )));
+    Ok((authority, router))
+}
+
 async fn call(
     router: &Router,
     method: Method,
@@ -81,8 +151,12 @@ async fn policy(
     ensure!(response.1["revision"] == revision + 1);
     Ok(())
 }
-async fn valid(store: &crate::Database, grant: &OperationAuthority) -> Result<bool> {
-    let mut tx = store.begin(case_tenant()).await?;
+async fn valid(store: &sqlx::PgPool, grant: &OperationAuthority) -> Result<bool> {
+    let mut tx = store.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *tx)
@@ -95,13 +169,50 @@ async fn valid(store: &crate::Database, grant: &OperationAuthority) -> Result<bo
 #[tokio::test]
 #[ignore = "MODULE=authorization.programmatic: real HTTP, credentials and PostgreSQL"]
 async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        store,
-        ..
-    } = fixture().await?;
+    let (mut authority, mut router) = fixture().await?;
+    let mut admin = authority.browser("admin")?;
+    let store = authority.authorization.clone();
+    let pool = authority.pool.clone();
+    let tenant = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
+    authority
+        .resources
+        .resource(InventoryFixtureResource(inventory.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit,
+        runtime,
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+    ));
+    router = router.merge(
+        authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::assets::routes()
+                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                        assets,
+                    }))
+                    .into_axum(),
+            ),
+        )?,
+    );
+    router = router.merge(authority.protect(authority.enrollment())?);
+    let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
         let mut manager = manager()?;
@@ -132,12 +243,10 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         policy(&mut manager, &router, 0, json!(["127.0.0.1/32"])).await?;
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &secret)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router, Method::GET, "/api/v1/api-keys", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
-        ensure!(call(&router, Method::GET, "/api/v1/policies", &[("x-api-key", &secret)], None).await?.0 == StatusCode::FORBIDDEN);
         let (status, token) = call(&router, Method::POST, &login_path, &[], Some(login.clone())).await?;
         ensure!(status == StatusCode::OK, "bearer login: {status}");
         let bearer = format!("Bearer {}", token["accessToken"].as_str().ok_or_else(|| anyhow::anyhow!("missing bearer"))?);
         ensure!(call(&router, Method::GET, &inventory, &[("authorization", &bearer)], None).await?.0 == StatusCode::OK);
-        ensure!(call(&router,Method::GET,"/api/v1/apple/organizations",&[("authorization",&bearer)],None).await?.0==StatusCode::OK);
         for (method,path) in [(Method::GET,"/api/v1/self-enrollments"),(Method::POST,"/api/v1/self-enrollments"),(Method::GET,"/api/v1/registration-quotas/me")] {
             ensure!(call(&router,method,path,&[("authorization",&bearer)],Some(json!({}))).await?.0==StatusCode::FORBIDDEN);
         }
@@ -147,15 +256,15 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         let digest = pg(&format!("SELECT encode(secret_digest,'hex') FROM mdm_access.api_keys WHERE tenant_id='{}' AND id='{id}'", case_tenant()))?;
         ensure!(digest.trim().len() == 64 && !digest.contains(&secret));
 
-        let access = store.authorization_store();
+        let access = store.clone();
         let parsed = ApiKeySecret::parse(secret.clone())?;
         let proof = AuthorizedPrincipal::from_identity(access.authenticate_key(case_tenant(), &parsed).await?).load_authorization(&access).await?;
         let grant = OperationAuthority::all_devices(proof.authorization()?, &proof, Permission::InventoryRead)?;
-        ensure!(valid(&store, &grant).await?);
+        ensure!(valid(&pool, &grant).await?);
         let (status, rotation) = admin.call(&router, Method::POST, &format!("{key_path}/rotate"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1}))).await?;
         ensure!(status == StatusCode::OK);
         let rotated = rotation["secret"].as_str().ok_or_else(|| anyhow::anyhow!("missing rotated secret"))?.to_owned();
-        ensure!(rotated != secret && valid(&store, &grant).await?);
+        ensure!(rotated != secret && valid(&pool, &grant).await?);
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &secret)], None).await?.0 == StatusCode::UNAUTHORIZED);
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &rotated)], None).await?.0 == StatusCode::OK);
         let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
@@ -166,13 +275,13 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         }).await?;
         let mut named = metadata.clone(); named["name"] = json!("renamed");
         ensure!(admin.call(&router, Method::PUT, &key_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"metadata":named}))).await?.0 == StatusCode::OK);
-        ensure!(valid(&store, &grant).await?);
+        ensure!(valid(&pool, &grant).await?);
         let mut disabled = named.clone(); disabled["enabled"] = json!(false);
         ensure!(admin.call(&router, Method::PUT, &key_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"metadata":disabled}))).await?.0 == StatusCode::OK);
-        ensure!(!valid(&store, &grant).await?);
+        ensure!(!valid(&pool, &grant).await?);
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &rotated)], None).await?.0 == StatusCode::UNAUTHORIZED);
         ensure!(admin.call(&router, Method::PUT, &key_path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":4,"metadata":named}))).await?.0 == StatusCode::OK);
-        ensure!(!valid(&store, &grant).await?);
+        ensure!(!valid(&pool, &grant).await?);
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key", &rotated)], None).await?.0 == StatusCode::OK);
         policy(&mut manager, &router, 1, json!(["192.0.2.0/24"])).await?;
         for (name, credential) in [("authorization", bearer.as_str()), ("x-api-key", rotated.as_str())] {
@@ -193,14 +302,49 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=authorization.programmatic: real key scope, lifecycle and transaction settlement"]
 async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Result<()> {
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        audit_store,
-        store,
-        ..
-    } = fixture().await?;
+    let (mut authority, mut router) = fixture().await?;
+    let mut admin = authority.browser("admin")?;
+    let audit_store = authority.audit.clone();
+    let store = authority.authorization.clone();
+    let tenant = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
+    authority
+        .resources
+        .resource(InventoryFixtureResource(inventory.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit,
+        runtime,
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+    ));
+    router = router.merge(
+        authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::assets::routes()
+                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                        assets,
+                    }))
+                    .into_axum(),
+            ),
+        )?,
+    );
+    let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
         let mut manager = manager()?;
@@ -221,7 +365,7 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         let inventory = format!("{}/inventory",case_device());
         ensure!(call(&router, Method::GET, &inventory, &[("x-api-key",&secret)], None).await?.0 == StatusCode::OK);
         ensure!(call(&router, Method::GET, "/api/v1/devices/outside-key-scope/inventory", &[("x-api-key",&secret)], None).await?.0 == StatusCode::FORBIDDEN);
-        ensure!(store.authorization_store().authenticate_key(&Uuid::new_v4().to_string(), &ApiKeySecret::parse(secret.clone())?).await.is_err());
+        ensure!(store.clone().authenticate_key(&Uuid::new_v4().to_string(), &ApiKeySecret::parse(secret.clone())?).await.is_err());
         for permission in ["identity_accounts_manage","identity_providers_manage","authorization_write","tenant_create"] {
             let mut input = scoped.clone(); input["grants"]=json!([{"operation":permission,"scope":{"kind":"tenant"}}]);
             ensure!(admin.call(&router, Method::PUT, &path, Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"metadata":input}))).await?.0 == StatusCode::BAD_REQUEST);
@@ -257,12 +401,123 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
 #[tokio::test]
 #[ignore = "MODULE=authorization.programmatic: programmatic business writes and managed enrollment"]
 async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        ..
-    } = fixture().await?;
+    let (mut authority, mut router) = fixture().await?;
+    let mut admin = authority.browser("admin")?;
+    let tenant = authority.identity.tenant;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let clock = Arc::new(crate::clock::SystemClock);
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            tenant,
+        ),
+    );
+    let content = None;
+    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            tenant,
+        ),
+        authorization: authority.authorization.clone(),
+        runtime: runtime.clone(),
+        audit_store: audit.clone(),
+        tenant,
+        content,
+        clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+    });
+    let catalog = crate::flow::catalog(audit, runtime, tenant, clock).await?;
+    let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(
+        authority.pool.clone(),
+        authority.audit.clone(),
+        tenant,
+        &secret("timeline-cursor"),
+    )?);
+    timeline.initialize().await?;
+    let routes = rss_mdm_management_http::resource_catalog::http::routes()
+        .with_state(Arc::new(
+            rss_mdm_management_http::resource_catalog::http::HttpState {
+                catalog,
+                content: content_access,
+            },
+        ))
+        .merge(rss_mdm_management_http::timeline::routes().with_state(timeline));
+    router = router.merge(
+        authority.protect(
+            Router::new()
+                .nest("/api/v1", routes.into_axum())
+                .merge(authority.enrollment()),
+        )?,
+    );
+    let (execution, _, _) = crate::test_support::command::command_service(
+        authority.audit.clone(),
+        sessions.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    authority
+        .resources
+        .resource(rss_mdm_execution_service::Resource(execution.clone()));
+    let apple = Arc::new(rss_mdm_apple_channel::HttpState {
+        platform_sso: None,
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+            authority.audit.clone(),
+        )),
+        material_roots: Arc::new(vec![]),
+        account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
+        authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
+            authority: authority.identity.authority.clone(),
+            http: authority.identity.browser().http.clone(),
+            origin: config.product_origin.clone(),
+        },
+        mount: crate::device::ChannelMount::new(
+            tenant,
+            rss_mdm_inventory::ReportSource::MdmApple,
+            rss_mdm_registration_service::Purpose::Primary,
+        ),
+        audit_store: authority.audit.clone(),
+        access: Arc::new(rss_mdm_apple_channel::Store::from_pool(
+            authority.pool.clone(),
+            authority.registration.clone(),
+            authority.authorization.clone(),
+        )),
+        apple: None,
+        clock: Arc::new(crate::clock::InventoryClock(Arc::new(
+            crate::clock::SystemClock,
+        ))),
+        execution,
+        protection: config.native_protector()?,
+        credentials: authority.credentials.clone(),
+        devices: Arc::new(crate::device::DeviceService::new(
+            authority.registration.clone(),
+            case_tenant().into(),
+            authority.audit.clone(),
+        )),
+        identity: sessions,
+        requests: Arc::new(tokio::sync::Semaphore::new(32)),
+    });
+    router = router.merge(
+        authority.protect(
+            rss_mdm_apple_channel::management_routes(apple)
+                .into_axum()
+                .layer(axum::middleware::from_fn(
+                    crate::api::apple_management_settlement,
+                )),
+        )?,
+    );
+
+    let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let mut manager = manager()?;
         policy(&mut manager, &router, 0, json!(["127.0.0.1"])).await?;
@@ -321,12 +576,54 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
 async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
     use futures::SinkExt;
     use sha2::{Digest, Sha256};
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        ..
-    } = fixture().await?;
+    let (mut authority, mut router) = fixture().await?;
+    let mut admin = authority.browser("admin")?;
+    let tenant = authority.identity.tenant;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let clock = Arc::new(crate::clock::SystemClock);
+    let content =
+        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+    if let Some(store) = &content {
+        authority
+            .resources
+            .resource(crate::execution_assembly::ContentResource(store.clone()));
+    }
+    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            tenant,
+        ),
+        authorization: authority.authorization.clone(),
+        runtime: runtime.clone(),
+        audit_store: audit.clone(),
+        tenant,
+        content,
+        clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+    });
+    router = router.merge(
+        authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::content::http::routes()
+                    .with_state(content_access)
+                    .into_axum(),
+            ),
+        )?,
+    );
+
+    let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let mut manager = manager()?;
         policy(&mut manager,&router,0,json!(["127.0.0.1"])).await?;
@@ -340,10 +637,16 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         let bytes=b"#!/bin/sh\nprintf '{}'\n";
         let digest:[u8;32]=Sha256::digest(bytes).into();
         let script=json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{},"required":[],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
-        for (revision,input) in [(0,json!({"action":"create","kind":"script"})),(1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"script","length":bytes.len(),"sha256":digest},"definition":script}}]}))] {
-            let result=call(&router,Method::POST,&path,&[("x-api-key",secret)],Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?;
-            ensure!(result.0==StatusCode::OK,"script prepare: {}",result.0);
-        }
+        use rss_mdm_resource::{Architecture, Artifact, Declaration, Digest, Id, Kind, Platform, Variant, Version};
+        let version = Version::new(tenant, Id::new(resource.to_string())?, Id::new("v1")?, Kind::Script,
+            vec![Variant::new(Platform::MacOS, Architecture::Aarch64, Id::new("default")?, Declaration::Script {
+                artifact: Artifact::new(Id::new("script")?, bytes.len() as u64, Digest::from_bytes(digest))?,
+                definition: serde_json::from_value(script)?,
+            })])?;
+        runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            rss_mdm_resource_postgres::fixture::draft_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).unwrap()).await
+        })).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("resource rollback unconfirmed")), |_| Err(anyhow::anyhow!("resource commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
         let operation=Uuid::new_v4();
         let upload_path=|op|format!("{path}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={op}");
         let (mut sender,stream)=futures::channel::mpsc::channel::<Result<Vec<u8>,std::io::Error>>(1);

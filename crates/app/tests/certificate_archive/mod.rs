@@ -580,11 +580,9 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
         Some(json!({"entryId":entry,"version":1})),
     )
     .await?;
-    let peer_access = database(&f.authority.base).await?;
-    let config: Config = serde_json::from_value(f.authority.base.clone())?;
     let peer = Arc::new(Archive::new(
-        peer_access.archive_pool(),
-        peer_access.audit_store_fixture(&config.audit).await?,
+        f.authority.pool.clone(),
+        f.authority.audit.clone(),
         f.clock.clone(),
     ));
     let peer_router = Fixture::routes(&f.authority, peer)?;

@@ -266,7 +266,7 @@ class EntryModes(unittest.TestCase):
             shutil.copyfile(ci.ROOT / 'Makefile', root / 'Makefile')
             subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
             python = root / 'python3'
-            python.write_text('#!/bin/sh\nprintf "%s:%s" "$CI_PLAN" "$CI_FULL"\n')
+            python.write_text('#!/bin/sh\nprintf "%s:%s:%s" "$CI_PLAN" "$CI_FULL" "$JOBS"\n')
             python.chmod(0o755)
             env = {
                 **os.environ,
@@ -275,14 +275,14 @@ class EntryModes(unittest.TestCase):
                 'CI_FULL': '0',
             }
             for target, expected in [
-                ('ci', '0:0'),
-                ('ci-full', '0:1'),
-                ('ci-plan', '1:0'),
+                ('ci', '0:0:3'),
+                ('ci-full', '0:1:3'),
+                ('ci-plan', '1:0:3'),
             ]:
                 for override in ([], ['CI_PLAN=1']):
                     with self.subTest(target=target, override=override):
                         result = subprocess.run(
-                            ['make', '-s', target, *override],
+                            ['make', '-s', target, 'JOBS=3', *override],
                             cwd=root,
                             env=env,
                             text=True,
