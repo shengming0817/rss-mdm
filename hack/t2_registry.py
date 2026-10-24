@@ -815,6 +815,8 @@ consume(('crates/registration-service/src/enrollment.rs', 'crates/registration-s
 consume(('crates/execution-service/src/sources/software.rs',),
         'planning.software execution.software.offer execution.software.recovery')
 consume(('crates/flow-service/src/planning/policies/*',), 'planning.policy planning.agent_policy planning.frequency planning.software execution.software.offer planning.self_service')
+consume(('crates/flow-service/src/automation/mod.rs', 'crates/flow-service/src/automation/runtime.rs', 'crates/flow-service/src/automation/completion.rs'),
+        'planning.scope planning.group_scope planning.recovery assets.queries assets.sources assets.group_input compliance.evaluation compliance.recovery planning.policy planning.agent_policy planning.frequency planning.software planning.onboarding')
 consume(('crates/flow-service/src/automation/jobs.rs',),
         'assets.queries assets.group_input compliance.http compliance.group_input planning.group_scope planning.scope planning.policy planning.agent_policy planning.frequency planning.recovery diagnostics.http')
 consume(('crates/management-http/src/planning/mod.rs',
