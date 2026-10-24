@@ -171,15 +171,47 @@ pub async fn field_mapping_references_in(
     field: &str,
     after: Option<(String, String)>,
     limit: u16,
-) -> Result<Vec<(String, String, bool)>, PgError> {
+) -> Result<Vec<(String, String, bool, State)>, PgError> {
+    use sqlx::Row;
     if !(1..=129).contains(&limit) {
         return Err(STORAGE.fault("field_refs::limit"));
     }
-    let tenant = tx.tenant_id().to_string();
+    let tenant = tx.tenant_id();
     let field = field.to_owned();
     let (owner, version) = after.unwrap_or_default();
-    tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND (owner,version)>($3,$4) ORDER BY owner,version LIMIT $5")
-            .bind(tenant).bind(field).bind(owner).bind(version).bind(i64::from(limit)).fetch_all(c).await
-    })).await
+    let rows: Vec<(String,String,bool)> = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_as("SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND (owner COLLATE \"C\",version COLLATE \"C\")>($3,$4) ORDER BY owner COLLATE \"C\",version COLLATE \"C\" LIMIT $5")
+            .bind(tenant.to_string()).bind(field).bind(owner).bind(version).bind(i64::from(limit)).fetch_all(c).await
+    })).await?;
+    let owners: Vec<_> = rows
+        .iter()
+        .map(|r| r.0.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // Read each canonical header once, without lifecycle/advisory locks or immutable materials.
+    // SQL bounds the total transferred documents; over-budget pages fail instead of truncating.
+    let headers = tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("SELECT id,revision,digest,CASE WHEN sum(octet_length(document)) OVER () <= $3 THEN document ELSE NULL END AS document FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=ANY($2)")
+            .bind(tenant.to_string()).bind(owners).bind(rss_mdm_backend_postgres_support::MAX_DOCUMENT as i64).fetch_all(c).await
+    })).await?;
+    let mut states = std::collections::BTreeMap::new();
+    for row in headers {
+        let owner: String = row.try_get("id")?;
+        let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+        states.insert(
+            owner.clone(),
+            crate::codec::header_states(&bytes, tenant, &owner, row.try_get("revision")?)?,
+        );
+    }
+    rows.into_iter()
+        .map(|(owner, version, telemetry)| {
+            let key = crate::error::decode_domain("field_refs::version", Id::new(&version))?;
+            let state = *states
+                .get(&owner)
+                .and_then(|s| s.get(&key))
+                .ok_or_else(|| STORAGE.fault("field_refs::header"))?;
+            Ok((owner, version, telemetry, state))
+        })
+        .collect()
 }

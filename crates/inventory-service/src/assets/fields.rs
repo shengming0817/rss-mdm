@@ -222,7 +222,7 @@ impl AssetService {
         let more = rows.len() > usize::from(query.limit);
         rows.truncate(usize::from(query.limit));
         let next = if more {
-            let (owner, version, _) = rows.last().ok_or(Error::Malformed)?;
+            let (owner, version, _, _) = rows.last().ok_or(Error::Malformed)?;
             Some(
                 checked_input(codec.encode(&context, &(owner, version)))?
                     .as_str()
@@ -232,15 +232,7 @@ impl AssetService {
             None
         };
         let mut items = Vec::new();
-        for (resource, version, telemetry) in rows {
-            let (_, state) = stored(
-                rss_mdm_resource_postgres::lock_reference_in(
-                    tx,
-                    &checked_input(rss_mdm_resource::Id::new(&resource))?,
-                    &checked_input(rss_mdm_resource::Id::new(&version))?,
-                )
-                .await?,
-            )?;
+        for (resource, version, telemetry, state) in rows {
             let state = match state {
                 rss_mdm_resource::State::Frozen => "frozen",
                 rss_mdm_resource::State::Active => "active",
