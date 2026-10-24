@@ -79,7 +79,18 @@ async fn template_flow(
     let request_message = 4;
     let mut host = Host::open().await?;
     host.listen().await?;
-    let peer = host.peer().await?;
+    let mut peer = host.peer().await?;
+    // Native Windows sends both the client-initiated session and LoginStatus alerts.
+    peer.message.commands.insert(
+        1,
+        s::Command::Alert {
+            id: 4,
+            alert: s::Alert::LoginStatus {
+                status: s::LoginStatus::Others,
+                explicit_format: false,
+            },
+        },
+    );
     let agent_source = if matches!(
         completion,
         Completion::Inventory
@@ -506,10 +517,8 @@ async fn template_flow(
             == json!({"kind":"value","value":{"kind":"string","value":"canonical-workstation"}}),
         "enum mapping did not reach durable collection: {progress}"
     );
-    // Restore the durable pre-settlement state while retaining the already sealed response.
-    // Recovery happens after its original execution timeout, as after worker downtime.
-    sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
-        .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
+    // Reconcile the committed success again after restart. Rewinding only the run
+    // while retaining its terminal webhook creates an impossible partial commit.
     host.app
         .execution
         .recover_native_run_fixture(runs[0])
@@ -518,10 +527,10 @@ async fn template_flow(
         .bind(case_tenant()).bind(runs[0]).fetch_one(&mut pg).await?;
     ensure!(
         state == "succeeded",
-        "sealed success was lost after downtime: {state}"
+        "committed success was lost during repeated recovery: {state}"
     );
-    // The restored downtime state has one recovery executor. Resume the background
-    // driver only after the explicit recovery assertion, before checking recurrence.
+    // Resume the background driver after the explicit recovery assertion, before
+    // checking recurrence of the same policy.
     let mut resumed = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
         Arc::new(crate::lifecycle::RuntimeTimer),

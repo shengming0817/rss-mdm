@@ -329,6 +329,28 @@ fn initialization(
         && !matches!(
             initialization.as_slice(),
             [Command::Alert { .. }, Command::DevInfo { .. }]
+                | [
+                    Command::Alert {
+                        alert: syncml::Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::Alert {
+                        alert: syncml::Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ]
+                | [
+                    Command::Alert {
+                        alert: syncml::Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::Alert {
+                        alert: syncml::Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ]
         )
         || authenticated_before
             && initial.iter().any(|c| {

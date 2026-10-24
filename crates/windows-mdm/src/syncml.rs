@@ -1049,6 +1049,26 @@ pub(crate) fn validate_body(
                         ..
                     },
                     Command::DevInfo { .. }
+                ] | [
+                    Command::Alert {
+                        alert: Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::Alert {
+                        alert: Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::DevInfo { .. }
+                ] | [
+                    Command::Alert {
+                        alert: Alert::LoginStatus { .. },
+                        ..
+                    },
+                    Command::Alert {
+                        alert: Alert::ClientInitiated,
+                        ..
+                    },
+                    Command::DevInfo { .. }
                 ]
             ))
             || !final_message

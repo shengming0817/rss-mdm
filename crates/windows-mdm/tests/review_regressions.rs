@@ -2,6 +2,47 @@ use rss_mdm_windows_mdm::{CodecError as E, CodecLimits, CorrelationError as C, s
 mod common;
 const LOGIN: &str = include_str!("fixtures/initialization-login-status.xml");
 #[test]
+fn client_session_and_login_alerts_can_share_initial_package() {
+    let limits = CodecLimits::default();
+    let mut message = syncml::decode(LOGIN.as_bytes(), &limits).unwrap();
+    let session = syncml::Command::Alert {
+        id: 4,
+        alert: syncml::Alert::ClientInitiated,
+    };
+    message.commands.insert(0, session.clone());
+    for reverse in [false, true] {
+        if reverse {
+            message.commands.swap(0, 1);
+        }
+        let wire = syncml::encode(&message, &limits).unwrap();
+        assert_eq!(syncml::decode(&wire, &limits).unwrap(), message);
+        let mut duplicate = message.clone();
+        duplicate.commands.insert(
+            0,
+            syncml::Command::Alert {
+                id: 5,
+                alert: syncml::Alert::ClientInitiated,
+            },
+        );
+        assert_eq!(syncml::encode(&duplicate, &limits), Err(E::Structure));
+        let mut duplicate = message.clone();
+        duplicate.commands.insert(
+            0,
+            syncml::Command::Alert {
+                id: 5,
+                alert: syncml::Alert::LoginStatus {
+                    status: syncml::LoginStatus::Others,
+                    explicit_format: false,
+                },
+            },
+        );
+        assert_eq!(syncml::encode(&duplicate, &limits), Err(E::Structure));
+        let mut partial = message.clone();
+        partial.final_message = false;
+        assert_eq!(syncml::encode(&partial, &limits), Err(E::Structure));
+    }
+}
+#[test]
 fn login_status_initialization_is_supported() {
     let l = CodecLimits::default();
     let message = syncml::decode(LOGIN.as_bytes(), &l).unwrap();
