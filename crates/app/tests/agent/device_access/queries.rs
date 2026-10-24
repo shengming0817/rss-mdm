@@ -13,7 +13,11 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
  ensure!(detail.0==StatusCode::OK&&detail.1["id"]==id.to_string());
  // Historical bindings may share a person/account; unrelated live uniqueness remains intact.
  let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+ sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut c).await?;
+ let caller_tenant:Option<String>=sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)").fetch_one(&mut c).await?;
  sqlx::query("INSERT INTO mdm_access.device_access_bindings SELECT tenant_id,x.id,device,registration,registration_generation,instance,principal,generation,revision,'revoked',account,jsonb_set(jsonb_set(document,'{id}',to_jsonb(x.id)),'{state}','\"revoked\"') FROM mdm_access.device_access_bindings CROSS JOIN (SELECT gen_random_uuid() id FROM generate_series(1,2)) x WHERE tenant_id=$1::uuid AND mdm_access.device_access_bindings.id=$2").bind(case_tenant()).bind(id).execute(&mut c).await?;
+ let restored_tenant:Option<String>=sqlx::query_scalar("SELECT current_setting('rss.tenant_id',true)").fetch_one(&mut c).await?;
+ ensure!(caller_tenant.unwrap_or_default()==restored_tenant.unwrap_or_default(),"trigger leaked the source tenant to its caller");
  let query="sort=-revision&fields=id,revision&limit=1";
  let first=f.author.call(&f.router,Method::GET,&format!("{path}?{query}"),None).await?;
  ensure!(first.0==StatusCode::OK,"page {first:?}");

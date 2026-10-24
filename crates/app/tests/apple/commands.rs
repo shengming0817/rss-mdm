@@ -397,7 +397,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     ensure!(payload["NewPassword"].as_string() == Some(""));
     peer.manage("Acknowledged", Some(attempt), None).await?;
     let (_, list) = f.browser.call(&f.router, Method::GET, &path, None).await?;
-    for version in list
+    for version in list["items"]
         .as_array()
         .unwrap()
         .iter()

@@ -368,8 +368,8 @@ async fn offboarding(
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum IdentityDisposition {
-    Execute,
-    Reconcile,
+    Execute {},
+    Reconcile {},
 }
 async fn offboarding_identity(
     State(s): State<Arc<Services>>,
@@ -385,7 +385,7 @@ async fn offboarding_identity(
     let (page_query, _) = access::lifecycle::IDENTITY_RECONCILIATION
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
-    if matches!(input, IdentityDisposition::Execute)
+    if matches!(input, IdentityDisposition::Execute { .. })
         && raw.as_deref().is_some_and(|v| !v.is_empty())
     {
         return Err(Error::Malformed);
@@ -426,7 +426,7 @@ async fn offboarding_identity(
         )
     };
     match input {
-        IdentityDisposition::Reconcile => {
+        IdentityDisposition::Reconcile {} => {
             let actor = s.identity.ceremony_actor(&headers).await?;
             let cursor = after
                 .map(|id| rss_identity_core::PrincipalId::parse(&id.to_string()))
@@ -487,7 +487,7 @@ async fn offboarding_identity(
                 .map_err(|_| Error::Malformed)?;
             Ok(Json(json!({"operation":value,"nextCursor":next})))
         }
-        IdentityDisposition::Execute => {
+        IdentityDisposition::Execute {} => {
             if matches!(original.identity, P::Executing | P::Unknown) {
                 return Err(Error::Conflict);
             }
