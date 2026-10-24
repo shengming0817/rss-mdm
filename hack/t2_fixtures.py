@@ -35,7 +35,7 @@ class RunFixtures:
         self.costs = Costs()
         self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1), output / 'resources')
         self.fault = DatabasePool(builds, 't2-fault', self.costs, 128, output / 'resources')
-        self.gateway_owner = Environment(group='t2-gateway')
+        self.gateway_owners = {}
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
         self.root = Path(self.cert_directory.name)
         self.native_key = private(self.root / 'native-data.key', '')
@@ -85,7 +85,7 @@ class RunFixtures:
         for pool in (self.normal, self.fault):
             if pool.ready:
                 pool.sample_connections(list(pool.shared.values()))
-        for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
+        for environment in (self.normal.owner, self.fault.owner, *self.gateway_owners.values()):
             try:
                 with measure(self.costs, phase, pg=environment.project):
                     environment.reset()
@@ -246,6 +246,12 @@ class RunFixtures:
         private(root / 'runtime.json', config)
         private(root / 'account-password', (shared / 'account-password').read_text())
         pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+        if 'management' in job.module.fixtures or 'management_delegate' in job.module.fixtures:
+            private(root / 'management-session.json', dict(tenant=management, principal=ADMIN, login='bootstrap', credential=source))
+        if 'management_delegate' in job.module.fixtures:
+            secret = private(root / 'management-source', source)
+            self.preparation_helper(root, dict(stage='management_delegate', management=management,
+                source_secret=str(secret), login='delegate-' + job.key), output / 'management-delegate', database)
     def prepare_identity(self, pool, database, job, output):
         shared, management, source = self.identity_environment(pool, database, output)
         key = (pool.owner.project, pool.generation, database)
@@ -490,6 +496,11 @@ class RunFixtures:
         stack = ExitStack()
         try:
             root = self.root / job.key
+            if 'gateway' in module.fixtures:
+                gateway_owner = Environment(group='t2-gateway-' + job.key)
+                with self.lock:
+                    self.gateway_owners[job.key] = gateway_owner
+                gateway_owner.reset()
             env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
                        MDM_CASE_CONTEXT=str(root / 'case.json'))
             env.pop('MDM_CASE_RENDEZVOUS', None)
@@ -625,8 +636,8 @@ class RunFixtures:
                     try:
                         stack.__exit__(*original)
                     finally:
-                        if module.python == 'gateway' and self.gateway_owner.root.exists():
-                            self.gateway_owner.reset()
+                        if job.key in self.gateway_owners:
+                            self.gateway_owners[job.key].reset()
             except BaseException as error:
                 import traceback
                 path = output / 'cleanup-failure.log'

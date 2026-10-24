@@ -170,9 +170,8 @@ class PreparationTests(unittest.TestCase):
         fixture.fault = Mock()
         fixture.fault.owner.project = 'fault'
         fixture.fault.ready = False
-        fixture.gateway_owner = Mock()
-        fixture.gateway_owner.project = 'gateway'
-        for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+        fixture.gateway_owners = {'fixture': Mock(project='gateway')}
+        for owner in (fixture.normal.owner, fixture.fault.owner, *fixture.gateway_owners.values()):
             owner.postgres_queries = dict(container=0, port=0)
         fixture.builds.processes.cleanup.return_value = nullcontext()
         return fixture
@@ -194,7 +193,7 @@ class PreparationTests(unittest.TestCase):
                 fixture.s3 = Mock()
                 try:
                     owners = {'normal': fixture.normal.owner, 'fault': fixture.fault.owner,
-                              'gateway': fixture.gateway_owner, 's3': fixture.s3}
+                              'gateway': fixture.gateway_owners['fixture'], 's3': fixture.s3}
                     owners[failing].reset.side_effect = RuntimeError('cleanup failed')
                     with self.assertRaisesRegex(RuntimeError, 'clean owned'):
                         fixture.cleanup_environments()
@@ -238,7 +237,7 @@ class PreparationTests(unittest.TestCase):
                     with fixture:
                         self.fail('foreign ownership must reject startup')
                 self.assertEqual(run.call_count, 2)
-                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                for owner in (fixture.normal.owner, fixture.fault.owner, *fixture.gateway_owners.values()):
                     owner.reset.assert_called_once()
 
     def test_cleanup_recovers_compose_resources_when_local_directories_are_missing(self):
@@ -247,10 +246,10 @@ class PreparationTests(unittest.TestCase):
             fixture = self.fixture(Path(tmp))
             fixture.s3 = Mock()
             try:
-                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                for owner in (fixture.normal.owner, fixture.fault.owner, *fixture.gateway_owners.values()):
                     owner.root = Path(tmp) / owner.project
                 fixture.cleanup_environments()
-                for owner in (fixture.normal.owner, fixture.fault.owner, fixture.gateway_owner):
+                for owner in (fixture.normal.owner, fixture.fault.owner, *fixture.gateway_owners.values()):
                     owner.reset.assert_called_once()
                 # The existing reset still verifies Docker ownership without owner.json.
                 environment = Environment(Path(tmp))
@@ -513,13 +512,13 @@ class PreparationBatchTests(unittest.TestCase):
             fixture = RunFixtures(Mock(), Path(tmp), 2)
             self.addCleanup(fixture.cert_directory.cleanup)
             shared = MODULES['execution.agent.content']
-            gateway = MODULES['gateway.admission']
+            gateway = MODULES['gateway.business']
             jobs = [Invocation(shared, Case(shared.build, 'test', '/test', 'shared')), Invocation(gateway, None)]
             fixture.prepare(jobs)
             contexts = [fixture.case_contexts[job.key] for job in jobs]
             self.assertNotEqual(contexts[0]['tenant'], contexts[1]['tenant'])
             self.assertEqual(jobs[0].module.profile, jobs[1].module.profile)
-            self.assertIn('local_worker', gateway.fixtures)
+            self.assertNotIn('shared_worker', gateway.fixtures)
 
     def test_host_start_does_not_hold_global_resource_lock_and_failure_is_shared(self):
         import threading

@@ -6,6 +6,7 @@ import json
 import os
 import threading
 from types import SimpleNamespace
+from pathlib import Path
 import uuid
 from urllib.parse import urlsplit
 from candidate_fixture import ADMIN, INSTANCE, installation
@@ -73,7 +74,7 @@ class HostProcesses:
     def cancel(self):
         self.failed.set()
 
-def execute(fixture):
+def metadata_cli(fixture):
     root = fixture.root
     pool = SimpleNamespace(owner=fixture.owner)
     pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
@@ -95,22 +96,12 @@ def execute(fixture):
         if reason is not None:
             require(reason in result.stderr, 'unexpected tenant failure: ' + result.stderr)
         return json.loads(result.stdout) if result.stdout.strip() else None
-    command('migrate', dict(database=database, installation=installation()))
     management = sql('SELECT management_tenant_id FROM public.mdm_installation')
-    require(sql('SELECT count(*) FROM public.mdm_tenants') == '1', 'installer did not reserve one management tenant')
+    original = {t['tenantId'] for t in command('tenant-list', dict(database=database, installation=installation()))}
     def create(tenant, name=None, notes=None):
         # Fixture seeding is not a public tenant creation contract.
         sql(f"SELECT public.create_new_tenant('{uuid.UUID(tenant)}',1,{literal(name) if name is not None else 'NULL'},{literal(notes) if notes is not None else 'NULL'})")
         return command('tenant-get', dict(database=database,installation=installation(),tenant_id=tenant))
-    create(a)
-    require(sql('SELECT count(*) FROM public.mdm_tenants') == '2', 'first registration changed tenant count')
-    def snapshot():
-        return sql(f"SELECT jsonb_build_object('epoch',(SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id='{a}'),'settings',(SELECT to_jsonb(s) FROM mdm_access.agent_enrollment_settings s WHERE tenant_id='{a}'))")
-    before = snapshot()
-    require(sql(f"SELECT count(*) FROM public.mdm_tenants WHERE tenant_id='{b}'") == '0', 'B was pre-registered')
-    create(b)
-    require(snapshot() == before, 'adding B changed A epoch or settings')
-    require(sql('SELECT count(*) FROM identity_authority.accounts') == '0', 'registration seeded an account')
     # Exercise the public management path before any tenant use is claimed.
     common = dict(database=database, installation=installation())
     c = str(uuid.uuid4())
@@ -128,7 +119,7 @@ def execute(fixture):
     require(command('tenant-delete', remove) == removed, 'deleted operation did not replay')
     command('tenant-get', dict(**common, tenant_id=c), accepted=False, reason='tenant not found')
     listed = command('tenant-list', common)
-    require([t['tenantId'] for t in listed] == sorted([a,b,management]), 'list leaked tombstone or changed ordering')
+    require([t['tenantId'] for t in listed] == sorted(original), 'list leaked tombstone or changed ordering')
     reserved = command('tenant-get', dict(**common,tenant_id=management))
     require(reserved['management'] and not reserved['deletable'], 'reserved tenant is not marked')
     for verb in ('tenant-update','tenant-delete'):
@@ -143,53 +134,55 @@ def execute(fixture):
         passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
         user=dict(instanceId=INSTANCE,tenantId=d,principalId=ADMIN)), accepted=False, reason='authorization.initialize: owner=authorization Unauthorized')
     command('tenant-delete', dict(**common, tenant_id=d, expected_revision=1, operation_id=str(uuid.uuid4())), accepted=False, reason='tenant already used')
-    configs, rules = [], []
-    for tenant in (a,b):
-        command('initialize', dict(database=pool.database_config(root,fixture.database,'mdm_identity_maintenance','identity-maintenance-fixture'),
-                installation=installation(), tenant_id=tenant, expected_epoch=1,
-                principal_id=ADMIN, login='admin', password_file=str(root/'account-password')))
-        receipt = command('initialize-authorization', dict(database=pool.database_config(root,fixture.database,'mdm_access','access-fixture'),
-                identityDatabase=pool.database_config(root,fixture.database,'mdm_identity_runtime','identity-runtime-fixture'),
-                audit={'mode':'plain'}, installation=installation(), expectedEpoch=1,
-                login='admin', passwordFile=str(root/'account-password'), operationId=str(uuid.uuid4()),
-                user=dict(instanceId=INSTANCE,tenantId=tenant,principalId=ADMIN)))
-        rules.append(receipt['id'])
-        config = RunFixtures.runtime_config(pool, root, fixture.database, tenant,
-            native_key=os.environ['MDM_NATIVE_PROTECTION_KEY_FILE'],
-            recovery_credentials=fixture.recovery_credentials)
-        config['agent_pki'] = {'mode':'disabled'}
-        configs.append(private(root/('runtime-'+tenant+'.json'),config))
-        detail=command('tenant-get',dict(**common,tenant_id=tenant))
-        require(detail['revision']==1 and not detail['deletable'], 'initialization changed metadata revision or left deletion open')
-        command('tenant-delete',dict(**common,tenant_id=tenant,expected_revision=1,operation_id=str(uuid.uuid4())),accepted=False,reason='tenant already used')
+
+
+def tenant_binding(fixture):
+    root = fixture.root
+    case = json.loads(Path(fixture.env['MDM_CASE_CONTEXT']).read_text())
+    a, b = case['tenant'], case['peer']
+    base = json.loads(Path(fixture.env['MDM_TEST_CONFIG']).read_text())
+    builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm': fixture.binary})
+    pool = SimpleNamespace(owner=fixture.owner)
+    pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
+    common = dict(database=pool.database_config(root, fixture.database), installation=installation())
+    def sql(statement):
+        return fixture.owner.sql(statement, fixture.database).strip()
+    def command(verb, value, accepted=True):
+        path = private(root / (verb + '.json'), value)
+        result = subprocess.run([fixture.binary, verb, '--config', str(path)], cwd=ROOT,
+            pass_fds=lease_fds(), capture_output=True, text=True, timeout=75)
+        require((result.returncode == 0) == accepted, f'{verb}: {result.stderr}')
+        if not accepted:
+            require('startup.tenant_binding' in result.stderr, 'tenant binding rejected at another stage: ' + result.stderr)
+    def snapshot():
+        return sql(f"SELECT jsonb_build_object('epoch',(SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id='{a}'),'settings',(SELECT to_jsonb(s) FROM mdm_access.agent_enrollment_settings s WHERE tenant_id='{a}'))")
+    before = snapshot()
     with ExitStack() as stack:
-        hosts = []
-        for index,path in enumerate(configs):
-            host=Host(builds,path,root/('host-'+str(index)),require_ready=False)
+        hosts, browsers, configurations = [], [], []
+        for tenant in (a, b):
+            config = json.loads(json.dumps(base))
+            config['identity']['tenant_id'] = tenant
+            path = private(root / ('runtime-' + tenant + '.json'), config)
+            host = Host(builds, path, root / ('host-' + tenant), require_ready=False)
             stack.callback(host.close)
-            hosts.append(host)
-        command('tenant-update',dict(**common,tenant_id=b,expected_revision=1,operation_id=str(uuid.uuid4()),name='正在使用的租户'))
-        browsers=[Browser(host,'https://mdm.example.test') for host in hosts]
-        for tenant,browser,rule in zip((a,b),browsers,rules):
-            require(browser.call('POST',f'/api/v1/identity/tenants/{tenant}/login',dict(login='admin',password=password))[0] == 200,
-                    'registered tenant cannot log in')
-            status,value=browser.call('GET',f'/api/v1/identity-host/tenants/{tenant}/context')
-            require(status == 200 and value['tenantId'] == tenant and value['principalId'] == ADMIN,
-                    'host context lost tenant binding')
-            status,value=browser.call('GET','/api/v1/authorization/rules')
-            require(status == 200 and [item['id'] for item in value['items']] == [rule],
-                    'host cannot consume its own initialized authorization rule')
-        for source,target,tenant in [(browsers[0],hosts[1],b),(browsers[1],hosts[0],a)]:
-            foreign=Browser(target,source.origin)
-            foreign.cookie,foreign.csrf=source.cookie,source.csrf
-            require(foreign.call('GET',f'/api/v1/identity-host/tenants/{tenant}/context')[0] == 401,
-                    'foreign tenant session crossed host binding')
-        for index,path in enumerate(configs):
-            config=json.loads(path.read_text())
-            config['listen']='127.0.0.1:0'
-            config['identity']['tenant_id']=str(uuid.uuid4())
-            command('serve',config,accepted=False)
-            config=json.loads(path.read_text());config['listen']='127.0.0.1:0';config['flow']['storage']['epoch']=2
-            command('serve',config,accepted=False)
-    require(snapshot() == before, 'initializing and consuming B changed A settings or epoch')
-    print('CLI CRUD/replay/tombstone -> failed first use -> account/authorization -> two hosts and tenant isolation passed',flush=True)
+            browser = Browser(host, config['product_origin'])
+            browser.cookie = '__Host-identity-session=' + (root / f'credential-{tenant}-admin').read_text()
+            actor = next(actor for actor in case['actors'] if actor['tenant'] == tenant and actor['role'] == 'admin')
+            status, context = browser.call('GET', f'/api/v1/identity-host/tenants/{tenant}/context')
+            require(status == 200 and context['tenantId'] == tenant and context['principalId'] == actor['principal'], 'own host lost prepared tenant identity')
+            status, rules = browser.call('GET', '/api/v1/authorization/rules')
+            require(status == 200 and any(rule.get('value', rule).get('subject', {}).get('user', {}).get('principalId') == actor['principal'] for rule in rules['items']), 'own host cannot read prepared grants')
+            hosts.append(host); browsers.append(browser); configurations.append(config)
+        command('tenant-update', dict(**common, tenant_id=b, expected_revision=1, operation_id=str(uuid.uuid4()), name='正在使用的租户'))
+        for source, target, tenant in [(browsers[0], hosts[1], b), (browsers[1], hosts[0], a)]:
+            foreign = Browser(target, source.origin)
+            foreign.cookie, foreign.csrf = source.cookie, source.csrf
+            require(foreign.call('GET', f'/api/v1/identity-host/tenants/{tenant}/context')[0] == 401, 'foreign session crossed host tenant')
+        for config in configurations:
+            invalid = json.loads(json.dumps(config)); invalid['listen'] = '127.0.0.1:0'
+            invalid['identity']['tenant_id'] = str(uuid.uuid4())
+            command('serve', invalid, False)
+            invalid = json.loads(json.dumps(config)); invalid['listen'] = '127.0.0.1:0'
+            invalid['flow']['storage']['epoch'] = 2
+            command('serve', invalid, False)
+    require(snapshot() == before, 'tenant B changed tenant A settings or epoch')

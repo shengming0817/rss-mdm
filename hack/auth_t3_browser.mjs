@@ -59,6 +59,17 @@ async function keycloak(page,user){
   await page.locator('#kc-login').click();
 }
 let admin,member;
+async function closeContexts(){
+  for(const context of browser.contexts()){
+    for(const page of context.pages())assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
+    for(const cookie of await context.cookies())privateValues.push(cookie.value);
+    await context.close();
+  }
+}
+async function localUsers(){
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  member=await pageAt();await login(member,'member',input.memberPassword);
+}
 try{
   browser=await chromium.launch({headless:true,chromiumSandbox:input.mode==='normal'});
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
@@ -71,12 +82,15 @@ try{
   for(const path of ['/api','/api/not-a-route'])assert((await request(member,path)).status===404,'unknown API became SPA');
   checks.local_ui=true;
 
+  await closeContexts();
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
   stage='account_ui';await admin.goto(origin+`/tenants/${input.tenant}/accounts`);
   await admin.locator('#account-login').fill('ui-created-'+crypto.randomUUID());await admin.locator('#account-password').fill(input.memberPassword);
   const created=admin.waitForResponse(r=>new URL(r.url()).pathname===api+'/accounts'&&r.request().method()==='POST');
   await admin.locator('form').filter({has:admin.locator('#account-login')}).locator('button').click();
   assert((await created).status()===201,'UI account creation');await admin.getByRole('cell',{name:/ui-created/}).waitFor();checks.account_ui=true;
 
+  await closeContexts();await localUsers();
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
   assert((await request(member,'/api/v1/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
@@ -93,6 +107,8 @@ try{
   assert((await request(admin,publisher)).status===404,'publisher permitted source lookup');
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;
 
+  await closeContexts();
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='cookie_csrf';const cookie=(await member.context().cookies(origin)).find(c=>c.name==='__Host-identity-session');
   assert(cookie&&cookie.secure&&cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'&&cookie.domain===new URL(origin).hostname,'cookie attributes');
   assert(!await member.evaluate(()=>document.cookie.includes('__Host-identity-session')),'HttpOnly');
@@ -106,16 +122,20 @@ try{
   assert((await post(member,api+'/session/refresh')).status===200,'refresh');
   assert((await request(stale,'/api/v1/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
 
-  if(faults){stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
+  if(faults){await closeContexts();await localUsers();stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
   assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;}
 
-  stage='isolation';assert((await request(attacker,'/api/v1/authorization')).status===401,'host cookie isolation');
+  await closeContexts();
+  member=await pageAt();await login(member,'member',input.memberPassword);
+  const isolated=await pageAt(other);
+  stage='isolation';assert((await request(isolated,'/api/v1/authorization')).status===401,'host cookie isolation');
   const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
   assert((await request(member,`/api/v1/identity/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
   assert((await request(member,`/api/v1/identity-host/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
-  await replay.context().close();await attacker.context().close();checks.isolation=true;
+  await replay.context().close();await isolated.context().close();checks.isolation=true;
 
   for(const [field,key] of [['enabled','account_disabled'],['membership','membership_removed']]){
+    await closeContexts();await localUsers();
     stage=key;const old=await cloneSession(member);
     assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:false})).status===200,'disable account/membership');
     assert((await request(member,inventory)).status===401,'disabled new request');
@@ -123,12 +143,17 @@ try{
     if(faults)await restart();assert((await request(old,inventory)).status===401,'revocation resurrected');
     await old.context().close();await member.context().clearCookies();await login(member,'member',input.memberPassword);checks[key]=true;
   }
+  await closeContexts();
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout';const old=await cloneSession(member);await logoutUI(member);
   assert((await request(old,inventory)).status===401,'logout authority');await old.context().close();checks.logout=true;
-  await login(member,'member',input.memberPassword);
+  await closeContexts();
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout_all';const second=await pageAt();await login(second,'member',input.memberPassword);
   await logoutUI(member,true);assert((await request(second,inventory)).status===401,'all sessions revoked');await second.context().close();checks.logout_all=true;
-  await member.context().clearCookies();await login(member,'sso-member',input.memberPassword);
+  await closeContexts();
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  member=await pageAt();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
   const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{subject:{kind:'oidc'},profile:{extensionsClaim:null,maxAgeSeconds:14400},groups:null,departmentSnapshot:null},jit:false};
@@ -158,11 +183,16 @@ try{
 
   let independent,persisted;
   if(faults){
-  stage='idp_down';docker(['stop','--time','10',input.idp]);independent=await pageAt();await login(independent,'admin',input.adminPassword);
+  await closeContexts();
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  stage='idp_down';docker(['stop','--time','10',input.idp]);try { independent=await pageAt();await login(independent,'admin',input.adminPassword);
   assert((await request(independent,api+'/accounts')).status===200,'IdP-independent account management');
   assert((await request(independent,inventory)).status===200,'IdP-independent request');
   const createdLocal=await post(independent,api+'/accounts',{login:'while-idp-down',password:input.memberPassword});assert(createdLocal.status===201,'IdP-independent account write');checks.idp_down=true;
-
+  } finally { docker(['start',input.idp]); }
+  await closeContexts();
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  independent=await pageAt();await login(independent,'admin',input.adminPassword);
   await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
   stage='pg_down';persisted=await cloneSession(independent);docker(['pause',input.pg]);
   try{
@@ -181,10 +211,7 @@ try{
   }
   stage='safe_logs';for(const value of [input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])assert(!consoleText.join('\n').includes(value),'console secret');
   assert(!consoleText.some(v=>/[?&]code=/.test(v)),'console callback code');
-  for(const page of [admin,member,independent,persisted].filter(Boolean)){
-    assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
-    const cookies=await page.context().cookies();for(const c of cookies)privateValues.push(c.value);
-  }
+  await closeContexts();
   checks.safe_logs=true;
   const result={checks,requests,browser:browser.version(),privateValues};
   await browser.close();process.stdout.write(JSON.stringify(result));

@@ -54,7 +54,7 @@ class Module:
     db_mode: str | None = 'reuse'
     scope: str | None = 'objects'
     policies: tuple[CasePolicy, ...] = ()
-    python: str | None = None
+    python: tuple[str, str] | None = None
     children: tuple[str, ...] = ()
     expected_cases: int | None = None
 

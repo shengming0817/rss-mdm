@@ -152,6 +152,23 @@ pub(super) async fn refresh_management(root: &std::path::Path) -> Result<()> {
     resources.finish(async { Ok(()) }).await
 }
 
+pub(super) async fn prepare_management_delegate(root: &std::path::Path, management: &str, source_secret: &std::path::Path, login: &str) -> Result<()> {
+    let config = configured(management)?;
+    let tenant = rss_request_context::TenantId::parse(management)?;
+    let (resources, identity) = super::runtime::Resources::build(move |resources| Box::pin(identity_with(config, resources))).await?;
+    resources.finish(async {
+        let source = identity.authority.inspect_session(tenant, SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?, crate::identity::deadline()).await?;
+        let account = identity.authority.create_local_account(source, LoginKey::parse(login)?, Password::new(PASSWORD.into())?, crate::identity::deadline()).await?;
+        let issued = identity.authority.login_local(tenant, LoginKey::parse(login)?, Password::new(PASSWORD.into())?, AttemptSource::parse(&format!("t2-management-{login}"))?, None, crate::identity::deadline()).await?;
+        let inspected = identity.authority.inspect_session(tenant, SessionSecret::parse(issued.secret().expose().into())?, crate::identity::deadline()).await?;
+        anyhow::ensure!(inspected.account() == account.key());
+        write(&root.join("management-delegate.json"), &serde_json::to_vec(&serde_json::json!({
+            "tenant":management,"principal":account.key().principal.as_uuid().to_string(),"login":login,
+            "credential":issued.secret().expose(),"csrf":issued.secret().csrf(),
+        }))?)
+    }).await
+}
+
 pub(super) async fn prepare_accounts(
     paths: &[std::path::PathBuf],
     management: &str,

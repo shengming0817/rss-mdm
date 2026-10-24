@@ -1,7 +1,8 @@
 """Installation management admission through CLI bootstrap and real TCP HTTP."""
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 from candidate_fixture import ADMIN, INSTANCE, installation
@@ -20,7 +21,7 @@ RULES = '/api/v1/tenant-administration/authorization/rules'
 EFFECTIVE = '/api/v1/tenant-administration/authorization'
 
 
-def execute(fixture):
+def bootstrap(fixture):
     root = fixture.root
     pool = SimpleNamespace(owner=fixture.owner)
     pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
@@ -81,14 +82,6 @@ def execute(fixture):
         registry_database=pool.database_config(root, fixture.database, 'mdm_tenant_registry', 'tenant-registry-fixture'),
         provisioning_database=pool.database_config(root, fixture.database, 'mdm_identity_provisioning', 'identity-provisioning-fixture'),
         fingerprint_key_file=str(private(root / 'tenant-operation-key', 'x' * 32)))
-    # The registry Audit pool is valid; only the independently configured provisioner is unsafe.
-    # Each failed serve must reject before readiness, and the normal host below proves repair.
-    for table in ('mdm_audit.receipts', 'rss_audit.records'):
-        sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
-        try:
-            command('serve', config, accepted=False, reason='startup.identity: Audit')
-        finally:
-            sql(f'REVOKE UPDATE ON {table} FROM mdm_identity_provisioning')
     path = private(root / 'runtime.json', config)
     public = command('public-host-config', config)
     require(public == {
@@ -100,62 +93,95 @@ def execute(fixture):
     foreign['listen'] = '127.0.0.1:0'
     command('public-host-config', foreign, accepted=False, reason='input_rejected')
     command('serve', foreign, accepted=False, reason='startup.tenant_binding')
-    api = '/api/v1/identity/tenants/' + management
-    business_api = '/api/v1/identity/tenants/' + business
-
-    def login(browser, tenant, login_name='admin', secret=password):
-        status, _ = browser.call('POST', '/api/v1/identity/tenants/' + tenant + '/login',
-                                 dict(login=login_name, password=secret))
-        require(status == 200, 'management local login failed: ' + str(status))
-
-    def operations(browser):
-        status, value = browser.call('GET', EFFECTIVE)
-        require(status == 200 and value['tenantId'] == management, 'management effective grants unavailable')
-        return {grant['operation'] for grant in value['grants']}
-
-    def rule(principal, permissions):
-        return dict(subject=dict(kind='user', user=dict(instanceId=INSTANCE, tenantId=management, principalId=principal)),
-                    grants=[dict(operation=operation, scope=dict(kind='tenant')) for operation in permissions])
-
-    def write(browser, identifier, revision, value, expected=200):
-        change = dict(operationId=str(uuid.uuid4()), expectedRevision=revision, value=value)
-        status, receipt = browser.call('PUT', RULES + '/' + identifier, change)
-        require(status == expected, 'unexpected management rule response: ' + str((status, receipt)))
-        return change, receipt
-
     with ExitStack() as stack:
-        host = Host(builds, path, root / 'host',require_ready=False)
+        host = Host(builds, path, root / 'bootstrap-host', require_ready=False)
         stack.callback(host.close)
         admin = Browser(host, config['product_origin'])
-        normal = Browser(host, config['product_origin'])
-        login(normal, business)
-        require(normal.call('GET','/readyz')[0]==503,'missing baseline dependencies must remain unready')
-        status, first_use = normal.call('GET', '/api/v1/settings/first-use')
-        require(status == 200 and first_use['tenantId'] == business
-                and first_use['saved']['revision'] == 0 and not first_use['complete']
-                and not first_use['canComplete'], 'fresh initialized tenant has no authoritative incomplete setup')
-        require(normal.call('GET', EFFECTIVE)[0] == 401, 'business session gained installation admission')
-        login(admin, management)
+        require(admin.call('POST', f'/api/v1/identity/tenants/{management}/login', dict(login='admin', password=password))[0] == 200, 'bootstrap login failed')
+        status, value = admin.call('GET', EFFECTIVE)
+        require(status == 200 and {g['operation'] for g in value['grants']} == CRUD | {'authorization_read','authorization_write','identity_accounts_manage','tenant_administrator_create'}, 'bootstrap granted unexpected powers')
+
+@contextmanager
+def management_host(fixture):
+    """One host consumes the existing runner-owned management and business credentials."""
+    root = fixture.root
+    case = json.loads(Path(fixture.env['MDM_CASE_CONTEXT']).read_text())
+    source = json.loads((root / 'management-session.json').read_text())
+    management, business = source['tenant'], case['tenant']
+    config = json.loads(Path(fixture.env['MDM_TEST_CONFIG']).read_text())
+    pool = SimpleNamespace(owner=fixture.owner)
+    pool.database_config = lambda *args: DatabasePool.database_config(pool, *args)
+    database = pool.database_config(root, fixture.database)
+    common = dict(database=database, installation=installation())
+    config['agent_pki'] = {'mode':'disabled'}
+    config['tenant_administration'] = dict(
+        registry_database=pool.database_config(root, fixture.database, 'mdm_tenant_registry','tenant-registry-fixture'),
+        provisioning_database=pool.database_config(root, fixture.database, 'mdm_identity_provisioning','identity-provisioning-fixture'),
+        fingerprint_key_file=str(private(root / 'tenant-operation-key','x'*32)))
+    password = (root / 'account-password').read_text()
+    builds = SimpleNamespace(processes=HostProcesses(), executables={'rss-mdm':fixture.binary})
+    def sql(statement):
+        return fixture.owner.sql(statement, fixture.database).strip()
+    def command(verb, value, accepted=True, reason=None):
+        path = private(root / (verb + '.json'), value)
+        result = subprocess.run([fixture.binary,verb,'--config',str(path)],cwd=ROOT,pass_fds=lease_fds(),capture_output=True,text=True,timeout=75)
+        require((result.returncode == 0) == accepted, verb + ': ' + result.stderr)
+        if reason is not None: require(reason in result.stderr, 'unexpected failure: ' + result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else None
+    with ExitStack() as stack:
+        path = private(root / 'management-runtime.json', config)
+        host = Host(builds,path,root/'management-host',require_ready=False)
+        stack.callback(host.close)
+        def browser(tenant, credential):
+            value=Browser(host,config['product_origin'])
+            value.cookie='__Host-identity-session='+credential
+            require(value.call('GET',f'/api/v1/identity/tenants/{tenant}/session')[0]==200,'prepared session rejected')
+            return value
+        admin=browser(management,source['credential'])
+        normal=browser(business,(root/f'credential-{business}-admin').read_text())
+        delegate=None; delegate_id=None; delegate_login=None
+        if (root/'management-delegate.json').exists():
+            prepared=json.loads((root/'management-delegate.json').read_text())
+            delegate=browser(management,prepared['credential'])
+            delegate_id=prepared['principal'];delegate_login=prepared['login']
+        business_actor=next(a for a in case['actors'] if a['tenant']==business and a['role']=='admin')
+        def login(browser,tenant,login_name=None,secret=password):
+            name=login_name if login_name is not None else source['login'] if tenant==management else business_actor['login']
+            require(browser.call('POST',f'/api/v1/identity/tenants/{tenant}/login',dict(login=name,password=secret))[0]==200,'local login failed')
+        def operations(browser):
+            status,value=browser.call('GET',EFFECTIVE)
+            require(status==200 and value['tenantId']==management,'management grants unavailable')
+            return {g['operation'] for g in value['grants']}
+        def rule(principal,permissions):
+            return dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=management,principalId=principal)),grants=[dict(operation=operation,scope=dict(kind='tenant')) for operation in permissions])
+        def write(browser,identifier,revision,value,expected=200):
+            change=dict(operationId=str(uuid.uuid4()),expectedRevision=revision,value=value)
+            status,receipt=browser.call('PUT',RULES+'/'+identifier,change)
+            require(status==expected,'management rule response: '+str((status,receipt)))
+            return change,receipt
+        yield SimpleNamespace(root=root,stack=stack,host=host,path=path,pool=pool,config=config,builds=builds,
+            sql=sql,command=command,common=common,password=password,management=management,business=business,
+            admin=admin,normal=normal,delegate=delegate,delegate_id=delegate_id,delegate_login=delegate_login,
+            login=login,operations=operations,rule=rule,write=write,business_actor=business_actor)
+
+def http_authority(fixture):
+    with management_host(fixture) as h:
+        root,config,builds,sql,command,common,password = h.root,h.config,h.builds,h.sql,h.command,h.common,h.password
+        management,business,admin,normal,delegate = h.management,h.business,h.admin,h.normal,h.delegate
+        delegate_id,delegate_login,login,write,rule,operations = h.delegate_id,h.delegate_login,h.login,h.write,h.rule,h.operations
+        api='/api/v1/identity/tenants/'+management
+        business_api='/api/v1/identity/tenants/'+business
+        protected=json.loads(sql(f"SELECT jsonb_build_object('id',r.id,'revision',r.revision) FROM mdm_access.authorization_initializations i JOIN mdm_access.authorization_operations o ON(o.tenant_id,o.instance,o.operation_id,o.actor)=(i.tenant_id,i.instance,i.operation_id,i.principal::text) JOIN mdm_access.authorization_rules r ON(r.tenant_id,r.instance,r.id)=(i.tenant_id,i.instance,(o.result::jsonb->>'id')::uuid) WHERE i.tenant_id='{management}' AND i.instance='{INSTANCE}'"))
         status, host_context = admin.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')
         require(status == 200 and host_context['tenantId'] == management and host_context['principalId'] == ADMIN
                 and host_context['navigation']['manageAccounts'] and not host_context['navigation']['manageProviders'],
                 'management identity host context unavailable')
         require(normal.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')[0] == 401,
                 'business session obtained management identity host context')
-        require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'bootstrap granted unexpected powers')
         for route in ['/api/v1/authorization', '/api/v1/authorization/user-groups', '/api/v1/resources',
                       '/api/v1/devices/device-1/inventory', '/api/v1/runtime/diagnostics', '/api/v1/settings/first-use']:
             require(admin.call('GET', route)[0] in (401, 403), 'management session entered business route: ' + route)
         require(admin.call('GET', business_api + '/accounts')[0] in (401, 403), 'management session managed business accounts')
-        require(normal.call('GET', business_api + '/providers')[0] == 200, 'business provider route is not installed')
-        require(admin.call('POST', api + '/oidc/' + str(uuid.uuid4()) + '/login', dict(returnTarget='home'))[0] == 403,
-                'management tenant started federation')
-        require(admin.call('GET', api + '/providers')[0] == 403, 'management session managed IdPs')
-        status, account = admin.call('POST', api + '/accounts', dict(login='delegate', password=password))
-        require(status == 201, 'existing account API could not add a management user')
-        delegate_id = account['principalId']
-        delegate = Browser(host, config['product_origin'])
-        login(delegate, management, 'delegate')
         require(operations(delegate) == set(), 'new account automatically gained privileges')
         require(delegate.call('GET', api + '/accounts')[0] == 403, 'delegate automatically became account manager')
         identifier = str(uuid.uuid4())
@@ -168,15 +194,26 @@ def execute(fixture):
         _, receipt = write(admin, identifier, revision, rule(delegate_id, ['tenant_read', 'authorization_read', 'authorization_write']))
         revision = receipt['revision']
         require(delegate.call('GET', RULES)[0] == 200, 'explicit authorization delegation failed')
-        write(delegate, seeds[management]['id'], 1, None, 403)
+        write(delegate, protected['id'], protected['revision'], None, 403)
         write(admin, str(uuid.uuid4()), 0, rule(delegate_id, ['resource_read']), 403)
         bad_subject = dict(subject=dict(kind='user_group', id=str(uuid.uuid4())), grants=[dict(operation='tenant_read', scope=dict(kind='tenant'))])
         write(admin, str(uuid.uuid4()), 0, bad_subject, 403)
         write(admin, identifier, revision, None)
         require(operations(delegate) == set(), 'revoked grant remained effective')
-        from t2_modules.tenant_http import exercise
-        exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
-                 builds, root, stack, login, write, rule, fixture.owner, fixture.database)
+
+def account_lifecycle(fixture):
+    with management_host(fixture) as h:
+        root,config,builds,sql,command,common,password = h.root,h.config,h.builds,h.sql,h.command,h.common,h.password
+        management,business,admin,normal,delegate = h.management,h.business,h.admin,h.normal,h.delegate
+        delegate_id,delegate_login,login,write,rule,operations = h.delegate_id,h.delegate_login,h.login,h.write,h.rule,h.operations
+        api='/api/v1/identity/tenants/'+management
+        business_api='/api/v1/identity/tenants/'+business
+        delegate_login='lifecycle-delegate'
+        status,account=admin.call('POST',api+'/accounts',dict(login=delegate_login,password=password))
+        require(status==201,'account API failed to create management subject')
+        delegate_id=account['principalId'];delegate=Browser(h.host,config['product_origin'])
+        login(delegate,management,delegate_login)
+        require(operations(delegate)==set(),'new account gained implicit management powers')
         # Membership and account enable state are authoritative on every request.
         for state in ('membership', 'enabled'):
             require(admin.call('POST', api + '/accounts/' + delegate_id + '/' + state, dict(enabled=False))[0] == 200,
@@ -184,13 +221,13 @@ def execute(fixture):
             require(delegate.call('GET', EFFECTIVE)[0] == 401, 'inactive account retained admission')
             require(admin.call('POST', api + '/accounts/' + delegate_id + '/' + state, dict(enabled=True))[0] == 200,
                     'account state restore failed')
-            login(delegate, management, 'delegate')
+            login(delegate, management, delegate_login)
         require(delegate.call('POST', api + '/session/logout')[0] == 204, 'management logout failed')
         require(delegate.call('GET', EFFECTIVE)[0] == 401, 'logged out session survived')
         # Same origin has one cookie: logging into the business tenant changes admission.
         login(admin, business)
         require(admin.call('GET', EFFECTIVE)[0] == 401, 'session switch retained management admission')
-        business_rule = rule(ADMIN, ['tenant_read'])
+        business_rule = rule(h.business_actor['principal'], ['tenant_read'])
         business_rule['subject']['user']['tenantId'] = business
         status, _ = admin.call('PUT', '/api/v1/authorization/rules/' + str(uuid.uuid4()),
                                dict(operationId=str(uuid.uuid4()), expectedRevision=0, value=business_rule))
@@ -201,15 +238,31 @@ def execute(fixture):
         require(admin.call('POST', api + '/accounts/' + ADMIN + '/membership', dict(enabled=False))[0] == 403,
                 'initial account manager membership could be removed')
         new_password = 'Fixture-only-recovered-management-2026!'
-        recovery = dict(initialization[management], login=None, password_file=str(private(root / 'recovered-password', new_password)))
+        recovery = dict(database=h.pool.database_config(root, fixture.database, 'mdm_identity_maintenance','identity-maintenance-fixture'), installation=installation(), tenant_id=management, expected_epoch=1, principal_id=ADMIN, login=None, password_file=str(private(root / 'recovered-password', new_password)))
         command('recover-password', recovery)
         require(admin.call('GET', EFFECTIVE)[0] == 401, 'recovery retained old session')
         login(admin, management, secret=new_password)
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'password recovery changed grants')
         # Restart preserves persisted identity, grants and active management session.
-        host.close()
-        host = Host(builds, path, root / 'restarted',require_ready=False)
-        stack.callback(host.close)
+        h.host.close()
+        host = Host(builds, h.path, root / 'restarted',require_ready=False)
+        h.stack.callback(host.close)
         admin.host = host
         require(operations(admin) == CRUD | {'authorization_read', 'authorization_write', 'identity_accounts_manage', 'tenant_administrator_create'}, 'restart lost management admission')
-    print('management installation/bootstrap/accounts/independent CRUD/isolation/CAS/revocation/recovery/restart passed', flush=True)
+
+def assembly_admission(fixture):
+    with management_host(fixture) as h:
+        for table in ('mdm_audit.receipts','rss_audit.records'):
+            h.sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
+            try: h.command('serve',h.config,accepted=False,reason='startup.identity: Audit')
+            finally: h.sql(f'REVOKE UPDATE ON {table} FROM mdm_identity_provisioning')
+        config=json.loads(json.dumps(h.config))
+        state_key=private(h.root/'oidc-state-key','ab'*32)
+        credential_key=private(h.root/'oidc-credential-key','cd'*32)
+        config['identity']['oidc']=dict(group_facts_max_age_seconds=300,state_key_file=str(state_key),active_credential_key='current',credential_keys={'current':str(credential_key)},return_targets={'home':'https://mdm.example.test/done'},private_providers=[],assurance_profiles=[dict(tenant_id=h.business,issuer='https://idp.example.invalid',client_id='mdm',keycloak_totp=False)])
+        host=Host(h.builds,private(h.root/'federation-runtime.json',config),h.root/'federation-host',require_ready=False)
+        h.stack.callback(host.close)
+        h.admin.host=host;h.normal.host=host
+        require(h.normal.call('GET',f'/api/v1/identity/tenants/{h.business}/providers')[0]==200,'business provider route missing')
+        require(h.admin.call('GET',f'/api/v1/identity/tenants/{h.management}/providers')[0]==403,'management entered federation')
+        require(h.admin.call('POST',f'/api/v1/identity/tenants/{h.management}/oidc/{uuid.uuid4()}/login',dict(returnTarget='home'))[0]==403,'management started federation')

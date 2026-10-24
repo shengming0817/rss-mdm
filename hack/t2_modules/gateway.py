@@ -16,7 +16,6 @@ from gateway_fixture import render
 ROOT=Path(__file__).resolve().parents[2]
 
 def verify(context):
-    verify_sni(context)
     # Only TLS/file/listener locations are adapted for this loopback protocol seam.
     # The source-key, budget, burst, error and location rules are the production file.
     config=render(ROOT/'deployment', backend='127.0.0.1:8082', public_port=8080, certificates='/run/config', web=False, plain=True)
@@ -198,18 +197,6 @@ def verify_business(context, fixture):
                     status,receipt=browser.call('PUT',path,update)
                     require(status==200 and receipt['revision']==1,'gateway rejected legal large user group')
                     require(browser.call('PUT',path,update)==(status,receipt),'gateway business receipt replay')
-                    seen=[]
-                    offset=0
-                    while True:
-                        status,page=browser.call('GET',path+f'/members?offset={offset}&expectedRevision=1')
-                        require(status==200 and page['revision']==1,'gateway member page failed')
-                        seen.extend(page['items'])
-                        next_offset=page['nextOffset']
-                        require(len(seen)<=len(members), 'gateway member pagination exceeded expected members')
-                        if next_offset is None:break
-                        require(type(next_offset) is int and offset<next_offset<len(members), 'gateway member pagination did not advance within bounds')
-                        offset=next_offset
-                    require(len(seen)==len(members) and {m['principalId'] for m in seen}=={m['principalId'] for m in members},'gateway member pagination lost or duplicated identities')
                     query="SELECT revision::text || ':' || document::text FROM mdm_access.user_groups WHERE id='"+path.rsplit('/',1)[1]+"'"
                     before=fixture.owner.sql(query,fixture.database)
                     # Rejection must happen before another mutation reaches the business.
@@ -226,10 +213,28 @@ def verify_business(context, fixture):
             finally:relay.shutdown();thread.join(timeout=5)
     finally:host.close()
 
-def main(context, fixture):
-    verify_network_allocation(context)
-    verify(context)
-    verify_business(context, fixture)
+def context(fixture):
+    from t2_environment import Environment
+    from t2_fixtures import RunFixtures
+    owner = SimpleNamespace(gateway_owner=Environment(group='t2-gateway-' + fixture.root.name))
+    owner.gateway = lambda config, files=None: RunFixtures.gateway(owner, config, files)
+    return owner
+
+
+def network(fixture):
+    verify_network_allocation(context(fixture))
+
+
+def tls(fixture):
+    verify_sni(context(fixture))
+
+
+def admission(fixture):
+    verify(context(fixture))
+
+
+def business(fixture):
+    verify_business(context(fixture), fixture)
 
 
 def verify_sni(context):

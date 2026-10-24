@@ -473,8 +473,8 @@ class CiImpactContract(unittest.TestCase):
         registry = self.repo.root / 'hack/t2_registry.py'
         registry.write_text(
             registry.read_text()
-            + "\nMODULES['host'] = Module('host', None, (), profile='none', fixtures=('identity',), python='test_registry', db_mode=None, scope=None)\n"
-            + "MODULES['python-only'] = Module('python-only', None, (), profile='none', python='test_registry', db_mode=None, scope=None)\n"
+            + "\nMODULES['host'] = Module('host', None, (), profile='none', fixtures=('identity',), python=('test_registry', 'execute'), db_mode=None, scope=None)\n"
+            + "MODULES['python-only'] = Module('python-only', None, (), profile='none', python=('test_registry', 'execute'), db_mode=None, scope=None)\n"
         )
         self.repo.commit('declare Rust fixture and Python consumers')
         self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()

@@ -212,19 +212,39 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
 
 add('installation.migration', selectors=('migration::tests::failed_unit_rolls_back_schema_and_can_resume_original_name','migration::tests::ledger_installation_rejects_audit_privilege_drift','migration::tests::fresh_installation_replay_and_mismatch_rejection','tenant_registry::tests::rollback_failure_preserves_primary_reason_and_cleanup_evidence'), profile='empty',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'), tests=('crates/app/tests/migration/mod.rs','crates/app/tests/tenant_registry/mod.rs',),
-    python='installation', support=('hack/t2_modules/installation.py',))
+    python=('installation', 'execute'), support=('hack/t2_modules/installation.py',))
 add('installation.registry', selectors=('tenant_registry::tests::business::',), profile='product',
     sources=('crates/app/src/migration.rs','crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql'),
     tests=('crates/app/tests/tenant_registry/business.rs',), support=('crates/app/tests/tenant_registry/mod.rs',))
 MODULES['installation.registry'] = replace(MODULES['installation.registry'], db_mode='fresh', scope='objects')
-add('installation.tenants', build=None, profile='empty', python='tenants',
+add('installation.tenants', build=None, profile='product', python=('tenants', 'metadata_cli'),
     sources=('crates/app/src/tenant_registry.rs','crates/app/src/tenant_use.rs','crates/app/schema/installation.sql','crates/app/src/main.rs','crates/app/src/migration.rs','crates/app/src/maintenance.rs','crates/app/src/authorization_bootstrap.rs','crates/app/src/lifecycle.rs'),
     support=('hack/t2_modules/tenants.py',))
 MODULES['installation.tenants'] = replace(MODULES['installation.tenants'], db_mode='fresh', scope='objects')
-add('deployment.management-tenant', build=None, profile='empty', python='management_tenant',
+MODULES['installation.tenant_binding'] = replace(MODULES['installation.tenants'], id='installation.tenant_binding', python=('tenants', 'tenant_binding'), fixtures=('identity',), scope='pair', actors=(('tenant','admin'),('peer','admin')))
+
+add('deployment.management-tenant', build=None, profile='product', python=('management_tenant', 'http_authority'), fixtures=('identity','management_delegate'),
     sources=('crates/app/src/identity.rs','crates/app/src/identity_audit.rs','crates/app/src/migration.rs','crates/app/schema/installation.sql','crates/authorization-service/src/tenancy.rs','crates/authorization-service/src/database.rs','crates/authorization-service/src/store.rs','crates/authorization-service/src/model.rs','crates/authorization-service/src/evaluate.rs','crates/authorization-service/src/identity_management.rs','crates/management-http/src/tenant_administration.rs','crates/management-http/src/authorization/http.rs','crates/app/src/tenant_http.rs','crates/app/src/tenant_administrator.rs','crates/app/src/tenant_registry.rs','crates/app/schema/tenant-administration.sql'),
     support=('hack/t2_modules/management_tenant.py','hack/t2_modules/tenants.py','hack/t2_modules/tenant_http.py',))
 MODULES['deployment.management-tenant'] = replace(MODULES['deployment.management-tenant'], db_mode='fresh', scope='objects')
+for name, entry, fixtures, profile in (
+    ('deployment.management-bootstrap', 'bootstrap', (), 'empty'),
+    ('deployment.management-assembly', 'assembly_admission', ('identity','management'), 'product'),
+    ('deployment.management-accounts', 'account_lifecycle', ('identity','management'), 'product'),
+):
+    MODULES[name] = replace(MODULES['deployment.management-tenant'], id=name, python=('management_tenant', entry), fixtures=fixtures, profile=profile)
+for name, entry, fixtures in (
+    ('installation.provisioning_http', 'provisioning', ('identity','management_delegate')),
+    ('installation.administrator_http', 'administrator', ('identity','management')),
+    ('installation.registry_recent_auth', 'recent_auth', ('identity','management_delegate')),
+    ('installation.registry_assembly', 'optional_routes', ('runtime_config',)),
+    ('installation.registry_pages', 'provisioning_pages_and_active_directory', ('identity','management')),
+    ('installation.administrator_rollback', 'administrator_rollback', ('identity','management')),
+    ('installation.registry_audit_backpressure', 'audit_backpressure', ('identity','management')),
+    ('installation.registry_commit_unknown', 'lost_commit_ack', ('identity','management')),
+):
+    MODULES[name] = replace(MODULES['deployment.management-tenant'], id=name, python=('tenant_http', entry), fixtures=fixtures)
+
 add('recovery-credentials.http',fixtures=('identity','agent_pki','task_signing'),selectors=('recovery_credentials_tests::',),
     sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs'),
     tests=('crates/app/tests/recovery_credentials/mod.rs',),support=())
@@ -316,7 +336,7 @@ MODULES['diagnostics.http'] = replace(MODULES['diagnostics.http'], scope='tenant
     CasePolicy('api::t2::runtime_diagnostics::runner_failure_is_visible_while_bridge_and_queries_succeed', 'instance', 'tenant'),
     CasePolicy('api::t2::runtime_diagnostics::management_audit_capacity_is_visible_without_cross_tenant_counts', 'reuse', 'pair'),
 ))
-add('host.lifecycle', build=None, python='host', fixtures=('identity',),
+add('host.lifecycle', build=None, python=('host', 'verify_startup_deadlines'), fixtures=('runtime_config',),
     sources=('crates/app/src/lifecycle.rs', 'crates/app/src/main.rs', 'crates/app/src/audit_health.rs', 'crates/app/src/audit_projection.rs'),
     support=('hack/t2_modules/host.py',))
 app_family('assets')
@@ -478,14 +498,19 @@ add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',
              'crates/app/src/identity.rs','crates/execution-service/src/admission.sql','crates/app/src/product-storage.sql','crates/app/src/product-storage.json'),
     support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/support/scep.rs', 'crates/app/tests/apple/lifecycle.rs', 'crates/app/tests/apple/renewal.rs'),
     tests=('crates/app/tests/apple/account_enrollment.rs',))
-add('catalog.contract', build=None, python='catalog',
+add('catalog.contract', build=None, python=('catalog', 'execute'),
     sources=('crates/*-service/src/*/catalog.sql', 'crates/*-service/src/*/catalog.json',
              'crates/software-service/src/*/catalog.sql', 'crates/software-service/src/*/catalog.json'),
     support=('hack/command_catalog.py', 'hack/t2_modules/catalog.py'))
-# Gateway owns a complete product host and therefore its tenant projection claim.
-add('gateway.admission', build=None, python='gateway', fixtures=('gateway','identity','local_worker'),
-    sources=('deployment/render_gateway.py','crates/app/src/native/gateway.rs','crates/certificate/src/peer.rs'), support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
-MODULES['gateway.admission'] = replace(MODULES['gateway.admission'], scope='tenant')
+# Gateway protocol proofs have no product storage or Identity prerequisite.
+for name in ('network', 'tls', 'admission'):
+    add('gateway.' + name, build=None, profile='none', python=('gateway', name), fixtures=('gateway',),
+        sources=('deployment/render_gateway.py','crates/app/src/native/gateway.rs','crates/certificate/src/peer.rs'),
+        support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
+add('gateway.business', build=None, python=('gateway', 'business'), fixtures=('gateway','identity'),
+    sources=('deployment/render_gateway.py','crates/app/src/native/gateway.rs'),
+    support=('hack/t2_modules/gateway.py','hack/gateway_fixture.py'))
+MODULES['gateway.business'] = replace(MODULES['gateway.business'], scope='tenant')
 
 
 # Isolation follows state and observation ownership. Only exceptions name a case.
@@ -1801,7 +1826,7 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], policies=(*MODULES['agent.p
 MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_trust'], policies=(*MODULES['execution.agent.task_trust'].policies,
     CasePolicy('execution::t2::agent::task_trust::selected_material_corruption_is_fatal_even_with_a_matching_active_key', 'fresh', 'tenant')))
 
-consume(('hack/ingress_network.py',), 'gateway.admission')
+consume(('hack/ingress_network.py',), 'gateway.network')
 # Device Access owns the joint human/device ceremony and exact application receipts.
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','shared_worker'),
     sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
