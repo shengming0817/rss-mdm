@@ -367,7 +367,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
-    let mut grants = identity::device_grants(None, &["inventory_read", "account_write"])?;
+    let mut grants = identity::device_grants(None, &["inventory_read", "device_unmanage"])?;
     for operation in ["group_read", "group_write", "scope_read", "scope_write",
         "resource_read", "resource_write", "policy_read", "policy_write"] {
         grants.push(crate::authorization::Grant {
@@ -420,7 +420,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let mut policy_ids=[Uuid::new_v4(),Uuid::new_v4()];policy_ids.sort();
     for (scope,policy) in scope_ids.iter().zip(policy_ids.iter()) {
         call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}})).await?;
-        call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":false,"definition":{"scope":scope,"action":{"kind":"device_access","selfEnrollment":true,"role":null}}})).await?;
+        call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":false,"definition":{"scope":scope,"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}})).await?;
     }
     for (family,ids) in [("scopes",scope_ids),("policies",policy_ids)] {
         let base=format!("/api/v1/{family}?filter=id=in=({},{});revision==1&sort=revision&fields=id&limit=1",ids[0],ids[1]);
