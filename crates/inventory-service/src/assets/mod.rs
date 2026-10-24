@@ -31,6 +31,7 @@ mod quality;
 mod query;
 mod query_read;
 mod query_sort;
+pub mod rsql;
 pub mod saved_directory;
 mod store;
 pub use filter::{criteria_view, rule};

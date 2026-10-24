@@ -40,7 +40,7 @@ impl AssetService {
         let (groups,compliance,saved_queries)=tx.with_connection(move|c|Box::pin(async move {
             let groups=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.group_fields WHERE tenant_id=$1::uuid AND field=$2").bind(tenant.to_string()).bind(&key).fetch_one(&mut *c).await?;
             let compliance=rss_mdm_compliance_postgres::field_references_in(c,tenant,&key).await?;
-            let saved_queries=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND document IS NOT NULL AND (jsonb_path_exists(document,'$.query.**.field ? (@ == $field || @ starts with $prefix)',jsonb_build_object('field',$2::text,'prefix',$2::text||'.')) OR jsonb_path_exists(document,'$.query.select[*] ? (@ == $field)',jsonb_build_object('field',$2::text)))").bind(tenant.to_string()).bind(key).fetch_one(c).await?;
+            let saved_queries=sqlx::query_scalar("SELECT count(*) FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND document IS NOT NULL AND (jsonb_path_exists(document,'$.query.**.field ? (@ == $field || @ starts with $prefix)',jsonb_build_object('field',$2::text,'prefix',$2::text||'.')) OR jsonb_path_exists(document,'$.query.fields[*] ? (@ == $field)',jsonb_build_object('field',$2::text)))").bind(tenant.to_string()).bind(key).fetch_one(c).await?;
             Ok((groups,compliance,saved_queries))
         })).await?;
         let (templates, telemetry_profiles, archived_resource_versions) =

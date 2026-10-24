@@ -320,8 +320,17 @@ fn bind(expr: Expression<String, String>) -> Result<Expression<Field, Scalar>> {
             values,
         } => {
             let f = field(&name)?;
-            if operator == rss_mdm_query::Operator::Icontains
-                || !f.filter
+            if !matches!(
+                operator,
+                rss_mdm_query::Operator::Eq
+                    | rss_mdm_query::Operator::Ne
+                    | rss_mdm_query::Operator::Lt
+                    | rss_mdm_query::Operator::Le
+                    | rss_mdm_query::Operator::Gt
+                    | rss_mdm_query::Operator::Ge
+                    | rss_mdm_query::Operator::In
+                    | rss_mdm_query::Operator::Out
+            ) || !f.filter
                 || (operator.range() && !matches!(f.field, Field::Id | Field::Revision))
             {
                 return Err(Error::Invalid);

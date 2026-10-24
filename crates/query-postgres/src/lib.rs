@@ -98,7 +98,7 @@ fn expression(
                 Operator::Ge => " >= ",
                 Operator::In => " IN ",
                 Operator::Out => " NOT IN ",
-                Operator::Icontains => unreachable!(),
+                _ => return Err(Error::Invalid),
             });
             if operator.set() {
                 sql.push("(");

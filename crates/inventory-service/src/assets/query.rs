@@ -9,14 +9,24 @@ impl AssetService {
         q: &Query,
         catalog: &rss_mdm_inventory::Catalog,
     ) -> Result<()> {
-        if q.select.len() > 1024 || q.select.iter().collect::<BTreeSet<_>>().len() != q.select.len()
+        if q.fields.len() > 1024 || q.fields.iter().collect::<BTreeSet<_>>().len() != q.fields.len()
         {
             return Err(Error::Malformed.into());
         }
-        for key in &q.select {
+        for key in &q.fields {
             checked_input(catalog.definition(*key))?;
         }
-        if let Some(sort) = &q.sort {
+        if q.sort.len() > 16
+            || q.sort
+                .iter()
+                .map(|s| s.field)
+                .collect::<BTreeSet<_>>()
+                .len()
+                != q.sort.len()
+        {
+            return Err(Error::Malformed.into());
+        }
+        for sort in &q.sort {
             let field = checked_input(catalog.definition(sort.field))?;
             if !field.searchable
                 || matches!(
@@ -38,15 +48,16 @@ impl AssetService {
         tx: &mut PgTransaction<'_>,
         task: Uuid,
         scope: &ReadScope,
-        q: &Query,
+        input: &rsql::QueryInput,
         at: Timepoint,
     ) -> Result<Response> {
         let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+        let q = &input.compile(&catalog)?;
         self.validate_query(q, &catalog)?;
         if let Some(criteria) = &q.criteria {
             filter::require_visible(&catalog, &criteria.criteria, scope.sensitive)?;
         }
-        for key in q.select.iter().chain(q.sort.iter().map(|s| &s.field)) {
+        for key in q.fields.iter().chain(q.sort.iter().map(|s| &s.field)) {
             if !scope.sensitive
                 && checked_input(catalog.definition(*key))?.sensitivity
                     == rss_mdm_inventory::Sensitivity::Sensitive
@@ -208,18 +219,16 @@ impl AssetService {
                     .entry(("asset_states", state_name(&field.state).into()))
                     .or_default() += 1;
             }
-            let key = q.sort.as_ref().map_or_else(
-                || Ok(Vec::new()),
-                |sort| {
-                    query_sort::key(
-                        device.fields.get(&sort.field).map(|f| &f.state),
-                        sort.descending,
-                    )
-                },
-            )?;
-            if !q.select.is_empty() {
-                device.fields.retain(|f, _| q.select.contains(f));
-                device.revisions.retain(|f, _| q.select.contains(f));
+            let mut key = Vec::new();
+            for sort in &q.sort {
+                key.extend(query_sort::key(
+                    device.fields.get(&sort.field).map(|f| &f.state),
+                    sort.descending,
+                )?);
+            }
+            if !q.fields.is_empty() {
+                device.fields.retain(|f, _| q.fields.contains(f));
+                device.revisions.retain(|f, _| q.fields.contains(f));
             }
             self.summarize_lists(&mut device, &catalog, scope, watermark)?;
             let bytes = stored(serde_json::to_vec(&device))?;

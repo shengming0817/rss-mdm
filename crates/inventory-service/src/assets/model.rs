@@ -99,9 +99,9 @@ pub struct Query {
     #[serde(default)]
     pub criteria: Option<InventoryCondition>,
     #[serde(default)]
-    pub select: Vec<FieldKey>,
+    pub fields: Vec<FieldKey>,
     #[serde(default)]
-    pub sort: Option<Sort>,
+    pub sort: Vec<Sort>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -114,7 +114,7 @@ pub enum ManualChange {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SavedDefinition {
     pub name: String,
-    pub query: Query,
+    pub query: super::rsql::QueryInput,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -372,7 +372,7 @@ pub enum Command {
         scope: ReadScope,
     },
     Search {
-        request: Box<Operation<Query>>,
+        request: Box<Operation<super::rsql::QueryInput>>,
         scope: ReadScope,
     },
     Manual {

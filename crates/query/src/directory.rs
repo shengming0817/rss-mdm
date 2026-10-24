@@ -154,6 +154,9 @@ impl Query {
     pub fn sort(&self) -> &[Sort<String>] {
         &self.sort
     }
+    pub fn selects(&self, field: &str) -> bool {
+        self.fields.iter().any(|f| f == field)
+    }
     pub fn limit(&self) -> usize {
         usize::from(self.limit)
     }
@@ -233,6 +236,23 @@ impl Query {
     }
     pub fn page(
         &self,
+        rows: Vec<Value>,
+        codec: &CursorCodec,
+        binding: &str,
+    ) -> Result<Page<Value>> {
+        let page = self.unprojected_page(rows, codec, binding)?;
+        Ok(Page {
+            items: page
+                .items
+                .into_iter()
+                .map(|r| self.project(r))
+                .collect::<Result<_>>()?,
+            next_cursor: page.next_cursor,
+        })
+    }
+    /// Preserve private identity/order fields until the HTTP owner has hydrated computed outputs.
+    pub fn unprojected_page(
+        &self,
         mut rows: Vec<Value>,
         codec: &CursorCodec,
         binding: &str,
@@ -251,10 +271,7 @@ impl Query {
             None
         };
         Ok(Page {
-            items: rows
-                .into_iter()
-                .map(|r| self.project(r))
-                .collect::<Result<_>>()?,
+            items: rows,
             next_cursor,
         })
     }
@@ -304,7 +321,18 @@ fn bind(schema: &Schema, e: Expression<String, String>) -> Result<Expression<Str
             values,
         } => {
             let spec = schema.field(&field)?;
-            if !spec.filter
+            if !matches!(
+                operator,
+                Operator::Eq
+                    | Operator::Ne
+                    | Operator::Lt
+                    | Operator::Le
+                    | Operator::Gt
+                    | Operator::Ge
+                    | Operator::In
+                    | Operator::Out
+                    | Operator::Icontains
+            ) || !spec.filter
                 || matches!(spec.kind, Kind::Object)
                 || (operator.range()
                     && matches!(

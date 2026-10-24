@@ -291,7 +291,7 @@ async fn search(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    payload: BodyInput<Operation<Query>>,
+    payload: BodyInput<Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let request = body(payload)?;
     let scope = ReadScope::from_proof(&auth.proof)?;

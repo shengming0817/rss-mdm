@@ -86,7 +86,10 @@ impl AssetService {
             revision: row.try_get("revision")?,
             definition: row
                 .try_get::<Option<String>, _>("document")?
-                .map(|s| stored(serde_json::from_str(&s)))
+                .map(|s| {
+                    stored(serde_json::from_str::<rsql::StoredDefinition>(&s))
+                        .and_then(rsql::StoredDefinition::into_view)
+                })
                 .transpose()?,
         })
     }
@@ -104,14 +107,13 @@ impl AssetService {
             SavedChange::Delete {} => None,
             SavedChange::Put { definition } => {
                 crate::authorization::exact_id(&definition.name)?;
-                self.validate_query(
-                    &definition.query,
-                    &catalog_in(tx, self.tenant, i64::MAX).await?,
-                )?;
+                let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
+                let compiled = rsql::StoredDefinition::compile(definition, &catalog)?;
+                self.validate_query(compiled.query(), &catalog)?;
                 if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
                     return Err(Error::Malformed.into());
                 }
-                Some(definition.as_ref().clone())
+                Some(compiled)
             }
         };
         let tenant = self.tenant.to_string();
@@ -133,7 +135,9 @@ impl AssetService {
             query: SavedView {
                 id,
                 revision,
-                definition,
+                definition: definition
+                    .map(rsql::StoredDefinition::into_view)
+                    .transpose()?,
             },
         })
     }

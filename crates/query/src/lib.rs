@@ -27,13 +27,22 @@ pub enum Operator {
     In,
     Out,
     Icontains,
+    Contains,
+    NotContains,
+    ContainsAny,
+    ContainsAll,
+    IsNull,
+    IsNotNull,
 }
 impl Operator {
     pub fn range(self) -> bool {
         matches!(self, Self::Lt | Self::Le | Self::Gt | Self::Ge)
     }
     pub fn set(self) -> bool {
-        matches!(self, Self::In | Self::Out)
+        matches!(
+            self,
+            Self::In | Self::Out | Self::ContainsAny | Self::ContainsAll
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
