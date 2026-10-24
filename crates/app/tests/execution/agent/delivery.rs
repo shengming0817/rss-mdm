@@ -1,4 +1,5 @@
 use anyhow::Context;
+use base64::Engine as _;
 #[path = "delivery/signing.rs"]
 mod signing;
 #[path = "windows_assets.rs"]
