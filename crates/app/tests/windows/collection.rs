@@ -575,6 +575,7 @@ async fn template_flow(
     let unknown:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
         .bind(case_tenant()).fetch_one(&mut pg).await?;
     ensure!(unknown == 65, "unknown history was retried or rewritten");
+    native_unknown_barrier(&host, &mut pg, policy, runs[0]).await?;
     // Preserve historical terminal evidence when retiring the same real registration.
     sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT tenant_id,gen_random_uuid(),policy_version,device,registration,generation,'confirmed-history',created_at,available_at,deadline,jsonb_set(jsonb_set(state,'{execution}','\"unknown\"'),'{cancellation}','\"confirmed\"'),gateway_accepted,dispatch_fingerprint,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(runs[0]).execute(&mut pg).await?;
     let history: serde_json::Value = sqlx::query_scalar("SELECT jsonb_agg(jsonb_build_array(id,state) ORDER BY id) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND (state->>'execution' IN('succeeded','failed') OR state->>'cancellation'='confirmed')").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&mut pg).await?;
@@ -603,6 +604,73 @@ async fn template_flow(
     ensure!(live == 0, "retirement paging missed pending actions");
     pg.close().await?;
     host.close().await
+}
+
+async fn native_unknown_barrier(
+    host: &Host,
+    pg: &mut sqlx::PgConnection,
+    policy: Uuid,
+    original: Uuid,
+) -> anyhow::Result<()> {
+    let (version, device, generation, deadline): (Uuid, String, i64, i64) = sqlx::query_as(
+        "SELECT policy_version,device,generation,deadline FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2",
+    ).bind(case_tenant()).bind(original).fetch_one(&mut *pg).await?;
+    // A replacement registration still sees Unknown history, but does not see
+    // the current registration's ordinary pending run.
+    let target = rss_mdm_execution_service::Target {
+        device,
+        registration: Uuid::new_v4(),
+        generation,
+    };
+    ensure!(pending_at(host, policy, version, target.clone(), deadline - 1).await?);
+    ensure!(!pending_at(host, policy, version, target.clone(), deadline + 1).await?);
+    sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{cancellation}','\"confirmed\"') WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
+        .bind(case_tenant()).execute(&mut *pg).await?;
+    ensure!(!pending_at(host, policy, version, target, deadline - 1).await?);
+    // Restore the fault fixture so the original retirement paging assertions
+    // continue to cover all 65 unconfirmed Unknown runs.
+    sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{cancellation}','\"none\"') WHERE tenant_id=$1::uuid AND occurrence LIKE 'blocked-history:%' AND state->>'execution'='unknown'")
+        .bind(case_tenant()).execute(&mut *pg).await?;
+    Ok(())
+}
+async fn pending_at(
+    host: &Host,
+    policy: Uuid,
+    version: Uuid,
+    target: rss_mdm_execution_service::Target,
+    now: i64,
+) -> anyhow::Result<bool> {
+    host.app
+        .execution_runtime
+        .local_tx(
+            rss_request_context::TenantId::parse(case_tenant())?,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(15),
+            ),
+            move |tx| {
+                Box::pin(async move {
+                    rss_mdm_execution_service::actions::production::policy_pending_in(
+                        tx, policy, version, &target, now, false,
+                    )
+                    .await
+                    .map(|value| value.0)
+                    .map_err(|e| {
+                        rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                            e.to_string(),
+                        ))
+                    })
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("pending probe rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("pending probe commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )
 }
 
 /// Hold the real pending run so its recovery transaction retains the channel fence.
