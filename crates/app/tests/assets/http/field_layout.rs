@@ -54,6 +54,30 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         ensure!(initial.0 == StatusCode::OK && initial.1["asset"]["editable"] == true && initial.1["asset"]["groups"] == json!([]));
         let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
         ensure!(catalog.0 == StatusCode::OK, "configuration metadata rejected: {catalog:?}");
+        // Native metadata must use the same typed directory/window contract as other fields.
+        let filter = "key=in=(device.software.windows.non_store,device.software.windows.store,device.software.windows.system)";
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("filter", filter).append_pair("sort", "key")
+            .append_pair("fields", "key,version,valueType,sources").append_pair("limit", "2").finish();
+        let first = fixture.author.call(&fixture.router, Method::GET, &format!("/api/v1/asset-fields?{query}"), None).await?;
+        ensure!(first.0 == StatusCode::OK && first.1["asset"]["items"].as_array().unwrap().len() == 2, "native directory: {first:?}");
+        let cursor = first.1["asset"]["nextCursor"].as_str().unwrap();
+        let next = url::form_urlencoded::Serializer::new(String::new()).append_pair("cursor", cursor).finish();
+        let second = fixture.author.call(&fixture.router, Method::GET, &format!("/api/v1/asset-fields?{query}&{next}"), None).await?;
+        ensure!(second.0 == StatusCode::OK && second.1["asset"]["items"].as_array().unwrap().len() == 1 && second.1["asset"]["nextCursor"].is_null());
+        let entries = first.1["asset"]["items"].as_array().unwrap().iter().chain(second.1["asset"]["items"].as_array().unwrap());
+        for entry in entries {
+            ensure!(entry.as_object().unwrap().len() == 4 && entry["sources"] == json!({"mdm.windows":0}));
+            let item = &entry["valueType"]["items"];
+            ensure!(item["kind"] == "record" && item["properties"]["is_provisioned_native"]["valueType"]["kind"] == "integer"
+                && item["properties"]["is_provisioned"]["valueType"]["kind"] == "boolean" && item["properties"]["is_provisioned"]["required"] == false);
+            let path = format!("/api/v1/asset-fields/{}", entry["key"].as_str().unwrap());
+            let descriptor = fixture.author.call(&fixture.router, Method::GET, &path, None).await?;
+            ensure!(descriptor.0 == StatusCode::OK && descriptor.1["asset"]["field"]["valueType"] == entry["valueType"], "native descriptor: {descriptor:?}");
+        }
+        let changed = query.replace("key%2Cversion%2CvalueType%2Csources", "key");
+        ensure!(fixture.author.call(&fixture.router, Method::GET, &format!("/api/v1/asset-fields?{changed}&{next}"), None).await?.0 == StatusCode::CONFLICT);
+        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?offset=0", None).await?.0 == StatusCode::BAD_REQUEST);
         let fields = catalog.1["asset"]["items"].as_array().unwrap();
         let selected = fields.iter().find(|field| field["key"].as_str().is_some_and(|key| key.starts_with("custom."))).ok_or_else(|| anyhow::anyhow!("fixture must offer an existing custom field"))?;
         let groups = json!([{ "id":Uuid::new_v4(),"name":"资产","fields":[selected["key"].clone()] }]);

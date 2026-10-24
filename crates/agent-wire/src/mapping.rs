@@ -99,23 +99,41 @@ impl ValueMapping {
         }
         Ok(())
     }
-    /// Convert an already extracted scalar or project one selected list row.
-    pub fn project_selected(&self, raw: &Value) -> Result<Value, WireError> {
-        self.validate()?;
-        if self.columns.is_empty() {
-            return self.conversion.apply(raw);
+    /// Convert an already selected scalar or list row using its frozen destination type.
+    /// Only an absent optional record member may be omitted; null and conversion failures
+    /// remain explicit. The consumer validates converted values against the field schema.
+    pub fn project_selected(&self, raw: &Value, ty: &ValueType) -> Result<Value, WireError> {
+        self.validate_type(ty)?;
+        fn project(m: &ValueMapping, raw: &Value, ty: &ValueType) -> Result<Value, WireError> {
+            if m.columns.is_empty() {
+                return m.conversion.apply(raw);
+            }
+            if !raw.is_object() {
+                return Err(WireError::InvalidValue);
+            }
+            let mut result = serde_json::Map::new();
+            for (name, column) in &m.columns {
+                let (member, required) = match ty {
+                    ValueType::Object { properties } => {
+                        (properties.get(name).ok_or(WireError::InvalidValue)?, true)
+                    }
+                    ValueType::Record { properties } => {
+                        let property = properties.get(name).ok_or(WireError::InvalidValue)?;
+                        (&property.value_type, property.required)
+                    }
+                    _ => return Err(WireError::InvalidValue),
+                };
+                match raw.pointer(&column.pointer) {
+                    Some(value) => {
+                        result.insert(name.clone(), project(column, value, member)?);
+                    }
+                    None if !required => (),
+                    None => return Err(WireError::InvalidValue),
+                }
+            }
+            Ok(Value::Object(result))
         }
-        if !raw.is_object() {
-            return Err(WireError::InvalidValue);
-        }
-        let mut result = serde_json::Map::new();
-        for (name, mapping) in &self.columns {
-            let selected = raw
-                .pointer(&mapping.pointer)
-                .ok_or(WireError::InvalidValue)?;
-            result.insert(name.clone(), mapping.project_selected(selected)?);
-        }
-        Ok(Value::Object(result))
+        project(self, raw, ty)
     }
 }
 impl Conversion {

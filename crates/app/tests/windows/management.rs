@@ -6,17 +6,20 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_windows_mdm::syncml::{self, Command, CommandName};
 use rss_mdm_windows_mdm::{CodecLimits, Secret};
 use uuid::Uuid;
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native BASIC challenge and optional 212 nonce"]
 async fn native_initial_package_repeats_after_basic_challenge_without_nonce_rotation()
 -> anyhow::Result<()> {
     native_challenge(false).await
 }
+#[cfg(feature = "integration")]
 #[tokio::test]
 #[ignore = "MODULE=windows.management: partial native initialization after size negotiation"]
 async fn native_initial_package_finishes_after_message_continuation() -> anyhow::Result<()> {
     native_challenge(true).await
 }
+#[cfg(feature = "integration")]
 #[allow(
     clippy::cognitive_complexity,
     reason = "sequential native authentication, continuation, replay and nonce assertions share one real setup"
