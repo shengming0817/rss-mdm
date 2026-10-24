@@ -70,7 +70,7 @@ impl QueryInput {
     pub fn from_query(query: Query) -> Result<Self> {
         let (filter, scope) = match query.criteria {
             Some(c) => (
-                Some(format(&c.criteria)?),
+                Some(formatted(&c.criteria)?),
                 QueryScope {
                     selector: c.selector,
                     quantifier: c.quantifier,
@@ -174,20 +174,59 @@ fn bind(expression: Expression<String, String>, catalog: &Catalog) -> Result<Cri
         }
     })
 }
-fn quoted(value: &Scalar) -> Result<String> {
+fn operand(value: &Scalar) -> Result<String> {
     let text = match value {
         Scalar::String(s) => s.clone(),
         Scalar::Integer(n) | Scalar::Time(n) => n.to_string(),
-        Scalar::Number(n) => n.to_string(),
+        Scalar::Number(n) => {
+            let decimal = n.to_string();
+            let scientific = format!("{:e}", n.into_inner());
+            if scientific.len() < decimal.len() {
+                scientific
+            } else {
+                decimal
+            }
+        }
         Scalar::Boolean(b) => b.to_string(),
         Scalar::Array(_) | Scalar::Object(_) => return Err(Error::Malformed.into()),
     };
-    Ok(format!(
-        "'{}'",
-        text.replace('\\', "\\\\").replace('\'', "\\'")
-    ))
+    // Choose the shortest spelling accepted by our parser, including escaped
+    // bare values. Mandatory quoting alone can expand an already full request.
+    let mut spellings = Vec::with_capacity(3);
+    if !text.is_empty()
+        && !text.chars().any(|c| {
+            c.is_whitespace() || c.is_control() || matches!(c, '=' | '!' | '<' | '>' | '*')
+        })
+    {
+        let mut bare = String::new();
+        for c in text.chars() {
+            if matches!(c, ',' | ';' | '(' | ')' | '\\' | '\'' | '"') {
+                bare.push('\\');
+            }
+            bare.push(c);
+        }
+        spellings.push(bare);
+    }
+    for quote in ['\'', '"'] {
+        let escaped = text
+            .replace('\\', "\\\\")
+            .replace(quote, &format!("\\{quote}"));
+        spellings.push(format!("{quote}{escaped}{quote}"));
+    }
+    spellings
+        .into_iter()
+        .min_by_key(String::len)
+        .ok_or_else(|| Error::Malformed.into())
 }
-fn format(criteria: &Criteria) -> Result<String> {
+// Both reads and pre-persistence admission use this boundary. A successfully
+// saved definition must produce public syntax accepted by the same bounded parser.
+fn formatted(criteria: &Criteria) -> Result<String> {
+    let text = format(criteria, 0)?;
+    checked_input(rss_mdm_query::parse_filter(&text))?;
+    Ok(text)
+}
+
+fn format(criteria: &Criteria, parent: u8) -> Result<String> {
     Ok(match criteria {
         Criteria::And { children } | Criteria::Or { children } => {
             let separator = if matches!(criteria, Criteria::And { .. }) {
@@ -195,14 +234,21 @@ fn format(criteria: &Criteria) -> Result<String> {
             } else {
                 ","
             };
-            format!(
-                "({})",
-                children
-                    .iter()
-                    .map(format)
-                    .collect::<Result<Vec<_>>>()?
-                    .join(separator)
-            )
+            let precedence = if matches!(criteria, Criteria::And { .. }) {
+                2
+            } else {
+                1
+            };
+            let text = children
+                .iter()
+                .map(|child| format(child, precedence))
+                .collect::<Result<Vec<_>>>()?
+                .join(separator);
+            if precedence < parent {
+                format!("({text})")
+            } else {
+                text
+            }
         }
         Criteria::Predicate {
             field,
@@ -231,12 +277,12 @@ fn format(criteria: &Criteria) -> Result<String> {
                     "({})",
                     values
                         .iter()
-                        .map(quoted)
+                        .map(operand)
                         .collect::<Result<Vec<_>>>()?
                         .join(",")
                 )
             } else if let Some(value) = value {
-                quoted(value)?
+                operand(value)?
             } else {
                 "true".into()
             };
@@ -252,9 +298,13 @@ pub(super) struct StoredDefinition {
 }
 impl StoredDefinition {
     pub(super) fn compile(input: &SavedDefinition, catalog: &Catalog) -> Result<Self> {
+        let query = input.query.compile(catalog)?;
+        if let Some(condition) = &query.criteria {
+            formatted(&condition.criteria)?;
+        }
         Ok(Self {
             name: input.name.clone(),
-            query: input.query.compile(catalog)?,
+            query,
         })
     }
     pub(super) fn query(&self) -> &Query {

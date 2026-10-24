@@ -110,7 +110,11 @@ impl AssetService {
                 let catalog = catalog_in(tx, self.tenant, i64::MAX).await?;
                 let compiled = rsql::StoredDefinition::compile(definition, &catalog)?;
                 self.validate_query(compiled.query(), &catalog)?;
-                if checked_input(serde_json::to_vec(definition))?.len() > 16384 {
+                // Returned definitions must also fit a subsequent Put request.
+                if checked_input(serde_json::to_vec(definition))?.len() > 16384
+                    || checked_input(serde_json::to_vec(&compiled.clone().into_view()?))?.len()
+                        > 16384
+                {
                     return Err(Error::Malformed.into());
                 }
                 Some(compiled)

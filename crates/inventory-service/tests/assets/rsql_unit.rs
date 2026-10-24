@@ -146,3 +146,102 @@ fn scope_constraints_are_not_erased_by_rsql() {
     input.scope.selector = ScopeSelector::Device;
     assert!(input.compile(&catalog).is_err());
 }
+
+#[test]
+fn maximum_filter_roundtrips_without_formatting_growth() {
+    let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    let text = vec![format!("device.name=={}", "z".repeat(1010)); 8].join(";");
+    assert_eq!(text.len(), 8191);
+    for suffix in ["", "z"] {
+        let input = SavedDefinition {
+            name: "boundary".into(),
+            query: QueryInput {
+                filter: Some(format!("{text}{suffix}")),
+                ..Default::default()
+            },
+        };
+        let view = StoredDefinition::compile(&input, &catalog)
+            .unwrap()
+            .into_view()
+            .unwrap();
+        assert_eq!(view.query.filter, input.query.filter);
+        assert!(StoredDefinition::compile(&view, &catalog).is_ok());
+    }
+}
+
+#[test]
+fn canonical_precedence_and_escaped_values_keep_their_meaning() {
+    let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    for text in [
+        "device.name==a;(device.name==b,device.name==c)",
+        "(device.name==a;device.name==b),device.name==c",
+        "device.name=in=('a,b','c;d',\"a'b\",'c\\\\d','*','')",
+    ] {
+        let query = QueryInput {
+            filter: Some(text.into()),
+            ..Default::default()
+        }
+        .compile(&catalog)
+        .unwrap();
+        let view = QueryInput::from_query(query.clone()).unwrap();
+        let replay = view.compile(&catalog).unwrap();
+        assert_eq!(
+            serde_json::to_value(query).unwrap(),
+            serde_json::to_value(replay).unwrap()
+        );
+    }
+}
+
+#[test]
+fn saved_numeric_spelling_does_not_expand_short_exponents() {
+    let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    let input = SavedDefinition {
+        name: "expanded".into(),
+        query: QueryInput {
+            filter: Some(vec!["device.hardware.apple.capacity_gb==1e300"; 30].join(";")),
+            ..Default::default()
+        },
+    };
+    assert!(input.query.compile(&catalog).is_ok());
+    let view = StoredDefinition::compile(&input, &catalog)
+        .unwrap()
+        .into_view()
+        .unwrap();
+    assert!(view.query.filter.as_ref().unwrap().len() < 2048);
+    assert!(StoredDefinition::compile(&view, &catalog).is_ok());
+}
+
+#[test]
+fn typed_definitions_cannot_emit_over_budget_public_syntax() {
+    let criteria = Criteria::And {
+        children: (0..9)
+            .map(|_| Criteria::Predicate {
+                field: FieldKey::parse("device.name").unwrap(),
+                op: Operator::Eq,
+                value: Some(Scalar::String("z".repeat(1024))),
+                values: None,
+            })
+            .collect(),
+    };
+    assert!(formatted(&criteria).is_err());
+}
+
+#[test]
+fn escaped_bare_values_at_the_filter_limit_remain_replayable() {
+    let catalog = Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    let text = vec![format!("device.name=={}\\'", "z".repeat(1008)); 8].join(";");
+    assert_eq!(text.len(), 8191);
+    let input = SavedDefinition {
+        name: "escaped".into(),
+        query: QueryInput {
+            filter: Some(text.clone()),
+            ..Default::default()
+        },
+    };
+    let view = StoredDefinition::compile(&input, &catalog)
+        .unwrap()
+        .into_view()
+        .unwrap();
+    assert_eq!(view.query.filter.as_deref(), Some(text.as_str()));
+    assert!(StoredDefinition::compile(&view, &catalog).is_ok());
+}
