@@ -271,6 +271,22 @@ fn device_information_response_is_bound_to_requested_queries_and_real_rights() {
             .validate_response(&response(answers.clone()), &target)
             .is_ok()
     );
+    answers.insert(
+        "UDID".into(),
+        Value::String("automatic-device-identifier".into()),
+    );
+    assert!(
+        command
+            .validate_response(&response(answers.clone()), &target)
+            .is_ok()
+    );
+    answers.insert("UDID".into(), Value::Boolean(true));
+    assert!(
+        command
+            .validate_response(&response(answers.clone()), &target)
+            .is_err()
+    );
+    answers.remove("UDID");
     assert!(
         command
             .validate_response(
@@ -286,6 +302,115 @@ fn device_information_response_is_bound_to_requested_queries_and_real_rights() {
     assert!(
         command
             .validate_response(&response(answers), &target)
+            .is_err()
+    );
+}
+
+#[test]
+fn security_response_extensions_preserve_known_types_rights_and_budget() {
+    let context = context();
+    let target = Target {
+        context: &context,
+        access_rights: &["AllowQuerySecurity"],
+    };
+    let command = Command::new("SecurityInfo", Dictionary::new(), &target).unwrap();
+    let mut firewall = Dictionary::new();
+    firewall.insert("FirewallEnabled".into(), Value::Boolean(false));
+    firewall.insert("AllowSigned".into(), Value::Boolean(true));
+    firewall.insert("AllowSignedApp".into(), Value::Boolean(true));
+    let mut boot = Dictionary::new();
+    boot.insert("SecureBootLevel".into(), Value::String("full".into()));
+    boot.insert(
+        "WindowsBootLevel".into(),
+        Value::String("not supported".into()),
+    );
+    let mut info = Dictionary::new();
+    info.insert(
+        "FirewallSettings".into(),
+        Value::Dictionary(firewall.clone()),
+    );
+    info.insert("SecureBoot".into(), Value::Dictionary(boot));
+    let response =
+        |info: Dictionary| Dictionary::from_iter([("SecurityInfo", Value::Dictionary(info))]);
+    assert!(
+        command
+            .validate_response(&response(info.clone()), &target)
+            .is_ok()
+    );
+    assert!(
+        command
+            .validate_response(
+                &response(info.clone()),
+                &Target {
+                    context: &context,
+                    access_rights: &[]
+                }
+            )
+            .is_err()
+    );
+    firewall.insert("FirewallEnabled".into(), Value::String("false".into()));
+    info.insert("FirewallSettings".into(), Value::Dictionary(firewall));
+    assert!(
+        command
+            .validate_response(&response(info.clone()), &target)
+            .is_err()
+    );
+    info.remove("FirewallSettings");
+    info.insert(
+        "FutureExtension".into(),
+        Value::Array(vec![Value::Boolean(true); 65_537]),
+    );
+    assert!(matches!(
+        command.validate_response(&response(info), &target),
+        Err(Error::Limit)
+    ));
+}
+
+#[test]
+fn macos_device_model_aliases_and_profile_managed_fact_are_typed_evidence() {
+    let context = context();
+    let target = Target {
+        context: &context,
+        access_rights: &["AllowQueryDeviceInformation", "AllowInspection"],
+    };
+    for query in ["Model", "ProductName"] {
+        let request =
+            Dictionary::from_iter([("Queries", Value::Array(vec![Value::String(query.into())]))]);
+        let command = Command::new("DeviceInformation", request, &target).unwrap();
+        let answers = Dictionary::from_iter([
+            ("Model", Value::String("VirtualMac2,1".into())),
+            ("ProductName", Value::String("VirtualMac2,1".into())),
+        ]);
+        let response = Dictionary::from_iter([("QueryResponses", Value::Dictionary(answers))]);
+        assert!(command.validate_response(&response, &target).is_ok());
+    }
+    let command = Command::new("ProfileList", Dictionary::new(), &target).unwrap();
+    let mut profile = Dictionary::from_iter([
+        (
+            "PayloadIdentifier",
+            Value::String("com.rss.acceptance".into()),
+        ),
+        (
+            "PayloadUUID",
+            Value::String("46bd6796-70c6-4b69-a873-013a9f9a9835".into()),
+        ),
+        ("IsManaged", Value::Boolean(true)),
+    ]);
+    let response = |profile: Dictionary| {
+        Dictionary::from_iter([(
+            "ProfileList",
+            Value::Array(vec![Value::Dictionary(profile)]),
+        )])
+    };
+    assert!(
+        command
+            .validate_response(&response(profile.clone()), &target)
+            .is_ok()
+    );
+    profile.insert("IsManaged".into(), Value::String("true".into()));
+    assert!(
+        command
+            .validate_response(&response(profile), &target)
             .is_err()
     );
 }

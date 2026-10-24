@@ -188,10 +188,11 @@ impl Context {
             .get("QueryResponses")
             .and_then(Value::as_dictionary)
             .ok_or(crate::Error::Malformed)?;
-        if facts
-            .keys()
-            .any(|key| !["OSVersion", "IsSupervised", "IsAppleSilicon"].contains(&key.as_str()))
-        {
+        // macOS includes UDID even when only prerequisite facts were requested.
+        // Device identity is authenticated by the channel, not inferred here.
+        if facts.keys().any(|key| {
+            !["OSVersion", "IsSupervised", "IsAppleSilicon", "UDID"].contains(&key.as_str())
+        }) {
             return Err(crate::Error::Malformed);
         }
         let version = Version::parse(crate::protocol::text(facts, "OSVersion")?)

@@ -15,6 +15,24 @@ spec.loader.exec_module(ci)
 sys.path.insert(0, str(ci.ROOT / "hack"))
 
 class DependencyPolicy(unittest.TestCase):
+    def test_apple_protocol_may_share_wire_contracts_but_not_product_implementations(self):
+        data = {'packages': [
+            {'id': name, 'name': name, 'dependencies': []}
+            for name in ci.LOCAL_PACKAGES
+        ], 'workspace_members': list(ci.LOCAL_PACKAGES)}
+        apple = next(p for p in data['packages'] if p['name'] == 'rss-mdm-apple-mdm')
+        apple['dependencies'] = [{'name': 'rss-mdm-agent-wire', 'kind': None}]
+        ci.verify_capability_boundaries(data)
+        for owner, dependency in [('apple-mdm', 'rss-mdm-app'),
+                                  ('apple-mdm', 'rss-mdm-apple-channel'),
+                                  ('certificate', 'rss-mdm-agent-wire')]:
+            changed = copy.deepcopy(data)
+            package = next(p for p in changed['packages'] if p['name'] == 'rss-mdm-' + owner)
+            package['dependencies'].append({'name': dependency, 'kind': None})
+            with self.subTest(owner=owner, dependency=dependency):
+                with self.assertRaisesRegex(RuntimeError, 'forbidden production dependencies'):
+                    ci.verify_capability_boundaries(changed)
+
     def test_identity_pin_rejects_invalid_or_divergent_sources(self):
         source = {'git': 'https://example.test/identity', 'rev': 'a' * 40}
         manifest = {'workspace': {'dependencies': {

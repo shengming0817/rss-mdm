@@ -416,17 +416,26 @@ impl Command {
                 .get("Queries")
                 .and_then(Value::as_array)
                 .ok_or(Error::InvalidSchema)?;
+            let requested = |name: &str| {
+                requested
+                    .iter()
+                    .any(|query| query.as_string() == Some(name))
+            };
             if let Some(answers) = fields.get("QueryResponses").and_then(Value::as_dictionary)
                 && answers.keys().any(|key| {
-                    !requested
-                        .iter()
-                        .any(|query| query.as_string() == Some(key.as_str()))
+                    !requested(key)
+                        && !match key.as_str() {
+                            "UDID" => true,
+                            "Model" => requested("ProductName"),
+                            "ProductName" => requested("Model"),
+                            _ => false,
+                        }
                 })
             {
                 return Err(Error::Constraint);
             }
         }
-        validation::dictionary(
+        validation::response(
             self.0.definition,
             self.0.definition.response,
             fields,

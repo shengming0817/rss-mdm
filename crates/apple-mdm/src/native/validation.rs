@@ -44,6 +44,27 @@ pub(super) fn dictionary(
     value: &Dictionary,
     target: &Target<'_>,
 ) -> Result<(), Error> {
+    dictionary_mode(definition, fields, value, target, false)
+}
+
+/// Vendor responses can add fields without changing the meaning of known facts.
+/// Unknown values still consume the complete structural budget.
+pub(super) fn response(
+    definition: &Definition,
+    fields: &[usize],
+    value: &Dictionary,
+    target: &Target<'_>,
+) -> Result<(), Error> {
+    dictionary_mode(definition, fields, value, target, true)
+}
+
+fn dictionary_mode(
+    definition: &Definition,
+    fields: &[usize],
+    value: &Dictionary,
+    target: &Target<'_>,
+    allow_unknown: bool,
+) -> Result<(), Error> {
     let mut budget = Budget { nodes: 0, bytes: 0 };
     for (key, child) in value {
         budget.charge(key.len(), 0)?;
@@ -54,7 +75,15 @@ pub(super) fn dictionary(
         conditions.access_rights = None;
     }
     conditions.check(target)?;
-    check_dictionary(definition, fields, value, target, conditions, 0)
+    check_dictionary(
+        definition,
+        fields,
+        value,
+        target,
+        conditions,
+        0,
+        allow_unknown,
+    )
 }
 
 fn check_dictionary(
@@ -64,6 +93,7 @@ fn check_dictionary(
     target: &Target<'_>,
     parent: Conditions,
     depth: usize,
+    allow_unknown: bool,
 ) -> Result<(), Error> {
     if depth > 64 {
         return Err(Error::Limit);
@@ -91,9 +121,14 @@ fn check_dictionary(
             .iter()
             .map(|&i| &d.fields[i])
             .find(|f| f.key == key)
-            .or_else(|| fields.iter().map(|&i| &d.fields[i]).find(|f| f.wildcard))
-            .ok_or(Error::Field)?;
-        check_field(d, field, value, target, parent, depth + 1)?;
+            .or_else(|| fields.iter().map(|&i| &d.fields[i]).find(|f| f.wildcard));
+        let Some(field) = field else {
+            if allow_unknown {
+                continue;
+            }
+            return Err(Error::Field);
+        };
+        check_field_mode(d, field, value, target, parent, depth + 1, allow_unknown)?;
     }
     Ok(())
 }
@@ -106,11 +141,33 @@ pub(super) fn check_field(
     parent: Conditions,
     depth: usize,
 ) -> Result<(), Error> {
+    check_field_mode(d, field, value, target, parent, depth, false)
+}
+
+fn check_field_mode(
+    d: &Definition,
+    field: &Field,
+    value: &Value,
+    target: &Target<'_>,
+    parent: Conditions,
+    depth: usize,
+    allow_unknown: bool,
+) -> Result<(), Error> {
     if depth > 64 {
         return Err(Error::Limit);
     }
+    let key = field.key;
     let field = field.active(target)?;
     let mut conditions = field.conditions.inherit(parent);
+    // macOS returns this typed fact despite the pinned schema's n/a annotation.
+    // Outgoing applicability and managed-profile ownership proofs stay separate.
+    if allow_unknown
+        && d.identity == "ProfileList"
+        && key == "IsManaged"
+        && conditions.introduced == Some("n/a")
+    {
+        conditions.introduced = parent.introduced;
+    }
     if d.kind == Kind::Command
         && d.identity == "DeviceInformation"
         && !field.children.is_empty()
@@ -149,9 +206,15 @@ pub(super) fn check_field(
                 .inherit(conditions)
                 .check(target)?;
         }
-        Value::Dictionary(values) if !field.children.is_empty() => {
-            check_dictionary(d, field.children, values, target, conditions, depth + 1)?
-        }
+        Value::Dictionary(values) if !field.children.is_empty() => check_dictionary(
+            d,
+            field.children,
+            values,
+            target,
+            conditions,
+            depth + 1,
+            allow_unknown,
+        )?,
         Value::Array(values) => {
             cardinality(field, values.len())?;
             if !field.children.is_empty() {
@@ -160,8 +223,16 @@ pub(super) fn check_field(
                     // one complete alternative, never merely a matching primitive type.
                     let mut accepted = false;
                     for &child in field.children {
-                        if check_field(d, &d.fields[child], value, target, conditions, depth + 1)
-                            .is_ok()
+                        if check_field_mode(
+                            d,
+                            &d.fields[child],
+                            value,
+                            target,
+                            conditions,
+                            depth + 1,
+                            allow_unknown,
+                        )
+                        .is_ok()
                         {
                             accepted = true;
                             break;
