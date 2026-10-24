@@ -86,3 +86,33 @@ Brew 派生只接受能保留冻结行为的子集：PKG/DMG 的 system scope、
 `GET /api/v1/resources/{id}/versions/{version}/script?platform=macos&architecture=aarch64&variant=default`
 以当前 ResourceRead 权限读取精确不可变 Script 产物。错误资源类型、归档版本、失效引用或越权均拒绝；下载前校验完整摘要与长度。
 返回附件原始字节，支持既有 Range/ETag，并禁止共享缓存。上传者身份不是读取授权，脚本内容不会写入审计。
+
+## 从公共源准备测试安装包
+
+公共源导入与直接分发是两个入口。WinGet/Homebrew 可用于查找上游安装包，
+下载并完整校验后也可按前文的 Direct Policy 上传分发；这条路径不要求托管发布目标，
+不代表已验证 RSS 的公共源转换或 WinGet/Brew 原生执行。
+
+Windows 可先用 `winget search`、`winget show --id <ID> --exact --source winget`
+确认精确版本，再下载匹配设备架构的文件：
+
+```powershell
+winget download --id <ID> --exact --source winget --version <VERSION> --architecture arm64 --download-directory <DIRECTORY>
+```
+
+Homebrew Cask 可用 `brew info --json=v2 --cask <TOKEN>` 查元数据，
+`brew fetch --cask <TOKEN>` 只下载到缓存，`brew --cache --cask <TOKEN>` 获取缓存路径。
+无需安装 Homebrew 也可读取其[官方 JSON API](https://formulae.brew.sh/docs/api/)，
+从精确 Cask 元数据取得上游 URL 与 SHA-256。Formula 的源码归档和 bottle 不是通用 macOS PKG；
+测试 PKG/DMG 应选择确实提供相应安装包的 Cask。
+
+可复现测试须保存精确版本、架构、原始清单及其 commit、上游 URL、实际字节长度和 SHA-256，
+不能只记可变的 latest 地址。旧版升级样本从原项目的固定 release 或公共源固定 commit 获取，
+分别记录两个版本的摘要。Bundle 中提取的 MSIX 须保持成员原字节并记录原 Bundle 和成员名；
+设备上的签名、依赖及注册/预配检查仍须实际完成。
+
+本地安装包统一放在仓库的 `deployment/software_package/`，该目录被 Git 忽略；
+本地 `manifest.json` 与 `SHA256SUMS` 记录文件来源和完整性，
+可在该目录执行 `shasum -a 256 -c SHA256SUMS` 复核。
+包、原始清单及运行记录均不强制加入 Git；安装包可取得不代表安装或升级成功。
+升级验收应先确认旧版已安装，再将同一 Policy 切到新版资源版本，核对实际设备版本及最终回执。
