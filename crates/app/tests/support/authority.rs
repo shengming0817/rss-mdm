@@ -43,12 +43,25 @@ impl Authority {
                     );
                     #[cfg(feature = "integration")]
                     let identity = if config.identity.enterprise.is_some() {
-                        crate::identity::Identity::for_oidc_fixture(&config, policy, Default::default(), |resource| resources.acquire(resource)).await?
+                        crate::identity::Identity::for_oidc_fixture(
+                            &config,
+                            policy,
+                            Default::default(),
+                            |resource| resources.acquire(resource),
+                        )
+                        .await?
                     } else {
-                        crate::identity::Identity::connect(&config, policy, None, |resource| resources.acquire(resource)).await?
+                        crate::identity::Identity::connect(&config, policy, None, |resource| {
+                            resources.acquire(resource)
+                        })
+                        .await?
                     };
                     #[cfg(not(feature = "integration"))]
-                    let identity = crate::identity::Identity::connect(&config, policy, None, |resource| resources.acquire(resource)).await?;
+                    let identity =
+                        crate::identity::Identity::connect(&config, policy, None, |resource| {
+                            resources.acquire(resource)
+                        })
+                        .await?;
                     let identity = Arc::new(identity);
                     let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)?;
                     let source = crate::audit_test_support::source_runtime(&pool, tenant).await?;
@@ -153,7 +166,10 @@ impl Authority {
     }
 
     pub(crate) fn router_with_public(&self, routes: Router, public: Router) -> Result<Router> {
-        Ok(self.protect(routes)?.merge(public).merge(self.identity.routes()))
+        Ok(self
+            .protect(routes)?
+            .merge(public)
+            .merge(self.identity.routes()))
     }
 
     pub(crate) fn protect(&self, routes: Router) -> Result<Router> {

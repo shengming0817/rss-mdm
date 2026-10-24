@@ -17,7 +17,11 @@ fn task(nodes: &[&str], remove: bool) -> Value {
     let operations:Vec<_>=nodes.iter().map(|node| json!({"kind":"node","node":node,"instance":[],"operation":if remove{"delete"}else{"replace"},"value":if remove{Value::Null}else{json!({"type":"integer","value":"1"})}})).collect();
     json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"sequence","operations":operations}}})
 }
-async fn resource(client: &mut Client, runtime: &rss_transactional_messaging_postgres::PgRuntime, nodes: &[&str]) -> anyhow::Result<String> {
+async fn resource(
+    client: &mut Client,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    nodes: &[&str],
+) -> anyhow::Result<String> {
     resource_input(
         client,
         runtime,

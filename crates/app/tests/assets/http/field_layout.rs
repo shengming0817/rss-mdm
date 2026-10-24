@@ -8,10 +8,17 @@ fn operation(revision: u64, groups: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"groups":groups}})
 }
 fn grants(operations: &[Permission]) -> Vec<Grant> {
-    operations.iter().map(|operation| Grant {
-        operation: *operation,
-        scope: if operation.device() { Scope::AllDevices } else { Scope::Tenant },
-    }).collect()
+    operations
+        .iter()
+        .map(|operation| Grant {
+            operation: *operation,
+            scope: if operation.device() {
+                Scope::AllDevices
+            } else {
+                Scope::Tenant
+            },
+        })
+        .collect()
 }
 async fn publish(fixture: &mut AssetHttp, key: &str, sensitivity: &str) -> Result<()> {
     let change = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{

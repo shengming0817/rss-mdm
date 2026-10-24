@@ -237,9 +237,7 @@ async fn storage_integrity_is_enforced() -> Result<()> {
                 tenant,
                 &source_control,
                 (&store, &fact),
-                |(store, fact), tx| {
-                    Box::pin(async move { store.append(tx, fact, false).await })
-                },
+                |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
             )
             .await;
         ensure!(state(written) == "committed");

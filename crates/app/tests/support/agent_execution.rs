@@ -431,16 +431,24 @@ impl Fixture {
         output_bytes: u32,
         inputs: bool,
     ) -> Result<(Uuid, &'static [u8], Value)> {
-        let router = &self.router;
-        let author = &mut self.author;
         let id = Uuid::new_v4();
         let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
-        let digest: [u8; 32] = Sha256::digest(bytes).into();
         let mut definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"},"padding":{"type":"string"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{"custom.corporate_agent.version":{"pointer":"/version","conversion":{"kind":"identity"},"columns":{}},"custom.corporate_agent.healthy":{"pointer":"/healthy","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":output_bytes,"maxRows":1});
         if inputs {
             definition["parameters"] = json!({"type":"object","properties":{"name":{"type":"string","maxLength":32},"path":{"type":"string","maxLength":64,"enum":["/Applications","/Library"]}},"required":["name","path"],"additionalProperties":false});
             definition["bindings"] = json!({"name":{"kind":"positional","index":0},"path":{"kind":"environment","name":"RSS_PARAM_PATH"}});
         }
+        self.seed_script_resource(id, bytes, definition.clone())
+            .await?;
+        Ok((id, bytes, definition))
+    }
+    pub(crate) async fn seed_script_resource(
+        &mut self,
+        id: Uuid,
+        bytes: &[u8],
+        definition: Value,
+    ) -> Result<()> {
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
         use rss_mdm_resource::{
             Architecture, Artifact, Declaration, Digest, Id, Kind, Platform, Variant, Version,
         };
@@ -480,8 +488,8 @@ impl Fixture {
                 |_| Err(anyhow::anyhow!("resource fixture commit unconfirmed")),
                 |e| Err(anyhow::anyhow!(e)),
             )?;
-        ensure!(upload(author, router, id, bytes).await? == StatusCode::CREATED);
-        Ok((id, bytes, definition))
+        ensure!(upload(&self.author, &self.router, id, bytes).await? == StatusCode::CREATED);
+        Ok(())
     }
 }
 pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uuid) -> Result<Uuid> {
@@ -539,4 +547,34 @@ pub(crate) async fn seed_scope(
             |_| Err(anyhow::anyhow!("scope fixture commit unconfirmed")),
             |e| Err(anyhow::anyhow!(e)),
         )
+}
+
+pub(crate) async fn seed_script_result(f: &Fixture, run: Uuid, canary: &str) -> Result<()> {
+    use rss_mdm_execution_service::actions::state::{Cancellation, Delivery, Execution, RunState};
+    let result = rss_mdm_agent_wire::runtime::ScriptRunResult {
+        collected_at: 1,
+        received_at: 2,
+        exit_code: Some(0),
+        quality: rss_mdm_agent_wire::runtime::OutputQuality::Complete,
+        schema_valid: true,
+        budget_valid: true,
+        output: json!({"secret":canary}),
+        output_reference: None,
+        diagnostics: serde_json::from_value(
+            json!({"stdout":canary,"stderr":canary,"durationMs":1,"executedAt":1,"failure":null}),
+        )?,
+        trusted: true,
+    };
+    let result = serde_json::to_value(result)?;
+    let tenant = f.authority.identity.tenant;
+    f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |c| Box::pin(async move {
+            let deadline: i64 = sqlx::query_scalar("SELECT deadline FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).fetch_one(&mut *c).await?;
+            let state = RunState { delivery: Delivery::Received {attempt: Uuid::new_v4(), lease_until: deadline}, execution: Execution::Succeeded, cancellation: Cancellation::None, deadline, started_at: Some(1) };
+            sqlx::query("UPDATE mdm_commands.action_runs SET state=$3,result=$4,gateway_accepted=true WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).bind(serde_json::to_value(state).expect("run state")).bind(result).execute(c).await?;
+            Ok(())
+        })).await
+    })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))
 }

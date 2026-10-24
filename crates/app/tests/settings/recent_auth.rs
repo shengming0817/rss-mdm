@@ -3,14 +3,25 @@ use crate::test_support::{http::*, runtime::*, *};
 #[ignore = "MODULE=settings.recent_auth: six consumers reject old authentication on a newly issued live session"]
 async fn sensitive_operations_use_authentication_time() -> Result<()> {
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    identity::seed_grants(case_tenant(), case_admin(), [
-        crate::authorization::Permission::RegistrationConfigurationRead,
-        crate::authorization::Permission::RegistrationConfigurationWrite,
-        crate::authorization::Permission::StorageConfigurationRead,
-        crate::authorization::Permission::StorageConfigurationWrite,
-        crate::authorization::Permission::WebhookRead,
-        crate::authorization::Permission::WebhookWrite,
-    ].into_iter().map(|operation| crate::authorization::Grant { operation, scope: crate::authorization::Scope::Tenant }).collect()).await?;
+    identity::seed_grants(
+        case_tenant(),
+        case_admin(),
+        [
+            crate::authorization::Permission::RegistrationConfigurationRead,
+            crate::authorization::Permission::RegistrationConfigurationWrite,
+            crate::authorization::Permission::StorageConfigurationRead,
+            crate::authorization::Permission::StorageConfigurationWrite,
+            crate::authorization::Permission::WebhookRead,
+            crate::authorization::Permission::WebhookWrite,
+        ]
+        .into_iter()
+        .map(|operation| crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        })
+        .collect(),
+    )
+    .await?;
     let (router, resources) = app(&base).await?;
     resources.finish(async {
         let mut browser=Browser::default();

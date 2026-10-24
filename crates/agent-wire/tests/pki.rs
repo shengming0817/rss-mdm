@@ -121,6 +121,8 @@ fn rust_and_schema_reject_the_same_malformed_coordinates() {
 
 #[test]
 fn issuer_fields_enums_and_digests_are_closed() {
+    let trust_schema = validator(true);
+    let ack_schema = validator(false);
     let trust = trust_json();
     let ack = ack_json();
     for value in [
@@ -133,11 +135,11 @@ fn issuer_fields_enums_and_digests_are_closed() {
     ] {
         let mut malformed = trust.clone();
         malformed["issuers"][0]["digest"] = json!(value);
-        assert!(!validator(true).is_valid(&malformed));
+        assert!(!trust_schema.is_valid(&malformed));
         assert!(!accepted(&malformed, true));
         let mut malformed = ack.clone();
         malformed["digest"] = json!(value);
-        assert!(!validator(false).is_valid(&malformed));
+        assert!(!ack_schema.is_valid(&malformed));
         assert!(!accepted(&malformed, false));
     }
     for field in trust["issuers"][0].as_object().unwrap().keys() {
@@ -146,10 +148,7 @@ fn issuer_fields_enums_and_digests_are_closed() {
             .as_object_mut()
             .unwrap()
             .remove(field);
-        assert!(
-            !validator(true).is_valid(&malformed),
-            "missing issuer {field}"
-        );
+        assert!(!trust_schema.is_valid(&malformed), "missing issuer {field}");
         assert!(!accepted(&malformed, true));
     }
     for (pointer, value) in [
@@ -159,12 +158,12 @@ fn issuer_fields_enums_and_digests_are_closed() {
     ] {
         let mut malformed = trust.clone();
         *malformed.pointer_mut(pointer).unwrap() = value;
-        assert!(!validator(true).is_valid(&malformed));
+        assert!(!trust_schema.is_valid(&malformed));
         assert!(!accepted(&malformed, true));
     }
     let mut malformed = trust;
     malformed["issuers"][0]["unexpected"] = json!(null);
-    assert!(!validator(true).is_valid(&malformed));
+    assert!(!trust_schema.is_valid(&malformed));
     assert!(!accepted(&malformed, true));
 }
 

@@ -100,10 +100,30 @@ pub(crate) async fn open(
                 .on_runtime(runtime.clone(), tenant, &audit_budget.control())
                 .await?,
         );
-        runtime.local_tx(tenant, deadline(), |tx| Box::pin(async move {
-            tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c))).await
-        })).await.fold(Ok, |_| Err(bad()), |_| Err(bad()), |_| Err(Error::CommitUnknown), |_| Err(Error::CommitUnknown), |_| Err(bad()))?;
-        let (outbox, store, reconcile) = open_storage(runtime.clone(), database.options()?, tenant, &protection, command_clock).await?;
+        runtime
+            .local_tx(tenant, deadline(), |tx| {
+                Box::pin(async move {
+                    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
+                        .await
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |_| Err(bad()),
+                |_| Err(bad()),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(Error::CommitUnknown),
+                |_| Err(bad()),
+            )?;
+        let (outbox, store, reconcile) = open_storage(
+            runtime.clone(),
+            database.options()?,
+            tenant,
+            &protection,
+            command_clock,
+        )
+        .await?;
         config.enrollment_entries.validate()?;
         let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
             Arc::new(
@@ -244,7 +264,14 @@ pub(crate) async fn open_storage(
     tenant: TenantId,
     protection: &rss_mdm_native_protection::Protector,
     command_clock: rss_device_command_postgres::CommandClock,
-) -> Result<(Arc<PgOutboxStore<()>>, rss_device_command_postgres::PgStore<()>, rss_reconcile_postgres::PgStore), Error> {
+) -> Result<
+    (
+        Arc<PgOutboxStore<()>>,
+        rss_device_command_postgres::PgStore<()>,
+        rss_reconcile_postgres::PgStore,
+    ),
+    Error,
+> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
     let outbox = Arc::new(
@@ -270,9 +297,7 @@ pub(crate) async fn open_storage(
                 })?;
                 rss_device_command_postgres::PgStore::new(tx, copy, command_clock)
                     .await
-                    .inspect_err(|_| {
-                        eprintln!("command startup: device-command admission failed")
-                    })
+                    .inspect_err(|_| eprintln!("command startup: device-command admission failed"))
             })
         })
         .await

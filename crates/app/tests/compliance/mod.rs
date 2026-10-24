@@ -133,32 +133,68 @@ impl Fixture {
         resources.resource(SourceResource(plan_runtime.clone()));
         let key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
         let clock = Arc::new(crate::clock::SystemClock);
-        let planning = Arc::new(crate::planning::Planning::new(
-            authority.audit.clone(), plan_runtime.clone(), tenant, clock.clone(), &key,
-            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(authority.audit.clone())),
-        ).await?);
+        let planning = Arc::new(
+            crate::planning::Planning::new(
+                authority.audit.clone(),
+                plan_runtime.clone(),
+                tenant,
+                clock.clone(),
+                &key,
+                Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                    authority.audit.clone(),
+                )),
+            )
+            .await?,
+        );
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let compliance = crate::planning::test_support::compliance(&planning).await;
         let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
             config.runtime_database.options()?,
-            Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone())),
-            tenant, monotonic(), authority.audit.clone(),
-        ).await?;
+            Arc::new(rss_mdm_inventory_service::Store::from_pool(
+                authority.pool.clone(),
+            )),
+            tenant,
+            monotonic(),
+            authority.audit.clone(),
+        )
+        .await?;
         resources.resource(InventoryFixtureResource(inventory.clone()));
         let assets = Arc::new(crate::assets::AssetService::new(
-            inventory, authority.audit.clone(), plan_runtime.clone(), tenant,
-            Arc::new(crate::clock::InventoryClock(clock.clone())), &key,
+            inventory,
+            authority.audit.clone(),
+            plan_runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::InventoryClock(clock.clone())),
+            &key,
             Arc::new(crate::automation::inventory_tasks::InventoryTasks),
         ));
-        let router = authority.router(Router::new().nest("/api/v1",
-            rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum()
-                .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(
-                    rss_mdm_management_http::assets::http::HttpState { assets },
-                )).into_axum())
-                .merge(rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
-                    rss_mdm_management_http::planning::http::HttpState { planning, groups },
-                )).into_axum()),
-        ).merge(authority.authorization()))?;
+        let router = authority.router(
+            Router::new()
+                .nest(
+                    "/api/v1",
+                    rss_mdm_management_http::compliance::http::routes()
+                        .with_state(compliance)
+                        .into_axum()
+                        .merge(
+                            rss_mdm_management_http::assets::routes()
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::assets::http::HttpState { assets },
+                                ))
+                                .into_axum(),
+                        )
+                        .merge(
+                            rss_mdm_management_http::planning::http::routes()
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::planning::http::HttpState {
+                                        planning,
+                                        groups,
+                                    },
+                                ))
+                                .into_axum(),
+                        ),
+                )
+                .merge(authority.authorization()),
+        )?;
         let browser = authority::Authority::prepared_browser("admin")?;
         let subject = prepared_subject(&browser)?;
         identity::seed_grants(case_tenant(), &subject, grants(None)?).await?;

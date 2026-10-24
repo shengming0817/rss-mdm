@@ -4,8 +4,8 @@
 )]
 use crate::test_support::planning_http::*;
 use crate::test_support::{
-    http::Browser, http::await_task, http::prepared_subject, http::change_device_grants,
-    http::change_management_grants, http::seed_management_grants,
+    http::Browser, http::await_task, http::change_device_grants, http::change_management_grants,
+    http::prepared_subject, http::seed_management_grants,
 };
 use crate::test_support::{process::*, runtime::*, *};
 #[tokio::test]
@@ -854,58 +854,56 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-                    let browser = fixture.browser("other")?;
-                    let subject = prepared_subject(&browser)?;
-                    let mut grants = identity::device_grants(None, &["inventory_read"])?;
-                    grants.push(crate::authorization::Grant {
-                        operation: crate::authorization::Permission::GroupRead,
-                        scope: crate::authorization::Scope::Tenant,
-                    });
-                    identity::seed_grants(case_tenant(), &subject, grants).await?;
-                    let proof =
-                        crate::device::test_support::admin(case_tenant(), "other-a").await?;
-                    proof.manage(crate::authorization::Permission::GroupRead)?;
-                    proof.require_all_devices(crate::authorization::Permission::InventoryRead)?;
-                    let planning = crate::planning::test_support::planning(
-                        crate::planning::test_support::tenant(),
-                    )
+            let browser = fixture.browser("other")?;
+            let subject = prepared_subject(&browser)?;
+            let mut grants = identity::device_grants(None, &["inventory_read"])?;
+            grants.push(crate::authorization::Grant {
+                operation: crate::authorization::Permission::GroupRead,
+                scope: crate::authorization::Scope::Tenant,
+            });
+            identity::seed_grants(case_tenant(), &subject, grants).await?;
+            let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
+            proof.manage(crate::authorization::Permission::GroupRead)?;
+            proof.require_all_devices(crate::authorization::Permission::InventoryRead)?;
+            let planning =
+                crate::planning::test_support::planning(crate::planning::test_support::tenant())
                     .await;
-                    let groups = rss_mdm_inventory_service::groups::Groups {
-                        objects: planning.objects.clone(),
-                        tenant: planning.tenant,
-                        groups: planning.groups.clone(),
-                        cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9; 32]),
-                        audit_store: planning.audit_store.clone(),
-                        runtime: planning.runtime.clone(),
-                        clock: Arc::new(crate::clock::InventoryClock(Arc::new(
-                            crate::clock::SystemClock,
-                        ))),
-                    };
-                    identity::change_grants(case_tenant(), &subject, vec![]).await?;
-                    // The same proof still contains both old grants. The transaction must reject before existence reads.
-                    let audit = rss_mdm_audit_integration::RequestAudit::new(
-                        case_tenant().into(),
-                        "management_read",
-                    );
-                    proof.bind_audit(&audit)?;
-                    let result = groups
-                        .memberships(
-                            &proof,
-                            "not-present",
-                            &rss_mdm_query::window::Query {
-                                limit: 1,
-                                cursor: None,
-                            },
-                            &audit,
-                        )
-                        .await;
-                    audit.finalize(None);
-                    planning.runtime.close().await;
-                    ensure!(
-                        matches!(result, Err(rss_mdm_inventory_service::Error::Forbidden)),
-                        "stale request authority: {result:?}"
-                    );
-                    Ok(())
+            let groups = rss_mdm_inventory_service::groups::Groups {
+                objects: planning.objects.clone(),
+                tenant: planning.tenant,
+                groups: planning.groups.clone(),
+                cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &[9; 32]),
+                audit_store: planning.audit_store.clone(),
+                runtime: planning.runtime.clone(),
+                clock: Arc::new(crate::clock::InventoryClock(Arc::new(
+                    crate::clock::SystemClock,
+                ))),
+            };
+            identity::change_grants(case_tenant(), &subject, vec![]).await?;
+            // The same proof still contains both old grants. The transaction must reject before existence reads.
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                case_tenant().into(),
+                "management_read",
+            );
+            proof.bind_audit(&audit)?;
+            let result = groups
+                .memberships(
+                    &proof,
+                    "not-present",
+                    &rss_mdm_query::window::Query {
+                        limit: 1,
+                        cursor: None,
+                    },
+                    &audit,
+                )
+                .await;
+            audit.finalize(None);
+            planning.runtime.close().await;
+            ensure!(
+                matches!(result, Err(rss_mdm_inventory_service::Error::Forbidden)),
+                "stale request authority: {result:?}"
+            );
+            Ok(())
         })
         .await
 }
@@ -1047,7 +1045,7 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
         let (router, _, runtime, planning, app_resources) = crate::api::application_fixture(
             config, Arc::new(crate::clock::SystemClock), monotonic(), access, None, audit_store,
         ).await?;
-        let router=router.layer(axum::Extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?)));
+        let router=router.browser.layer(axum::Extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?)));
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
             let subject = prepared_subject(&browser)?;

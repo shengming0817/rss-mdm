@@ -129,7 +129,6 @@ fn software_validation_reports_closed_context_without_input_values() {
     );
 }
 
-
 #[test]
 fn installer_material_does_not_require_an_execution_plan() {
     let mut material = spec();

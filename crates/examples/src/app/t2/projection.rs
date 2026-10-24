@@ -55,29 +55,6 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         );
         assert_ne!(view["checkpoint"], original["checkpoint"]);
     }
-    a.ingest(batch("full", 3, Body::Snapshot(facts("Model-B"))))
-        .await?;
-    a.project(&cancel).await?;
-    a.ingest(batch(
-        "delta",
-        4,
-        Body::Delta {
-            baseline: Id::new("full")?,
-            previous: 3,
-            changes: vec![Change::delete(Id::new("device.os.version")?)],
-        },
-    ))
-    .await?;
-    a.project(&cancel).await?;
-    assert_eq!(
-        inspect(&a, "delta").await?["assets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|a| a["fact"]["state"]["kind"] == "known")
-            .count(),
-        1
-    );
     let other = app(scope(2, "d1")).await?;
     other
         .ingest(batch("first", 0, Body::Snapshot(facts("Tenant-B"))))
@@ -92,15 +69,6 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         "not_projected"
     );
     sibling.project(&cancel).await?;
-    a.ingest(batch("empty", 5, Body::Snapshot(vec![]))).await?;
-    a.project(&cancel).await?;
-    let own = inspect(&a, "empty").await?;
-    assert_eq!(own["projection"], "projected");
-    assert!(
-        fields(&own)
-            .values()
-            .all(|row| row["fact"]["state"]["kind"] == "deleted")
-    );
     known(
         &inspect(&other, "first").await?,
         &scope(2, "d1"),

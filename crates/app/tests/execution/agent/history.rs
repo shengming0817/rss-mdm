@@ -198,52 +198,43 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
-    f.grants.push(Grant {
-        operation: Permission::InventoryFieldsWrite,
-        scope: Scope::Tenant,
-    });
-    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
     let key = "custom.confidential_observation";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    ensure!(f.author.call(&f.router,Method::PUT,&format!("/api/v1/asset-fields/{key}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0==StatusCode::OK);
+    let mut tx = f.authority.pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+    ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, f.authority.identity.tenant, 0, &serde_json::from_value(field)?).await?);
+    tx.commit().await?;
     let id = Uuid::new_v4();
     let bytes = b"printf '{}'";
-    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
-    resource(
-        &mut f.author,
-        &f.router,
-        id,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
-    resource(&mut f.author,&f.router,id,1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"sensitive-script","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
-    ensure!(upload(&f.author, &f.router, id, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(id, bytes, definition).await?;
     f.scope(
         case_task_scope(),
         json!([{"kind":"device","id":case_device_id()}]),
     )
     .await?;
-    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     {
         let policy = publish(&mut f.author, &f.router, id).await?;
-        let task = claim(&f.router).await?;
-        task_event(&f.router, &task, json!({"kind":"received"})).await?;
-        task_event(&f.router, &task, json!({"kind":"start"})).await?;
-        task_event(&f.router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":"private-collection-canary"},"diagnostics":{"stdout":"private-collection-canary","stderr":"private-collection-canary","durationMs":1,"executedAt":1,"failure":null}})).await?;
+        let task_id = Uuid::new_v4();
+        let mut tx = f.authority.pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        let object = f.planning.objects.endpoint(&mut tx, f.authority.identity.tenant, case_device_id()).await?;
+        tx.rollback().await?;
+        let source_objects = serde_json::to_value(vec![object])?;
+        let tenant = f.authority.identity.tenant;
+        f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            tx.with_connection(move |c| Box::pin(async move {
+                let state = rss_mdm_execution_service::actions::state::RunState::new(300, 1).expect("valid run horizon");
+                sqlx::query("INSERT INTO mdm_commands.action_runs(tenant_id,id,policy_version,device,registration,generation,occurrence,created_at,available_at,deadline,state,gateway_accepted,dispatch_fingerprint,source_objects) SELECT p.tenant_id,$2,p.current_version,r.device,r.id,r.generation,'retained-sensitive-result',1,1,300,$4,true,$5,$6 FROM mdm_policy.policies p JOIN mdm_access.registrations r ON r.tenant_id=p.tenant_id AND r.device=$3 AND r.channel='agent' AND r.state='active' WHERE p.tenant_id=$1::uuid AND p.id=$7")
+                    .bind(tenant.to_string()).bind(task_id).bind(case_device_id()).bind(serde_json::to_value(state).expect("run state"))
+                    .bind(vec![7u8;32]).bind(source_objects).bind(policy).execute(c).await?;
+                Ok(())
+            })).await
+        })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
+        seed_script_result(&f, task_id, "private-collection-canary").await?;
         let path = format!(
             "/api/v1/policies/{policy}/runs/{}",
-            task["payload"]["task"]["taskId"].as_str().unwrap()
+            task_id
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
@@ -270,7 +261,6 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
-        let task_id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
         let denied = f.queries.action_run(&stale, policy, task_id, &audit).await;
         ensure!(
             matches!(
@@ -280,7 +270,6 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             "stale sensitive grant survived withdrawal"
         );
     }
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

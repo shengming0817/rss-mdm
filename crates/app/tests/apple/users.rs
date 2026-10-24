@@ -51,7 +51,12 @@ impl Peer {
 #[ignore = "MODULE=apple.users: Bootstrap Token escrow over real mTLS and PG"]
 async fn bootstrap_escrow_requires_evidence_and_clears_secrets() -> Result<()> {
     let mut f = Fixture::start().await?;
-    crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+    crate::test_support::identity::change_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::native_grants(&["device_control"])?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let get = protocol::dictionary([
         ("MessageType", "GetBootstrapToken".into()),

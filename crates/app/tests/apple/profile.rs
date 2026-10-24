@@ -7,7 +7,12 @@ use sqlx::Connection;
 #[ignore = "MODULE=apple.profile: native error requires complete contrary evidence to retire reservations"]
 async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -> Result<()> {
     let mut f = Fixture::start().await?;
-    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();
@@ -83,7 +88,12 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
 #[ignore = "MODULE=apple.profile: attempt, guards, command and audit share the original transaction"]
 async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()> {
     let mut f = Fixture::start().await?;
-    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();

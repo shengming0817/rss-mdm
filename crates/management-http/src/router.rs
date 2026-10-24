@@ -199,7 +199,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::planning::policies::http::routes(state.queries.clone())
                 .with_state(policies.clone()),
         )
-        .merge(crate::planning::policies::http::previews(state.queries.clone(), state.telemetry.clone()))
+        .merge(crate::planning::policies::http::previews(
+            state.queries.clone(),
+            state.telemetry.clone(),
+        ))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
@@ -209,11 +212,12 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::device_views::routes(sessions, directory_identity, state.platform_configuration)
                 .with_state(state.associations),
         );
-    let host_context = identity_context_routes(state.identity_management)
-        .route_layer(middleware::from_fn_with_state(
+    let host_context = identity_context_routes(state.identity_management).route_layer(
+        middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,
-        ));
+        ),
+    );
     let protected = core
         .merge(planning_routes)
         .merge(operations)
@@ -290,7 +294,9 @@ pub fn identity_context_routes(
         "/api/v1/identity-host/tenants/{tenant}/context",
         get(identity_context)
             .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
-            .with_state(Arc::new(IdentityContextState { identity_management: policy })),
+            .with_state(Arc::new(IdentityContextState {
+                identity_management: policy,
+            })),
     )
 }
 

@@ -66,15 +66,31 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
 -> Result<()> {
     let mut f = fixture().await?;
     let runtime = agent_runtime(&f.authority).await?;
-    f.resources.resource(InventoryFixtureResource(runtime.clone()));
-    let reports = rss_mdm_agent_channel::router(Arc::new(crate::agent::HttpState {
-        content: None, enrollment: f.enrollment.clone(), audit_store: f.authority.audit.clone(),
-        access: Arc::new(rss_mdm_agent_channel::Store::from_pool(f.authority.pool.clone())), inventory: runtime, telemetry: None,
-    }), rss_mdm_agent_channel::boundary::Envelope {
-        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test:9445".into(),
-        clock: monotonic(), audit_store: f.authority.audit.clone(), tenant: case_tenant().into(),
-    });
-    f.router = f.router.merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
+    f.resources
+        .resource(InventoryFixtureResource(runtime.clone()));
+    let reports = rss_mdm_agent_channel::router(
+        Arc::new(crate::agent::HttpState {
+            content: None,
+            enrollment: f.enrollment.clone(),
+            audit_store: f.authority.audit.clone(),
+            access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
+                f.authority.pool.clone(),
+            )),
+            inventory: runtime,
+            telemetry: None,
+        }),
+        rss_mdm_agent_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            requests: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test:9445".into(),
+            clock: monotonic(),
+            audit_store: f.authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
+    );
+    f.router = f
+        .router
+        .merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let id = publish(&mut f).await?;
@@ -209,7 +225,9 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         .finish(async {
             let id = publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
-            let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+            let workers =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             inventory::seed_unenrolled(case_device_id())?;
             planning_http::await_ingress().await?;
             let task = claim(&f.router).await?;
@@ -237,7 +255,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             resources
                 .finish(async {
                     let execution = execution.service;
-                    let router = router.layer(axum::Extension(
+                    let router = router.browser.layer(axum::Extension(
                         rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
                     ));
                     execution.recover_action_fixture(id).await?;
@@ -452,6 +470,28 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Result<()> {
     let mut f = Fixture::new().await?;
+    let tenant = f.authority.identity.tenant;
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(
+        f.authority.audit.clone(),
+        tenant,
+        &[7; 32],
+    )?);
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            f.authority.identity.authority.clone(),
+            tenant,
+        ),
+    );
+    let routes = rss_mdm_management_http::device_views::routes(
+        sessions,
+        f.authority.identity.authority.clone(),
+        None,
+    )
+    .with_state(associations.clone())
+    .into_axum();
+    f.router = f
+        .router
+        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1", "task.execute.v1", "device.unmanage.v1"])).await?;
@@ -508,11 +548,9 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let force_path=format!("/api/v1/device-retirements/{retirement}/force-revoke");
         let receipt=post(&mut f.author,&f.router,&force_path,forced.clone()).await?;
         ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
-        let access=database(&f.base).await?;
-        let owner=rss_mdm_device_service::Associations::new(access.audit_store_fixture(&crate::config::AuditConfig::Plain).await?,rss_request_context::TenantId::parse(case_tenant())?,&[7;32])?;
         // The live worker may have finalized this operation before the explicit sweep.
         // Prove the persisted outcome, not which concurrent caller did the work.
-        owner.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
+        associations.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;

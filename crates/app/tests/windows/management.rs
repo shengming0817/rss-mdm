@@ -479,8 +479,7 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
             == StatusCode::OK
     );
     let mut work =
-        crate::execution::test_support::Client::start(host.browser.clone(), &host.app)
-            .await?;
+        crate::execution::test_support::Client::start(host.browser.clone(), &host.app).await?;
     work.accept_authorized().await?;
     work.publish_operation(work.operation).await?;
     let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;

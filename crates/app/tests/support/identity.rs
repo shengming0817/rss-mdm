@@ -152,10 +152,18 @@ pub(super) async fn refresh_management(root: &std::path::Path) -> Result<()> {
     resources.finish(async { Ok(()) }).await
 }
 
-pub(super) async fn prepare_management_delegate(root: &std::path::Path, management: &str, source_secret: &std::path::Path, login: &str) -> Result<()> {
+pub(super) async fn prepare_management_delegate(
+    root: &std::path::Path,
+    management: &str,
+    source_secret: &std::path::Path,
+    login: &str,
+) -> Result<()> {
     let config = configured(management)?;
     let tenant = rss_request_context::TenantId::parse(management)?;
-    let (resources, identity) = super::runtime::Resources::build(move |resources| Box::pin(identity_with(config, resources))).await?;
+    let (resources, identity) = super::runtime::Resources::build(move |resources| {
+        Box::pin(identity_with(config, resources))
+    })
+    .await?;
     resources.finish(async {
         let source = identity.authority.inspect_session(tenant, SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?, crate::identity::deadline()).await?;
         let account = identity.authority.create_local_account(source, LoginKey::parse(login)?, Password::new(PASSWORD.into())?, crate::identity::deadline()).await?;
@@ -483,11 +491,20 @@ pub(crate) async fn seed_grants(
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
     use crate::authorization::{Rule, Subject};
-    let rule = Rule { subject: Subject::User { user: user(tenant, subject) }, grants };
+    let rule = Rule {
+        subject: Subject::User {
+            user: user(tenant, subject),
+        },
+        grants,
+    };
     rule.subject.validate(tenant, INSTANCE)?;
-    if !rule.grants.is_empty() { rule.validate(tenant, INSTANCE)?; }
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(config(tenant)?.access_options()?).await?;
+    if !rule.grants.is_empty() {
+        rule.validate(tenant, INSTANCE)?;
+    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(config(tenant)?.access_options()?)
+        .await?;
     let result = async {
         let mut tx = pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;
@@ -520,8 +537,10 @@ pub(crate) async fn seed_management_grants(
     mut grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
     use crate::authorization::{Permission, Rule, Subject};
-    let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(config(tenant)?.access_options()?).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(config(tenant)?.access_options()?)
+        .await?;
     let result = async {
         let mut tx = pool.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;

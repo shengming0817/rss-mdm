@@ -2199,29 +2199,6 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
     let p = admin(case_a(), "admin-a").await?;
     // A supported RSA-8192 leaf makes the Candidate exceed the small operation-receipt budget.
     let csr_file = root().join("recovery-long.der");
-    let output = tokio::time::timeout(
-        Duration::from_secs(30),
-        tokio::process::Command::new("openssl")
-            .args([
-                "req",
-                "-new",
-                "-newkey",
-                "rsa:8192",
-                "-nodes",
-                "-subj",
-                "/CN=rss-mdm-agent",
-                "-outform",
-                "DER",
-            ])
-            .arg("-keyout")
-            .arg(root().join("recovery-long.key"))
-            .arg("-out")
-            .arg(&csr_file)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await??;
-    anyhow::ensure!(output.status.success(), "large CSR generation failed");
     let mut g = grant()?;
     g.csr = STANDARD.encode(std::fs::read(csr_file)?);
     let authorized = authorize_request(&s, &p, &g, &audit()).await?;

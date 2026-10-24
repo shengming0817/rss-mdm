@@ -18,17 +18,57 @@ async fn fixture() -> Result<Fixture> {
 }
 impl Fixture {
     pub(crate) async fn mount_access(&mut self) -> Result<()> {
-    let f = self;
-    let config: Config = serde_json::from_value(f.base.clone())?;
-    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    let access_audit = Arc::new(f.authority.audit.on_runtime(f.authority.identity.runtime.clone(), f.authority.identity.tenant, &budget.control()).await?);
-    let recovery = config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?.map(|p| Arc::new(rss_mdm_recovery_credentials::Credentials::new(f.authority.pool.clone(), f.authority.audit.clone(), p.keys.clone(), Some(access_audit), f.execution.clone())));
-    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
-    let routes = rss_mdm_management_http::device_access::routes(rss_mdm_query::cursor::CursorCodec::new(&key)?, f.authority.authorization.clone(), recovery.clone(), Some(f.enrollment.clone()), f.execution.clone(), f.authority.identity.browser()).into_axum()
-        .merge(rss_mdm_management_http::recovery_credentials::routes(recovery, rss_mdm_query::cursor::CursorCodec::new(&key)?).into_axum());
-    f.router = f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
-    Ok(())
-}
+        let f = self;
+        let config: Config = serde_json::from_value(f.base.clone())?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let access_audit = Arc::new(
+            f.authority
+                .audit
+                .on_runtime(
+                    f.authority.identity.runtime.clone(),
+                    f.authority.identity.tenant,
+                    &budget.control(),
+                )
+                .await?,
+        );
+        let recovery = config
+            .recovery_credentials
+            .as_ref()
+            .map(crate::recovery_credentials::Config::open)
+            .transpose()?
+            .map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                    f.authority.pool.clone(),
+                    f.authority.audit.clone(),
+                    p.keys.clone(),
+                    Some(access_audit),
+                    f.execution.clone(),
+                ))
+            });
+        let key =
+            rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+        let routes = rss_mdm_management_http::device_access::routes(
+            rss_mdm_query::cursor::CursorCodec::new(&key)?,
+            f.authority.authorization.clone(),
+            recovery.clone(),
+            Some(f.enrollment.clone()),
+            f.execution.clone(),
+            f.authority.identity.browser(),
+        )
+        .into_axum()
+        .merge(
+            rss_mdm_management_http::recovery_credentials::routes(
+                recovery,
+                rss_mdm_query::cursor::CursorCodec::new(&key)?,
+            )
+            .into_axum(),
+        );
+        f.router = f
+            .router
+            .clone()
+            .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+        Ok(())
+    }
 }
 
 fn context(revision: u64, session: Uuid, account: Uuid) -> Value {

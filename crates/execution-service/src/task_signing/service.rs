@@ -86,7 +86,14 @@ impl ExecutionService {
         audit: &RequestAudit,
         operation: Uuid,
     ) -> Result<Trust, Error> {
-        read_task_trust(&self.task_signing_audit, self.tenant, p, audit, Some(operation)).await
+        read_task_trust(
+            &self.task_signing_audit,
+            self.tenant,
+            p,
+            audit,
+            Some(operation),
+        )
+        .await
     }
     pub async fn change_task_trust(
         &self,
@@ -304,42 +311,43 @@ impl ExecutionService {
 }
 
 pub async fn read_task_trust(
-        store: &rss_mdm_audit_integration::AuditStore,
-        tenant: rss_request_context::TenantId,
-        p: &AuthorizedPrincipal,
-        audit: &RequestAudit,
-        operation: Option<Uuid>,
-    ) -> Result<Trust, Error> {
-        if p.tenant_id() != tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
-        p.require(Permission::RegistrationConfigurationRead, None)?;
-        p.bind_audit(audit)?;
-        let budget = AuditBudget::new(Duration::from_secs(6));
-        let result = store.read(
-                tenant,
-                &budget.control(),
-                (tenant, p, operation),
-                |(tenant, p, operation), tx| {
-                    Box::pin(async move {
-                        let tenant = *tenant;
-                        let operation = *operation;
-                        let value = tx
-                            .with_connection(move |c| {
-                                Box::pin(async move {
-                                    if let Some(id) = operation {
-                                        trust::operation(c, tenant, id).await
-                                    } else {
-                                        trust::current(c, tenant).await
-                                    }
-                                })
-                            })
-                            .await?;
-                        p.check_live()?;
-                        Ok::<_, Error>(value)
-                    })
-                },
-            )
-            .await;
-        settle(result, audit, false)
+    store: &rss_mdm_audit_integration::AuditStore,
+    tenant: rss_request_context::TenantId,
+    p: &AuthorizedPrincipal,
+    audit: &RequestAudit,
+    operation: Option<Uuid>,
+) -> Result<Trust, Error> {
+    if p.tenant_id() != tenant.to_string() {
+        return Err(Error::Forbidden);
     }
+    p.require(Permission::RegistrationConfigurationRead, None)?;
+    p.bind_audit(audit)?;
+    let budget = AuditBudget::new(Duration::from_secs(6));
+    let result = store
+        .read(
+            tenant,
+            &budget.control(),
+            (tenant, p, operation),
+            |(tenant, p, operation), tx| {
+                Box::pin(async move {
+                    let tenant = *tenant;
+                    let operation = *operation;
+                    let value = tx
+                        .with_connection(move |c| {
+                            Box::pin(async move {
+                                if let Some(id) = operation {
+                                    trust::operation(c, tenant, id).await
+                                } else {
+                                    trust::current(c, tenant).await
+                                }
+                            })
+                        })
+                        .await?;
+                    p.check_live()?;
+                    Ok::<_, Error>(value)
+                })
+            },
+        )
+        .await;
+    settle(result, audit, false)
+}

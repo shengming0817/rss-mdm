@@ -459,70 +459,15 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     launch.stage_task_with_token(f.archive.clone().registration());
     launch.finish();
     let request = Uuid::new_v4();
-    f.write("/generate", json!({"entryId":request,"expectedRevision":0,"metadata":metadata("request"),"profile":"csr","algorithm":"p256","commonName":"issued.example","organization":"Test","sans":[],"days":0,"issuer":null,"scepUrl":null})).await?;
-    let exported = f
-        .write("/export", json!({"entryId":request,"version":1}))
-        .await?;
-    let files = exported["files"].as_array().unwrap();
-    let csr = files.iter().find(|v| v["name"] == "request.csr").unwrap();
-    let key = files
-        .iter()
-        .find(|v| v["name"].as_str().unwrap().ends_with(".pk8"))
-        .unwrap();
-    let work = tempfile::tempdir()?;
-    std::fs::write(
-        work.path().join("request.pem"),
-        STANDARD.decode(csr["data"].as_str().unwrap())?,
-    )?;
-    std::fs::write(
-        work.path().join("key.der"),
-        STANDARD.decode(key["data"].as_str().unwrap())?,
-    )?;
-    let signed = tokio::process::Command::new("openssl")
-        .current_dir(work.path())
-        .args([
-            "x509",
-            "-req",
-            "-in",
-            "request.pem",
-            "-signkey",
-            "key.der",
-            "-keyform",
-            "DER",
-            "-days",
-            "30",
-            "-set_serial",
-            "1",
-            "-out",
-            "certificate.pem",
-        ])
-        .output()
-        .await?;
-    ensure!(
-        signed.status.success(),
-        "fixture certificate signing failed"
-    );
-    let encrypted = tokio::process::Command::new("openssl")
-        .current_dir(work.path())
-        .args([
-            "pkey",
-            "-inform",
-            "DER",
-            "-in",
-            "key.der",
-            "-aes-256-cbc",
-            "-passout",
-            "pass:fixture",
-            "-out",
-            "encrypted.pem",
-        ])
-        .output()
-        .await?;
-    ensure!(encrypted.status.success(), "fixture key encryption failed");
+    let work = std::path::PathBuf::from(std::env::var("MDM_ARCHIVE_FIXTURES")?);
+    let csr = json!({"data":STANDARD.encode(std::fs::read(work.join("request.pem"))?)});
+    let mut initial = import(request, 0, "");
+    initial["files"] = json!([{"name":"request.pem","format":"csr","data":csr["data"],"password":null}]);
+    f.write("/import", initial).await?;
     let mut pem = import(Uuid::new_v4(), 0, "");
     pem["files"][0]["format"] = json!("private_key");
     pem["files"][0]["data"] =
-        json!(STANDARD.encode(std::fs::read(work.path().join("encrypted.pem"))?));
+        json!(STANDARD.encode(std::fs::read(work.join("encrypted.pem"))?));
     // More failures than the worker capacity must release every permit.
     for _ in 0..3 {
         f.admin.operation = Some(Uuid::new_v4());
@@ -554,7 +499,7 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     let duplicate_ref = json!({"entryId":duplicate,"version":1});
     let mut issued = import(result, 0, "");
     issued["requestVersion"] = original_ref.clone();
-    issued["files"] = json!([{"name":"certificate.pem","format":"certificate","data":STANDARD.encode(std::fs::read(work.path().join("certificate.pem"))?),"password":null}]);
+    issued["files"] = json!([{"name":"certificate.pem","format":"certificate","data":STANDARD.encode(std::fs::read(work.join("server.crt"))?),"password":null}]);
     f.write("/import", issued.clone()).await?;
     issued["expectedRevision"] = json!(1);
     issued["requestVersion"] = duplicate_ref.clone();

@@ -229,11 +229,17 @@ pub(crate) async fn await_task(
 }
 
 pub(crate) fn prepared_subject(browser: &Browser) -> Result<String> {
-    let cookie = browser.cookies.get("__Host-identity-session").ok_or_else(|| anyhow::anyhow!("prepared session missing"))?;
+    let cookie = browser
+        .cookies
+        .get("__Host-identity-session")
+        .ok_or_else(|| anyhow::anyhow!("prepared session missing"))?;
     for actor in case::context().actors() {
         let secret = identity::credential_for(&actor.tenant, &actor.role)?;
         if secret.expose() == cookie {
-            return actor.principal.clone().ok_or_else(|| anyhow::anyhow!("actor was not prepared"));
+            return actor
+                .principal
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("actor was not prepared"));
         }
     }
     anyhow::bail!("browser does not carry a prepared case session")
@@ -268,7 +274,12 @@ pub(crate) async fn change_management_grants(subject: &str, permissions: Value) 
 }
 
 pub(crate) async fn seed_management_grants(subject: &str, permissions: Value) -> Result<()> {
-    crate::test_support::identity::seed_grants(case_tenant(), subject, management_grants(permissions)?).await
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        subject,
+        management_grants(permissions)?,
+    )
+    .await
 }
 
 fn management_grants(permissions: Value) -> Result<Vec<crate::authorization::Grant>> {

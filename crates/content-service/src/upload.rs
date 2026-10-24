@@ -264,7 +264,14 @@ impl Store {
                         capacity.clone(),
                     )
                     .await?;
-                buffer = self.plaintext(&bytes, &artifact, saved.upload.binding.class(), start)?;
+                buffer = protected::plaintext(
+                    &self.protection,
+                    self.tenant,
+                    &bytes,
+                    &artifact,
+                    saved.upload.binding.class(),
+                    start,
+                )?;
             }
             saved.pieces.clear();
         } else if saved
@@ -331,7 +338,13 @@ impl Store {
             };
             let length = buffer.len() as u64;
             let bytes = if native {
-                self.seal(&buffer, &artifact, saved.upload.binding.class())?
+                protected::seal(
+                    &self.protection,
+                    self.tenant,
+                    &buffer,
+                    &artifact,
+                    saved.upload.binding.class(),
+                )?
             } else {
                 std::mem::take(&mut *buffer)
             };

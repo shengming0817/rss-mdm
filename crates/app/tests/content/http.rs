@@ -47,7 +47,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
                 original.0 == StatusCode::OK && original.1 == enabled,
                 "recovery preserves the historical enable receipt without granting new access"
             );
-            crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, vec![])
+            crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, vec![])
                 .await?;
             ensure!(
                 user.call(&fixture.router, Method::GET, &admission_path, None)

@@ -27,7 +27,8 @@ async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
 impl Client {
     async fn storage_admitted(&self) -> anyhow::Result<bool> {
         use rss_mdm_execution_service::{Error, Failure, transaction::Fault};
-        let admission = self.execution_runtime
+        let admission = self
+            .execution_runtime
             .local_tx(
                 rss_request_context::TenantId::parse(case_tenant())?,
                 rss_mdm_execution_service::deadline(),
@@ -461,7 +462,8 @@ impl Client {
                 && missing.1["code"] == "service_unavailable",
             "missing command misclassified {missing:?}"
         );
-        let poison = self.execution
+        let poison = self
+            .execution
             .accept_dispatch(Uuid::new_v4(), vec![0; 32])
             .await;
         ensure!(matches!(
@@ -511,10 +513,28 @@ impl Client {
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(host.pool.clone(), host.audit.clone(), client.tenant, &[31; 32])?);
+    let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(
+        host.pool.clone(),
+        host.audit.clone(),
+        client.tenant,
+        &[31; 32],
+    )?);
     timeline.initialize().await?;
-    client.router = client.router.clone().merge(host.protect(axum::Router::new().nest("/api/v1", rss_mdm_management_http::timeline::routes().with_state(timeline).into_axum()))?);
-    let devices = crate::device::DeviceService::new(host.registration.clone(), client.tenant.to_string(), host.audit.clone());
+    client.router = client.router.clone().merge(
+        host.protect(
+            axum::Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::timeline::routes()
+                    .with_state(timeline)
+                    .into_axum(),
+            ),
+        )?,
+    );
+    let devices = crate::device::DeviceService::new(
+        host.registration.clone(),
+        client.tenant.to_string(),
+        host.audit.clone(),
+    );
     let (other, other_operation) = client.timeline_pair(&devices).await?;
     let cancelled = client
         .call(
@@ -558,16 +578,17 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
 }
 
 impl Client {
-    async fn timeline_pair(&mut self, devices: &crate::device::DeviceService) -> anyhow::Result<(String, Uuid)> {
+    async fn timeline_pair(
+        &mut self,
+        devices: &crate::device::DeviceService,
+    ) -> anyhow::Result<(String, Uuid)> {
         let other = crate::test_support::case::name("timeline-other").to_owned();
         let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
         let credential =
             crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 94);
-        crate::device::test_support::bind(devices, &proof, &credential, &other, 0)
-            .await?;
+        crate::device::test_support::bind(devices, &proof, &credential, &other, 0).await?;
         self.known_windows_capability(&other).await?;
-        let subject =
-            crate::test_support::http::prepared_subject(&self.browser)?;
+        let subject = crate::test_support::http::prepared_subject(&self.browser)?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &["device_control", "operation_read", "operation_cancel"],
@@ -582,8 +603,7 @@ impl Client {
         let mut other_browser = crate::test_support::http::Browser::default();
         let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
         ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
-        let other_subject =
-            crate::test_support::http::prepared_subject(&other_browser)?;
+        let other_subject = crate::test_support::http::prepared_subject(&other_browser)?;
         crate::test_support::identity::change_grants(
             case_tenant(),
             &other_subject,

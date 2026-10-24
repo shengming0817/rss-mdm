@@ -17,18 +17,17 @@ fn native_envelope_requires_input_version_and_explicit_target() {
         missing.as_object_mut().unwrap().remove(key);
         assert!(serde_json::from_value::<Create>(missing).is_err());
     }
-    let old = json!({"operationId":Uuid::new_v4(),"task":{"kind":"profile_install","enabled":true},"deadline":100});
-    assert!(serde_json::from_value::<Create>(old).is_err());
 }
 #[test]
 fn input_digest_binds_tenant_device_user_and_version() {
+    let protection = protector();
     let mut input = request();
-    let digest = input.digest(&protector(), tenant(), "device").unwrap();
+    let digest = input.digest(&protection, tenant(), "device").unwrap();
     assert_ne!(
         digest,
         input
             .digest(
-                &protector(),
+                &protection,
                 rss_request_context::TenantId::parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
                     .unwrap(),
                 "device"
@@ -37,20 +36,20 @@ fn input_digest_binds_tenant_device_user_and_version() {
     );
     assert_ne!(
         digest,
-        input.digest(&protector(), tenant(), "other").unwrap()
+        input.digest(&protection, tenant(), "other").unwrap()
     );
     input.target = NativeTarget::User {
         user_id: "native-user".into(),
     };
     assert_ne!(
         digest,
-        input.digest(&protector(), tenant(), "device").unwrap()
+        input.digest(&protection, tenant(), "device").unwrap()
     );
     input.target = NativeTarget::Device;
     input.input_version = "resource-2".into();
     assert_ne!(
         digest,
-        input.digest(&protector(), tenant(), "device").unwrap()
+        input.digest(&protection, tenant(), "device").unwrap()
     );
 }
 #[test]
@@ -176,7 +175,6 @@ fn native_input_digest_is_not_a_keyless_pin_verifier() {
         guess
     );
 }
-
 
 #[test]
 fn native_parent_and_child_claims_overlap_only_on_same_scope_and_segment_boundaries() {

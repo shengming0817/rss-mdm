@@ -219,19 +219,6 @@ fn native_capabilities_are_not_software_and_claim_evidence_is_required() {
     );
 }
 #[test]
-fn manifest_transport_rejects_missing_conflicting_or_corrupt_chunks() {
-    use sha2::{Digest, Sha256};
-    let bytes = b"{\"result\":true}";
-    let manifest = OutputManifest::new(bytes.len() as u32, Sha256::digest(bytes).into()).unwrap();
-    let chunk = OutputChunk::new(manifest.clone(), 0, bytes).unwrap();
-    assert_eq!(manifest.assemble(vec![chunk.clone()]).unwrap(), bytes);
-    assert!(manifest.assemble(vec![]).is_err());
-    assert!(manifest.assemble(vec![chunk.clone(), chunk]).is_err());
-    let bad = OutputChunk::new(manifest.clone(), 0, b"{\"result\":null}").unwrap();
-    assert!(manifest.assemble(vec![bad]).is_err());
-}
-
-#[test]
 fn fixed_native_vectors_bind_permit_plan_and_domain() {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};

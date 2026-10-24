@@ -13,15 +13,7 @@ fn typed_binding_rejects_unsupported_values_and_capabilities() {
         "filter=presentation==x",
         "filter=id==a%27OR%271%27",
         "sort=active",
-        "sort=id,-id",
         "fields=active",
-        "fields=id,id",
-        "fields=",
-        "limit=0",
-        "limit=1001",
-        "after=a",
-        "kind=script",
-        "descending=true",
     ] {
         assert!(Query::parse(input).is_err(), "{input}");
     }

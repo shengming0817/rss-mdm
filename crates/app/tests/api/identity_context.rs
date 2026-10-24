@@ -16,7 +16,8 @@ pub(crate) async fn host_context_matrix(
     let router = authority.router(
         rss_mdm_management_http::identity_context_routes(Arc::new(
             crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
-        )).into_axum(),
+        ))
+        .into_axum(),
     )?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {

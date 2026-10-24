@@ -325,7 +325,12 @@ async fn template_access_rights_change_rejects_first_report() -> Result<()> {
 async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let definition = f.collection_template().await?;
     let owner = f.policy_worker().await?;
     let queued = f.queue_collection(&definition, &peer).await;
@@ -409,7 +414,12 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
     use lifecycle::command;
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let user = Uuid::new_v4();
     let other = Uuid::new_v4();
     peer.user_token(user, 41).await?;

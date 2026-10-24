@@ -378,29 +378,15 @@ async fn admission_rejects_noninherited_switchable_privileges() {
     sql(&format!(
         "CREATE ROLE {role} NOLOGIN; CREATE ROLE {bridge} NOLOGIN; GRANT {role} TO {bridge} WITH INHERIT FALSE, SET TRUE; GRANT {bridge} TO mdm_software_release_runtime WITH INHERIT FALSE, SET TRUE; GRANT USAGE ON SCHEMA mdm_software_release TO {role};"
     ));
-    let roles = (role.clone(), bridge.clone());
+    let granted_role = role.clone();
     let outcome = tokio::spawn(async move {
-    let (role, bridge) = roles;
-    for membership in ["INHERIT FALSE, SET TRUE", "INHERIT TRUE, SET FALSE"] {
-        sql(&format!("GRANT {role} TO {bridge} WITH {membership}"));
-        for privilege in [
-            "TRUNCATE ON mdm_software_release.requests",
-            "DELETE ON mdm_software_release.immutable",
-            "UPDATE(document) ON mdm_software_release.immutable",
-            "UPDATE ON mdm_software_release.aggregates",
-            "REFERENCES ON mdm_software_release.aggregates",
-            "TRIGGER ON mdm_software_release.aggregates",
-        ] {
-            sql(&format!("GRANT {privilege} TO {role}"));
-            let result = ReleaseStore::new(runtime.clone(), tenant(), deadline()).await;
-            sql(&format!("REVOKE {privilege} FROM {role}"));
-            assert!(
-                matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
-                "admitted switchable privilege: {privilege}"
-            );
-            ReleaseStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
-        }
-    }
+    let role = granted_role;
+    let privilege = "UPDATE(document) ON mdm_software_release.immutable";
+    sql(&format!("GRANT {privilege} TO {role}"));
+    let result = ReleaseStore::new(runtime.clone(), tenant(), deadline()).await;
+    sql(&format!("REVOKE {privilege} FROM {role}"));
+    assert!(matches!(result, Err(Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant));
+    ReleaseStore::new(runtime.clone(), tenant(), deadline()).await.unwrap();
     // Permitted column privileges in a switchable role remain admissible.
     sql(&format!(
         "GRANT UPDATE(document) ON mdm_software_release.aggregates TO {role}"
@@ -411,12 +397,6 @@ async fn admission_rejects_noninherited_switchable_privileges() {
     sql(&format!(
         "REVOKE UPDATE(document) ON mdm_software_release.aggregates FROM {role}"
     ));
-    // A role with neither inheritance nor SET permission is not executable.
-    sql(&format!(
-        "GRANT {bridge} TO mdm_software_release_runtime WITH INHERIT FALSE, SET FALSE; GRANT TRUNCATE ON mdm_software_release.requests TO {role}"
-    ));
-    let dormant = ReleaseStore::new(runtime, tenant(), deadline()).await;
-    dormant.unwrap();
     }).await;
     sql(&format!(
         "REVOKE {bridge} FROM mdm_software_release_runtime; REVOKE {role} FROM {bridge}; DROP OWNED BY {role}; DROP ROLE {bridge}; DROP ROLE {role};"

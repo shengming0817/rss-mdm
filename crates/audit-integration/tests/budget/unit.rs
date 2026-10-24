@@ -24,14 +24,23 @@ async fn reborrowing_never_renews_budget_and_keeps_host_cancellation() {
     tokio::time::advance(Duration::from_millis(10)).await;
     assert_eq!(first.total_remaining(), Duration::from_millis(10));
     assert_eq!(budget.control().total_remaining(), first.total_remaining());
-    assert_eq!(budget.source_control().operation.instant(), source.operation.instant());
+    assert_eq!(
+        budget.source_control().operation.instant(),
+        source.operation.instant()
+    );
     cancel.cancel();
-    let result = budget.source_control().run(async {
-        panic!("cancelled source work ran");
-        #[allow(unreachable_code)]
-        Ok::<(), crate::Error>(())
-    }).await;
-    assert!(matches!(result, Err(crate::Error::Audit(rss_audit_postgres::Error::Cancelled(_)))));
+    let result = budget
+        .source_control()
+        .run(async {
+            panic!("cancelled source work ran");
+            #[allow(unreachable_code)]
+            Ok::<(), crate::Error>(())
+        })
+        .await;
+    assert!(matches!(
+        result,
+        Err(crate::Error::Audit(rss_audit_postgres::Error::Cancelled(_)))
+    ));
     tokio::time::advance(Duration::from_millis(10)).await;
     assert!(budget.control().total_remaining().is_zero());
 }

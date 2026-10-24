@@ -35,8 +35,7 @@ async fn mirror_matrix(
 ) -> Result<()> {
     {
         let (path, bytes) = ("wrong.msi", &b"abd"[..]);
-        let (url, operation) =
-            mirror_resource(runtime, definition, server, path, bytes).await?;
+        let (url, operation) = mirror_resource(runtime, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
         ensure!(
             response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request",

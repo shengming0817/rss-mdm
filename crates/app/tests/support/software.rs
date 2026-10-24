@@ -44,7 +44,12 @@ pub(crate) struct Fixture {
     pub(crate) subject: String,
     pub(crate) registered: Value,
     pub(crate) peer: Option<publication_support::Server>,
-    _server: HttpServer,
+    pub(crate) server: HttpServer,
+    pub(crate) software: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
 }
 impl Fixture {
     pub(crate) async fn open(mirror: bool) -> Result<Self> {
@@ -136,7 +141,7 @@ impl Fixture {
             rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
             )).into_axum()
-            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software).into_axum())
+            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()).into_axum())
             .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum()),
         ).merge(authority.authorization()))?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -194,7 +199,8 @@ impl Fixture {
             subject,
             registered,
             peer,
-            _server: server,
+            server,
+            software,
         })
 
         })).await?;
@@ -228,44 +234,114 @@ pub(crate) async fn seed_software_version(
     let resource = Uuid::new_v4().to_string();
     definition["package"] = json!(format!("Private.{resource}"));
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    let version = Version::new(tenant, Id::new(resource.clone())?, Id::new("v1")?, Kind::Software,
-        vec![Variant::new(Platform::Windows, Architecture::X86_64, Id::new("default")?,
-            Declaration::Software { definition: serde_json::from_value(definition)? })])?;
+    let version = Version::new(
+        tenant,
+        Id::new(resource.clone())?,
+        Id::new("v1")?,
+        Kind::Software,
+        vec![Variant::new(
+            Platform::Windows,
+            Architecture::X86_64,
+            Id::new("default")?,
+            Declaration::Software {
+                definition: serde_json::from_value(definition)?,
+            },
+        )],
+    )?;
     let digest = json!(version.digest().bytes());
-    runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
-        rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await
-    })).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
-        |_| Err(anyhow::anyhow!("resource rollback unconfirmed")),
-        |_| Err(anyhow::anyhow!("resource commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
+    runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    version,
+                    rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                )
+                .await
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("resource rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("resource commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )?;
     Ok((resource, digest))
 }
 
 impl Fixture {
     pub(crate) async fn seed_content(&self, bytes: &[u8]) -> Result<rss_mdm_resource::Artifact> {
         let _guard = content_setup_guard().await?;
-        let definition = publication_support::private_definition(self.registered["snapshot"].clone(), bytes);
+        let definition =
+            publication_support::private_definition(self.registered["snapshot"].clone(), bytes);
         let source = serde_json::from_value(definition["source"].clone())?;
         let inspection = serde_json::from_value(definition["material"]["format"].clone())?;
         let (id, digest) = seed_software_version(&self.runtime, definition).await?;
-        let store = self.content.as_ref().ok_or_else(|| anyhow::anyhow!("content store missing"))?;
-        let artifact = rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new("installer")?, bytes.len() as u64, rss_mdm_resource::Digest::of(bytes))?;
+        let store = self
+            .content
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("content store missing"))?;
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("installer")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(bytes),
+        )?;
         let binding = rss_mdm_content_service::Binding {
-            purpose: rss_mdm_content_service::Purpose::Resource(rss_mdm_content_service::ResourceBinding {
-                inspection: Some(inspection), storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                resource: id, version: "v1".into(), variant: "default".into(), platform: rss_mdm_resource::Platform::Windows,
-                architecture: rss_mdm_resource::Architecture::X86_64, resource_digest: serde_json::from_value(digest)?, source: Some(source), origin: None,
-            }), reference: artifact.reference().as_str().into(), length: artifact.length(), sha256: artifact.digest().bytes(), actor: self.subject.clone(),
+            purpose: rss_mdm_content_service::Purpose::Resource(
+                rss_mdm_content_service::ResourceBinding {
+                    inspection: Some(inspection),
+                    storage_class: rss_mdm_content_service::StorageClass::Artifact,
+                    resource: id,
+                    version: "v1".into(),
+                    variant: "default".into(),
+                    platform: rss_mdm_resource::Platform::Windows,
+                    architecture: rss_mdm_resource::Architecture::X86_64,
+                    resource_digest: serde_json::from_value(digest)?,
+                    source: Some(source),
+                    origin: None,
+                },
+            ),
+            reference: artifact.reference().as_str().into(),
+            length: artifact.length(),
+            sha256: artifact.digest().bytes(),
+            actor: self.subject.clone(),
         };
         let operation = Uuid::new_v4();
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         let budget = store.upload_budget()?;
         store.begin(operation, binding, now, budget).await?;
-        store.append(&self.subject, operation, 0, now, bytes, budget).await?;
+        store
+            .append(&self.subject, operation, 0, now, bytes, budget)
+            .await?;
         let upload = store.finish(&self.subject, operation, now, budget).await?;
-        self.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?, crate::identity::deadline(), move |tx| Box::pin(async move {
-            rss_mdm_content_service::bindings::bind_in(tx, &upload).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))
-        })).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)),
-            |_| Err(anyhow::anyhow!("content preparation rollback unconfirmed")), |_| Err(anyhow::anyhow!("content preparation commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
+        self.runtime
+            .local_tx(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                crate::identity::deadline(),
+                move |tx| {
+                    Box::pin(async move {
+                        rss_mdm_content_service::bindings::bind_in(tx, &upload)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(anyhow::anyhow!(e)),
+                |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("content preparation rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("content preparation commit unconfirmed")),
+                |e| Err(anyhow::anyhow!(e)),
+            )?;
         Ok(artifact)
     }
 }

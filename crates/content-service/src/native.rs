@@ -315,9 +315,17 @@ mod tests {
         let valid = r#"<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"><Identity Name="Acme" Publisher="CN=Acme" Version="1.0.0.0"/></Package>"#;
         assert!(facts(valid.as_bytes()).is_ok());
         for xml in [
-            valid.replace(r#" xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10""#, ""),
-            valid.replace("http://schemas.microsoft.com/appx/manifest/foundation/windows10", "urn:forged"),
-            valid.replace("<Identity", "<Properties><Identity").replace("/></Package>", "/></Properties></Package>"),
+            valid.replace(
+                r#" xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10""#,
+                "",
+            ),
+            valid.replace(
+                "http://schemas.microsoft.com/appx/manifest/foundation/windows10",
+                "urn:forged",
+            ),
+            valid
+                .replace("<Identity", "<Properties><Identity")
+                .replace("/></Package>", "/></Properties></Package>"),
         ] {
             assert!(facts(xml.as_bytes()).is_err(), "accepted {xml}");
         }

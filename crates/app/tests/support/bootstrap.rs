@@ -7,57 +7,39 @@ use rss_mdm_execution_service::{Task, storage, transaction};
 use rss_mdm_windows_mdm::native::{Execution, Request as Native, Value as NativeValue};
 use sqlx::Row;
 
-pub(crate) async fn issue(
+pub(crate) async fn prepare(
     app: &Arc<crate::api::Assembly>,
     router: &Router,
-    _root: &std::path::Path,
     installation: uuid::Uuid,
-) -> Result<BootstrapPeer> {
-    issue_observed(app, router, _root, installation, None).await
+) -> Result<PreparedBootstrap> {
+    prepare_observed(app, router, installation, None).await
 }
-pub(crate) async fn issue_windows(
+pub(crate) async fn prepare_windows(
     app: &Arc<crate::api::Assembly>,
     router: &Router,
-    root: &std::path::Path,
     installation: uuid::Uuid,
     message: &rss_mdm_windows_mdm::syncml::Message,
-) -> Result<BootstrapPeer> {
-    issue_observed(
-        app,
-        router,
-        root,
-        installation,
-        Some(Observed::Windows(message)),
-    )
-    .await
+) -> Result<PreparedBootstrap> {
+    prepare_observed(app, router, installation, Some(Observed::Windows(message))).await
 }
-pub(crate) async fn issue_apple(
+pub(crate) async fn prepare_apple(
     app: &Arc<crate::api::Assembly>,
     router: &Router,
-    root: &std::path::Path,
     installation: uuid::Uuid,
     payload: &plist::Dictionary,
-) -> Result<BootstrapPeer> {
-    issue_observed(
-        app,
-        router,
-        root,
-        installation,
-        Some(Observed::Apple(payload)),
-    )
-    .await
+) -> Result<PreparedBootstrap> {
+    prepare_observed(app, router, installation, Some(Observed::Apple(payload))).await
 }
 enum Observed<'a> {
     Windows(&'a rss_mdm_windows_mdm::syncml::Message),
     Apple(&'a plist::Dictionary),
 }
-async fn issue_observed(
+async fn prepare_observed(
     app: &Arc<crate::api::Assembly>,
     router: &Router,
-    _root: &std::path::Path,
     installation: uuid::Uuid,
     observed: Option<Observed<'_>>,
-) -> Result<BootstrapPeer> {
+) -> Result<PreparedBootstrap> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     let root = root.as_path();
     let (id, deadline, task) = transaction::inspect(&app.execution_runtime, rss_request_context::TenantId::parse(case_tenant())?, (&app.protection, installation), |ctx, tx| Box::pin(async move {
@@ -246,29 +228,8 @@ async fn issue_observed(
         .unwrap()
         .bootstrap_configuration()?;
     let now = crate::clock::SystemClock.unix_seconds()?;
-    let mut request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
+    let request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
     let approval = webhook(router, config, "challenge", &request).await?;
-    // Simulate the CA losing the first approved response after the transaction commits.
-    ensure!(
-        webhook(router, config, "challenge", &request).await? == approval,
-        "exact challenge retry must reuse the approval"
-    );
-    let mut changed = request.clone();
-    changed["scepTransactionID"] = json!(Uuid::new_v4());
-    ensure!(
-        webhook_response(router, config, "challenge", &changed)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    changed = request.clone();
-    changed["scepChallenge"] = json!(credential("different-bootstrap-challenge"));
-    ensure!(
-        webhook_response(router, config, "challenge", &changed)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
     let approved = &approval["data"]["subject"];
     ensure!(
         approved["commonName"] == cn
@@ -296,14 +257,36 @@ async fn issue_observed(
         approved["commonName"].as_str().unwrap()
     );
     let chain = super::pki::leaf(root, &csr, &subject, &[], now - 1, expiry)?;
-    request["x509Certificate"] = json!({"raw":STANDARD.encode(&chain[0])});
-    webhook(router, config, "notify", &request).await?;
-    Ok(BootstrapPeer {
-        app: app.clone(),
-        chain,
-        directory: temp,
+    Ok(PreparedBootstrap {
+        peer: BootstrapPeer {
+            app: app.clone(),
+            chain,
+            directory: temp,
+        },
+        request,
+        approval,
     })
 }
+pub(crate) struct PreparedBootstrap {
+    peer: BootstrapPeer,
+    pub(crate) request: Value,
+    pub(crate) approval: Value,
+}
+impl PreparedBootstrap {
+    pub(crate) async fn notify(mut self, router: &Router) -> Result<BootstrapPeer> {
+        let config = self
+            .peer
+            .app
+            .agent_enrollment
+            .as_ref()
+            .context("Agent enrollment")?
+            .bootstrap_configuration()?;
+        self.request["x509Certificate"] = json!({"raw":STANDARD.encode(&self.peer.chain[0])});
+        webhook(router, config, "notify", &self.request).await?;
+        Ok(self.peer)
+    }
+}
+
 async fn webhook(
     router: &Router,
     config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
@@ -314,7 +297,7 @@ async fn webhook(
     ensure!(status.is_success(), "bootstrap {phase}: {status} {body}");
     Ok(body)
 }
-async fn webhook_response(
+pub(crate) async fn webhook_response(
     router: &Router,
     config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
     phase: &str,

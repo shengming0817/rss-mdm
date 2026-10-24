@@ -14,21 +14,44 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
             let management = fixture.identity.management_tenant.to_string();
             let mut initializer = Browser::default();
-            let response = initial.clone().oneshot(Request::builder()
-                .method(Method::POST).uri(format!("/api/v1/identity/tenants/{management}/login"))
-                .header("host", "mdm.example.test").header("origin", "https://mdm.example.test")
-                .header("x-identity-request", "1").header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&json!({"login":"bootstrap","password":PASSWORD}))?))?).await?;
+            let response = initial
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!("/api/v1/identity/tenants/{management}/login"))
+                        .header("host", "mdm.example.test")
+                        .header("origin", "https://mdm.example.test")
+                        .header("x-identity-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(
+                            &json!({"login":"bootstrap","password":PASSWORD}),
+                        )?))?,
+                )
+                .await?;
             let status = response.status();
-            let cookies = response.headers().get_all("set-cookie").iter().collect::<Vec<_>>();
-            ensure!(!cookies.is_empty(), "successful login must issue a session cookie");
+            let cookies = response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .collect::<Vec<_>>();
+            ensure!(
+                !cookies.is_empty(),
+                "successful login must issue a session cookie"
+            );
             for header in cookies {
                 let text = header.to_str()?;
-                ensure!(text.contains("Secure") && text.contains("HttpOnly") && text.contains("Path=/") && !text.contains("Domain="));
+                ensure!(
+                    text.contains("Secure")
+                        && text.contains("HttpOnly")
+                        && text.contains("Path=/")
+                        && !text.contains("Domain=")
+                );
                 let (name, value) = text.split(';').next().unwrap().split_once('=').unwrap();
                 initializer.cookies.insert(name.into(), value.into());
             }
-            let value: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+            let value: Value =
+                serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
             initializer.csrf = value["csrfToken"].as_str().map(str::to_owned);
             let login = (status, value);
             ensure!(login.0 == StatusCode::OK);

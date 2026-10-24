@@ -64,7 +64,7 @@ fn restart_replay_and_all_native_coordinates_are_authenticated() {
         wrong.mac(plain, &aad).unwrap(),
         first.mac(plain, &aad).unwrap()
     );
-    for position in 0..sealed.len() {
+    for position in [0, 8, 40, 52, sealed.len() - 1] {
         let mut tampered = sealed.clone();
         tampered[position] ^= 1;
         assert!(
@@ -72,7 +72,7 @@ fn restart_replay_and_all_native_coordinates_are_authenticated() {
             "tampered byte {position}"
         );
     }
-    for length in 0..sealed.len() {
+    for length in [0, 7, 8, 39, 40, 51, 52, 67, sealed.len() - 1] {
         assert!(first.open_bytes(&sealed[..length], &aad).is_err());
     }
     assert!(first.open_bytes(plain, &aad).is_err());

@@ -3,7 +3,7 @@ use super::*;
 #[ignore = "MODULE=examples.cli: real PostgreSQL"]
 async fn cli_roundtrip() -> Result<()> {
     let executable = &std::env::var("MDM_FIXTURE_BIN")?;
-    let dir = std::env::temp_dir().join(format!("mdm-cli-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("mdm-cli-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir)?;
     std::fs::write(dir.join("scope.json"), scope(5, "cli").encode()?)?;
     std::fs::write(

@@ -128,137 +128,34 @@ impl Fixture {
         db.close().await?;
         Ok(())
     }
-    // Prepare one authorized operation and its retained prerequisite evidence.
-    // Control admission and actual response intake remain the protocol tests' actions.
+    // Retained prerequisite facts; control admission and response intake are tested separately.
     pub(super) async fn native_context(&mut self) -> Result<()> {
-        use crate::authorization::{OperationAuthority, Permission};
-        use rss_mdm_execution_service::{authority::ExecutionAuthority, device_control::Kind};
-        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
-        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let snapshot =
-            crate::authorization::snapshot_on(&mut db, case_tenant(), &proof.user()?.instance_id)
-                .await?;
-        let authority = ExecutionAuthority::DeviceControl {
-            action: Kind::Restart,
-            confirmation: None,
-            required: vec![Permission::DeviceControl],
-            evidence: vec![OperationAuthority::from_proof(
-                &snapshot,
-                &proof,
-                case_device(),
-                Permission::DeviceControl,
-            )?],
-        };
-        let operation = Uuid::new_v4();
-        let input = rss_mdm_execution_service::Create {
-            operation_id: operation,
-            input_version: "device-control-v1".into(),
-            target: rss_mdm_execution_service::NativeTarget::Device,
-            task: rss_mdm_execution_service::Task::Macos {
-                request: rss_mdm_apple_mdm::native::request::Request::Command {
-                    command: rss_mdm_apple_mdm::native::input::CommandInput {
-                        request_type: "RestartDevice".into(),
-                        fields: Default::default(),
-                    },
-                },
-            },
-            deadline: self.app.clock.unix_seconds()? + 300,
-        };
-        let audit =
-            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_accept");
-        proof.bind_audit(&audit)?;
-        let fingerprint = input
-            .digest(
-                &self.app.protection,
-                rss_request_context::TenantId::parse(case_tenant())?,
-                case_device(),
-            )?
-            .as_bytes()
-            .to_vec();
-        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let source = self
-            .app
-            .audit_store
-            .on_runtime(
-                self.app.execution_runtime.clone(),
-                rss_request_context::TenantId::parse(case_tenant())?,
-                &budget.control(),
-            )
-            .await?;
-        self.app
-            .execution_runtime
-            .local_tx_with_context(
-                rss_request_context::TenantId::parse(case_tenant())?,
-                crate::identity::deadline(),
-                (&self.app.execution, &source, &audit),
-                |(service, audit_store, audit), tx| {
-                    Box::pin(async move {
-                        audit_store.prepare_in(tx, audit, &[]).await.map_err(|e| {
-                            rss_transactional_messaging_postgres::PgError::from(
-                                sqlx::Error::Protocol(e.to_string()),
-                            )
-                        })?;
-                        service
-                            .queue_authorized_in(
-                                tx,
-                                case_device(),
-                                &input,
-                                authority,
-                                fingerprint,
-                                audit,
-                            )
-                            .await
-                            .map_err(|e| {
-                                rss_transactional_messaging_postgres::PgError::from(
-                                    sqlx::Error::Protocol(e.to_string()),
-                                )
-                            })
-                    })
-                },
-            )
-            .await
-            .fold(
-                Ok,
-                |e| Err(anyhow::anyhow!(e)),
-                |e| Err(anyhow::anyhow!(e)),
-                |_| Err(anyhow::anyhow!("context preparation rollback unconfirmed")),
-                |_| Err(anyhow::anyhow!("context preparation commit unconfirmed")),
-                |e| Err(anyhow::anyhow!(e)),
-            )?;
-        audit.finalize(None);
         let mut tx = db.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(case_tenant())
             .execute(&mut *tx)
             .await?;
+        let (registration, generation): (Uuid, i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary' AND state='active'")
+            .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
         self.app
             .apple()?
             .channel
-            .prepare_context_fixture(&mut tx, case_tenant(), operation)
+            .prepare_context_fixture(&mut tx, case_tenant(), registration, generation)
             .await?;
         tx.commit().await?;
-        let detail = self.operation(operation).await?;
-        let cancelled = self
-            .browser
-            .call(
-                &self.router,
-                Method::POST,
-                &format!(
-                    "/api/v1/devices/{}/operations/{operation}/cancel",
-                    case_device()
-                ),
-                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":detail["revision"]})),
-            )
-            .await?;
-        ensure!(cancelled.0 == StatusCode::OK);
         db.close().await?;
         Ok(())
     }
     pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+        crate::test_support::identity::seed_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::policy_grants()?,
+        )
+        .await?;
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
@@ -386,9 +283,19 @@ impl Fixture {
         // Drain independent trust maintenance before asserting that revoked
         // business authority cannot request a wake.
         ensure!(peer.manage("Idle", None, None).await?.is_empty());
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::policy_grants()?,
+        )
+        .await?;
         let definition = self.collection_template().await?;
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::native_grants(&["device_control"])?,
+        )
+        .await?;
         let op = self.create_restart().await?;
         crate::test_support::identity::change_grants(
             case_tenant(),
@@ -454,7 +361,12 @@ impl Fixture {
             });
         ensure!(audited, "collection denial lost business action audit");
         // Publish a new collection only after its own current authorization is restored.
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::policy_grants()?,
+        )
+        .await?;
         let owner = self.policy_worker().await?;
         let queued = self.pending_collections(&definition, 1, peer).await;
         crate::test_support::runtime::stop_worker(Some(owner)).await?;

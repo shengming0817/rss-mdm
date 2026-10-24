@@ -3,7 +3,12 @@ use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
     pub async fn before_token(&mut self, peer: &Peer) -> Result<()> {
-        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+        crate::test_support::identity::seed_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::policy_grants()?,
+        )
+        .await?;
         let reply = peer
             .send(
                 "/mdm",
@@ -181,7 +186,12 @@ impl Fixture {
             .await?;
         ensure!(wrong.0 == StatusCode::UNAUTHORIZED);
         self.native_context().await?;
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::native_grants(&["device_control"])?,
+        )
+        .await?;
         let rejected = self.create_restart().await?;
         let (id, _) = peer.next("RestartDevice").await?;
         peer.manage("CommandFormatError", Some(id), None).await?;
@@ -240,7 +250,12 @@ impl Fixture {
             "stale APNs receipt retired new token"
         );
         ensure!(self.operation(queued).await?["commandStatus"] == "published");
-        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
+        crate::test_support::identity::seed_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::policy_grants()?,
+        )
+        .await?;
         let definition = self.collection_template().await?;
         let owner = self.policy_worker().await?;
         let queued = self.pending_collections(&definition, 65, peer).await;

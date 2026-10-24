@@ -37,7 +37,9 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             json!([{"kind":"device","id":agent::case_device_id()}]),
         )
         .await?;
-    let worker = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
+    let worker =
+        crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone())
+            .await?;
     agent::publish(&mut fixture.author, &fixture.router, resource).await?;
     let task = agent::claim(&fixture.router).await?;
     agent::complete(&fixture.router, &task).await?;
@@ -133,7 +135,8 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
     let before = crate::test_support::process::pg(revision_sql)?;
     let rejected = Uuid::new_v4();
-    client.execution
+    client
+        .execution
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
     ensure!(

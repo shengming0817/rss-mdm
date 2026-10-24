@@ -162,7 +162,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     )
     .await?;
     resources.finish(async {
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+    let router = router.browser.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
         "127.0.0.1".parse()?,
     )));
     let mut admin = Browser::default();

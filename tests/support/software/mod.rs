@@ -541,10 +541,16 @@ async fn seed_version(
                 .unwrap();
         }
     }
-    runtime.local_tx_with_context(tenant(), deadline(), &version, |version, tx| Box::pin(async move {
-        resource_pg::fixture::draft_version_in(tx, version.clone(), at(1)).await?;
-        Ok(Ok(()))
-    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &version, |version, tx| {
+            Box::pin(async move {
+                resource_pg::fixture::draft_version_in(tx, version.clone(), at(1)).await?;
+                Ok(Ok(()))
+            })
+        })
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
     if enabled {
         seed_enabled_version(&version, &content).await;
     }
@@ -830,30 +836,66 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
 async fn seed_private_source(source: &str) -> resource::SoftwareSource {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let definition = c::SourceDefinition { id: source.into(), revision: "1".into(), protocol: c::SourceProtocol::Private };
+    let definition = c::SourceDefinition {
+        id: source.into(),
+        revision: "1".into(),
+        protocol: c::SourceProtocol::Private,
+    };
     let snapshot = definition.snapshot().unwrap();
-    runtime.local_tx_with_context(tenant(), deadline(), &definition, |definition, tx| Box::pin(async move {
-        let reader = c::Reader::new(tx.tenant_id());
-        match reader.source_read_in(tx, &definition.id, &definition.revision).await {
-            Ok(value) if value["lifecycle"]["state"] == "enabled" => (),
-            Err(c::Error::Missing) => {
-                c::fixture::source_in(tx, definition.clone()).await.map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-            }
-            _ => return Err(sqlx::Error::Protocol("source seed requires missing or enabled state".into()).into()),
-        }
-        Ok(Ok(()))
-    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &definition, |definition, tx| {
+            Box::pin(async move {
+                let reader = c::Reader::new(tx.tenant_id());
+                match reader
+                    .source_read_in(tx, &definition.id, &definition.revision)
+                    .await
+                {
+                    Ok(value) if value["lifecycle"]["state"] == "enabled" => (),
+                    Err(c::Error::Missing) => {
+                        c::fixture::source_in(tx, definition.clone())
+                            .await
+                            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    }
+                    _ => {
+                        return Err(sqlx::Error::Protocol(
+                            "source seed requires missing or enabled state".into(),
+                        )
+                        .into());
+                    }
+                }
+                Ok(Ok(()))
+            })
+        })
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
     runtime.close().await;
     snapshot
 }
-async fn seed_enabled_version(version: &resource::Version, content: &rss_mdm_content_service::Store) {
+async fn seed_enabled_version(
+    version: &resource::Version,
+    content: &rss_mdm_content_service::Store,
+) {
     use rss_mdm_software_service::catalog::{self as c, ContentPort};
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
     let verified = content.verify(version).await.unwrap();
-    runtime.local_tx_with_context(tenant(), deadline(), (version, &verified), |(version, verified), tx| Box::pin(async move {
-        c::fixture::enabled_in(tx, version, verified.as_ref()).await.map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
-        Ok(Ok(()))
-    })).await.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
+    runtime
+        .local_tx_with_context(
+            tenant(),
+            deadline(),
+            (version, &verified),
+            |(version, verified), tx| {
+                Box::pin(async move {
+                    c::fixture::enabled_in(tx, version, verified.as_ref())
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    Ok(Ok(()))
+                })
+            },
+        )
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
     runtime.close().await;
 }
 

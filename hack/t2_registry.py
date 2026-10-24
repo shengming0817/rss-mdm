@@ -1393,6 +1393,7 @@ for name, module in tuple(MODULES.items()):
 # Exceptional cryptographic material has an actual consuming case.
 MODULES['windows.declared'] = replace(MODULES['windows.declared'], materials=('windows-renewal',))
 _pki_materials = {
+    'administrator_recovery_receipt_is_independent_of_issued_certificate': ('agent-large-csr',),
     'restored_ca_preserves_authorized_agent_issuance_and_activation': ('pki-recovery',),
     'explicit_development_limit_and_unknown_result_remain_auditable': ('agent-long-lived',),
     'provisioner_rejects_substituted_csr_and_consumed_token': ('other',),
@@ -1974,3 +1975,13 @@ consume(('crates/flow-service/src/automation/jobs.rs',), 'planning.recovery')
 consume(('crates/app/tests/apple/oracle.rs',),
         'apple.scep apple.identity apple.renewal apple.host apple.account_enrollment apple.ade apple.platform_sso')
 consume(('crates/app/tests/fixtures/error.rs',), 'api.diagnostics')
+
+MODULES['certificate-archive.http'] = replace(MODULES['certificate-archive.http'], policies=(*MODULES['certificate-archive.http'].policies,
+    CasePolicy('certificate_archive_tests::issued_results_keep_exact_request_versions_across_clean_shutdown', 'reuse', 'tenant', ('identity',), materials=('archive-issued',))))
+for name in ('encrypted_versions_replay_rewrap_and_registration_retirement', 'postgres_backup_restores_material_only_with_the_correct_key',
+             'unknown_candidates_block_rotation_and_retention_preserves_unresolved_material',
+             'retention_sweep_skips_protected_registrations_and_advances_past_blocked_copies',
+             'unescrowed_agent_mutation_protects_retired_material_from_expiry'):
+    module = MODULES['recovery-credentials.http']
+    MODULES[module.id] = replace(module, policies=(*module.policies, CasePolicy('recovery_credentials_tests::' + name,
+        'fresh' if name == 'postgres_backup_restores_material_only_with_the_correct_key' else 'reuse', 'tenant', (), actors=())))

@@ -331,7 +331,9 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
 pub(crate) async fn router(fixture: &mut authority::Authority) -> Result<Router> {
     let service = service(fixture).await?;
     let runtime = agent_runtime(fixture).await?;
-    fixture.resources.resource(InventoryFixtureResource(runtime.clone()));
+    fixture
+        .resources
+        .resource(InventoryFixtureResource(runtime.clone()));
     let envelope = rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: "mdm.example.test:9445".into(),
@@ -523,7 +525,12 @@ pub(crate) async fn agent_runtime(
     let config: Config = serde_json::from_value(authority.base.clone())?;
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone())),
-        authority.identity.tenant, monotonic(), authority.audit.clone(),
-    ).await?)
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(
+            authority.pool.clone(),
+        )),
+        authority.identity.tenant,
+        monotonic(),
+        authority.audit.clone(),
+    )
+    .await?)
 }

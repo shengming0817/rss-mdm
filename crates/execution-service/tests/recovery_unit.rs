@@ -42,14 +42,17 @@ async fn readiness_requires_both_confirmed_rounds_and_live_task() {
 async fn readiness_never_survives_task_completion() {
     use super::super::health::Readiness;
     let readiness = Readiness::default();
-    let (start, status) = rss_runtime::ManagedTask::prepare(
-        "execution-terminal", std::time::Duration::from_secs(2),
-    );
+    let (start, status) =
+        rss_runtime::ManagedTask::prepare("execution-terminal", std::time::Duration::from_secs(2));
     readiness.bind(status.clone());
     readiness.scan(Ok(()));
     readiness.relay(Ok(()));
-    let task = start.spawn_detached(tokio_util::sync::CancellationToken::new(), |_| async { Ok(()) });
-    tokio::time::timeout(std::time::Duration::from_secs(2), status.wait_stopped()).await.unwrap();
+    let task = start.spawn_detached(tokio_util::sync::CancellationToken::new(), |_| async {
+        Ok(())
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), status.wait_stopped())
+        .await
+        .unwrap();
     assert!(!readiness.health().is_ready());
     task.shutdown().await.unwrap();
 }

@@ -74,7 +74,7 @@ pub(crate) async fn application_fixture(
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> Result<
     (
-        axum::Router,
+        crate::native::Routers,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
         Arc<rss_mdm_flow_service::planning::Planning>,
@@ -168,7 +168,9 @@ pub(crate) async fn application_fixture(
             .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         let telemetry = match &compiled.config.telemetry {
             Some(config) => {
-                let service = config.open(planning.planning.clone(), execution.service.clone()).await?;
+                let service = config
+                    .open(planning.planning.clone(), execution.service.clone())
+                    .await?;
                 resources.resource(crate::telemetry::Resource(service.clone()));
                 resources.resource(crate::telemetry::fixture_task(
                     service.clone(),
@@ -216,7 +218,7 @@ pub(crate) async fn application_fixture(
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
-        for (kind, tls) in fixture_routers.listeners {
+        for (kind, tls) in fixture_routers.listeners.drain(..) {
             if kind == crate::native::ChannelKind::Agent {
                 fixture_routers.browser = crate::test_support::gateway::browser_agent(
                     fixture_routers.browser,
@@ -226,7 +228,7 @@ pub(crate) async fn application_fixture(
             }
         }
         Ok((
-            fixture_routers.browser,
+            fixture_routers,
             execution_service,
             plan_runtime,
             fixture_planning,
@@ -775,18 +777,40 @@ pub(crate) fn from_state(
         federation: state.identity.federation.clone(),
         tenant_administration: state.identity.tenant_administration.clone(),
         user_profiles: Arc::new(crate::user_profiles::Backend {
-            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &state.flow.cursor_key)),
-            identity: state.identity.authority.clone(), tenant: state.identity.tenant, instance: state.identity.instance,
+            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                ring::hmac::HMAC_SHA256,
+                &state.flow.cursor_key,
+            )),
+            identity: state.identity.authority.clone(),
+            tenant: state.identity.tenant,
+            instance: state.identity.instance,
             audit: state.audit_store.clone(),
         }),
-        audit: state.audit_store.clone(), clock: state.clock.clone(), protection: state.protection.clone(),
-        pki: state.pki.clone(), software: software_access(&state), registration: state.agent_enrollment.clone(),
-        webhooks: state.webhooks.clone(), windows: state.access.windows_store(), windows_loaded: state.windows.is_some(),
-        windows_push_revision: state.windows.as_ref().filter(|w| w.channel.push.is_some()).and_then(|w| w.config.push.as_ref().map(|p| p.revision)),
-        apple_materials: state.apple.as_ref().map(|apple| apple.config.materials.clone()),
-        s3_revision: state.content_writer.as_ref().and_then(|store| match &store.config.storage {
-            rss_mdm_content_service::Storage::S3(value) => i64::try_from(value.revision).ok(), _ => None,
-        }),
+        audit: state.audit_store.clone(),
+        clock: state.clock.clone(),
+        protection: state.protection.clone(),
+        pki: state.pki.clone(),
+        software: software_access(&state),
+        registration: state.agent_enrollment.clone(),
+        webhooks: state.webhooks.clone(),
+        windows: state.access.windows_store(),
+        windows_loaded: state.windows.is_some(),
+        windows_push_revision: state
+            .windows
+            .as_ref()
+            .filter(|w| w.channel.push.is_some())
+            .and_then(|w| w.config.push.as_ref().map(|p| p.revision)),
+        apple_materials: state
+            .apple
+            .as_ref()
+            .map(|apple| apple.config.materials.clone()),
+        s3_revision: state
+            .content_writer
+            .as_ref()
+            .and_then(|store| match &store.config.storage {
+                rss_mdm_content_service::Storage::S3(value) => i64::try_from(value.revision).ok(),
+                _ => None,
+            }),
         signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
         recovery: state.execution.recovery_credentials(),
         apple: apple_state.clone(),
@@ -798,7 +822,8 @@ pub(crate) fn from_state(
         instance: state.identity.instance,
         audit: state.audit_store.clone(),
         admission: rss_mdm_registration_service::admission::Admission::new(
-            state.access.registration(), state.audit_store.clone(),
+            state.access.registration(),
+            state.audit_store.clone(),
         ),
         channels: channels.clone(),
     });

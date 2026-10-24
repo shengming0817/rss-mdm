@@ -198,6 +198,16 @@ mod tests {
 
     #[test]
     fn checked_budget_arithmetic_preserves_the_limit_category() {
+        let mut budget = Budget {
+            bytes: limits::RULE_BYTES - 1,
+            byte_kind: LimitKind::RuleBytes,
+            items: 0,
+        };
+        budget.scalar_text("x").unwrap();
+        assert_eq!(
+            budget.scalar_text("x"),
+            Err(Error::LimitExceeded(LimitKind::RuleBytes))
+        );
         for kind in [
             LimitKind::Nodes,
             LimitKind::RuleBytes,
@@ -210,9 +220,16 @@ mod tests {
         }
         for kind in [LimitKind::Visits, LimitKind::Explanations] {
             assert_eq!(kind.product(usize::MAX, 2), Err(Error::LimitExceeded(kind)));
-            let limit = match kind { LimitKind::Visits => limits::VISITS, LimitKind::Explanations => limits::EXPLANATIONS, _ => unreachable!() };
+            let limit = match kind {
+                LimitKind::Visits => limits::VISITS,
+                LimitKind::Explanations => limits::EXPLANATIONS,
+                _ => unreachable!(),
+            };
             assert_eq!(kind.product(limit / 2, 2), Ok(()));
-            assert_eq!(kind.product(limit / 2 + 1, 2), Err(Error::LimitExceeded(kind)));
+            assert_eq!(
+                kind.product(limit / 2 + 1, 2),
+                Err(Error::LimitExceeded(kind))
+            );
         }
     }
 

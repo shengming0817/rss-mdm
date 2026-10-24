@@ -15,9 +15,16 @@ pub fn previews(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
 ) -> Router {
-    Router::new().route("/policies/previews", post(super::http_preview::preview)
-        .owned(&contracts::POLICIES, &[RouteOperation::Action]))
-        .with_state(Arc::new(super::http_preview::StateServices { queries, telemetry }))
+    Router::new()
+        .route(
+            "/policies/previews",
+            post(super::http_preview::preview)
+                .owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
+        .with_state(Arc::new(super::http_preview::StateServices {
+            queries,
+            telemetry,
+        }))
 }
 
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<Policies>> {

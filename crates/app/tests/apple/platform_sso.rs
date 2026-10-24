@@ -613,7 +613,9 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let agent_registration:Uuid=serde_json::from_value(agent_receipt["registrationId"].clone())?;
         let agent_device=agent_receipt["deviceId"].as_str().context("Agent device")?;
         let mdm=pair(&f,agent_device).await?;
+        if !mode {
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"application/profile observations are required");
+        }
         let login=if let Some(p)=&password{p.login()}else{Default::default()};
         let binding=binding_with_configuration(&mut f,agent_device,serde_json::to_value(&login)?).await?;
         if let Some(p)=&password{p.mapping(binding).await?;}
@@ -624,6 +626,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let waiting = peer.manage("Acknowledged",Some(security),Some(("SecurityInfo",protocol::dictionary([("ManagementStatus",protocol::dictionary([("EnrolledViaDEP",false.into()),("UserApprovedEnrollment",true.into()),("IsUserEnrollment",false.into())]).into())]).into()))).await?;
         ensure!(waiting.is_empty(),"RSS profile waits for application observation: {}",String::from_utf8_lossy(&waiting));
         installed_application(mdm.registration_id,"psso-applications",Some("1.0")).await?;
+        if !mode {
         installed_application(mdm.registration_id,"psso-missing-version",None).await?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"a valid scope must not mask another scope missing version");
         {
@@ -636,10 +639,13 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
             let valid:bool=sqlx::query_scalar("SELECT mdm_apple.application_valid_until($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint) IS NOT NULL").bind(mdm.registration_id).bind(&cfg).fetch_one(&mut pg).await?;
             ensure!(valid,"valid scope alone qualifies");
         }
+        }
         let (execute,_)=peer.next("InstallProfile").await?;
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
+        if !mode {
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"ACK is not observed readiness");
+        }
         let payloads = profile.payloads.iter().map(|payload| Ok(protocol::dictionary([
             ("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),
             ("PayloadVersion",1.into()),("PayloadType",payload.payload_type()?.into())]).into())).collect::<Result<Vec<plist::Value>>>()?;

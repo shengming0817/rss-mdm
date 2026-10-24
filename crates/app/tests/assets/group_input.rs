@@ -68,7 +68,10 @@ async fn collection_matrix(
                 && quality["registrationGeneration"] == 1
         );
         ensure!(quality["epoch"].as_str().is_some());
-        ensure!(quality["runId"] == full.id.to_string(), "query must retain the projected producer coordinate");
+        ensure!(
+            quality["runId"] == full.id.to_string(),
+            "query must retain the projected producer coordinate"
+        );
         let search = ok(
             browser,
             router,

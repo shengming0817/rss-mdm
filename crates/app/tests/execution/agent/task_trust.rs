@@ -113,12 +113,7 @@ async fn settings_catalog_projects_authority_without_cross_session_or_secret_exp
                 operation: crate::authorization::Permission::RegistrationConfigurationRead,
                 scope: crate::authorization::Scope::Tenant,
             }];
-            crate::test_support::identity::change_grants(
-                case_tenant(),
-                &subject,
-                grants,
-            )
-            .await?;
+            crate::test_support::identity::change_grants(case_tenant(), &subject, grants).await?;
             let (status, after) = author
                 .call(&router, Method::GET, "/api/v1/settings/catalog", None)
                 .await?;

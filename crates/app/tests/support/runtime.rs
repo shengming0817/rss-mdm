@@ -44,9 +44,11 @@ pub(crate) async fn app_with_access(
     .await
     .map_err(|error| anyhow::anyhow!("fixture application admission: {error:?}"))?;
     Ok((
-        router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        ))),
+        router
+            .browser
+            .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                "127.0.0.1".parse()?,
+            ))),
         audit_store,
         resources,
     ))
@@ -68,48 +70,75 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    let access = Arc::new(crate::Database::connect(config.access_options()?).await?);
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::lifecycle::AccessResource(access.clone()),
-    ));
-    let audit_store = access.audit_store_fixture(&config.audit).await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(config.access_options()?)
+        .await?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(PoolResource(
+        pool.clone(),
+    )));
+    let source = crate::audit_test_support::source_runtime(&pool, tenant).await?;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(SourceResource(
+        source.clone(),
+    )));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        rss_mdm_audit_integration::AuditStore::new(
+            pool.clone(),
+            config.audit.integrity()?,
+            source,
+            tenant,
+            Default::default(),
+            &budget.control(),
+        )
+        .await?,
+    );
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.inventory(),
-        rss_request_context::TenantId::parse(case_tenant())?,
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(pool)),
+        tenant,
         monotonic(),
-        audit_store.clone(),
+        audit.clone(),
     )
     .await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
         InventoryFixtureResource(inventory.clone()),
     ));
-    let content =
-        crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
-    if let Some(content) = &content {
-        startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-            crate::execution_assembly::ContentResource(content.clone()),
-        ));
-    }
-    let service = config
-        .flow
-        .open(
-            inventory,
-            audit_store,
-            rss_request_context::TenantId::parse(case_tenant())?,
-            Arc::new(crate::clock::SystemClock),
-            content,
-            |resource| startup.stage_resource(rss_runtime::DynManagedResource::new_box(resource)),
-        )
-        .await?;
-    let automation = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(
-            service.planning.clone(),
-            config.flow.storage.database.options()?,
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    startup.stage_resource(rss_runtime::DynManagedResource::new_box(SourceResource(
+        runtime.clone(),
+    )));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let planning = Arc::new(
+        crate::planning::Planning::new(
+            audit.clone(),
+            runtime.clone(),
+            tenant,
+            clock.clone(),
+            &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                audit.clone(),
+            )),
         )
         .await?,
-        service.assets.clone(),
-        service.compliance.clone(),
+    );
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        audit,
+        runtime,
+        tenant,
+        clock,
+        &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+    ));
+    let compliance = crate::planning::test_support::compliance(&planning).await;
+    let automation = crate::automation::Automation::connect(
+        crate::automation::PlanningWork::connect(planning, config.flow.storage.database.options()?)
+            .await?,
+        assets,
+        compliance,
     )
     .await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(

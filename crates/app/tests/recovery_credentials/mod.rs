@@ -13,10 +13,8 @@ fn keys(active: &str, old: bool) -> Arc<KeyRing> {
     }
     Arc::new(KeyRing::new(active.into(), values).unwrap())
 }
-async fn begin(
-    authority: &authority::Authority,
-) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
-    let mut tx = authority.pool.clone().begin().await?;
+async fn begin(pool: &sqlx::PgPool) -> Result<sqlx::Transaction<'static, sqlx::Postgres>> {
+    let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
@@ -24,13 +22,13 @@ async fn begin(
     Ok(tx)
 }
 async fn seed(
-    authority: &authority::Authority,
+    pool: &sqlx::PgPool,
     keys: &KeyRing,
     device: &str,
     secret: &str,
 ) -> Result<Coordinates> {
     let (registration, _) = inventory::seed_source(device, "agent", "agent.builtin", "fixture")?;
-    let mut tx = begin(authority).await?;
+    let mut tx = begin(pool).await?;
     let binding = Binding {
         device: device.into(),
         registration,
@@ -159,7 +157,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 }),
                 created_by_rss: false,
             };
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             access::storage::insert_in(&mut tx, &b).await?;
             tx.commit().await?;
             let binding = Binding {
@@ -174,7 +172,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
             };
             let first_operation = Uuid::new_v4();
             let secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             let first = storage::reserve_in(&mut tx, tenant, &binding, first_operation, 0).await?;
             storage::ingest_in(&mut tx, &keys, &first, first_operation, secret.as_bytes()).await?;
             storage::verify_in(&mut tx, &first, first_operation).await?;
@@ -183,7 +181,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 let authority = &authority;
                 let binding = binding.clone();
                 async move {
-                    let mut tx = begin(authority).await?;
+                    let mut tx = begin(&authority.pool).await?;
                     let result = storage::reserve_in(&mut tx, tenant, &binding, operation, 1).await;
                     match result {
                         Ok(c) => {
@@ -205,7 +203,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 "both concurrent rotations were admitted"
             );
             let (operation, next) = a.or(z).context("one rotation admitted")?;
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             let again = storage::reserve_in(&mut tx, tenant, &binding, operation, 1).await?;
             ensure!(again.version == next.version);
             let next_secret = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
@@ -231,7 +229,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
             .await?;
             ensure!(current == Some(2));
             tx.commit().await?;
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             let mut changed = access::storage::locked_in(&mut tx, tenant, id).await?;
             changed.generation = 2;
             changed.revision = 2;
@@ -239,10 +237,10 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
             changed.configuration.enabled = false;
             access::storage::save_in(&mut tx, &changed, 1).await?;
             tx.commit().await?;
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             ensure!(storage::active_in(&mut tx, tenant, &binding).await.is_err());
             tx.rollback().await?;
-            let mut tx = begin(&authority).await?;
+            let mut tx = begin(&authority.pool).await?;
             ensure!(
                 storage::active_in(&mut tx, Uuid::new_v4(), &binding)
                     .await
@@ -269,7 +267,7 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
             let router = route(&authority, ring.clone(), fixture.execution.clone())?;
             let device = case::name("recovery-device");
             let secret = "recovery-http-canary-2789";
-            let coordinates = seed(&authority, &ring, device, secret).await?;
+            let coordinates = seed(&authority.pool, &ring, device, secret).await?;
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let app = router.clone();
@@ -343,12 +341,16 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
 #[tokio::test]
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Result<()> {
-    let mut authority = authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
     resources.finish(async{
         let first=keys("first",true);let device=case::name("recovery-storage");let secret="storage-recovery-canary-2789";
-        let coordinates=seed(&authority,&first,device,secret).await?;
-        let mut tx=begin(&authority).await?;
+        let coordinates=seed(&pool,&first,device,secret).await?;
+        let mut tx=begin(&pool).await?;
         let row=sqlx::query("SELECT operation,sealed FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=1").bind(coordinates.tenant).bind(coordinates.material).fetch_one(&mut *tx).await?;
         let operation:Uuid=row.try_get("operation")?;let sealed:Vec<u8>=row.try_get("sealed")?;
         ensure!(!sealed.windows(secret.len()).any(|v|v==secret.as_bytes()));
@@ -359,7 +361,7 @@ async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Resul
         storage::validate_keys_in(&mut tx,coordinates.tenant,&first).await?;
         let next=keys("next",true);let prepared=storage::prepare_rewrap_in(&mut tx,coordinates.tenant,&next).await?;ensure!(storage::rewrap_in(&mut tx,prepared,&next).await?==1);
         tx.commit().await?;
-        let restarted=keys("next",false);let mut tx=begin(&authority).await?;
+        let restarted=keys("next",false);let mut tx=begin(&pool).await?;
         ensure!(storage::secret_in(&mut tx,&restarted,&coordinates).await?.expose()==secret.as_bytes());
         let mut wrong=coordinates.clone();wrong.binding.device="another-device".into();
         ensure!(storage::secret_in(&mut tx,&restarted,&wrong).await.is_err());
@@ -373,18 +375,22 @@ async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Resul
 #[tokio::test]
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result<()> {
-    let mut authority = authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
     resources.finish(async{
         let ring=keys("first",true);let device=case::name("recovery-backup");
-        let secret="backup-recovery-canary-2789";let c=seed(&authority,&ring,device,secret).await?;
-        let config:Config=serde_json::from_value(authority.base.clone())?;
+        let secret="backup-recovery-canary-2789";let c=seed(&pool,&ring,device,secret).await?;
+        let config:Config=serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
         let container=std::env::var("MDM_TEST_PG_CONTAINER")?;
         let dump=command(&["exec","-i",&container,"pg_dump","-U","postgres","-d",&config.access_database.name,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
         ensure!(!dump.contains(secret));
         pg("TRUNCATE mdm_recovery.disclosures,mdm_recovery.rss_login_uses,mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
         command(&["exec","-i",&container,"psql","-Xq","-U","postgres","-d",&config.access_database.name,"-v","ON_ERROR_STOP=1"],Some(&dump))?;
-        let mut tx=begin(&authority).await?;
+        let mut tx=begin(&pool).await?;
         storage::validate_keys_in(&mut tx,c.tenant,&ring).await?;
         ensure!(storage::secret_in(&mut tx,&ring,&c).await?.expose()==secret.as_bytes());
         let wrong=KeyRing::new("first".into(),vec![("first".into(),Zeroizing::new(vec![99;32]))])?;
@@ -399,12 +405,16 @@ async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_material()
 -> Result<()> {
-    let mut authority = authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
     resources.finish(async{
         let ring=keys("first",true);let device=case::name("recovery-retention");
-        let first=seed(&authority,&ring,device,"first-managed-password").await?;
-        let mut tx=begin(&authority).await?;
+        let first=seed(&pool,&ring,device,"first-managed-password").await?;
+        let mut tx=begin(&pool).await?;
         let operation=Uuid::new_v4();
         let second=storage::reserve_in(&mut tx,first.tenant,&first.binding,operation,1).await?;
         storage::ingest_in(&mut tx,&ring,&second,operation,b"second-managed-password").await?;
@@ -435,13 +445,17 @@ async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_ma
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked_copies()
 -> Result<()> {
-    let mut authority = authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
     resources.finish(async {
         let ring=keys("first",true);
-        let a=seed(&authority,&ring,case::name("retention-held"),"first-password").await?;
-        let b=seed(&authority,&ring,case::name("retention-free"),"other-password").await?;
-        let mut tx=begin(&authority).await?;
+        let a=seed(&pool,&ring,case::name("retention-held"),"first-password").await?;
+        let b=seed(&pool,&ring,case::name("retention-free"),"other-password").await?;
+        let mut tx=begin(&pool).await?;
         for revision in 1..=100 {
             let operation=Uuid::new_v4();
             let candidate=storage::reserve_in(&mut tx,a.tenant,&a.binding,operation,revision).await?;
@@ -470,12 +484,16 @@ async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked
 #[tokio::test]
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn unescrowed_agent_mutation_protects_retired_material_from_expiry() -> Result<()> {
-    let mut authority = authority::Authority::open().await?;
-    let resources = std::mem::take(&mut authority.resources);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(4)
+        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
     resources.finish(async{
         let ring=keys("first",true);
-        let original=seed(&authority,&ring,case::name("guard-retention"),"possibly-still-current-password").await?;
-        let mut tx=begin(&authority).await?;
+        let original=seed(&pool,&ring,case::name("guard-retention"),"possibly-still-current-password").await?;
+        let mut tx=begin(&pool).await?;
         storage::start_agent_in(&mut tx,original.tenant,original.binding.registration,original.binding.generation,Uuid::new_v4(),Uuid::new_v4()).await?;
         storage::retire_in(&mut tx,case_tenant(),original.binding.registration).await?;
         sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2").bind(original.tenant).bind(original.material).execute(&mut *tx).await?;
@@ -501,7 +519,7 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
         let router = route(&authority, ring.clone(), fixture.execution.clone())?;
         let device = case::name("recovery-lock-order");
         let secret = "recovery-lock-order-canary";
-        let coordinates = seed(&authority, &ring, device, secret).await?;
+        let coordinates = seed(&authority.pool, &ring, device, secret).await?;
         let mut browser = authority.browser("admin")?;
         let actor = prepared_subject(&browser)?;
         identity::seed_grants(case_tenant(), &actor, identity::device_grants(Some(device), &["credentials", "account_write"])?).await?;
@@ -553,8 +571,8 @@ async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> 
  let router=route(&authority,ring.clone(),fixture.execution.clone())?;
  let device=case::name("query-recovery");
  let secret="recovery-directory-private-value";
- let first=seed(&authority,&ring,device,secret).await?;
- let mut tx=begin(&authority).await?;
+ let first=seed(&authority.pool,&ring,device,secret).await?;
+ let mut tx=begin(&authority.pool).await?;
  let operation=Uuid::new_v4();
  let second=storage::reserve_in(&mut tx,first.tenant,&first.binding,operation,1).await?;
  storage::ingest_in(&mut tx,&ring,&second,operation,secret.as_bytes()).await?;

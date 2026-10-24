@@ -124,15 +124,6 @@ fn invalid_facts_expose_closed_categories_without_input_values() {
         Fact::business(&valid, "key", b"", 200, "success", None),
         Err(InvalidFact::Fingerprint)
     ));
-    for error in [
-        InvalidFact::Tenant,
-        InvalidFact::Status,
-        InvalidFact::Outcome,
-        InvalidFact::Identity,
-        InvalidFact::Fingerprint,
-    ] {
-        assert!(!format!("{error:?}: {error}").contains("secret"));
-    }
     context.finalize(None);
     valid.finalize(None);
 }

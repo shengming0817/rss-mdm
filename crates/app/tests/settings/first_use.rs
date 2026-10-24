@@ -266,3 +266,53 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
         })
         .await
 }
+
+// The registration configuration journey supplies one actually published package.
+// Settings owns the product-wide readiness projection.
+pub(crate) async fn published_agent_package_readiness(base: &Value) -> Result<()> {
+    use anyhow::Context;
+    let (router, resources) = app(base).await?;
+    resources.finish(async {
+    let mut user = authority::Authority::prepared_browser("admin")?;
+    let settings = user
+        .call(&router, Method::GET, "/api/v1/settings/catalog", None)
+        .await?;
+    ensure!(settings.0 == StatusCode::OK);
+    let capability = settings.1["items"]
+        .as_array()
+        .context("settings items")?
+        .iter()
+        .find(|item| item["id"] == "agent-package")
+        .context("package capability")?;
+    ensure!(
+        capability["status"] == "configured"
+            && capability["configuredCount"] == 1
+            && capability["lifecycle"] == "business_configuration",
+        "single package projection {capability:?}"
+    );
+    let path = "/api/v1/settings/first-use";
+    let initial = user.call(&router, Method::GET, path, None).await?;
+    ensure!(initial.0 == StatusCode::OK);
+    let previous = user.operation.replace(Uuid::new_v4());
+    let selected = user.call(&router, Method::PUT, path, Some(json!({"expectedRevision":initial.1["saved"]["revision"],"intent":{"channels":["agent"],"capabilities":{"agent_package":{"kind":"configure"}},"completionRequested":false}}))).await?;
+    user.operation = previous;
+    ensure!(
+        selected.0 == StatusCode::OK,
+        "first use selection {selected:?}"
+    );
+    let progress = user.call(&router, Method::GET, path, None).await?;
+    ensure!(progress.0 == StatusCode::OK);
+    let step = progress.1["steps"]
+        .as_array()
+        .context("first use steps")?
+        .iter()
+        .find(|step| step["id"] == "agent_package")
+        .context("package readiness")?;
+    ensure!(
+        step["status"] == "ready",
+        "single package first use {step:?}"
+    );
+
+    Ok(())
+    }).await
+}

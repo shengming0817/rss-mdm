@@ -4,7 +4,10 @@ use anyhow::Context;
 #[ignore = "MODULE=assets.queries: real Router and persisted assets"]
 async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     let fixture = AssetHttp::open().await?;
-    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')",
+        tenant = case_tenant()
+    ))?;
     let router = &fixture.router;
     let subject = &fixture.author_id;
     let mut browser = fixture.author.clone();
@@ -114,7 +117,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     ensure!(
         last["asset"]["items"] == json!([{"id":ids[1]}]) && last["asset"]["nextCursor"].is_null()
     );
-    let mut other = crate::test_support::authority::Authority::prepared_browser("other")?;
+    let mut other = crate::test_support::authority::Authority::prepared_browser("admin")?;
     let other_subject = prepared_subject(&other)?;
     identity::seed_grants(case_tenant(), &other_subject, permissions(None, true)?).await?;
     ensure!(
@@ -319,7 +322,10 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
 async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
     let fixture = AssetHttp::open().await?;
-    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')",
+        tenant = case_tenant()
+    ))?;
     let router = &fixture.router;
     let mut browser = fixture.author.clone();
     let mut grants = crate::test_support::identity::device_grants(
@@ -430,7 +436,10 @@ async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()
 #[ignore = "MODULE=assets.queries: saved definitions roundtrip at the parser boundary"]
 async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
     let fixture = AssetHttp::open().await?;
-    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')",
+        tenant = case_tenant()
+    ))?;
     let router = &fixture.router;
     let mut browser = fixture.author.clone();
     let text = vec![format!("device.name=={}", "z".repeat(1010)); 8].join(";");

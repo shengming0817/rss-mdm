@@ -155,9 +155,20 @@ pub(crate) fn seed_unenrolled(device: &str) -> Result<()> {
     let field = rss_mdm_inventory::FieldKey::parse("channel.mdm.enrollment")?;
     let definition = definition("mdm-enrollment-fixture", "agent.builtin", &[field]);
     register_definition(&definition)?;
-    let scope = crate::device::scope_dataset(rss_request_context::TenantId::parse(case_tenant())?, registration, "agent.builtin", epoch, definition.dataset())?.encode()?.replace('\'', "''");
+    let scope = crate::device::scope_dataset(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        registration,
+        "agent.builtin",
+        epoch,
+        definition.dataset(),
+    )?
+    .encode()?
+    .replace('\'', "''");
     let coverage = serde_json::to_string(&definition.coverage()?)?.replace('\'', "''");
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String("unenrolled".into()))?;
-    pg(&format!("SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','agent.builtin','{epoch}',0)", tenant=case_tenant()))?;
+    pg(&format!(
+        "SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','agent.builtin','{epoch}',0)",
+        tenant = case_tenant()
+    ))?;
     Ok(())
 }

@@ -104,7 +104,10 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
 #[ignore = "MODULE=assets.sources: real Router and persisted assets"]
 async fn sources_resolution_and_retained_quality() -> Result<()> {
     let fixture = AssetHttp::open().await?;
-    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
+    pg(&format!(
+        "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')",
+        tenant = case_tenant()
+    ))?;
     let router = &fixture.router;
     let mut browser = fixture.author.clone();
     source_matrix(&mut browser, router).await?;

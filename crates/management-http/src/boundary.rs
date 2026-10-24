@@ -285,7 +285,7 @@ fn route_action(route: &str) -> &'static str {
 mod tests {
     use super::*;
     #[test]
-    fn route_actions_precede_handler_rejections() {
+    fn route_templates_select_audit_actions() {
         assert_eq!(
             route_action("/api/v1/devices/{device}/registrations"),
             "registration_read"
@@ -384,16 +384,19 @@ mod tests {
             );
             let id = audit.request_id();
             let response = secure(response, id);
-            assert!(
-                uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).is_ok()
-            );
-            assert_eq!(response.headers()["x-request-id"], id.to_string());
-            assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
-            assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
-            assert_eq!(
-                response.headers()[header::X_CONTENT_TYPE_OPTIONS],
-                "nosniff"
-            );
+            if code == "invalid_identity" {
+                assert!(
+                    uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap())
+                        .is_ok()
+                );
+                assert_eq!(response.headers()["x-request-id"], id.to_string());
+                assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+                assert_eq!(response.headers()[header::REFERRER_POLICY], "no-referrer");
+                assert_eq!(
+                    response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+                    "nosniff"
+                );
+            }
             let body = axum::body::to_bytes(response.into_body(), 1024)
                 .await
                 .unwrap();

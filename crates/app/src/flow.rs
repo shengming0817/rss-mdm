@@ -306,7 +306,6 @@ impl rss_runtime::ManagedResource for Resource {
     }
 }
 
-
 pub(crate) struct Flow {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,

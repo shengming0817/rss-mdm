@@ -286,16 +286,44 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     );
     let (initial, execute, delivered_bootstrap) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::issue_windows(
+    let prepared = bootstrap::prepare_windows(
         &host.app,
         &client.router,
-        &host.root,
         operation,
         delivered_bootstrap
             .as_ref()
             .context("native bootstrap delivery")?,
     )
     .await?;
+    let config = host
+        .app
+        .agent_enrollment
+        .as_ref()
+        .context("Agent enrollment")?
+        .bootstrap_configuration()?;
+    let replay =
+        bootstrap::webhook_response(&client.router, config, "challenge", &prepared.request).await?;
+    ensure!(
+        replay == (StatusCode::OK, prepared.approval.clone()),
+        "exact challenge retry must reuse the approval"
+    );
+    let mut changed = prepared.request.clone();
+    changed["scepTransactionID"] = json!(Uuid::new_v4());
+    ensure!(
+        bootstrap::webhook_response(&client.router, config, "challenge", &changed)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    changed = prepared.request.clone();
+    changed["scepChallenge"] = json!(credential("different-bootstrap-challenge"));
+    ensure!(
+        bootstrap::webhook_response(&client.router, config, "challenge", &changed)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+    let bootstrap_peer = prepared.notify(&client.router).await?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("managed-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     let mut wrong = input.clone();
     wrong["runtime"]["architecture"] = json!("aarch64");
@@ -938,7 +966,10 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
 async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
+    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
+        .await?
+        .notify(&client.router)
+        .await?;
     let result = client
         .call(
             Method::POST,
@@ -999,7 +1030,10 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         start_fixture_until(Some(300)).await?;
     let until = until.expect("scheduled fixture");
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
+    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
+        .await?
+        .notify(&client.router)
+        .await?;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -1011,7 +1045,8 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         package_status(&client.router, operation).await? == StatusCode::OK,
         "package was never accessible before expiry"
     );
-    client.execution
+    client
+        .execution
         .advance_installation_authorization_to(until)?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(
@@ -1043,7 +1078,10 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
+    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
+        .await?
+        .notify(&client.router)
+        .await?;
     let current = host.enrolled_peer().await?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(
@@ -1110,7 +1148,10 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
 async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::issue(&host.app, &client.router, &host.root, operation).await?;
+    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
+        .await?
+        .notify(&client.router)
+        .await?;
     let policy_view = client
         .browser
         .call(
@@ -1540,13 +1581,14 @@ async fn expired_known_bootstrap_recovers_without_reinstall_or_unknown_resigning
     );
     let (initial, execute, delivered) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let old = bootstrap::issue_windows(
+    let old = bootstrap::prepare_windows(
         &host.app,
         &client.router,
-        &host.root,
         operation,
         delivered.as_ref().context("first bootstrap")?,
     )
+    .await?
+    .notify(&client.router)
     .await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     pg(&format!(
@@ -1769,13 +1811,14 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     let (initial, execute, wire) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    bootstrap::issue_windows(
+    bootstrap::prepare_windows(
         &host.app,
         &client.router,
-        &host.root,
         operation,
         wire.as_ref().context("initial identity")?,
     )
+    .await?
+    .notify(&client.router)
     .await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     let old:Uuid=Uuid::parse_str(pg(&format!("SELECT id FROM mdm_access.agent_bootstraps WHERE tenant_id='{}' AND installation='{operation}' AND active",case_tenant()))?.trim())?;
@@ -1789,14 +1832,10 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         for _ in 0..CodecLimits::default().session_messages {
             if !bootstrap::windows_fields(&wire.commands).is_empty() {
                 replacement = Some(
-                    bootstrap::issue_windows(
-                        &host.app,
-                        &client.router,
-                        &host.root,
-                        operation,
-                        &wire,
-                    )
-                    .await?,
+                    bootstrap::prepare_windows(&host.app, &client.router, operation, &wire)
+                        .await?
+                        .notify(&client.router)
+                        .await?,
                 );
                 post(&peer, &reply(&start, &wire, false)).await?;
                 break 'sessions;
@@ -1876,15 +1915,16 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     // Complete the independent bootstrap certificate delivery without activating
     // an Agent registration. Otherwise that older uncertain command is the first blocker.
-    bootstrap::issue_windows(
+    bootstrap::prepare_windows(
         &host.app,
         &client.router,
-        &host.root,
         operation,
         bootstrap_wire
             .as_ref()
             .context("native bootstrap delivery")?,
     )
+    .await?
+    .notify(&client.router)
     .await?;
     let mut next = post(&peer, &reply(&initial, &execute, false)).await?;
     while next
@@ -2146,15 +2186,16 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     let (initial, execute, delivered) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let _issued = bootstrap::issue_windows(
+    let _issued = bootstrap::prepare_windows(
         &host.app,
         &client.router,
-        &host.root,
         operation,
         delivered
             .as_ref()
             .context("accepted bootstrap before capability block")?,
     )
+    .await?
+    .notify(&client.router)
     .await?;
     post(&peer, &reply(&initial, &execute, false)).await?;
     ensure!(commands.shutdown().join().await?.is_clean());

@@ -362,29 +362,91 @@ async fn lost_commit_ack_replays_durable_result_once() {
 #[ignore = "real PostgreSQL; executed by make t2 MODULE=group.persistence"]
 async fn admission_rejects_catalog_and_security_drift() {
     let runtime = connect_runtime().await;
-    for mutation in [
-        "GRANT CREATE ON SCHEMA mdm_group TO mdm_group_runtime",
-        "GRANT TRUNCATE ON mdm_group.groups TO mdm_group_runtime",
-        "GRANT UPDATE(id) ON mdm_group.groups TO mdm_group_runtime",
-        "GRANT SELECT ON mdm_group.groups TO PUBLIC",
-        "GRANT SELECT ON mdm_group.groups TO mdm_group_runtime WITH GRANT OPTION",
-        "ALTER POLICY tenant ON mdm_group.groups USING (true)",
-        "ALTER POLICY tenant ON mdm_group.groups WITH CHECK (true)",
-        "CREATE POLICY extra ON mdm_group.groups USING (true)",
-        "ALTER ROLE mdm_group_runtime BYPASSRLS",
-        "ALTER TABLE mdm_group.operations DROP COLUMN receipt_digest CASCADE",
-        "ALTER TABLE mdm_group.groups ADD COLUMN unexpected text",
-        "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
-        "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
-        "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",
-        "ALTER TABLE mdm_group.member_rows DROP CONSTRAINT member_rows_tenant_id_run_id_fkey",
-        "ALTER TABLE mdm_group.member_changes DROP CONSTRAINT member_changes_pkey",
-        "DROP INDEX mdm_group.member_changes_history",
-        "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,object_id)",
-        "ALTER TABLE mdm_group.operations ADD COLUMN unexpected text",
-        "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-        "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
-        "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+    for (mutation, restore) in [
+        (
+            "GRANT CREATE ON SCHEMA mdm_group TO mdm_group_runtime",
+            "REVOKE CREATE ON SCHEMA mdm_group FROM mdm_group_runtime",
+        ),
+        (
+            "GRANT TRUNCATE ON mdm_group.groups TO mdm_group_runtime",
+            "REVOKE TRUNCATE ON mdm_group.groups FROM mdm_group_runtime",
+        ),
+        (
+            "GRANT UPDATE(id) ON mdm_group.groups TO mdm_group_runtime",
+            "REVOKE UPDATE(id) ON mdm_group.groups FROM mdm_group_runtime",
+        ),
+        (
+            "GRANT SELECT ON mdm_group.groups TO PUBLIC",
+            "REVOKE SELECT ON mdm_group.groups FROM PUBLIC",
+        ),
+        (
+            "GRANT SELECT ON mdm_group.groups TO mdm_group_runtime WITH GRANT OPTION",
+            "REVOKE GRANT OPTION FOR SELECT ON mdm_group.groups FROM mdm_group_runtime",
+        ),
+        (
+            "ALTER POLICY tenant ON mdm_group.groups USING (true)",
+            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+        ),
+        (
+            "ALTER POLICY tenant ON mdm_group.groups WITH CHECK (true)",
+            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+        ),
+        (
+            "CREATE POLICY extra ON mdm_group.groups USING (true)",
+            "DROP POLICY extra ON mdm_group.groups",
+        ),
+        (
+            "ALTER ROLE mdm_group_runtime BYPASSRLS",
+            "ALTER ROLE mdm_group_runtime NOBYPASSRLS",
+        ),
+        (
+            "ALTER TABLE mdm_group.groups ADD COLUMN unexpected text",
+            "ALTER TABLE mdm_group.groups DROP COLUMN unexpected",
+        ),
+        (
+            "ALTER TABLE mdm_group.operations ALTER COLUMN request DROP NOT NULL",
+            "ALTER TABLE mdm_group.operations ALTER COLUMN request SET NOT NULL",
+        ),
+        (
+            "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT true",
+            "ALTER TABLE mdm_group.groups ALTER COLUMN deleted SET DEFAULT false",
+        ),
+        (
+            "ALTER TABLE mdm_group.operations DROP CONSTRAINT operations_as_of_check",
+            "ALTER TABLE mdm_group.operations ADD CONSTRAINT operations_as_of_check CHECK(as_of>=0)",
+        ),
+        (
+            "ALTER TABLE mdm_group.member_rows DROP CONSTRAINT member_rows_tenant_id_run_id_fkey",
+            "ALTER TABLE mdm_group.member_rows ADD CONSTRAINT member_rows_tenant_id_run_id_fkey FOREIGN KEY(tenant_id,run_id) REFERENCES mdm_group.member_runs(tenant_id,id)",
+        ),
+        (
+            "ALTER TABLE mdm_group.member_changes DROP CONSTRAINT member_changes_pkey",
+            "ALTER TABLE mdm_group.member_changes ADD CONSTRAINT member_changes_pkey PRIMARY KEY(tenant_id,run_id,object_id)",
+        ),
+        (
+            "DROP INDEX mdm_group.member_changes_history",
+            "CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC)",
+        ),
+        (
+            "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,object_id)",
+            "DROP INDEX mdm_group.member_changes_history; CREATE INDEX member_changes_history ON mdm_group.member_changes(tenant_id,group_id,object_id,revision DESC)",
+        ),
+        (
+            "ALTER TABLE mdm_group.operations ADD COLUMN unexpected text",
+            "ALTER TABLE mdm_group.operations DROP COLUMN unexpected",
+        ),
+        (
+            "UPDATE pg_index SET indisvalid=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+            "UPDATE pg_index SET indisvalid=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+        ),
+        (
+            "UPDATE pg_index SET indisready=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+            "UPDATE pg_index SET indisready=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+        ),
+        (
+            "UPDATE pg_index SET indislive=false WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+            "UPDATE pg_index SET indislive=true WHERE indexrelid='mdm_group.member_changes_history'::regclass",
+        ),
     ] {
         GroupStore::new(runtime.clone(), tenant(), deadline())
             .await
@@ -392,9 +454,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         admin(mutation);
         let result = GroupStore::new(runtime.clone(), tenant(), deadline()).await;
         // Restore before asserting so a failing case cannot contaminate later tests.
-        admin(&format!(
-            "ALTER ROLE mdm_group_runtime NOBYPASSRLS; UPDATE pg_index SET indisvalid=true,indisready=true,indislive=true WHERE indexrelid=to_regclass('mdm_group.member_changes_history'); DROP SCHEMA mdm_group CASCADE; SET ROLE mdm_group_owner; {MIGRATION_SQL} {OUTBOX_MIGRATION_SQL}"
-        ));
+        admin(restore);
         assert!(
             matches!(result, Err(rss_mdm_group_postgres::Error::RolledBack(ref e)) if e.kind() == rss_transactional_messaging::error::MessagingErrorKind::Invariant),
             "accepted or unrelated drift failure: {mutation}"

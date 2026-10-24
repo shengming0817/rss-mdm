@@ -15,7 +15,12 @@ async fn state(pg: &mut PgConnection) -> Result<serde_json::Value> {
 impl Fixture {
     pub async fn push_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
         self.native_context().await?;
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::native_grants(&["device_control"])?,
+        )
+        .await?;
         let operation = self.create_restart().await?;
         let mut pg =
             PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;

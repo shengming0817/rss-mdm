@@ -366,7 +366,7 @@ mod tests {
         assert!(!a.same_delivery(&b));
     }
     #[test]
-    fn subscription_rejects_unbounded_or_credential_urls() {
+    fn subscription_rejects_insecure_credential_and_query_urls() {
         let mut s = settings();
         assert!(s.validate().is_ok());
         for endpoint in [

@@ -206,20 +206,40 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     let mut authority = authority::Authority::from_config(base.clone()).await?;
     let mut resources = std::mem::take(&mut authority.resources);
     let tenant_id = authority.identity.tenant;
-    let runtime = crate::planning::test_support::runtime_role(tenant_id, "mdm_command_runtime").await;
+    let runtime =
+        crate::planning::test_support::runtime_role(tenant_id, "mdm_command_runtime").await;
     resources.resource(SourceResource(runtime.clone()));
     let material_configuration = config.webhooks.material_configuration()?;
     let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
-        rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)?,
-        vec![(tenant_id, rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)],
+        rss_transactional_messaging::fence::StorageIdentity::new(
+            config.flow.storage.target,
+            config.flow.storage.lineage,
+        )?,
+        vec![(
+            tenant_id,
+            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+        )],
     )?;
     let protection = config.native_protector()?;
-    let backend = crate::webhooks::Backend::open(config.webhooks, runtime.clone(), tenant_id,
-        authority.audit.clone(), Arc::new(crate::clock::SystemClock), protection, binding).await?;
+    let backend = crate::webhooks::Backend::open(
+        config.webhooks,
+        runtime.clone(),
+        tenant_id,
+        authority.audit.clone(),
+        Arc::new(crate::clock::SystemClock),
+        protection,
+        binding,
+    )
+    .await?;
     resources.resource(crate::webhooks::Resource(backend.clone()));
-    let router = authority.router(Router::new().nest("/api/v1",
-        rss_mdm_management_http::webhooks::routes(backend.clone()).into_axum(),
-    ).merge(authority.authorization()))?;
+    let router = authority.router(
+        Router::new()
+            .nest(
+                "/api/v1",
+                rss_mdm_management_http::webhooks::routes(backend.clone()).into_axum(),
+            )
+            .merge(authority.authorization()),
+    )?;
     let stop = tokio_util::sync::CancellationToken::new();
     let mut worker = None;
     let result=async {

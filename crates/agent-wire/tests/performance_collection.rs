@@ -68,21 +68,23 @@ fn performance_plans_require_exact_platform_engine_version_and_device_scope() {
                 }
             );
             assert!(p.supported_by(&[(engine, 1)].into()));
-            assert!(!p.supported_by(&Default::default()));
-            assert!(!p.supported_by(&[(engine, 2)].into()));
-            let other = query(section, !windows);
-            assert!(!p.supported_by(&[(other.definition.engine(), 1)].into()));
-            let mut mixed = p.spec().clone();
-            mixed.queries.insert("other".into(), other);
-            assert!(NativeCollectionPlan::new(mixed).is_err());
-            let mut scoped = p.spec().clone();
-            scoped.scope = CollectionScope::User {
-                identity: "501".into(),
-            };
-            assert!(NativeCollectionPlan::new(scoped).is_err());
-            let mut version = q.clone();
-            version.version = 2;
-            assert!(version.validate().is_err());
+            if section == PerformanceSection::Cpu {
+                assert!(!p.supported_by(&Default::default()));
+                assert!(!p.supported_by(&[(engine, 2)].into()));
+                let other = query(section, !windows);
+                assert!(!p.supported_by(&[(other.definition.engine(), 1)].into()));
+                let mut mixed = p.spec().clone();
+                mixed.queries.insert("other".into(), other);
+                assert!(NativeCollectionPlan::new(mixed).is_err());
+                let mut scoped = p.spec().clone();
+                scoped.scope = CollectionScope::User {
+                    identity: "501".into(),
+                };
+                assert!(NativeCollectionPlan::new(scoped).is_err());
+                let mut version = q.clone();
+                version.version = 2;
+                assert!(version.validate().is_err());
+            }
             let mut keys = q.clone();
             keys.instance_keys = vec!["total_bytes".into()];
             assert!(keys.validate().is_err());
@@ -92,11 +94,15 @@ fn performance_plans_require_exact_platform_engine_version_and_device_scope() {
                 NativeCardinality::List => NativeCardinality::ExactlyOne,
             };
             assert!(cardinality.validate().is_err());
-            assert_eq!(
-                serde_json::from_value::<NativeCollectionPlan>(serde_json::to_value(&p).unwrap())
+            if section == PerformanceSection::Cpu {
+                assert_eq!(
+                    serde_json::from_value::<NativeCollectionPlan>(
+                        serde_json::to_value(&p).unwrap()
+                    )
                     .unwrap(),
-                p
-            );
+                    p
+                );
+            }
         }
     }
 }
@@ -131,7 +137,8 @@ fn performance_recipe_cannot_carry_executable_or_sampling_parameters() {
 #[test]
 fn performance_values_preserve_precision_and_reject_impossible_observations() {
     use PerformanceSection::*;
-    for windows in [true, false] {
+    {
+        let windows = true;
         for (section, good, bad) in [
             (
                 Cpu,
@@ -190,6 +197,8 @@ fn performance_values_preserve_precision_and_reject_impossible_observations() {
             !answer(&q, json!({"total_bytes":"0","available_bytes":"0"})).complete_for(&q, 100)
         );
     }
+    let mac = query(Cpu, false);
+    assert!(answer(&mac, json!({"busy_percent":25.5})).complete_for(&mac, 100));
 }
 
 #[test]

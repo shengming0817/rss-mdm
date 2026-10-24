@@ -197,13 +197,14 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         bootstrap_payload.contains_key("Payload"),
         "native bootstrap must deliver a profile"
     );
-    let bootstrap_peer = crate::test_support::bootstrap::issue_apple(
+    let bootstrap_peer = crate::test_support::bootstrap::prepare_apple(
         &f.app,
         &f.router,
-        &f.root,
         operation,
         &bootstrap_payload,
     )
+    .await?
+    .notify(&f.router)
     .await?;
     // The native daily identity is no longer mounted as an Agent authorization endpoint.
     ensure!(

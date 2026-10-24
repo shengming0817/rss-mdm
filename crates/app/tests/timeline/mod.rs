@@ -34,12 +34,14 @@ impl Fixture {
                 timeline.initialize().await?;
                 let admin = authority.browser("admin")?;
                 let router = authority.router(
-                    Router::new().nest(
-                        "/api/v1",
-                        rss_mdm_management_http::timeline::routes()
-                            .with_state(timeline.clone())
-                            .into_axum(),
-                    ).merge(authority.authorization()),
+                    Router::new()
+                        .nest(
+                            "/api/v1",
+                            rss_mdm_management_http::timeline::routes()
+                                .with_state(timeline.clone())
+                                .into_axum(),
+                        )
+                        .merge(authority.authorization()),
                 )?;
                 Ok(Self {
                     resources: Default::default(),

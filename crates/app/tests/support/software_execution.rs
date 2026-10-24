@@ -207,7 +207,10 @@ impl Fixture {
     }
     pub(crate) async fn seed_dependency(&mut self) -> Result<Value> {
         let platform = self.platform;
-        let (platform_name, architecture) = match platform { Platform::MacOs => ("macos", "aarch64"), Platform::Windows => ("windows", "x86_64") };
+        let (platform_name, architecture) = match platform {
+            Platform::MacOs => ("macos", "aarch64"),
+            Platform::Windows => ("windows", "x86_64"),
+        };
         let planning = &self.planning;
         let router = &self.router;
         let author = &self.author;
@@ -245,8 +248,7 @@ impl Fixture {
         }
         seed_enabled(
             &planning,
-            self
-                .content
+            self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
             &dependency_resource,
@@ -257,7 +259,10 @@ impl Fixture {
     }
     pub(crate) async fn seed_root(&mut self, dependencies: Value) -> Result<()> {
         let platform = self.platform;
-        let (platform_name, architecture) = match platform { Platform::MacOs => ("macos", "aarch64"), Platform::Windows => ("windows", "x86_64") };
+        let (platform_name, architecture) = match platform {
+            Platform::MacOs => ("macos", "aarch64"),
+            Platform::Windows => ("windows", "x86_64"),
+        };
         let planning = &self.planning;
         let router = &self.router;
         let author = &self.author;
@@ -302,8 +307,7 @@ impl Fixture {
         }
         seed_enabled(
             &planning,
-            self
-                .content
+            self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
             &root_resource,
@@ -318,13 +322,7 @@ impl Fixture {
     ) -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        Self::with_config(
-            platform,
-            capabilities,
-            execution_context,
-            base,
-        )
-        .await
+        Self::with_config(platform, capabilities, execution_context, base).await
     }
     pub(crate) async fn with_config(
         platform: Platform,

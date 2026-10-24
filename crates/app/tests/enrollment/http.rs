@@ -7,7 +7,8 @@ use crate::test_support::*;
 use crate::test_support::{http::Browser, http::change_device_grants};
 pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) -> Result<()> {
     let issue = "/api/v1/enrollments";
-    change_device_grants(browser,
+    change_device_grants(
+        browser,
         crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )

@@ -33,7 +33,8 @@ impl Handoff {
         let policy = Uuid::new_v4();
         planning_http::call(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":600}}})).await?;
         let automation = start_automation(&f.base).await?;
-        let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let worker =
+            crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         inventory::seed_unenrolled(source["deviceId"].as_str().unwrap())?;
         planning_http::await_ingress().await?;
         let task=tokio::time::timeout(Duration::from_secs(30),async {loop{

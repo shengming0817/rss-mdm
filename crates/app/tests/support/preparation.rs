@@ -5,7 +5,11 @@ use super::*;
 #[serde(tag = "stage", rename_all = "snake_case", deny_unknown_fields)]
 enum Setup {
     Environment,
-    ManagementDelegate { management: String, source_secret: std::path::PathBuf, login: String },
+    ManagementDelegate {
+        management: String,
+        source_secret: std::path::PathBuf,
+        login: String,
+    },
     Refresh,
     TaskSigning {
         directory: std::path::PathBuf,
@@ -30,8 +34,13 @@ async fn prepare() -> Result<()> {
             task_signing::prepare(&directory).await?;
             Vec::new()
         }
-        Setup::ManagementDelegate { management, source_secret, login } => {
-            identity::prepare_management_delegate(root, &management, &source_secret, &login).await?;
+        Setup::ManagementDelegate {
+            management,
+            source_secret,
+            login,
+        } => {
+            identity::prepare_management_delegate(root, &management, &source_secret, &login)
+                .await?;
             Vec::new()
         }
         Setup::Environment => {

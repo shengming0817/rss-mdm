@@ -23,7 +23,6 @@ fn server_acknowledges_results_by_command_name() {
     );
 }
 
-
 #[test]
 fn duplicate_header_is_rejected() {
     let xml = include_str!("fixtures/results.xml")
@@ -31,11 +30,24 @@ fn duplicate_header_is_rejected() {
     assert!(syncml::decode(xml.as_bytes(), &CodecLimits::default()).is_err());
 }
 
-
 #[test]
 fn empty_results_data_is_a_present_empty_value() {
     let xml = include_str!("fixtures/results.xml").replace("<Data>TEST-DEVICE</Data>", "<Data/>");
-    assert!(syncml::decode(xml.as_bytes(), &CodecLimits::default()).is_ok());
+    let decoded = syncml::decode(xml.as_bytes(), &CodecLimits::default()).unwrap();
+    let result = decoded
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            syncml::Command::Results(result) => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        result
+            .items
+            .iter()
+            .any(|item| item.data.as_ref().is_some_and(|data| data.0.is_empty()))
+    );
 }
 #[test]
 fn malformed_xml_declaration_is_rejected() {

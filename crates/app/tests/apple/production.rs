@@ -36,7 +36,12 @@ impl Fixture {
         ensure!(reply.0 == StatusCode::OK);
         peer.token().await?;
         self.native_context().await?;
-        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
+        crate::test_support::identity::change_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Fixture::native_grants(&["device_control"])?,
+        )
+        .await?;
         let operation = self.create_restart().await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
         let mut config = crate::test_support::identity::config(case_tenant())?;
@@ -278,18 +283,37 @@ fn startup_material_diagnostics() -> Result<()> {
 async fn durable_material_authority_controls_host_use() -> Result<()> {
     use rss_mdm_apple_channel::runtime_materials::runtime;
     use sqlx::Connection;
-    let f = Fixture::start().await?;
-    seed_fixture_materials(&f.root, &f.app.protection).await?;
-    let roots = vec![std::fs::read(f.root.join("apple-root.pem"))?];
+    let root = std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let protection = config.native_protector()?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(config.access_options()?)
+        .await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    let store = rss_mdm_apple_channel::Store::from_pool(
+        pool.clone(),
+        Arc::new(rss_mdm_registration_service::Store::from_pool(
+            pool.clone(),
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
+        Arc::new(rss_mdm_authorization_service::Store::from_pool(
+            pool,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )),
+    );
+    resources.finish(async {
+    seed_fixture_materials(&root, &protection).await?;
+    let roots = vec![std::fs::read(root.join("apple-root.pem"))?];
     let selection = runtime::Selection {
         apns: Some(1),
         profile: Some(1),
         accounts: std::collections::BTreeMap::from([("organization".into(), 1)]),
     };
-    let store = f.app.access.apple_store();
     let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    let now = f.app.clock.unix_seconds()?;
-    let loaded = runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now).await?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    let loaded = runtime::load(&store, tenant, &protection, &roots, &selection, now).await?;
     loaded.binding.check(&store, case_tenant(), now).await?;
     let wrong = rss_mdm_native_protection::Protector::new(&[19; 32])?;
     ensure!(
@@ -301,7 +325,7 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
         runtime::load(
             &store,
             rss_request_context::TenantId::parse("33333333-3333-4333-8333-333333333333")?,
-            &f.app.protection,
+            &protection,
             &roots,
             &selection,
             now
@@ -325,7 +349,7 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
     .await?;
     tx.commit().await?;
     // A rejected newer candidate cannot prevent restoring the previously selected valid version.
-    runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now).await?;
+    runtime::load(&store, tenant, &protection, &roots, &selection, now).await?;
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
@@ -341,11 +365,13 @@ async fn durable_material_authority_controls_host_use() -> Result<()> {
             .is_err()
     );
     ensure!(
-        runtime::load(&store, tenant, &f.app.protection, &roots, &selection, now)
+        runtime::load(&store, tenant, &protection, &roots, &selection, now)
             .await
             .is_err()
     );
-    f.close().await
+    c.close().await?;
+    Ok(())
+    }).await
 }
 
 #[tokio::test]
@@ -510,9 +536,28 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=apple.host: persisted Apple corruption must remain a fatal material error"]
 async fn corrupt_persisted_apple_certificate_is_not_optional_unavailability() -> Result<()> {
-    let fixture = Fixture::start().await?;
-    let result: Result<()> = async {
-        seed_fixture_materials(&fixture.root, &fixture.app.protection).await?;
+    let root = std::path::PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let protection = config.native_protector()?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(config.access_options()?)
+        .await?;
+    let mut resources = crate::test_support::runtime::Resources::default();
+    resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    let store = rss_mdm_apple_channel::Store::from_pool(
+        pool.clone(),
+        Arc::new(rss_mdm_registration_service::Store::from_pool(
+            pool.clone(),
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
+        Arc::new(rss_mdm_authorization_service::Store::from_pool(
+            pool,
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )),
+    );
+    resources.finish(async {
+        seed_fixture_materials(&root, &protection).await?;
         let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("UPDATE mdm_apple_runtime.versions SET certificate='corrupt persisted PEM' WHERE tenant_id=$1::uuid AND purpose='apns' AND revision=1")
             .bind(case_tenant()).execute(&mut c).await?;
@@ -520,14 +565,12 @@ async fn corrupt_persisted_apple_certificate_is_not_optional_unavailability() ->
             apns: Some(1), profile: Some(1), accounts: Default::default(),
         };
         let result = rss_mdm_apple_channel::runtime_materials::runtime::load(
-            &fixture.app.access.apple_store(), rss_request_context::TenantId::parse(case_tenant())?,
-            &fixture.app.protection, &[std::fs::read(fixture.root.join("apple-root.pem"))?],
+            &store, rss_request_context::TenantId::parse(case_tenant())?,
+            &protection, &[std::fs::read(root.join("apple-root.pem"))?],
             &selection, time::OffsetDateTime::now_utc().unix_timestamp(),
         ).await;
         ensure!(matches!(result, Err(rss_mdm_apple_channel::runtime_materials::runtime::LoadError::Fatal(_))));
+        c.close().await?;
         Ok(())
-    }.await;
-    let closed = fixture.close().await;
-    result?;
-    closed
+    }).await
 }

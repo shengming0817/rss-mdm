@@ -6,10 +6,7 @@ use rss_mdm_authorization_service::{
     context::{AuthorizedPrincipal, RequestAuth},
 };
 use rss_mdm_management_http::{
-    Error, Failure,
-    first_use::*,
-    http_operation::RequestContinuation,
-    settings,
+    Error, Failure, first_use::*, http_operation::RequestContinuation, settings,
 };
 use rss_mdm_registration_service::{admission::State, quotas::Channel};
 use std::sync::Arc;
@@ -43,8 +40,7 @@ impl FirstUse {
         write: bool,
     ) -> Result<(), Error> {
         p.session()?;
-        if p.tenant_id() != self.tenant.to_string()
-            || p.instance_id() != self.instance.to_string()
+        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string()
         {
             return Err(Error::Forbidden);
         }
@@ -238,8 +234,7 @@ impl Source for FirstUse {
             self.proof(&auth.proof, &audit, matches!(command, Command::Update(..)))?;
             match command {
                 Command::Read => {
-                    let saved =
-                        store::read(&self.audit, &auth.proof, &audit).await?;
+                    let saved = store::read(&self.audit, &auth.proof, &audit).await?;
                     Ok(Output::Progress(
                         self.progress(&auth, &audit, continuation, saved).await?,
                     ))
@@ -314,7 +309,7 @@ fn database(_: sqlx::Error) -> Error {
 
 #[cfg(test)]
 #[path = "../tests/settings/first_use.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod unit {

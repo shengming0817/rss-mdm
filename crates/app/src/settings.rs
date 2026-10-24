@@ -18,7 +18,11 @@ pub(crate) struct Directory {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    pub software: Arc<rss_mdm_software_service::management::catalog::Access<rss_mdm_content_service::software::SoftwareContent>>,
+    pub software: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
     pub registration: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub webhooks: Arc<crate::webhooks::Backend>,
     pub windows: Arc<rss_mdm_windows_channel::Store>,
@@ -144,12 +148,11 @@ impl Source for Directory {
                         }
                     }
                     "audit" | "ledger" => {
-                        projection.status =
-                            if item.id == "audit" || self.audit.uses_ledger() {
-                                Status::Loaded
-                            } else {
-                                Status::Unconfigured
-                            };
+                        projection.status = if item.id == "audit" || self.audit.uses_ledger() {
+                            Status::Loaded
+                        } else {
+                            Status::Unconfigured
+                        };
                         projection.reason = Some(if self.audit.uses_ledger() {
                             "fixed_installation_key_no_same_chain_rotation"
                         } else {
@@ -447,7 +450,10 @@ impl Source for Directory {
                                     let desired: BTreeMap<String, i64> =
                                         serde_json::from_value(value["accountBindings"].clone())
                                             .map_err(|_| Error::Malformed)?;
-                                    let loaded = self.apple_materials.as_ref().map(|materials| &materials.accounts);
+                                    let loaded = self
+                                        .apple_materials
+                                        .as_ref()
+                                        .map(|materials| &materials.accounts);
                                     projection.desired_revision = None;
                                     projection.applied_revision = None;
                                     projection.status = account_material_status(
@@ -464,10 +470,12 @@ impl Source for Directory {
                                     });
                                 } else {
                                     let loaded =
-                                        self.apple_materials.as_ref().and_then(|materials| match purpose {
-                                            Purpose::Apns => materials.apns,
-                                            Purpose::Profile => materials.profile,
-                                            Purpose::ManagedAccount => None,
+                                        self.apple_materials.as_ref().and_then(|materials| {
+                                            match purpose {
+                                                Purpose::Apns => materials.apns,
+                                                Purpose::Profile => materials.profile,
+                                                Purpose::ManagedAccount => None,
+                                            }
                                         });
                                     projection.applied_revision = loaded;
                                     if let Some(revision) = loaded {
@@ -614,11 +622,25 @@ impl Source for Directory {
                         }
                     }
                     "task-key" if business => {
-                        match rss_mdm_execution_service::task_signing::service::read_task_trust(&self.audit, self.tenant, &proof, &audit, None).await {
+                        match rss_mdm_execution_service::task_signing::service::read_task_trust(
+                            &self.audit,
+                            self.tenant,
+                            &proof,
+                            &audit,
+                            None,
+                        )
+                        .await
+                        {
                             Ok(trust) => {
                                 configured(&mut projection, trust.keys.len());
                                 projection.revision = i64::try_from(trust.revision).ok();
-                                projection.ready = self.signing_key.as_deref().is_some_and(|id| trust.keys.iter().any(|k| k.id == id && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active));
+                                projection.ready = self.signing_key.as_deref().is_some_and(|id| {
+                                    trust.keys.iter().any(|k| {
+                                        k.id == id
+                                            && k.state
+                                                == rss_mdm_agent_wire::task_trust::KeyState::Active
+                                    })
+                                });
                                 projection.reason = Some("device_acknowledgements_gate_activation");
                             }
                             Err(error) => unavailable(&mut projection, error.into())?,
@@ -647,7 +669,8 @@ impl Source for Directory {
                     }
                     "webhook-own" if business => {
                         use rss_mdm_management_http::webhooks::{Command, Source};
-                        match self.webhooks
+                        match self
+                            .webhooks
                             .execute(proof.clone(), audit.clone(), Command::Materials)
                             .await
                         {
@@ -711,7 +734,8 @@ impl Source for Directory {
                     "user-attributes" => Some(Permission::UserAttributeDefinitionsWrite),
                     _ => None,
                 };
-                let recent = self.clock
+                let recent = self
+                    .clock
                     .unix_seconds()
                     .ok()
                     .is_some_and(|now| proof.recently_authenticated(now, 300).unwrap_or(false));

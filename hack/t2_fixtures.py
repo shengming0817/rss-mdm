@@ -364,6 +364,10 @@ class RunFixtures:
                         elif kind == 'apple':
                             from apple_fixtures import generate
                             generate(source, source / 'server.crt', source / 'server.key')
+                        elif kind == 'archive':
+                            subprocess.run(['openssl', 'x509', '-x509toreq', '-in', str(source / 'server.crt'), '-signkey', str(source / 'server.key'), '-out', str(source / 'request.pem')], check=True, capture_output=True, timeout=30)
+                            subprocess.run(['openssl', 'pkey', '-in', str(source / 'server.key'), '-aes-256-cbc', '-passout', 'pass:fixture', '-out', str(source / 'encrypted.pem')], check=True, capture_output=True, timeout=30)
+                            (source / 'encrypted.pem').chmod(0o600)
                         elif kind.startswith('pki-'):
                             from pki_fixtures import offline_materials
                             offline_materials(source, kind.removeprefix('pki-'))
@@ -531,6 +535,9 @@ class RunFixtures:
                         certificates.prepare_inputs()
                 for name in ('ca.crt', 'server.crt', 'server.key'):
                     private(root / name, (certificates.root / name).read_text())
+            if 'archive-issued' in module.materials:
+                self.prepare_materials('archive', root)
+                env['MDM_ARCHIVE_FIXTURES'] = str(root)
             if 'windows' in module.fixtures:
                 self.prepare_materials('windows', root, tuple(item for item in module.materials if item.startswith('windows-')))
                 env['MDM_WINDOWS_FIXTURES'] = str(root)

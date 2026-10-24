@@ -182,7 +182,9 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 .await?
                 .0 == StatusCode::CONFLICT
             );
-            let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+            let stack =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             let task = claim(&f.router).await?;
             ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
             ensure!(
@@ -696,7 +698,9 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
             value["action"]["schedule"]["trigger"] =
                 json!({"kind":"check_in","minimumSeconds":3600});
             let (id, policy) = publish_definition(&mut f, value).await?;
-            let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+            let stack =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             let automatic = claim(&f.router).await?;
             ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
             complete(&f.router, &automatic).await?;
@@ -776,37 +780,16 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
-    f.grants.push(Grant {
-        operation: Permission::InventoryFieldsWrite,
-        scope: Scope::Tenant,
-    });
-    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
     let key = "custom.self_service_secret";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    ensure!(f.author.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0 == StatusCode::OK);
+    let mut tx = f.authority.pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+    ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, f.authority.identity.tenant, 0, &serde_json::from_value(field)?).await?);
+    tx.commit().await?;
     let resource_id = Uuid::new_v4();
     let bytes = b"printf '{}'";
-    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let script = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
-    resource(&mut f.author, &f.router, resource_id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"self-service-secret","length":bytes.len(),"sha256":digest},"definition":script}}]})).await?;
-    ensure!(upload(&f.author, &f.router, resource_id, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(resource_id, bytes, script).await?;
     f.scope(
         case_task_scope(),
         json!([{"kind":"device","id":case_device_id()}]),
@@ -814,18 +797,11 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     .await?;
     let (id, policy) = publish_definition(&mut f, definition(resource_id, false)).await?;
     let input = request(id, &policy, json!({}));
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
-            .await?
-            .0
-            == StatusCode::ACCEPTED
-    );
-    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-    let task = claim(&f.router).await?;
-    task_event(&f.router, &task, json!({"kind":"received"})).await?;
-    task_event(&f.router, &task, json!({"kind":"start"})).await?;
+    let accepted = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED);
+    let run: Uuid = serde_json::from_value(accepted.1["runId"].clone())?;
     let canary = "self-service-private-canary";
-    task_event(&f.router, &task, json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":canary},"diagnostics":{"stdout":canary,"stderr":canary,"durationMs":1,"executedAt":1,"failure":null}})).await?;
+    seed_script_result(&f, run, canary).await?;
     let path = format!("{INVOKE}/{}", input["operationId"].as_str().unwrap());
     let mut full = f.grants.clone();
     full.push(Grant {
@@ -866,7 +842,6 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && !denied.1.to_string().contains(canary),
         "withdrawal must suppress the full result"
     );
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }

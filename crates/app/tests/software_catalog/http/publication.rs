@@ -69,8 +69,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         });
     }
     crate::test_support::identity::seed_grants(case_tenant(), &subject, grants.clone()).await?;
-    let stack = execution::worker(&cfg, f.execution.clone())
-    .await?;
+    let stack = execution::worker(&cfg, f.execution.clone()).await?;
     let resource = Uuid::new_v4();
     let resource_path = format!("/api/v1/resources/{resource}");
     let bytes = b"frozen native MSI bytes";

@@ -20,7 +20,9 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
     ))?;
     let mut authority = authority::Authority::from_config(base.clone()).await?;
-    let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()));
+    let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(
+        authority.pool.clone(),
+    ));
     let service = crate::device::DeviceService::new(
         authority.registration.clone(),
         case_tenant().into(),
@@ -37,7 +39,9 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         authority.audit.clone(),
     )
     .await?;
-    authority.resources.resource(InventoryFixtureResource(runtime.clone()));
+    authority
+        .resources
+        .resource(InventoryFixtureResource(runtime.clone()));
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
     let owner = start(runtime.clone()).await?;

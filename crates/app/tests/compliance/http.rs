@@ -79,19 +79,35 @@ async fn history_boundaries(
     let mut resources = std::mem::take(&mut authority.resources);
     let runtime = crate::planning::test_support::runtime(authority.identity.tenant).await;
     resources.resource(SourceResource(runtime.clone()));
-    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, authority.identity.tenant).await?;
-    let groups = Arc::new(rss_mdm_group_postgres::GroupStore::new(runtime.clone(), authority.identity.tenant, crate::identity::deadline()).await?);
+    let key =
+        rss_mdm_flow_service::storage::cursor_key(&runtime, authority.identity.tenant).await?;
+    let groups = Arc::new(
+        rss_mdm_group_postgres::GroupStore::new(
+            runtime.clone(),
+            authority.identity.tenant,
+            crate::identity::deadline(),
+        )
+        .await?,
+    );
     let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
         rss_mdm_inventory_service::compliance::Dependencies {
-            tenant: authority.identity.tenant, groups, runtime,
-            audit_store: authority.audit.clone(), clock: Arc::new(crate::clock::SystemClock),
+            tenant: authority.identity.tenant,
+            groups,
+            runtime,
+            audit_store: authority.audit.clone(),
+            clock: Arc::new(crate::clock::SystemClock),
             tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
         },
     ));
-    let other_router = authority.router(Router::new().nest("/api/v1",
-        rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum(),
-    ))?;
+    let other_router = authority.router(
+        Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::compliance::http::routes()
+                .with_state(compliance)
+                .into_axum(),
+        ),
+    )?;
     resources
         .finish(async {
             pg_tenant(
@@ -431,7 +447,12 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
             Ok::<_,anyhow::Error>(())
         }).await??;
         // Authentication and its original snapshot completed before the write reached the barrier.
-        identity::change_grants(case_tenant(), &fixture.subject, grants(Some("compliance-a"))?).await?;
+        identity::change_grants(
+            case_tenant(),
+            &fixture.subject,
+            grants(Some("compliance-a"))?,
+        )
+        .await?;
         hold.commit().await?;
         Ok::<_, anyhow::Error>(())
     };

@@ -67,36 +67,20 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let config = crate::test_support::identity::config(case_tenant())?;
         let audit = self.audit_store.clone();
         let sessions = self.sessions.clone();
         let restart_clock = clock.clone();
-        let (resources, restarted) =
+        let (resources, (restarted, restarted_runtime)) =
             crate::test_support::runtime::Resources::build(move |resources| {
                 Box::pin(async move {
-                    let content = crate::execution_assembly::open_content(
-                        &config,
-                        config.native_protector()?,
-                    )
-                    .await?;
-                    if let Some(content) = &content {
-                        resources
-                            .resource(crate::execution_assembly::ContentResource(content.clone()));
-                    }
-                    let restarted = crate::execution_assembly::open(
-                        &config,
-                        config.native_protector()?,
+                    let (restarted, _, runtime) = command_service(
                         audit,
-                        content,
-                        std::collections::BTreeMap::new(),
-                        rss_device_command_postgres::CommandClock::Controlled(restart_clock),
                         sessions,
+                        rss_device_command_postgres::CommandClock::Controlled(restart_clock),
                     )
                     .await?;
-                    resources.resource(rss_mdm_execution_service::Resource(
-                        restarted.service.clone(),
-                    ));
-                    Ok(restarted)
+                    resources.resource(rss_mdm_execution_service::Resource(restarted.clone()));
+                    Ok((restarted, runtime))
                 })
             })
             .await?;
@@ -153,7 +137,7 @@ impl Client {
         };
         let notify = tokio::sync::Notify::new();
         let (report,released) = tokio::join!(
-            restarted.service.run_recovery(&scope,policy,&control,&notify), release
+            restarted.run_recovery(&scope,policy,&control,&notify), release
         );
         released?;
         let report = report?;
@@ -174,8 +158,7 @@ impl Client {
         // Empty discovery defers structural checks. Make an actual operation due
         // before corrupting the catalog, so the worker must reject its claim.
         let target = rss_mdm_execution_service::target(self.tenant, case_device());
-        restarted
-            .runtime
+        restarted_runtime
             .local_tx_with_context(
                 self.tenant,
                 deadline(),
@@ -198,7 +181,6 @@ impl Client {
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
         let fatal = restarted
-            .service
             .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
             .await;
         sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'rss-reconcile-postgres:1'")
@@ -224,7 +206,6 @@ impl Client {
         let execution_signals = signals.execution();
         let mut worker = Box::pin(
             restarted
-                .service
                 .run_worker(&worker_cancel, &execution_signals),
         );
         tokio::select! {

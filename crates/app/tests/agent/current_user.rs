@@ -4,10 +4,27 @@ use anyhow::Context;
 async fn fixture() -> Result<Fixture> {
     let mut f = Fixture::new().await?;
     let tenant = f.authority.identity.tenant;
-    let associations = Arc::new(rss_mdm_device_service::Associations::new(f.authority.audit.clone(), tenant, &[7; 32])?);
-    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(f.authority.identity.authority.clone(), tenant));
-    let routes = rss_mdm_management_http::device_views::routes(sessions, f.authority.identity.authority.clone(), None).with_state(associations).into_axum();
-    f.router = f.router.merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(
+        f.authority.audit.clone(),
+        tenant,
+        &[7; 32],
+    )?);
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            f.authority.identity.authority.clone(),
+            tenant,
+        ),
+    );
+    let routes = rss_mdm_management_http::device_views::routes(
+        sessions,
+        f.authority.identity.authority.clone(),
+        None,
+    )
+    .with_state(associations)
+    .into_axum();
+    f.router = f
+        .router
+        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
     Ok(f)
 }
 const CURRENT: &str = "/api/v1/agent/runtime/current-user";

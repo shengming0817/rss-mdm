@@ -8,6 +8,33 @@ use crate::test_support::agent_execution::*;
 use crate::test_support::{agent::*, process::*, runtime::*, *};
 use ring::signature::KeyPair;
 
+async fn mount_assets(
+    f: &mut Fixture,
+    inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
+) -> Result<()> {
+    let tenant = f.authority.identity.tenant;
+    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+        inventory,
+        f.authority.audit.clone(),
+        f.plan_runtime.clone(),
+        tenant,
+        Arc::new(crate::clock::SystemClock),
+        &key,
+        Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+    ));
+    let routes = rss_mdm_management_http::assets::routes()
+        .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+            assets,
+        }))
+        .into_axum();
+    f.router = f
+        .router
+        .clone()
+        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_history() -> Result<()> {
@@ -144,6 +171,11 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.agent.delivery"]
 async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    let runtime = agent_runtime(&fixture.authority).await?;
+    fixture
+        .resources
+        .resource(InventoryFixtureResource(runtime.clone()));
+    mount_assets(&mut fixture, runtime.clone()).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let registration = fixture.register().await?;
@@ -294,7 +326,6 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         ))? == reserved,
         "result changed collection ordering"
     );
-    let runtime = agent_runtime(&fixture.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
@@ -327,7 +358,6 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         "detail: {detail}"
     );
     crate::test_support::runtime::stop_worker(inventory).await?;
-    runtime.close_fixture().await?;
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
@@ -561,6 +591,10 @@ async fn native_inventory_case(
     };
     let large_raw = !macos && map_software;
     let mut f = Fixture::new().await?;
+    let runtime = agent_runtime(&f.authority).await?;
+    f.resources
+        .resource(InventoryFixtureResource(runtime.clone()));
+    mount_assets(&mut f, runtime.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     f.grants
@@ -714,7 +748,6 @@ async fn native_inventory_case(
         ensure!(wrong.0 == StatusCode::BAD_REQUEST, "cross-field cursor: {wrong:?}");
     }
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-    let runtime = agent_runtime(&f.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
@@ -1199,7 +1232,6 @@ async fn native_inventory_case(
         ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.action_kind='execution'",case_tenant()))?.trim()=="0");
     }
     crate::test_support::runtime::stop_worker(inventory).await?;
-    runtime.close_fixture().await?;
     crate::test_support::runtime::stop_worker(worker).await?;
     Ok(())
     }).await

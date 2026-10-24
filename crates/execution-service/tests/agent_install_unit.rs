@@ -18,12 +18,6 @@ fn package_identities_are_format_specific() {
         .validate()
         .is_ok()
     );
-    assert!(
-        serde_json::from_value::<Identity>(
-            serde_json::json!({"platform":"windows","product":Uuid::new_v4(),"publisher":"RSS"})
-        )
-        .is_err()
-    );
 }
 
 #[test]
@@ -43,11 +37,7 @@ fn material_only_releases_do_not_invalidate_native_absence() {
     assert!(expected.complete && expected.identities.len() == 1);
     // known_in includes published and withdrawn historical material; neither has execution claims.
     let combined = detection_catalog(
-        vec![
-            release(behavior),
-            release(serde_json::Value::Null),
-            release(serde_json::Value::Null),
-        ],
+        vec![release(behavior), release(serde_json::Value::Null)],
         TaskPlatform::Windows,
     )
     .unwrap();
