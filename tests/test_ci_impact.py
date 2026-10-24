@@ -373,7 +373,7 @@ class CiImpactContract(unittest.TestCase):
         self.assert_selected(decision, [], [])
         self.assertEqual(decision['toolTests'], ['test_registry'])
 
-    def test_removed_mapping_preserves_old_consumer(self):
+    def test_removed_mapping_keeps_cargo_without_old_t2_consumers(self):
         p = self.repo.root / 'hack/t2_registry.py'
         p.write_text(
             p.read_text()
@@ -381,7 +381,7 @@ class CiImpactContract(unittest.TestCase):
         )
         self.repo.change('crates/leaf/src/obsolete.rs')
         self.assert_selected(
-            self.repo.select()[1], ['leaf', 'leaf-integration'], ['leaf']
+            self.repo.select()[1], ['leaf', 'leaf-integration'], []
         )
 
     def test_deleted_module_requires_current_carrier_owner(self):
@@ -469,7 +469,7 @@ class CiImpactContract(unittest.TestCase):
             self.assert_selected(decision, [], [])
             self.assertEqual(decision['toolTests'], ['test_registry'])
 
-    def test_shared_controls_select_actual_runtime_consumers(self):
+    def test_shared_controls_only_expand_cargo(self):
         registry = self.repo.root / 'hack/t2_registry.py'
         registry.write_text(
             registry.read_text()
@@ -478,19 +478,6 @@ class CiImpactContract(unittest.TestCase):
         )
         self.repo.commit('declare Rust fixture and Python consumers')
         self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
-        expected = sorted(
-            [
-                'core',
-                'leaf',
-                'other',
-                'dev-consumer',
-                'build-consumer',
-                'optional-consumer',
-                'leaf-integration',
-                'other-integration',
-                'host',
-            ]
-        )
         for path, content, detail in (
             ('Cargo.toml', (self.repo.root / 'Cargo.toml').read_text() + '\n[profile.dev]\nopt-level=1\n',
              'cargo-only'),
@@ -517,7 +504,7 @@ class CiImpactContract(unittest.TestCase):
                 decision = self.repo.select()[1]
                 self.assertEqual(decision['status'], 'selected', decision)
                 self.assertEqual(
-                    decision['t2'], {'mode': 'affected', 'modules': [] if path == 'Cargo.toml' else expected}
+                    decision['t2'], {'mode': 'affected', 'modules': []}
                 )
                 self.assertEqual(len(decision['cargo']['packages']), 8)
                 self.assertEqual(decision['toolTests'], [] if path == 'Cargo.toml' else ['test_registry'])
@@ -655,6 +642,16 @@ class CiImpactContract(unittest.TestCase):
                 for r in decision['reasons']
             )
         )
+
+    def test_retired_representative_does_not_run_from_baseline(self):
+        registry = self.repo.root / 'hack/t2_registry.py'
+        registry.write_text(registry.read_text() + "\nTOOL_INPUTS['hack/runtime.py'] = ('test_registry',)\nTOOL_ONLY_INPUTS = ('hack/runtime.py',)\nREPRESENTATIVE_INPUTS = {'hack/runtime.py': ('leaf',)}\n")
+        self.repo._write('hack/runtime.py', '# execution')
+        self.repo.commit('representative owner')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        registry.write_text(registry.read_text() + "\nREPRESENTATIVE_INPUTS = {}\n")
+        self.repo.change('hack/runtime.py', '# changed execution')
+        self.assert_selected(self.repo.select()[1], [], [])
 
     def test_damaged_registry_fails_before_metadata(self):
         p = self.repo.root / 'hack/t2_registry.py'

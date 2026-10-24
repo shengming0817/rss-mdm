@@ -71,13 +71,15 @@ Identity 用户组与设备 Group 各自归属。Assets 验证资产输入，Pla
 
 ## affected 与执行证据
 
-选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；helper 变化只选择实际消费者；生产变化按登记的输入与消费接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，选择机制变化由现有工具行为测试证明。manifest/lock 仅选择 Cargo 检查，不推导业务 T2。混合职责的生产文件按整个文件选择，不做 Rust 语义 diff。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，共享 fixture/profile 输入按真实消费者选择。可识别 rename/copy 合并两端输入。未知输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
+选择器对 merge-base、已提交差异、工作区修改、未跟踪和删除输入取并集。独立 T1 文件只贡献 Cargo 检查；独立 T2 文件只选择自身；业务断言 helper 变化选择直接验证者，公共准备由现有 owner 专项证明；生产变化按当前登记的直接行为与被测接缝选择。模块被选中不会继续递归扩大。登记描述与选择机制分离，基线完整版本树仅导出描述，不运行历史 selector；执行描述和业务输入变化选模块，选择机制变化由现有工具行为测试证明。manifest/lock 仅选择 Cargo 检查，不推导业务 T2。混合职责的生产文件按直接登记选择，不做 Rust 语义 diff。Cargo 已确认归属的生产文件可以没有 T2 映射，此时仍执行受影响的编译、Clippy、T1 和契约检查。发现、调度、日志和汇总由工具测试持有；真实执行、隔离或故障变化在同一 registry 的 `REPRESENTATIVE_INPUTS` 声明最小现有模块集合，fixture/profile、平台前缀及准备依赖不用于生成业务模块集合。可识别 rename/copy 的两端使用当前输入登记，旧映射不恢复已删除的扩散规则。未登记的非生产输入、不可用基线、异常或非法选择结果必须失败，由实现者修复归属或分析问题；不通过隐式全量、静默跳过或手工 MODULE 掩盖。
 
 模块职责变化使用两版 registry 和实际文件/target 事实。`removedModules` 记录消失的模块、载体删除或当前 T1/T2 归属；不维护 `replaces`、旧名称或永久退出名册。仍存在或移动后的测试文件必须有当前测试 owner，仅 support/production 通配不能承接。Python scenario 删除后，其执行文件也须删除或由当前模块直接承接。需求退出依据在 issue/PR，机器检查不替代业务判断。
 
 `ownershipChecks` 是从本次删除、build/selector/child 变化或纯测试装配入口变化派生的临时发现计划。Cargo metadata 确认 target 是否仍存在；现存 target 按当前 features 用 nextest 编译/发现，检查每个 ignored 测试的唯一当前 owner，零 ignored 允许退出。目标已删除无需构建，构建或发现失败不能冒充删除成功。`make ci` 与 affected T2 入口执行检查，即使业务模块空选也不跳过；不启动数据库、Identity 或业务测试函数。`ci-plan` 仅展示要求，未执行发现不表示校验通过。
 
-迁移列表与执行机制分离。局部 schema 选择必要安装/catalog 和真实数据、事务、权限消费者，角色 SQL 按角色使用方选择；只有确有广泛行为影响的机制才扩大。仅登记说明或输入归属元数据变化执行工具验证；真实输入变化合并旧新消费者，执行策略变化选择所属模块。日常 affected 不叠加定期完整 T2，周期回归沿用既有安排。
+迁移列表与执行机制分离。局部 schema 选择直接存储证明，公共安装/catalog/权限契约由对应专项证明；不从源码消费者反推 schema 的下游业务集合。公共模型、wire、查询与预算不触发所有消费产品回归。仅登记说明或输入归属元数据变化执行工具验证，真实输入变化使用当前登记，执行策略变化选择所属模块。日常 affected 不叠加定期完整 T2，周期回归沿用既有安排。
+
+`MODULE=affected` 始终使用直接选择结果，不受 `CI_FULL`/`CI_T2` 环境变量扩展；显式 `MODULE=all` 和 `ci-full` 保留给完整回归。公共编译配置变化只扩大 Cargo 检查。
 
 Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承 Cargo 闭包，manifest/lock 变化不自动推荐业务 T2；依赖升级按任务通过 `MODULE` 显式运行必要专项。成功输出包含 `status=selected`、`cargo.mode/packages`、`t2.mode/modules`、`toolTests`、`reasons`、`removedModules` 和 `ownershipChecks`；失败输出为 `status=failed` 与 `error`，进程非零退出。Resource `behavior.rs` 只选 `resource.persistence`；Content T1 和 Scope 模型测试不推荐 T2；Content Range 生产输入选择 HTTP 和两类 Agent task-content 消费接缝。相应 must-select/must-not-select 由工具行为测试固定。
 

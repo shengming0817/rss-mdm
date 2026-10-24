@@ -273,7 +273,7 @@ class Inputs:
     kind: str = ''
 
 
-def path_inputs(path, registry):
+def path_inputs(path, registry, *, production=False):
     if is_docs(path):
         return Inputs((), (), 'documentation')
     tools = set(registry.tools.get(path, ()))
@@ -297,6 +297,8 @@ def path_inputs(path, registry):
             return Inputs((), tools, 'unit-test')
     if tools or path in registry.controls:
         return Inputs((), tools, 'tool')
+    if production:
+        return Inputs((), (), 'business')
     raise SelectionError('unmapped-input', path)
 
 
@@ -304,8 +306,15 @@ def select_inputs(paths, registry=None):
     """Use the formal selector's matcher for direct ownership behavior tests."""
     registry = registry or current_registry()
     modules, tools = set(), set()
+    graph = None
     for path in sorted(set(paths)):
-        impact = path_inputs(path, registry)
+        try:
+            impact = path_inputs(path, registry)
+        except SelectionError as error:
+            if error.code != 'unmapped-input' or not (ROOT / path).is_file():
+                raise
+            graph = graph or metadata(ROOT)
+            impact = path_inputs(path, registry, production=graph.production(path))
         modules.update(impact.modules)
         tools.update(impact.tools)
     return Inputs(tuple(sorted(modules)), tuple(sorted(tools)))
@@ -404,6 +413,13 @@ class Graph:
     def owner(self, path):
         candidate = PurePosixPath(path)
         return next((k for p, k in self.roots if candidate == p or p in candidate.parents), None)
+
+    def production(self, path):
+        owner = self.owner(path)
+        if owner is None:
+            return False
+        relative = PurePosixPath(path).relative_to(PurePosixPath(self.manifests[owner]).parent)
+        return relative.parts[0] in {'src', 'schema', 'migrations'} or str(relative) == 'build.rs'
 
     def closure(self, keys, *, reverse=False):
         selected, pending, tests = set(keys), list(keys), set()
@@ -611,12 +627,8 @@ def analyze_dependencies(oldroot, root, changes, graphs):
     return packages & graphs[1].names(graphs[1].members), reasons
 
 
-def runtime_consumers(registry):
-    return {name for name, module in registry.modules.items() if module['build'] or 'identity' in module['fixtures']}
-
-
 def analyze_controls(oldroot, root, changes, registries):
-    packages_all, modules, tools, reasons = False, set(), set(), []
+    packages_all, tools, reasons = False, set(), []
     paths = {p for change in changes for p in (change.old, change.new) if p}
     for path in sorted(paths & (registries[0].controls.keys() | registries[1].controls.keys())):
         policies = [reg.controls[path] for reg in registries if path in reg.controls]
@@ -664,18 +676,16 @@ def analyze_controls(oldroot, root, changes, registries):
             raise SelectionError('config-invalid', path) from error
         if runtime:
             packages_all = True
-            consumers = set().union(*(runtime_consumers(reg) for reg in registries))
-            modules.update(consumers)
             for field in runtime:
                 reasons.append(
                     dict(
-                        kind='business',
+                        kind='tool',
                         input=path if 'make' in formats else path + ':' + field,
-                        modules=sorted(consumers),
+                        modules=[],
                         detail=field if 'make' in formats else 'shared-runtime',
                     )
                 )
-    return packages_all, modules, tools, reasons
+    return packages_all, tools, reasons
 
 
 # Ownership changes are verified by tooling and by changed inputs. They do not
@@ -777,8 +787,8 @@ def select(root, base):
         for path in before.representatives.keys() | after.representatives.keys():
             old, new = set(before.representatives.get(path, ())), set(after.representatives.get(path, ()))
             if old != new:
-                modules.update(old | new)
-                reasons.append(dict(kind='representative', input=path, modules=sorted(old | new)))
+                modules.update(new)
+                reasons.append(dict(kind='representative', input=path, modules=sorted(new)))
         cargo_inputs = any(p.startswith('crates/') or p.endswith('.rs')
                            or p in {'Cargo.toml', 'Cargo.lock'} for p in paths)
         graphs = (metadata(oldroot, 'baseline:' + base), metadata(root)) if cargo_inputs else (None, None)
@@ -786,53 +796,48 @@ def select(root, base):
         for path in sorted(paths):
             if path in {'Cargo.toml', 'Cargo.lock'} or path.endswith('/Cargo.toml'):
                 continue
-            # Treat each rename/copy endpoint independently. A stable path may
-            # retain its old owner after a mapping is removed or migrated.
-            owners = [(after, graphs[1])] if path in after.tool_only else zip((before, after), graphs)
-            claimed = False
-            for registry, graph in owners:
-                try:
-                    impact = path_inputs(path, registry)
-                except SelectionError:
-                    continue
-                claimed = True
-                consumers = set(impact.modules)
-                if path in after.tool_only:
-                    consumers.update(before.representatives.get(path, ()))
-                modules.update(consumers)
-                active_tools = set(impact.tools) - retired_tools
-                tools.update(active_tools)
-                reasons.append(
-                    dict(
-                        kind='representative' if path in after.tool_only and consumers else impact.kind,
-                        input=path,
-                        modules=sorted(consumers),
-                        tools=sorted(active_tools),
-                    )
-                )
+            # T2 uses current ownership, including both rename/copy endpoints.
+            # Historical Cargo facts still locate removed production inputs.
+            production = any(graph and graph.production(path) and (tree / path).is_file()
+                             for tree, graph in zip((oldroot, root), graphs))
+            try:
+                impact = path_inputs(path, after, production=production)
+            except SelectionError:
+                if (root / path).exists():
+                    raise
+                # Deleted test carriers have no execution left. Their old target
+                # is still discovered to verify surviving ignored-test ownership.
+                old_tests = [m for m in before.modules.values()
+                             if matches(path, (*m['test_inputs'], *m['support_inputs']))]
+                if not old_tests and not matches(path, before.t1):
+                    raise
+                checks.extend(ownership_builds(old_tests, graphs[1] or metadata(root)))
+                impact = Inputs((), (), 'unit-test')
+            modules.update(impact.modules)
+            active_tools = set(impact.tools) - retired_tools
+            tools.update(active_tools)
+            reasons.append(dict(kind=impact.kind, input=path,
+                                modules=list(impact.modules), tools=sorted(active_tools)))
+            for graph in graphs:
                 if graph:
                     owner = graph.owner(path)
-                    # A test carrier/helper is not part of its package's exported library.
                     relative = str(PurePosixPath(path).relative_to(PurePosixPath(graph.manifests[owner]).parent)) if owner else path
                     test_input = relative.startswith('tests/')
                     if test_input:
-                        packages.update(module['build']['package'] for name, module in registry.modules.items()
-                                        if name in consumers and module['build'])
+                        packages.update(after.modules[name]['build']['package'] for name in impact.modules
+                                        if after.modules[name]['build'])
                     if owner:
                         packages.update(graph.names({owner} if test_input else graph.closure({owner}, reverse=True)))
                         if path in after.tool_only:
                             checks.extend(ownership_builds(
                                 [module for module in after.modules.values() if module['build']
                                  and module['build']['package'] == graph.packages[owner]['name']], graph))
-            if not claimed:
-                raise SelectionError('unmapped-input', path)
         if cargo_inputs:
             p, r = analyze_dependencies(oldroot, root, changes, graphs)
             packages.update(p)
             reasons.extend(r)
             packages &= graphs[1].names(graphs[1].members)
-        all_cargo, m, t, r = analyze_controls(oldroot, root, changes, (before, after))
-        modules.update(m)
+        all_cargo, t, r = analyze_controls(oldroot, root, changes, (before, after))
         tools.update(t)
         reasons.extend(r)
         missing = modules - after.modules.keys() - {item['module'] for item in removed}
