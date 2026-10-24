@@ -136,24 +136,13 @@ class Selection(unittest.TestCase):
         )
         self.assertFalse(ci.selected_gate('script-tests', selection))
 
-    def test_compliance_owner_selects_real_router_module(self):
-        from ci_impact import select_inputs, SelectionError
-
-        for owner in ['compliance', 'compliance-postgres', 'group-postgres']:
-            self.assertTrue(
-                any(
-                    name.startswith('compliance.')
-                    for name in select_inputs(
-                        ['crates/' + owner + '/src/lib.rs']
-                    ).modules
-                )
-            )
-        self.assertFalse(
-            any(
-                name.startswith('compliance.')
-                for name in select_inputs(['crates/winget-source/src/lib.rs']).modules
-            )
-        )
+    def test_storage_owner_does_not_expand_into_business_consumers(self):
+        from ci_impact import select_inputs
+        self.assertEqual(select_inputs(['crates/compliance/src/lib.rs']).modules, ())
+        self.assertEqual(select_inputs(['crates/compliance-postgres/src/lib.rs']).modules,
+                         ('compliance.storage',))
+        self.assertEqual(set(select_inputs(['crates/group-postgres/src/lib.rs']).modules),
+                         {'group.persistence', 'group.generations'})
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -389,7 +378,8 @@ class EntryModes(unittest.TestCase):
             self.assertFalse((out / 'ownership.log').exists())
 
     def test_explicit_full_bypasses_unavailable_baseline_only_in_ci(self):
-        with tempfile.TemporaryDirectory() as directory, (
+        with (
+            tempfile.TemporaryDirectory() as directory,
             patch.dict(ci.os.environ, {'CI_FULL': '1', 'CI_T2': 'all', 'CI_PLAN': '1'}),
             patch.object(ci, 'OUT', Path(directory)),
             patch.object(ci, 'require_lease'),

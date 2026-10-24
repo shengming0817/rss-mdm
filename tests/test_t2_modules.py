@@ -57,12 +57,9 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue({'publication.winget', 'publication.brew', 'publication.withdrawal', 'execution.software.offer'} <= set(selected.modules))
 
 
-    def test_native_modules_select_actual_write_read_permission_and_helper_inputs(self):
-        for path in ('crates/execution-service/src/service.rs',
-                     'crates/execution-service/src/queries/records.rs',
-                     'crates/execution-service/src/permissions.rs'):
-            selected = select_inputs([path])
-            self.assertTrue({'apple.commands', 'apple.users'} <= set(selected.modules), path)
+    def test_native_channel_storage_selects_its_direct_protocol_proofs(self):
+        self.assertTrue({'apple.commands', 'apple.users'} <=
+                        self.selected('crates/apple-channel/src/flow_store.rs'))
 
     def test_ddm_authority_and_reads_select_native_consumers(self):
         for path in ('crates/authorization-service/src/authority.rs',
@@ -92,7 +89,7 @@ class ModuleImpactTests(unittest.TestCase):
                 self.assertNotIn('execution.commands.configuration', self.selected(path))
 
     def test_native_rules_select_configuration_consumer(self):
-        for path in ('crates/windows-mdm/src/native/request.rs', 'crates/windows-mdm/src/native/verification.rs'):
+        for path in ('crates/execution-service/src/native_configuration.rs',):
             self.assertIn('execution.commands.configuration', self.selected(path), path)
 
     def test_declared_protocol_consumers_select_linked_end_to_end_proof(self):
@@ -140,7 +137,6 @@ class ModuleImpactTests(unittest.TestCase):
     def test_device_access_direct_execution_consumers_select_http_evidence(self):
         for path in ('crates/execution-service/src/actions/agent.rs',
                      'crates/execution-service/src/actions/storage.rs',
-                     'crates/authorization-service/src/authority.rs',
                      'crates/registration-service/src/lifecycle.rs',
                      'crates/app/tests/support/task_signature.rs',
                      'crates/execution-service/src/input_preparation.rs'):

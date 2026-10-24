@@ -1933,3 +1933,8 @@ consume(('crates/inventory-service/schema/group-selections.sql',), 'planning.gro
 consume(('crates/execution-service/src/dispatch-v1.json',), 'execution.commands.dispatch')
 consume(('crates/execution-service/src/queries/records.rs',), 'execution.agent.history execution.commands.windows')
 consume(('crates/flow-service/src/automation/jobs.rs',), 'planning.recovery')
+
+# Protocol comparison and fixture error projection keep their direct proof owners.
+consume(('crates/app/tests/apple/oracle.rs',),
+        'apple.scep apple.identity apple.renewal apple.host apple.account_enrollment apple.ade apple.platform_sso')
+consume(('crates/app/tests/fixtures/error.rs',), 'api.diagnostics')
