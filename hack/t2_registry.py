@@ -728,7 +728,7 @@ for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.
         MODULES[name] = replace(value, fixtures=(*value.fixtures, 'local_worker'))
 
 
-case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', None)
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', ('identity',))
 
 def consume(inputs, names):
     """The named modules test a real production path through these inputs."""
@@ -2219,6 +2219,7 @@ consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.ag
 
 consume(('crates/registration-service/src/agent/configurations/*.rs',), 'agent.configurations')
 consume(('crates/inventory-service/src/assets/saved_directory.rs',), 'assets.queries')
+consume(('crates/inventory-service/src/compliance/directory.rs',), 'compliance.http')
 consume(('crates/software-service/src/management/directory.rs', 'crates/software-service/src/management/publication/directory.rs'), 'software.http')
 consume(('crates/software-service/src/agent_packages/*.rs',), 'agent.configurations')
 

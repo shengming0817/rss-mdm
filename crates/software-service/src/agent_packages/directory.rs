@@ -14,7 +14,7 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("architecture", Kind::Enum(&["x86_64", "aarch64"])),
         Field::scalar(
             "format",
-            Kind::Enum(&["windows_exe", "windows_msi", "macos_pkg"]),
+            Kind::Enum(&["windows_exe", "windows_msi", "windows_msix", "macos_pkg"]),
         ),
         Field::scalar("version", Kind::Text),
         Field::output("tenantId"),

@@ -134,10 +134,10 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(rejected.0==StatusCode::CONFLICT,"enabled delete: {rejected:?}");
     let other_policy=Uuid::new_v4();
     call(browser,router,&format!("/api/v1/policies/{other_policy}"),0,json!({"action":"put","enabled":false,"definition":definition})).await?;
-    let first=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1"),None).await?;
+    let first=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}&limit=1"),None).await?;
     ensure!(first.0==StatusCode::OK,"policy directory: {first:?}");
     let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("policy cursor missing: {first:?}"))?;
-    let second=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&limit=1&cursor={token}"),None).await?;
+    let second=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}&limit=1&cursor={token}"),None).await?;
     ensure!(second.0==StatusCode::OK && second.1["nextCursor"].is_null(),"policy paging: {second:?}");
     let page_id = |page: &serde_json::Value| -> Result<Uuid> {
         let items = page["items"].as_array().ok_or_else(|| anyhow::anyhow!("missing policy items: {page}"))?;
@@ -147,7 +147,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(page_id(&json!({"items":[],"nextCursor":null})).is_err(), "empty policy page must fail validation");
     let actual = std::collections::BTreeSet::from([page_id(&first.1)?, page_id(&second.1)?]);
     ensure!(actual == std::collections::BTreeSet::from([id, other_policy]), "incomplete policy pages: {actual:?}");
-    let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}&state=disabled&limit=1&cursor={token}"),None).await?;
+    let changed=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource};state==disabled&limit=1&cursor={token}"),None).await?;
     ensure!(changed.0==StatusCode::CONFLICT,"changed cursor filter: {changed:?}");
     let mut cursor = None;
     let mut seen = std::collections::BTreeSet::new();
@@ -192,9 +192,9 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     ensure!(replay==deleted,"delete replay changed receipt");
     let enabled=settled_write(browser,router,policy,json!({"operationId":Uuid::new_v4(),"expectedRevision":3,"input":{"action":"enable"}})).await?;
     ensure!(enabled.0==StatusCode::CONFLICT,"archived enable: {enabled:?}");
-    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?resource={resource}"),None).await?;
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=resource=={resource}"),None).await?;
     ensure!(directory.0==StatusCode::OK && directory.1["items"].as_array().is_some_and(|v|v.len()==1) && directory.1["items"][0]["id"]==other_policy.to_string());
-    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?state=archived&resource={resource}"),None).await?;
+    let directory=browser.call(router,Method::GET,&format!("/api/v1/policies?filter=state==archived;resource=={resource}"),None).await?;
     ensure!(directory.0==StatusCode::OK && directory.1["items"][0]["id"]==id.to_string());
     let legacy=browser.call(router,Method::GET,&format!("/api/v1/policies?after={id}"),None).await?;
     ensure!(legacy.0==StatusCode::BAD_REQUEST);

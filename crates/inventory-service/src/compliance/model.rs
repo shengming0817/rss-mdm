@@ -39,7 +39,6 @@ pub enum Command {
         revision: i64,
     },
     Put {
-        sensitive: bool,
         id: Uuid,
         request: Box<crate::operation::Operation<Definition>>,
     },

@@ -61,7 +61,7 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 `POST /api/v1/policies/{id}/reruns` 使用 `operationId`、当前 `expectedRevision`、`input:{"deadline":...}` 请求显式重执行；只保存一个有期限触发，设备签入时才受理。此入口用于支持显式重执行的脚本与运维动作；标准 native_collection/agent_collection 只按固定周期执行，不接受 rerun。已启动而结果未知的脚本不自动重跑。关闭分配阻止新执行并请求取消既有任务，取消不证明副作用回滚。
 
-`GET /api/v1/policies` 按 `after` UUID 分页；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
+`GET /api/v1/policies` 使用 `filter/sort/fields/limit/cursor`，将响应 `nextCursor` 原样传给 `cursor`，见[统一目录查询](groups-scopes-policies.md)；`/{id}` 返回定义、编辑 revision 和执行 version；`/{id}/devices` 按设备 `after` 分页返回当前分配资格、诊断及原生 Operation 关联。执行历史 `/{id}/runs` 用 afterAt/afterId 分页，摘要不含输出；`/{id}/runs/{taskId}` 返回完整执行证据并检查 OperationRead；采集结果另需 InventoryRead，冻结映射含敏感字段时还需 InventorySensitiveRead。
 
 ## 设备动作与退出边界
 

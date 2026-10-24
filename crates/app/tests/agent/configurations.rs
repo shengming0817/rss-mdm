@@ -631,6 +631,48 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let expected = [windows.release_id.to_string(), macos.release_id.to_string()];
     ensure!(found == expected.iter().map(String::as_str).collect());
 
+    let (msix, _) = publish_bytes(
+        &f,
+        &mut user,
+        "windows",
+        "x86_64",
+        "msix",
+        Some("2.3.4.5"),
+        &installer_fixtures::msix("2.3.4.5", false),
+    )
+    .await?;
+    let filtered = user
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/agent-packages?filter=format==windows_msix&fields=releaseId,format",
+            None,
+        )
+        .await?;
+    ensure!(
+        filtered.0 == StatusCode::OK
+            && filtered.1["items"]
+                == json!([{"releaseId":msix.release_id,"format":"windows_msix"}])
+    );
+    let base = "/api/v1/agent-packages?sort=-format&fields=releaseId,format&limit=1";
+    let first = user.call(&f.router, Method::GET, base, None).await?;
+    ensure!(
+        first.0 == StatusCode::OK
+            && first.1["items"][0]["releaseId"] == msix.release_id.to_string(),
+        "MSIX order: {first:?}"
+    );
+    let cursor = first.1["nextCursor"]
+        .as_str()
+        .context("MSIX continuation")?;
+    let second = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{base}&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    ensure!(second.0 == StatusCode::OK && second.1["items"][0]["format"] == "windows_exe");
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {

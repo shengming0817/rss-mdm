@@ -411,3 +411,61 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
     fixture.close().await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=compliance.http: queued Delete must recheck authorization before writes"]
+async fn queued_delete_observes_permission_revocation() -> Result<()> {
+    use sqlx::Connection;
+    let fixture = Fixture::open().await?;
+    let (id, path, _) = fixture.rule().await?;
+    let mut browser = fixture.browser.clone();
+    let mut observer =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut hold = observer.begin().await?;
+    crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(
+        &mut hold,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    )
+    .await?;
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(3),async{
+            loop{
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                if waiting{break;}
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::task::yield_now().await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        // Authentication and its original snapshot completed before the write reached the barrier.
+        grants(&fixture.subject, Some("compliance-a")).await?;
+        hold.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (response, released) = tokio::join!(
+        browser.call(
+            &fixture.router,
+            Method::DELETE,
+            &path,
+            Some(request(1, json!({})))
+        ),
+        release
+    );
+    released?;
+    observer.close().await?;
+    ensure!(
+        response?.0 == StatusCode::FORBIDDEN,
+        "queued delete ignored revoked write permission"
+    );
+    let deleted: bool = serde_json::from_str(&pg(&format!(
+        "SELECT deleted::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
+        case_tenant()
+    ))?)?;
+    ensure!(!deleted);
+    grants(&fixture.subject, None).await?;
+    ensure!(ok(&mut browser, &fixture.router, Method::GET, &path, None).await?["revision"] == 1);
+    fixture.close().await;
+    Ok(())
+}

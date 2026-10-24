@@ -76,7 +76,8 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 必填只表示资料完整性，不阻止基础登录。过期或无效资料不沿用旧值，refresh 和 GET 不更新采集时间。
 
 设置中的用户字段入口由 `user_attribute_definitions_read/write` 独立控制；写定义不授予样本读取、账户管理或本地资料写入。
-定义及批准来源元数据通过 `GET /api/v1/user-attribute-definitions` 读取，分页继续使用响应 `nextCursor` 作为 `after`。
+定义及批准来源元数据通过 `GET /api/v1/user-attribute-definitions` 读取，使用 `filter/sort/fields/limit/cursor`，响应为 `items/nextCursor/sources`；将 `nextCursor` 原样作为 `cursor`。
+字段投影和续页规则见[统一目录查询](groups-scopes-policies.md)。
 详情与写入位于 `/{fieldId}`；PUT 携带 `operationId/expectedRevision/value`，value 为 null 表示删除。
 最多同时启用 128 个字段。来源、路径或类型约束变化默认等待下一次登录；明确选择使用已有观察仅重投影仍有效的观察，不延长其期限。
 纯展示修改保留采集门槛，停用和删除立即停止暴露。字段使用严格 JSON Pointer，不执行表达式、脚本或远程取值。

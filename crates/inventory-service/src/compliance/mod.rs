@@ -1,5 +1,6 @@
 //! Product composition: Inventory owns facts, Group owns predicates and membership,
 //! Compliance owns assessments. Existing automation owns all task progress.
+use crate::authorization::{Permission, Snapshot, context::AuthorizedPrincipal};
 use crate::transaction::*;
 use crate::{Error, Failure};
 use rss_mdm_audit_integration::RequestAudit;
@@ -66,20 +67,30 @@ impl Compliance {
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        proof: &AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        authorize()?;
+        proof.check_live()?;
+        proof.bind_audit(audit)?;
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant(),
             audit,
-            (self, command, audit, authorize),
+            (self, command, audit, proof),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize) = *ctx;
+                    let (s, command, audit, proof) = *ctx;
+                    let current = query_authority(tx, proof).await?;
+                    authorize(&current, proof, command)?;
+                    let sensitive =
+                        match current.require(proof, Permission::InventorySensitiveRead, None) {
+                            Ok(()) => true,
+                            Err(crate::authorization::error::AuthorizationError::Forbidden) => {
+                                false
+                            }
+                            Err(e) => return Err(e.into()),
+                        };
                     crate::transaction::lock(tx).await?;
-                    authorize()?;
                     s.audit_store.prepare_in(tx, audit, &[]).await?;
                     let actor = audit.snapshot();
                     let hash = fingerprint(&(
@@ -105,11 +116,11 @@ impl Compliance {
                                 return Err(Error::Conflict.into());
                             }
                             s.audit(tx, audit, operation, &hash, true).await?;
-                            authorize()?;
+                            proof.check_live()?;
                             return Ok(response);
                         }
                     }
-                    let response = s.handle(tx, command).await?;
+                    let response = s.handle(tx, command, sensitive).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = response.clone();
@@ -119,7 +130,7 @@ impl Compliance {
                         .await?;
                     }
                     s.audit(tx, audit, operation, &hash, false).await?;
-                    authorize()?;
+                    proof.check_live()?;
                     Ok(response)
                 })
             },
@@ -150,7 +161,12 @@ impl Compliance {
         }
         Ok(())
     }
-    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Value> {
+    async fn handle(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        command: &Command,
+        sensitive: bool,
+    ) -> Result<Value> {
         let t = self.tenant();
         match command {
             Command::Read { id } => json(&RuleView::from(self.rule(tx, *id).await?)),
@@ -171,11 +187,7 @@ impl Compliance {
                     .ok_or(Error::NotFound)?;
                 Ok(json!({"id":id,"revision":revision,"definition":row}))
             }
-            Command::Put {
-                id,
-                request,
-                sensitive,
-            } => self.put(tx, *id, request, *sensitive).await,
+            Command::Put { id, request } => self.put(tx, *id, request, sensitive).await,
             Command::Delete { id, request } => {
                 let mut rule = self.rule(tx, *id).await?;
                 if rule.revision as u64 != request.expected_revision {
@@ -298,4 +310,29 @@ impl Compliance {
         };
         Ok(json!({"id":id,"revision":revision,"task":task}))
     }
+}
+
+fn authorize(
+    current: &Snapshot,
+    proof: &AuthorizedPrincipal,
+    command: &Command,
+) -> std::result::Result<(), Error> {
+    let (permission, device) = match command {
+        Command::Put { .. } | Command::Delete { .. } => (Permission::ComplianceWrite, None),
+        Command::Recompute { .. } => (Permission::ComplianceRecompute, None),
+        Command::Current { device } | Command::History { device, .. } => {
+            (Permission::ComplianceRead, Some(device.as_str()))
+        }
+        _ => (Permission::ComplianceRuleRead, None),
+    };
+    current.require(proof, permission, device)?;
+    if let Command::Put { request, .. } = command
+        && !request.input.groups().is_empty()
+    {
+        current.require(proof, Permission::GroupRead, None)?;
+    }
+    if matches!(command, Command::Task { .. }) {
+        current.require_all_devices(proof, Permission::ComplianceRead)?;
+    }
+    Ok(())
 }

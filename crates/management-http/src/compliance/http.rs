@@ -1,5 +1,5 @@
 use super::*;
-use crate::authorization::{Permission, context::RequestAuth};
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -10,29 +10,6 @@ use rss_mdm_http_contract::{
     routing::{get, post},
 };
 type Response = std::result::Result<Json<Value>, Error>;
-fn authorize(
-    auth: &RequestAuth,
-    c: &Command,
-) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
-    let (permission, device) = match c {
-        Command::Put { .. } | Command::Delete { .. } => (Permission::ComplianceWrite, None),
-        Command::Recompute { .. } => (Permission::ComplianceRecompute, None),
-        Command::Current { device } | Command::History { device, .. } => {
-            (Permission::ComplianceRead, Some(device.as_str()))
-        }
-        _ => (Permission::ComplianceRuleRead, None),
-    };
-    auth.proof.require(permission, device)?;
-    if let Command::Put { request, .. } = c
-        && !request.input.groups().is_empty()
-    {
-        auth.proof.manage(Permission::GroupRead)?;
-    }
-    if matches!(c, Command::Task { .. }) {
-        auth.proof.require_all_devices(Permission::ComplianceRead)?;
-    }
-    Ok(())
-}
 async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) -> Response {
     audit.set_action(if c.operation().is_some() {
         "compliance_write"
@@ -53,8 +30,7 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
     if let Some(id) = c.operation() {
         audit.operation(id, audit.snapshot().action)
     }
-    authorize(a, &c)?;
-    s.execute(&c, audit, &|| authorize(a, &c))
+    s.execute(&c, audit, &a.proof)
         .await
         .map(Json)
         .map_err(Error::from)
@@ -158,8 +134,6 @@ async fn put(
         &a,
         &audit,
         Command::Put {
-            sensitive: rss_mdm_inventory_service::assets::ReadScope::from_proof(&a.proof)?
-                .sensitive,
             id,
             request: Box::new(body.map_err(Error::from)?.0),
         },
