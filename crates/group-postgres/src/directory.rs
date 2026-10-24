@@ -1,58 +1,78 @@
-//! Bounded current metadata reads, without materializing rule or member histories.
+//! Domain-owned Group directory mapping; the query adapter owns only SQL syntax.
 use crate::{model::*, storage, store::input};
+use rss_mdm_query::directory::{Field, Kind, Position, Query, Schema};
 use rss_transactional_messaging_postgres::PgTransaction;
 use sqlx::Row;
-/// Filters and ID ordering for one tenant's Group directory.
-#[derive(Clone, Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectoryQuery {
-    /// Exclusive ID boundary in the requested order.
-    pub after: Option<uuid::Uuid>,
-    /// Maximum number of returned records, from one to one thousand.
-    #[serde(default = "limit")]
-    pub limit: usize,
-    /// Descending ID order when true; ascending otherwise.
-    #[serde(default)]
-    pub descending: bool,
-    /// Exact kind, if selected.
-    pub kind: Option<GroupKind>,
-    /// Exact object universe for a reference selector.
-    pub asset_context: Option<AssetContext>,
-
-    /// Include only the selected tombstone state; current records by default.
-    #[serde(default)]
-    pub deleted: bool,
-    /// Literal name substring; not a SQL wildcard expression.
-    pub name: Option<String>,
-}
-fn limit() -> usize {
-    64
+/// Query fields consumed by Group metadata SQL and route documentation.
+pub static SCHEMA: Schema = Schema {
+    id: "groups",
+    keys: &["id"],
+    default_limit: 64,
+    max_limit: 1000,
+    fields: &[
+        Field::scalar("id", Kind::Uuid),
+        Field::scalar("revision", Kind::Integer),
+        Field::scalar("kind", Kind::Enum(&["static", "dynamic", "system"])),
+        Field::scalar(
+            "assetContext",
+            Kind::Enum(&["endpoint", "associated_device"]),
+        ),
+        Field::scalar("deleted", Kind::Boolean),
+        Field {
+            name: "name",
+            kind: Kind::Text,
+            filter: true,
+            sort: true,
+            output: false,
+        },
+        Field::scalar("memberCount", Kind::Integer),
+        Field::scalar("calculationRevision", Kind::Integer),
+        Field::scalar("memberVersion", Kind::Integer),
+        Field::output("presentation"),
+        Field::output("systemSelector"),
+        Field::output("ruleVersion"),
+    ],
+};
+fn column(name: &str) -> &'static str {
+    match name {
+        "id" => "id::text COLLATE \"C\"",
+        "revision" => "revision",
+        "kind" => "kind COLLATE \"C\"",
+        "assetContext" => "asset_context COLLATE \"C\"",
+        "deleted" => "deleted",
+        "name" => "(presentation->>'name') COLLATE \"C\"",
+        "memberCount" => "member_count",
+        "calculationRevision" => "calculation_revision",
+        "memberVersion" => "member_version",
+        _ => unreachable!("checked Group field"),
+    }
 }
 impl crate::GroupStore {
-    /// Read bounded Group metadata through the owning runtime and tenant transaction.
+    /// Query a bounded tenant page, applying an optional reference context before paging.
     pub async fn directory_in(
         &self,
         tx: &mut PgTransaction<'_>,
-        q: &DirectoryQuery,
+        q: &Query,
+        after: Option<&Position>,
+        context: Option<AssetContext>,
     ) -> InTransaction<Vec<Group>> {
         input!(self.check_transaction(tx)?);
-        if !(1..=1000).contains(&q.limit)
-            || q.after.is_some_and(|v| v.is_nil())
-            || q.name.as_ref().is_some_and(|v| v.len() > 4096)
-        {
+        if q.require_schema(&SCHEMA).is_err() {
             return Ok(Err(Rejection::InvalidInput));
         }
-        let tenant = self.tenant.to_string();
-        let q = q.clone();
-        let kind = q.kind.map(|v| match v {
-            GroupKind::Static => "static",
-            GroupKind::Dynamic => "dynamic",
-            GroupKind::System => "system",
-        });
-        let rows=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query("SELECT * FROM mdm_group.groups WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND ($4::text IS NULL OR kind=$4) AND deleted=$5 AND ($8::text IS NULL OR asset_context=$8) AND ($6::text IS NULL OR strpos(lower(presentation->>'name'),lower($6))>0) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $7")
-                .bind(tenant).bind(q.after).bind(q.descending).bind(kind).bind(q.deleted).bind(q.name).bind((q.limit+1) as i64).bind(q.asset_context.map(|c|c.as_str())).fetch_all(c).await
-        })).await?;
+        let mut sql = sqlx::QueryBuilder::new("SELECT * FROM mdm_group.groups WHERE tenant_id=");
+        sql.push_bind(self.tenant.to_string()).push("::uuid");
+        if let Some(context) = context {
+            sql.push(" AND asset_context=")
+                .push_bind(context.as_str())
+                .push(" AND NOT deleted");
+        }
+        if rss_mdm_query_postgres::append(&mut sql, q, after, column).is_err() {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let rows = tx
+            .with_connection(move |c| Box::pin(async move { sql.build().fetch_all(c).await }))
+            .await?;
         let groups = rows
             .into_iter()
             .map(|r| {

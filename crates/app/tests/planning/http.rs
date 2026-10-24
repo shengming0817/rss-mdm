@@ -376,7 +376,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             "scope_write",
             "resource_read",
             "resource_write",
-            "policy_read"
+            "policy_read", "policy_write"
         ]),
     )
     .await?;
@@ -389,19 +389,19 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v1/groups?limit=1&kind=static",
+            "/api/v1/groups?limit=1&filter=kind==static",
             None,
         )
         .await?;
     ensure!(
         first["items"][0]["id"] == groups[0].to_string()
-            && first["nextCursor"] == groups[0].to_string()
+            && first["nextCursor"].is_string()
     );
     let (_, second) = browser
         .call(
             &router,
             Method::GET,
-            &format!("/api/v1/groups?limit=1&after={}", groups[0]),
+            &format!("/api/v1/groups?limit=1&filter=kind==static&cursor={}", first["nextCursor"].as_str().unwrap()),
             None,
         )
         .await?;
@@ -410,7 +410,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v1/groups?name=console-1&descending=true",
+            "/api/v1/groups?filter=name=icontains=console-1&sort=-id",
             None,
         )
         .await?;
@@ -418,6 +418,24 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         named["items"].as_array().unwrap().len() == 1
             && named["items"][0]["id"] == groups[1].to_string()
     );
+
+    // Real SQL tie-breaking and projection-independent continuation for Scope and Policy.
+    let mut scope_ids=[Uuid::new_v4(),Uuid::new_v4()];scope_ids.sort();
+    let mut policy_ids=[Uuid::new_v4(),Uuid::new_v4()];policy_ids.sort();
+    for (scope,policy) in scope_ids.iter().zip(policy_ids.iter()) {
+        call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}})).await?;
+        call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":false,"definition":{"scope":scope,"action":{"kind":"device_access","selfEnrollment":true,"role":null}}})).await?;
+    }
+    for (family,ids) in [("scopes",scope_ids),("policies",policy_ids)] {
+        let base=format!("/api/v1/{family}?filter=id=in=({},{});revision==1&sort=revision&fields=id&limit=1",ids[0],ids[1]);
+        let (status,page)=browser.call(&router,Method::GET,&base,None).await?;
+        ensure!(status==StatusCode::OK,"{family}: {page}");
+        ensure!(page["items"]==json!([{"id":ids[0]}])&&page["nextCursor"].is_string());
+        let cursor=page["nextCursor"].as_str().unwrap();
+        let (status,last)=browser.call(&router,Method::GET,&format!("{base}&cursor={cursor}"),None).await?;
+        ensure!(status==StatusCode::OK&&last["items"]==json!([{"id":ids[1]}])&&last["nextCursor"].is_null());
+        ensure!(browser.call(&router,Method::GET,&format!("{}&cursor={cursor}",base.replace("fields=id","fields=revision")),None).await?.0==StatusCode::CONFLICT);
+    }
     let resource = case::name("directory-script");
     call(
         &mut browser,
@@ -485,7 +503,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
             .call(
                 &router,
                 Method::GET,
-                &format!("/api/v1/groups?after={}", groups[0]),
+                &format!("/api/v1/groups?filter=kind==static&cursor={}", first["nextCursor"].as_str().unwrap()),
                 None
             )
             .await?
@@ -522,7 +540,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     .await?;
     await_ingress().await?;
     let fresh = browser
-        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?filter=ready==true", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),
@@ -533,10 +551,10 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     ensure!(changed.0 == StatusCode::OK, "scope update: {changed:?}");
     ensure!(pg(&format!("SELECT resolution IS NOT NULL FROM mdm_planning.scopes WHERE tenant_id='{}' AND id='{scope}'", case_tenant()))?.trim() == "t", "fixture lost historical resolution");
     let fresh = browser
-        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?filter=ready==true", None)
         .await?;
     let stale = browser
-        .call(&router, Method::GET, "/api/v1/scopes?ready=false", None)
+        .call(&router, Method::GET, "/api/v1/scopes?filter=ready==false", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"] == json!([]),
@@ -555,7 +573,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     .await?;
     await_ingress().await?;
     let fresh = browser
-        .call(&router, Method::GET, "/api/v1/scopes?ready=true", None)
+        .call(&router, Method::GET, "/api/v1/scopes?filter=ready==true", None)
         .await?;
     ensure!(
         fresh.0 == StatusCode::OK && fresh.1["items"][0]["id"] == scope.to_string(),

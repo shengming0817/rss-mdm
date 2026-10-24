@@ -30,3 +30,10 @@ pub mod storage;
 /// Exact read-only execution authority required by native Agent registration.
 pub const ACCESS_CONTRACT: &str = include_str!("access-contract.json");
 pub const ACCESS_ADMISSION_SQL: &str = include_str!("access-admission.sql");
+
+pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
+    match error {
+        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        _ => Error::Malformed,
+    }
+}

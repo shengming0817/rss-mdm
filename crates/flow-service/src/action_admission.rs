@@ -40,6 +40,9 @@ pub async fn current(
     tx: &mut PgTransaction<'_>,
     proof: &crate::authorization::context::AuthorizedPrincipal,
 ) -> Result<crate::authorization::Snapshot> {
+    if proof.tenant_id() != tx.tenant_id().to_string() {
+        return Err(crate::Error::Forbidden.into());
+    }
     let tenant = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx

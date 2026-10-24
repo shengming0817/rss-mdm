@@ -53,3 +53,10 @@ pub const SOURCE_FACTS_SQL: &str = include_str!("../schema/source-facts.sql");
 
 /// Current scalar directory fields resolved before search and pagination.
 pub const DIRECTORY_SQL: &str = include_str!("../schema/directory.sql");
+
+pub(crate) fn query_error(error: rss_mdm_query::Error) -> Error {
+    match error {
+        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        _ => Error::Malformed,
+    }
+}
