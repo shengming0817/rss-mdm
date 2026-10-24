@@ -252,6 +252,8 @@ pub enum Response {
     FieldReferences {
         field: FieldKey,
         impact: super::FieldImpact,
+        mappings: Vec<super::FieldMappingReference>,
+        next_cursor: Option<String>,
     },
     QueryStatus {
         task: Uuid,
@@ -272,7 +274,7 @@ pub enum Response {
     },
     Fields {
         dictionary: String,
-        fields: Vec<serde_json::Value>,
+        fields: Vec<super::FieldView>,
     },
     Detail {
         device: DeviceView,
@@ -345,6 +347,7 @@ pub enum Command {
     },
     FieldReferences {
         field: FieldKey,
+        query: super::FieldReferenceQuery,
     },
     QueryStatus {
         task: Uuid,

@@ -55,13 +55,7 @@ impl Fixture {
         config.apple_material_roots = vec![self.root.join("apple-root.pem")];
         seed_fixture_materials(&self.root, &self.app.protection).await?;
         let address = config.listen;
-        let empty = rss_runtime::ShutdownStack::try_new(
-            rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
-            Arc::new(crate::lifecycle::RuntimeTimer),
-        )?;
-        self.stop_execution_worker().await?;
-        let manual = std::mem::replace(&mut self.owner, empty);
-        ensure!(manual.shutdown().join().await?.is_clean());
+        self.stop_services().await?;
         let mut ingress = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(5))?,
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -379,7 +373,7 @@ enum StartupFault {
 }
 
 async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
-    let fixture = Fixture::start().await?;
+    let mut fixture = Fixture::start().await?;
     let (expected_state, expected_reason) = match fault {
         StartupFault::MissingSelection => ("waiting", "material_not_selected"),
         StartupFault::ProviderUnavailable => ("degraded", "dependency_unavailable"),
@@ -422,6 +416,8 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
     .await?;
     config.native_protocols.apple = Some(apple);
     config.apple_material_roots = vec![fixture.root.join("apple-root.pem")];
+    // Transfer tenant projection ownership before the production host starts.
+    fixture.stop_services().await?;
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
     let server = tokio::spawn(crate::lifecycle::serve(

@@ -701,6 +701,10 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
         .call(&fixture.router, Method::PUT, &saved, Some(value))
         .await?;
     ensure!(response.0 == StatusCode::OK, "saved query: {response:?}");
+    let denied_refs = fixture.author.call(&fixture.router, Method::GET, &format!("{path}/references"), None).await?;
+    ensure!(denied_refs.0 == StatusCode::FORBIDDEN, "resource references require ResourceRead");
+    fixture.grants.push(Grant { operation: Permission::ResourceRead, scope: Scope::Tenant });
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let references = fixture
         .author
         .call(

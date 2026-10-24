@@ -1,3 +1,6 @@
+use rss_mdm_agent_wire::runtime::{
+    AgentCollectionMapping, Conversion, NativeMissing, ValueMapping,
+};
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
 use rss_mdm_resource::*;
 fn spec(ty: w::CimType) -> AgentCollectionSpec {

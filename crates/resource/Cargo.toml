@@ -9,7 +9,6 @@ publish.workspace = true
 rss-mdm-query.workspace = true
 schemars.workspace = true
 rss-mdm-agent-wire.workspace = true
-time.workspace = true
 rss-request-context = { workspace = true }
 rss-contract = { workspace = true }
 sha2 = { workspace = true }

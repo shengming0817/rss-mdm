@@ -1,5 +1,5 @@
 //! Telemetry values carried by the current runtime protocol. No storage or authority.
-use super::WireError;
+use super::{AgentCollectionMapping, Conversion, ValueMapping, WireError};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -300,6 +300,8 @@ pub enum TelemetryDelivery {
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryConfiguration {
+    /// Exact frozen template Resource digest, independent of policy identity.
+    pub resource_digest: [u8; 32],
     /// Trusted tenant coordinate; compare with the local enrollment before execution.
     pub tenant_id: uuid::Uuid,
     /// Trusted device coordinate.
@@ -391,9 +393,11 @@ pub enum TelemetryCollector {
     Native {
         /// Exact immutable native engine plan.
         plan: super::NativeCollectionPlan,
+        /// Digest of the exact native plan; checked before projection.
+        plan_digest: [u8; 32],
         /// Only configured field projections.
         /// Exact configured field projections.
-        mappings: BTreeMap<String, TelemetryNativeMapping>,
+        mappings: BTreeMap<String, AgentCollectionMapping>,
     },
     /// Immutable script material served by the authenticated configuration content route.
     Script {
@@ -414,20 +418,8 @@ pub enum TelemetryCollector {
         /// Maximum complete output rows.
         max_rows: u16,
         /// Exact configured field projections.
-        mappings: BTreeMap<String, TelemetryValueMapping>,
+        mappings: BTreeMap<String, ValueMapping>,
     },
-}
-/// A native query's output path. Missing/failed queries remain explicit telemetry quality.
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TelemetryNativeMapping {
-    /// Explicit durable per-instance normalization, absent for raw native values.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub counter_normalization: Option<NativeCounterNormalization>,
-    /// Stable query identifier from the supplied plan.
-    pub query: String,
-    /// Explicit projection of that query's result.
-    pub mapping: TelemetryValueMapping,
 }
 /// Closed Agent-owned normalization of native cumulative observations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -436,7 +428,7 @@ pub enum NativeCounterNormalization {
     /// Persist an exact baseline and UTC start for each signed field and native instance.
     LocalCumulativeV1,
 }
-impl TelemetryNativeMapping {
+impl AgentCollectionMapping {
     /// Validate the signed source and destination of generated per-instance counter starts.
     pub fn validate_counter_normalization(
         &self,
@@ -491,7 +483,7 @@ impl TelemetryNativeMapping {
         }
         let m = &self.mapping;
         if !m.pointer.is_empty()
-            || m.conversion != TelemetryConversion::Identity
+            || m.conversion != Conversion::Identity
             || m.columns.contains_key(&start[0])
             || m.columns.len() + 1 != properties.len()
             || !m.columns.keys().all(|k| properties.contains_key(k))
@@ -501,14 +493,14 @@ impl TelemetryNativeMapping {
         let identity = |name: &str, pointers: &[&str]| {
             m.columns.get(name).is_some_and(|c| {
                 c.columns.is_empty()
-                    && c.conversion == TelemetryConversion::Identity
+                    && c.conversion == Conversion::Identity
                     && pointers.contains(&c.pointer.as_str())
             })
         };
         if !identity(key, &["/id"])
             || !m.columns.get(&binding.value_path[0]).is_some_and(|c| {
                 c.columns.is_empty()
-                    && c.conversion == TelemetryConversion::Integer
+                    && c.conversion == Conversion::Integer
                     && ["/received_bytes", "/sent_bytes"].contains(&c.pointer.as_str())
             })
         {
@@ -517,62 +509,6 @@ impl TelemetryNativeMapping {
         Ok(())
     }
 }
-/// Closed conversions; unknown native codes never become a successful default value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum TelemetryConversion {
-    /// Preserve the native JSON type, including explicit null.
-    Identity,
-    /// Convert a fully specified CIM datetime with explicit offset to UTC Unix seconds.
-    CimTime,
-    /// Parse an exact decimal integer string.
-    Integer,
-    /// Parse a finite JSON number or decimal number string.
-    Number,
-    /// Explicit source code to canonical scalar, including boolean values.
-    Enum {
-        /// Finite exact source tokens. Unknown tokens are invalid.
-        values: BTreeMap<String, serde_json::Value>,
-    },
-    /// Interpret membership in a complete integer array; never treat a numeric bitmask as a set.
-    ArrayMember {
-        /// Exact native enum member.
-        member: i64,
-        /// Value when present in the complete set.
-        present: serde_json::Value,
-        /// Value when absent from the complete set.
-        absent: serde_json::Value,
-    },
-    /// Convert nonnegative integral units using checked exact rational arithmetic.
-    Scale {
-        /// Numerator.
-        numerator: u64,
-        /// Nonzero denominator; fractional output is rejected.
-        denominator: u64,
-    },
-    /// Decode a finite nonnegative bitmask to a sorted list of declared flag names.
-    Bitmask {
-        /// Keys are decimal single-bit masks. Undeclared set bits are invalid.
-        flags: BTreeMap<String, String>,
-    },
-}
-/// Extraction relative to a response or list item. Empty pointer selects the whole value.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TelemetryValueMapping {
-    /// RFC 6901 pointer, never an expression.
-    pub pointer: String,
-    /// TelemetryConversion of a direct scalar; structured projections require identity.
-    pub conversion: TelemetryConversion,
-    /// Exact output properties for each array item. No undeclared attributes are copied.
-    pub columns: BTreeMap<String, TelemetryValueMapping>,
-}
-
 /// Complete bounded assignment directory. A capacity failure never returns a partial list.
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -668,19 +604,19 @@ impl TelemetryConfiguration {
                 return Err(WireError::InvalidValue);
             }
         }
-        if let TelemetryCollector::Native { plan, mappings } = &self.collector {
-            for (key, mapping) in mappings {
-                let field = self
-                    .fields
-                    .iter()
-                    .find(|f| f.key.as_str() == key)
-                    .ok_or(WireError::InvalidValue)?;
-                let query = plan
-                    .spec()
-                    .queries
-                    .get(&mapping.query)
-                    .ok_or(WireError::InvalidValue)?;
-                mapping.validate_counter_normalization(&query.definition, field)?;
+        match &self.collector {
+            TelemetryCollector::Native {
+                plan,
+                plan_digest,
+                mappings,
+            } => {
+                if *plan_digest != plan.digest() {
+                    return Err(WireError::InvalidValue);
+                }
+                super::validate_native_projection(&self.fields, mappings, plan, true)?;
+            }
+            TelemetryCollector::Script { mappings, .. } => {
+                super::validate_script_projection(&self.fields, mappings)?;
             }
         }
         let mut bytes = b"rss-mdm-agent-telemetry-configuration-v1-ed25519\0".to_vec();

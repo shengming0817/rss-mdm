@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Supported executor profiles; osquery consumes a published, validated SQL template.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ScriptProfile {
     /// PowerShell 7 on Windows.
@@ -18,7 +18,7 @@ pub enum ScriptProfile {
     Osquery,
 }
 /// Explicit execution identity; no implicit elevation or fallback.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunAs {
     /// Machine service identity.
@@ -27,14 +27,14 @@ pub enum RunAs {
     LoggedInUser,
 }
 /// Content and output encoding.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptEncoding {
     /// Strict UTF-8, with invalid bytes rejected.
     Utf8,
 }
 /// An argument destination; values must never be interpolated into source text.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ParameterBinding {
     /// A literal PowerShell parameter name.
@@ -54,7 +54,7 @@ pub enum ParameterBinding {
     },
 }
 /// Declared purpose is part of the immutable digest, not inferred from script text.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ScriptPurpose {
     /// An operation whose exit status alone does not prove a device state.
@@ -66,11 +66,11 @@ pub enum ScriptPurpose {
         /// Exact additional endpoint prerequisites.
         applicability: crate::Applicability,
         /// JSON pointers into the validated output, keyed by published inventory field identities.
-        mappings: BTreeMap<String, crate::ValueMapping>,
+        mappings: BTreeMap<String, rss_mdm_agent_wire::runtime::ValueMapping>,
     },
 }
 /// Complete execution interface. Use [`ScriptDefinition::new`] to validate and freeze it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptSpec {
     /// Selected executor profile.
@@ -97,7 +97,7 @@ pub struct ScriptSpec {
     pub max_rows: u16,
 }
 /// Validated immutable execution interface; deserialization uses the same constructor.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ScriptSpec", into = "ScriptSpec")]
 pub struct ScriptDefinition(ScriptSpec);
 

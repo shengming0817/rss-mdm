@@ -2,7 +2,7 @@
 use super::*;
 
 /// Install scope is separate from the process identity.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareScope {
     /// Organization device installation.
@@ -11,7 +11,7 @@ pub enum SoftwareScope {
     User,
 }
 /// Approved upgrade mechanism; no mutable command discovery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareUpgrade {
     /// The exact installer performs replacement.
@@ -22,7 +22,7 @@ pub enum SoftwareUpgrade {
     Deny,
 }
 /// Disjoint explicitly accepted return codes. All others are failures.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExitCodePolicy {
     /// Process success, still requiring independent effect detection.
@@ -31,7 +31,7 @@ pub struct ExitCodePolicy {
     pub reboot: BTreeSet<i32>,
 }
 /// Literal invocation of the native installer chosen by the enclosing behavior.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeInvocation {
     /// Process identity, never inferred from installation scope.
@@ -48,7 +48,7 @@ pub struct NativeInvocation {
     pub exit_codes: ExitCodePolicy,
 }
 /// Script implementations only appear in declared Bundle entries or detectors.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareInterpreter {
     /// PowerShell 7.
@@ -59,7 +59,7 @@ pub enum SoftwareInterpreter {
     Bash,
 }
 /// Approved bounded script, with a declared immutable entry.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareScript {
     /// Finite interpreter.
@@ -70,7 +70,7 @@ pub struct SoftwareScript {
     pub invocation: NativeInvocation,
 }
 /// Native removal executes an explicitly approved artifact, never a discovered path.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NativeRemoval {
     /// Artifact key of the approved removal installer.
@@ -79,7 +79,7 @@ pub struct NativeRemoval {
     pub invocation: NativeInvocation,
 }
 /// Native installer material shared only where its values have identical meaning.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeSoftware {
     /// Installer artifact key.
@@ -99,7 +99,7 @@ pub struct NativeSoftware {
     pub detect: SoftwareDetection,
 }
 /// Complete offline EXE layout, including companion payload files.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExeSoftware {
     /// Approved EXE installer key.
@@ -121,7 +121,7 @@ pub struct ExeSoftware {
     pub detect: SoftwareDetection,
 }
 /// RSS ZIP with approved finite script entries.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BundleSoftware {
     /// ZIP artifact key.
@@ -137,7 +137,7 @@ pub struct BundleSoftware {
     pub detect: SoftwareDetection,
 }
 /// Exact application identity retained independently of image identity.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MacApplication {
     /// Exact payload relative path within the selected image volume.
@@ -150,7 +150,7 @@ pub struct MacApplication {
     pub target_name: String,
 }
 /// DMG inner payload; no first-candidate discovery or automatic scripts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -181,7 +181,7 @@ pub enum DmgPayload {
     },
 }
 /// One selected volume and payload in an immutable disk image.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DmgSoftware {
     /// Image artifact key.
@@ -198,7 +198,7 @@ pub struct DmgSoftware {
     pub payload: DmgPayload,
 }
 /// MSIX material architecture, distinct from the device processor architecture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MsixArchitecture {
     /// Native x64 application or resource material.
@@ -219,7 +219,7 @@ impl MsixArchitecture {
     }
 }
 /// MSIX identity uses Windows' own version and Publisher semantics.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MsixIdentity {
     /// Manifest Name.
@@ -234,7 +234,7 @@ pub struct MsixIdentity {
     pub resource_id: String,
 }
 /// Frozen .msixbundle member and its complete bytes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MsixMember {
     /// Exact relative container member path.
@@ -247,7 +247,7 @@ pub struct MsixMember {
     pub sha256: [u8; 32],
 }
 /// One MSIX or a precisely selected application/resource bundle member set.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MsixContainer {
     /// Single application package.
@@ -264,7 +264,7 @@ pub enum MsixContainer {
     },
 }
 /// Approved target selector; actual user identity is frozen into a device task.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareUser {
     /// Only a unique interactive user; missing/multiple sessions block execution.
@@ -276,7 +276,7 @@ pub enum SoftwareUser {
     },
 }
 /// Registration and provisioning are different effects, including on removal.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MsixDeployment {
     /// Install/register and remove for one exact user.
@@ -288,7 +288,7 @@ pub enum MsixDeployment {
     DeviceProvisioning,
 }
 /// Complete MSIX execution prerequisites and precise package identities.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MsixSoftware {
     /// Frozen package/container bytes.
@@ -313,7 +313,7 @@ pub struct MsixSoftware {
     pub upgrade: SoftwareUpgrade,
 }
 /// Independent finite detector; an exit code is never a detector.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -364,7 +364,7 @@ pub enum SoftwareDetection {
     },
 }
 /// Single source of native dispatch and format-specific fields.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SoftwareBehavior {
     /// Windows Installer.
@@ -445,7 +445,7 @@ impl SoftwareBehavior {
     }
 }
 /// Raw material retained by the existing content owner.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareSourceFile {
     /// Exact source-relative path.
@@ -454,7 +454,7 @@ pub struct SoftwareSourceFile {
     pub content: SoftwareArtifact,
 }
 /// Imported evidence is part of the definition, never a mutable second catalog.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -475,7 +475,7 @@ pub enum SoftwareProvenance {
     },
 }
 /// Signature checks are opt-in and bound to complete approved material.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareSignature {
     /// Immutable reviewed platform verification report, bound to these exact installer bytes.
@@ -488,7 +488,7 @@ pub struct SoftwareSignature {
     pub publisher: String,
 }
 /// Platform signature requirement; never an automatic enterprise approval.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SignatureMechanism {
     /// Windows Authenticode policy.
@@ -499,7 +499,7 @@ pub enum SignatureMechanism {
     Msix,
 }
 /// Only metadata needed to derive an optional native document.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -535,7 +535,7 @@ pub enum SoftwareExport {
     },
 }
 /// Bottle/Cask parameters belong to the frozen definition, not a second editable Recipe.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",

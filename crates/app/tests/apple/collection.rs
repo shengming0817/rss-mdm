@@ -80,14 +80,14 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 "device.model".into(),
                 NativeMapping {
                     query: rss_mdm_resource::NativeQuery::Apple("Model".into()),
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                 },
             ),
             (
                 field.into(),
                 NativeMapping {
                     query: rss_mdm_resource::NativeQuery::Apple("ActiveManagedUsers".into()),
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                 },
             ),
         ]

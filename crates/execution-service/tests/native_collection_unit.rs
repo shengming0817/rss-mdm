@@ -332,6 +332,26 @@ fn agent_templates_bind_native_queries_to_existing_field_types() {
             continue;
         };
         count += 1;
+        let frozen = template
+            .spec()
+            .mappings
+            .keys()
+            .map(|name| {
+                let field = fields.iter().find(|f| f.key.as_str() == name).unwrap();
+                rss_mdm_inventory_service::collection::wire::to_wire_field(field).unwrap()
+            })
+            .collect::<Vec<_>>();
+        rss_mdm_agent_wire::runtime::validate_native_projection(
+            &frozen,
+            &template.spec().mappings,
+            &template.spec().plan,
+            template
+                .spec()
+                .mappings
+                .values()
+                .any(|m| m.counter_normalization.is_some()),
+        )
+        .unwrap_or_else(|e| panic!("{}: {e:?}", blueprint.id));
         for (name, mapping) in &template.spec().mappings {
             let field = fields
                 .iter()

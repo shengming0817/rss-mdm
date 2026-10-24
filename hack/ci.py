@@ -221,7 +221,7 @@ def verify_agent_wire(data):
     roots = [p for p in packages.values() if p['name'] == 'rss-mdm-agent-wire']
     require(len(roots) == 1, 'exactly one Agent wire package required')
     root = roots[0]
-    direct = {'serde', 'serde_json', 'uuid', 'sha2', 'base64', 'url', 'zeroize', 'schemars', 'ordered-float'}
+    direct = {'serde', 'serde_json', 'uuid', 'sha2', 'base64', 'url', 'zeroize', 'schemars', 'ordered-float', 'time'}
     require(not any('custom-build' in target['kind'] for target in root.get('targets', [])),
             'Agent wire must not execute a product build script')
     for dependency in root.get('dependencies', []):

@@ -2249,6 +2249,14 @@ for name, selector in (
     policy = replace(previous, fixtures=tuple(dict.fromkeys((*fixtures, 'content'))))
     MODULES[name] = replace(module, policies=(*[p for p in module.policies if p.selector != selector], policy))
 
+# Shared projection declarations and pure semantics moved from Resource to agent-wire (#2914).
+consume(('crates/agent-wire/src/mapping.rs',), 'planning.http planning.agent_policy execution.agent.delivery assets.http telemetry.ingress.postgres windows.management apple.collection')
+
+T1_INPUTS += ('crates/inventory-service/src/operation.rs',
+              'crates/management-http/src/resource_catalog/mod.rs',
+              'crates/management-http/examples/collection_schema.rs',
+              'crates/management-http/schema/Collection.json')
+
 if __name__ == '__main__':
     import argparse
     import json

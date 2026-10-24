@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 fn main() {
     let id = uuid::Uuid::parse_str("11111111-2222-4333-8444-555555555555").unwrap();
     let configuration = TelemetryConfiguration {
+        resource_digest: [8; 32],
         tenant_id: id,
         device_id: "telemetry-vector".into(),
         registration_id: id,
@@ -37,9 +38,9 @@ fn main() {
             max_rows: 1,
             mappings: [(
                 "custom.load".into(),
-                TelemetryValueMapping {
+                ValueMapping {
                     pointer: "/load".into(),
-                    conversion: TelemetryConversion::Identity,
+                    conversion: Conversion::Identity,
                     columns: Default::default(),
                 },
             )]

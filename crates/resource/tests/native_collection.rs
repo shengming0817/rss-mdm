@@ -12,7 +12,7 @@ fn spec(adapter: NativeAdapter, query: &str) -> NativeCollectionSpec {
                 } else {
                     NativeQuery::Apple(query.into())
                 },
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
             },
         )]
         .into(),

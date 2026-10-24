@@ -5,7 +5,7 @@ use crate::{Error, Platform};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 /// Read-only protocol adapter, never an arbitrary native command name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeAdapter {
     /// SyncML Get over an explicit device CSP URI.
@@ -24,7 +24,7 @@ pub enum NativeAdapter {
     AppleUsers,
 }
 /// Platform-owned query. Apple keys retain their protocol meaning.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum NativeQuery {
     /// Explicit typed Windows read; strings are never accepted as Windows queries.
@@ -33,7 +33,7 @@ pub enum NativeQuery {
     Apple(String),
 }
 /// Closed Windows collection operations; all protocol commands are Get.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WindowsRead {
     /// One explicitly named scalar leaf.
@@ -52,7 +52,7 @@ pub enum WindowsRead {
     },
 }
 /// Independently complete native namespaces, never a claim of all installed software.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowsInventory {
     /// Win32InstalledProgram records.
@@ -84,16 +84,16 @@ impl NativeQuery {
     }
 }
 /// One native response extraction; list columns map canonical properties to item JSON pointers.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeMapping {
     /// CSP URI or DeviceInformation query key; empty for InstalledApplicationList.
     pub query: NativeQuery,
     /// Shared typed extraction and conversion.
-    pub mapping: crate::ValueMapping,
+    pub mapping: rss_mdm_agent_wire::runtime::ValueMapping,
 }
 /// Complete native collection interface, owned by the same Resource version lifecycle.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NativeCollectionSpec {
     /// Exact immutable collection namespace.
@@ -110,7 +110,7 @@ pub struct NativeCollectionSpec {
     pub output_bytes: u32,
 }
 /// Validated, immutable native template; it carries neither actor authority nor approval state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "NativeCollectionSpec", into = "NativeCollectionSpec")]
 pub struct NativeCollectionDefinition(NativeCollectionSpec);
 impl From<NativeCollectionDefinition> for NativeCollectionSpec {

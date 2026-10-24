@@ -45,7 +45,7 @@ struct Fixture {
     app: Arc<Assembly>,
     browser: Browser,
     router: Router,
-    owner: rss_runtime::ShutdownStack,
+    owner: Option<rss_runtime::ShutdownStack>,
     execution_owner: Option<rss_runtime::ShutdownStack>,
     signals: Arc<crate::worker_wake::Signals>,
     root: PathBuf,
@@ -468,7 +468,7 @@ impl Fixture {
             app,
             browser,
             router,
-            owner,
+            owner: Some(owner),
             execution_owner: Some(execution_owner),
             signals,
             root,
@@ -753,6 +753,14 @@ mod push;
 mod renewal;
 
 impl Fixture {
+    async fn stop_services(&mut self) -> Result<()> {
+        self.stop_execution_worker().await?;
+        if let Some(owner) = self.owner.take() {
+            let report = owner.shutdown().join().await?;
+            ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
+        }
+        Ok(())
+    }
     async fn stop_execution_worker(&mut self) -> Result<()> {
         crate::test_support::runtime::stop_worker(self.execution_owner.take()).await
     }
@@ -766,9 +774,12 @@ impl Fixture {
         } = self;
         resources
             .finish(async move {
-                let report = owner.shutdown().join().await?;
+                let report = match owner {
+                    Some(owner) => Some(owner.shutdown().join().await?),
+                    None => None,
+                };
                 crate::test_support::runtime::stop_worker(execution_owner).await?;
-                if !report.is_clean() {
+                if report.as_ref().is_some_and(|report| !report.is_clean()) {
                     let diagnostics = app
                         .inventory
                         .diagnostics(fixture_clock().now() + Duration::from_secs(1))
@@ -790,7 +801,10 @@ impl Fixture {
                         );
                     }
                 }
-                ensure!(report.is_clean(), "Apple fixture shutdown: {report:?}");
+                ensure!(
+                    report.as_ref().is_none_or(|report| report.is_clean()),
+                    "Apple fixture shutdown: {report:?}"
+                );
                 Ok(())
             })
             .await
@@ -932,7 +946,7 @@ impl Fixture {
                     field.into(),
                     NativeMapping {
                         query: rss_mdm_resource::NativeQuery::Apple(query.into()),
-                        mapping: rss_mdm_resource::ValueMapping::identity(""),
+                        mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                     },
                 )
             })

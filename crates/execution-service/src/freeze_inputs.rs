@@ -186,7 +186,7 @@ pub(crate) async fn prepare_agent_fields(
         r::Platform::Windows => rss_mdm_inventory::Platform::Windows,
         r::Platform::MacOS => rss_mdm_inventory::Platform::Macos,
     };
-    definition
+    let fields = definition
         .spec()
         .mappings
         .iter()
@@ -207,5 +207,17 @@ pub(crate) async fn prepare_agent_fields(
             )?;
             Ok(field.clone())
         })
-        .collect()
+        .collect::<crate::transaction::Result<Vec<_>>>()?;
+    let wire_fields = fields
+        .iter()
+        .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| crate::Error::Malformed)?;
+    checked_input(wire::validate_native_projection(
+        &wire_fields,
+        &definition.spec().mappings,
+        &definition.spec().plan,
+        false,
+    ))?;
+    Ok(fields)
 }

@@ -16,7 +16,7 @@ use rss_mdm_resource as r;
 use rss_mdm_resource_postgres as pg;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Software,
@@ -38,26 +38,26 @@ impl Kind {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum Platform {
     Windows,
     Macos,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum Architecture {
     X86_64,
     Aarch64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Artifact {
     reference: String,
     length: u64,
     sha256: [u8; 32],
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     rename_all = "snake_case",
@@ -88,7 +88,7 @@ enum Declaration {
         artifact: Artifact,
     },
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Variant {
     platform: Platform,
@@ -96,7 +96,7 @@ pub struct Variant {
     key: String,
     declaration: Declaration,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "action",
     rename_all = "snake_case",
@@ -241,6 +241,42 @@ impl ResourceCatalog {
                         Platform::Windows => rss_mdm_inventory::Platform::Windows,
                         Platform::Macos => rss_mdm_inventory::Platform::Macos,
                     };
+                    let projection_fields = keys
+                        .iter()
+                        .map(|key| {
+                            let field = checked_input(catalog.definition(checked_input(
+                                rss_mdm_inventory::FieldKey::parse(key),
+                            )?))?;
+                            rss_mdm_inventory_service::collection::wire::to_wire_field(field)
+                                .map_err(|_| Error::Malformed.into())
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    match &variant.declaration {
+                        Declaration::AgentCollection { definition, .. } => {
+                            checked_input(rss_mdm_agent_wire::runtime::validate_projection_size(
+                                &(&projection_fields, &definition.spec().mappings),
+                            ))?
+                        }
+                        Declaration::NativeCollection { definition, .. } => {
+                            checked_input(rss_mdm_agent_wire::runtime::validate_projection_size(
+                                &(&projection_fields, &definition.spec().mappings),
+                            ))?
+                        }
+                        Declaration::Script { definition, .. } => {
+                            if let r::ScriptPurpose::Collection { mappings, .. } =
+                                &definition.spec().purpose
+                            {
+                                checked_input(
+                                    rss_mdm_agent_wire::runtime::validate_projection_size(&(
+                                        &projection_fields,
+                                        mappings,
+                                        &definition.spec().output,
+                                    )),
+                                )?;
+                            }
+                        }
+                        _ => (),
+                    }
                     for key in keys {
                         let field =
                             checked_input(catalog.definition(checked_input(
@@ -501,7 +537,7 @@ pub struct ResourceCatalog {
     resources: pg::ResourceStore,
     references: Arc<dyn References>,
 }
-#[derive(Serialize)]
+#[derive(Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind")]
 pub enum Command {
     Resource {

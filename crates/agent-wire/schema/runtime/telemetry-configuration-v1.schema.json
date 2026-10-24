@@ -62,6 +62,41 @@
         }
       ]
     },
+    "AgentCollectionMapping": {
+      "additionalProperties": false,
+      "description": "One field binds to one reusable query.",
+      "properties": {
+        "counterNormalization": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeCounterNormalization"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit telemetry-only durable counter normalization."
+        },
+        "mapping": {
+          "$ref": "#/$defs/ValueMapping",
+          "description": "Existing pointer and conversion semantics."
+        },
+        "missing": {
+          "$ref": "#/$defs/NativeMissing",
+          "description": "Explicit handling of complete absence."
+        },
+        "query": {
+          "description": "Stable query identity.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "mapping",
+        "missing"
+      ],
+      "type": "object"
+    },
     "ApplicationPermission": {
       "description": "Only permissions needed by the explicitly selected application, never a TCC dump.",
       "oneOf": [
@@ -242,6 +277,165 @@
           "required": [
             "kind",
             "path"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Conversion": {
+      "description": "Closed conversions; unknown native codes never become a successful default value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Preserve the native JSON type, including explicit null.",
+          "properties": {
+            "kind": {
+              "const": "identity",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Convert a fully specified CIM datetime with explicit offset to UTC Unix seconds.",
+          "properties": {
+            "kind": {
+              "const": "cim_time",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Parse an exact decimal integer string.",
+          "properties": {
+            "kind": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Parse a finite JSON number or decimal number string.",
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit source code to canonical scalar, including boolean values.",
+          "properties": {
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": true,
+              "description": "Finite exact source tokens. Unknown tokens are invalid.",
+              "type": "object"
+            }
+          },
+          "required": [
+            "kind",
+            "values"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
+          "properties": {
+            "absent": {
+              "description": "Value when absent from the complete set."
+            },
+            "kind": {
+              "const": "array_member",
+              "type": "string"
+            },
+            "member": {
+              "description": "Exact native enum member.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "present": {
+              "description": "Value when present in the complete set."
+            }
+          },
+          "required": [
+            "kind",
+            "member",
+            "present",
+            "absent"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Convert nonnegative integral units using checked exact rational arithmetic.",
+          "properties": {
+            "denominator": {
+              "description": "Nonzero denominator; fractional output is rejected.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "scale",
+              "type": "string"
+            },
+            "numerator": {
+              "description": "Numerator.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "numerator",
+            "denominator"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Decode a finite nonnegative bitmask to a sorted list of declared flag names.",
+          "properties": {
+            "flags": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Keys are decimal single-bit masks. Undeclared set bits are invalid.",
+              "type": "object"
+            },
+            "kind": {
+              "const": "bitmask",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "flags"
           ],
           "type": "object"
         }
@@ -709,6 +903,26 @@
         {
           "const": "local_cumulative_v1",
           "description": "Persist an exact baseline and UTC start for each signed field and native instance.",
+          "type": "string"
+        }
+      ]
+    },
+    "NativeMissing": {
+      "description": "Complete absence handling, never applied to failed or truncated queries.",
+      "oneOf": [
+        {
+          "const": "missing",
+          "description": "Preserve the prior fact and record Missing.",
+          "type": "string"
+        },
+        {
+          "const": "null",
+          "description": "Publish explicit null (only for nullable fields).",
+          "type": "string"
+        },
+        {
+          "const": "delete",
+          "description": "Publish a source-local tombstone.",
           "type": "string"
         }
       ]
@@ -1688,7 +1902,7 @@
             },
             "mappings": {
               "additionalProperties": {
-                "$ref": "#/$defs/TelemetryNativeMapping"
+                "$ref": "#/$defs/AgentCollectionMapping"
               },
               "description": "Only configured field projections.\nExact configured field projections.",
               "type": "object"
@@ -1696,11 +1910,24 @@
             "plan": {
               "$ref": "#/$defs/NativeCollectionPlan",
               "description": "Exact immutable native engine plan."
+            },
+            "planDigest": {
+              "description": "Digest of the exact native plan; checked before projection.",
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxItems": 32,
+              "minItems": 32,
+              "type": "array"
             }
           },
           "required": [
             "kind",
             "plan",
+            "planDigest",
             "mappings"
           ],
           "type": "object"
@@ -1733,7 +1960,7 @@
             },
             "mappings": {
               "additionalProperties": {
-                "$ref": "#/$defs/TelemetryValueMapping"
+                "$ref": "#/$defs/ValueMapping"
               },
               "description": "Exact configured field projections.",
               "type": "object"
@@ -1777,165 +2004,6 @@
             "timeoutSeconds",
             "maxRows",
             "mappings"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "TelemetryConversion": {
-      "description": "Closed conversions; unknown native codes never become a successful default value.",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "description": "Preserve the native JSON type, including explicit null.",
-          "properties": {
-            "kind": {
-              "const": "identity",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Convert a fully specified CIM datetime with explicit offset to UTC Unix seconds.",
-          "properties": {
-            "kind": {
-              "const": "cim_time",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Parse an exact decimal integer string.",
-          "properties": {
-            "kind": {
-              "const": "integer",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Parse a finite JSON number or decimal number string.",
-          "properties": {
-            "kind": {
-              "const": "number",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Explicit source code to canonical scalar, including boolean values.",
-          "properties": {
-            "kind": {
-              "const": "enum",
-              "type": "string"
-            },
-            "values": {
-              "additionalProperties": true,
-              "description": "Finite exact source tokens. Unknown tokens are invalid.",
-              "type": "object"
-            }
-          },
-          "required": [
-            "kind",
-            "values"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Interpret membership in a complete integer array; never treat a numeric bitmask as a set.",
-          "properties": {
-            "absent": {
-              "description": "Value when absent from the complete set."
-            },
-            "kind": {
-              "const": "array_member",
-              "type": "string"
-            },
-            "member": {
-              "description": "Exact native enum member.",
-              "format": "int64",
-              "type": "integer"
-            },
-            "present": {
-              "description": "Value when present in the complete set."
-            }
-          },
-          "required": [
-            "kind",
-            "member",
-            "present",
-            "absent"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Convert nonnegative integral units using checked exact rational arithmetic.",
-          "properties": {
-            "denominator": {
-              "description": "Nonzero denominator; fractional output is rejected.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "kind": {
-              "const": "scale",
-              "type": "string"
-            },
-            "numerator": {
-              "description": "Numerator.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": [
-            "kind",
-            "numerator",
-            "denominator"
-          ],
-          "type": "object"
-        },
-        {
-          "additionalProperties": false,
-          "description": "Decode a finite nonnegative bitmask to a sorted list of declared flag names.",
-          "properties": {
-            "flags": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "description": "Keys are decimal single-bit masks. Undeclared set bits are invalid.",
-              "type": "object"
-            },
-            "kind": {
-              "const": "bitmask",
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "flags"
           ],
           "type": "object"
         }
@@ -1991,63 +2059,6 @@
           "type": "string"
         }
       ]
-    },
-    "TelemetryNativeMapping": {
-      "additionalProperties": false,
-      "description": "A native query's output path. Missing/failed queries remain explicit telemetry quality.",
-      "properties": {
-        "counterNormalization": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NativeCounterNormalization"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Explicit durable per-instance normalization, absent for raw native values."
-        },
-        "mapping": {
-          "$ref": "#/$defs/TelemetryValueMapping",
-          "description": "Explicit projection of that query's result."
-        },
-        "query": {
-          "description": "Stable query identifier from the supplied plan.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "query",
-        "mapping"
-      ],
-      "type": "object"
-    },
-    "TelemetryValueMapping": {
-      "additionalProperties": false,
-      "description": "Extraction relative to a response or list item. Empty pointer selects the whole value.",
-      "properties": {
-        "columns": {
-          "additionalProperties": {
-            "$ref": "#/$defs/TelemetryValueMapping"
-          },
-          "description": "Exact output properties for each array item. No undeclared attributes are copied.",
-          "type": "object"
-        },
-        "conversion": {
-          "$ref": "#/$defs/TelemetryConversion",
-          "description": "TelemetryConversion of a direct scalar; structured projections require identity."
-        },
-        "pointer": {
-          "description": "RFC 6901 pointer, never an expression.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "pointer",
-        "conversion",
-        "columns"
-      ],
-      "type": "object"
     },
     "TimeSeriesBinding": {
       "additionalProperties": false,
@@ -2154,6 +2165,33 @@
           "type": "string"
         }
       ]
+    },
+    "ValueMapping": {
+      "additionalProperties": false,
+      "description": "Extraction relative to a response or list item. Empty pointer selects the whole value.",
+      "properties": {
+        "columns": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ValueMapping"
+          },
+          "description": "Exact output properties for each array item. No undeclared attributes are copied.",
+          "type": "object"
+        },
+        "conversion": {
+          "$ref": "#/$defs/Conversion",
+          "description": "Conversion of a direct scalar; structured projections require identity."
+        },
+        "pointer": {
+          "description": "RFC 6901 pointer, never an expression.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pointer",
+        "conversion",
+        "columns"
+      ],
+      "type": "object"
     },
     "ValueType": {
       "description": "Closed structural schema for one field; every property is explicit and required.",
@@ -2617,6 +2655,18 @@
       "format": "uuid",
       "type": "string"
     },
+    "resourceDigest": {
+      "description": "Exact frozen template Resource digest, independent of policy identity.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "maxItems": 32,
+      "minItems": 32,
+      "type": "array"
+    },
     "sampleMillis": {
       "description": "Effective cadence at the server's current UTC time.",
       "format": "uint32",
@@ -2649,6 +2699,7 @@
     }
   },
   "required": [
+    "resourceDigest",
     "tenantId",
     "deviceId",
     "registrationId",

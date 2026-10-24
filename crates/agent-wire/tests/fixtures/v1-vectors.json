@@ -45,10 +45,10 @@
   "tasks": [
     {
       "family": "script",
-      "payloadJson": "{\"kind\":\"script\",\"task\":{\"wireVersion\":1,\"tenantId\":\"11111111-2222-4333-8444-555555555555\",\"deviceId\":\"设备\",\"platform\":\"macos\",\"architecture\":\"aarch64\",\"registrationId\":\"11111111-2222-4333-8444-555555555555\",\"generation\":7,\"taskId\":\"11111111-2222-4333-8444-555555555555\",\"attemptId\":\"11111111-2222-4333-8444-555555555555\",\"permit\":\"offer\",\"expiresAt\":100,\"resourceDigest\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"resource\":{\"id\":\"r\",\"version\":\"v1\",\"variant\":\"default\"},\"authorization\":{\"kind\":\"policy\",\"policyId\":\"11111111-2222-4333-8444-555555555555\",\"policyVersion\":\"11111111-2222-4333-8444-555555555555\"},\"parameters\":{\"a\":\"值\",\"z\":true},\"deadline\":200,\"content\":{\"length\":3,\"sha256\":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]},\"profile\":\"posix_sh\",\"sqlParameters\":null,\"runAs\":\"system\",\"executionTarget\":{\"kind\":\"device\"},\"arguments\":[\"literal\\nvalue\"],\"environment\":{\"RSS_PARAM_A\":\"a\",\"RSS_PARAM_Z\":\"z\"},\"timeoutSeconds\":60,\"outputBytes\":4096,\"maxRows\":1}}",
-      "signature": "U7kjmDuy08amXWt-zA0cV2dKvuf8KFzMJ6B_4Rf4NIq3zDy8SdEF6Gg197u-xHZfvcCIXGah0lQbTuL7uwIvDg",
-      "signingBytesLength": 1040,
-      "signingBytesSha256": "46b1ec214b202f9161a853a46671dfaa30816f1b523d271a59d79fcbfe126baf"
+      "payloadJson": "{\"kind\":\"script\",\"task\":{\"projection\":{\"kind\":\"none\"},\"wireVersion\":1,\"tenantId\":\"11111111-2222-4333-8444-555555555555\",\"deviceId\":\"设备\",\"platform\":\"macos\",\"architecture\":\"aarch64\",\"registrationId\":\"11111111-2222-4333-8444-555555555555\",\"generation\":7,\"taskId\":\"11111111-2222-4333-8444-555555555555\",\"attemptId\":\"11111111-2222-4333-8444-555555555555\",\"permit\":\"offer\",\"expiresAt\":100,\"resourceDigest\":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],\"resource\":{\"id\":\"r\",\"version\":\"v1\",\"variant\":\"default\"},\"authorization\":{\"kind\":\"policy\",\"policyId\":\"11111111-2222-4333-8444-555555555555\",\"policyVersion\":\"11111111-2222-4333-8444-555555555555\"},\"parameters\":{\"a\":\"值\",\"z\":true},\"deadline\":200,\"content\":{\"length\":3,\"sha256\":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2]},\"profile\":\"posix_sh\",\"sqlParameters\":null,\"runAs\":\"system\",\"executionTarget\":{\"kind\":\"device\"},\"arguments\":[\"literal\\nvalue\"],\"environment\":{\"RSS_PARAM_A\":\"a\",\"RSS_PARAM_Z\":\"z\"},\"timeoutSeconds\":60,\"outputBytes\":4096,\"maxRows\":1}}",
+      "signature": "nO1xiRQd6EI2LP9jw0Zykx-b-gBfmc_J7fNqoha8NVBXWUOTqWAnSSuI5dvYSmRGlx9e7Y9uwVDuGz1rOK14Ag",
+      "signingBytesLength": 1069,
+      "signingBytesSha256": "7842754d5396ff262a79892bca6f4d6f663428bd1aa5bc96115314edaa619c52"
     },
     {
       "family": "software",
