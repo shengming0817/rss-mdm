@@ -119,13 +119,15 @@ impl ExecutionService {
                     storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
                     crate::actions::native_recovery::lock_device(tx, device).await?;
                     service.audit_store.prepare_in(tx, audit, &[]).await?;
-                    rss_reconcile_postgres::messaging::wake_in(
-                        tx,
-                        &crate::service::target(service.tenant, device),
-                        (),
-                        |_, _| Box::pin(async { Ok(()) }),
-                    )
-                    .await?;
+                    service
+                        .reconcile_messaging
+                        .wake_in(
+                            tx,
+                            &crate::service::target(service.tenant, device),
+                            (),
+                            |_, _| Box::pin(async { Ok(()) }),
+                        )
+                        .await?;
                     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery)
                         .await?;
 

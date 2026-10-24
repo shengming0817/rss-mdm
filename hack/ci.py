@@ -374,7 +374,8 @@ def selected_gate(name, selection):
     if name=="agent-wire-artifact" and "test_agent_wire_artifact" in selection["toolTests"]:return True
     if name == "script-tests":return bool(selection["toolTests"])
     policy_inputs = {r['input'] for r in selection['reasons'] if isinstance(r, dict)}
-    if name == 'advisories' and 'deny.toml' in policy_inputs:
+    if name == 'advisories' and ('deny.toml' in policy_inputs or any(
+            reason.get('detail') == 'dependency' for reason in selection['reasons'])):
         return True
     if name == 'clippy' and 'clippy.toml' in policy_inputs:
         return True

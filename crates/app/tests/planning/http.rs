@@ -875,6 +875,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                     )
                     .await;
                     let groups = rss_mdm_inventory_service::groups::Groups {
+                        reconcile_messaging: planning.reconcile_messaging.clone(),
                         objects: planning.objects.clone(),
                         tenant: planning.tenant,
                         groups: planning.groups.clone(),

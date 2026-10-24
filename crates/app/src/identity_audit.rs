@@ -8,7 +8,6 @@ use rss_runtime::{
 };
 use rss_transactional_messaging::policy::{DeliveryBudget, OperationDeadline};
 use rss_transactional_messaging_postgres::PgRuntime;
-use rss_transactional_messaging_runtime::relay::RelayBatchLimit;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 use tokio::sync::Notify;
@@ -201,10 +200,7 @@ impl Worker {
         // Await the original component settlement owner; cancellation stops the next batch.
         let report = self
             .delivery
-            .run_once(
-                RelayBatchLimit::new(NonZeroUsize::new(2).expect("audit pool capacity"))
-                    .expect("bounded batch"),
-            )
+            .run_once(NonZeroUsize::new(2).expect("audit pool capacity"))
             .await?;
         let wait = should_wait(report.projected(), report.deferred());
         self.readiness

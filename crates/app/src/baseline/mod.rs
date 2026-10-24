@@ -327,6 +327,7 @@ async fn execute_owned(
             let policies = rss_mdm_flow_service::planning::policies::Policies::new(
                 &state.flow.cursor_key,
                 state.flow.runtime.clone(),
+                state.flow.planning.reconcile_messaging.clone(),
                 state.flow.audit_store.clone(),
                 state.identity.tenant,
                 state.flow.planning.policy_store.clone(),

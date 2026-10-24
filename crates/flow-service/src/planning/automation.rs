@@ -88,13 +88,15 @@ impl Planning {
                             .bind_in(tx)
                             .await
                             .map_err(PgError::from)?;
-                        rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_, tx| {
-                            Box::pin(async move {
-                                let tenant = tx.tenant_id().to_string();
-                                tx.with_connection(move |c| {
-                                    Box::pin(async move {
-                                        let result = sqlx::query(
-                                            r#"
+                        service
+                            .reconcile_messaging
+                            .wake_in(tx, target, context, |_, tx| {
+                                Box::pin(async move {
+                                    let tenant = tx.tenant_id().to_string();
+                                    tx.with_connection(move |c| {
+                                        Box::pin(async move {
+                                            let result = sqlx::query(
+                                                r#"
                       WITH batch AS (
                         SELECT revision FROM mdm.asset_changes
                         WHERE tenant_id=$1::uuid AND NOT forwarded ORDER BY revision
@@ -102,24 +104,24 @@ impl Planning {
                       ) UPDATE mdm.asset_changes c SET forwarded=true FROM batch b
                         WHERE c.tenant_id=$1::uuid AND c.revision=b.revision
                     "#,
-                                        )
-                                        .bind(tenant)
-                                        .execute(&mut *c)
-                                        .await?;
-                                        if result.rows_affected() > 0 {
-                                            crate::worker_wake::notify(
-                                                c,
-                                                crate::worker_wake::Work::Automation,
                                             )
+                                            .bind(tenant)
+                                            .execute(&mut *c)
                                             .await?;
-                                        }
-                                        Ok(result.rows_affected())
+                                            if result.rows_affected() > 0 {
+                                                crate::worker_wake::notify(
+                                                    c,
+                                                    crate::worker_wake::Work::Automation,
+                                                )
+                                                .await?;
+                                            }
+                                            Ok(result.rows_affected())
+                                        })
                                     })
+                                    .await
                                 })
-                                .await
                             })
-                        })
-                        .await
+                            .await
                     })
                 },
             )

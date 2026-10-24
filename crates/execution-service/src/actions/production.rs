@@ -300,7 +300,7 @@ pub async fn accept_for_device(
         },
     )
     .await?;
-    crate::sources::storage::wake_execution_in(tx, owner).await?;
+    crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, owner).await?;
     Ok(())
 }
 pub struct RunInput<'a> {
@@ -387,10 +387,11 @@ pub async fn queue_run_in(
             .bind(tenant).bind(id).bind(kind).bind(version).bind(target.device).bind(target.registration).bind(target.generation).bind(occurrence).bind(available).bind(deadline).bind(state).bind(digest).bind(now).bind(evidence).bind(triggered_at).execute(c).await?;Ok(())
     })).await?;
     if native {
-        super::native_recovery::wake_run(tx, id).await?;
+        super::native_recovery::wake_run(&service.reconcile_messaging, tx, id).await?;
     }
     if retirement {
-        crate::sources::storage::wake_execution_in(tx, policy.id).await?;
+        crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id)
+            .await?;
     }
     let audit =
         rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");

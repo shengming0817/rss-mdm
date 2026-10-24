@@ -20,6 +20,7 @@ pub struct Groups {
     pub cursor_key: ring::hmac::Key,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 pub trait Flow: Send + Sync {

@@ -19,13 +19,18 @@ pub async fn read_in(
     .await?;
     checked(reader.read_in(tx, id).await?)
 }
-pub async fn wake_execution_in(tx: &mut PgTransaction<'_>, policy: Uuid) -> Result<()> {
+pub async fn wake_execution_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    policy: Uuid,
+) -> Result<()> {
     let target = rss_reconcile::Target::new(
         crate::recovery_scope(tx.tenant_id()),
         format!("policy.{policy}"),
     )
     .map_err(|_| Error::Malformed)?;
-    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+    reconcile
+        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     Ok(())

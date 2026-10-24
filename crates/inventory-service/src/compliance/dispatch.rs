@@ -1,6 +1,10 @@
 use super::*;
 /// Invalidate and wake atomically with the group mutation, without a second checkpoint.
-pub async fn group_changed(tx: &mut PgTransaction<'_>, group: Uuid) -> Result<()> {
+pub async fn group_changed(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    group: Uuid,
+) -> Result<()> {
     let tenant = tx.tenant_id();
     let affected = tx
         .with_connection(move |c| {
@@ -8,13 +12,11 @@ pub async fn group_changed(tx: &mut PgTransaction<'_>, group: Uuid) -> Result<()
         })
         .await?;
     if affected > 0 {
-        rss_reconcile_postgres::messaging::wake_in(
-            tx,
-            &crate::tasks::asset_target(tenant),
-            (),
-            |_, _| Box::pin(async { Ok(()) }),
-        )
-        .await?;
+        reconcile
+            .wake_in(tx, &crate::tasks::asset_target(tenant), (), |_, _| {
+                Box::pin(async { Ok(()) })
+            })
+            .await?;
         crate::wake::automation(tx).await?;
     }
     Ok(())

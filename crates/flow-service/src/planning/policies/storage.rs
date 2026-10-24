@@ -75,6 +75,7 @@ pub async fn write_in(
     Ok(())
 }
 pub async fn enqueue_change_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
     old: Option<&Policy>,
@@ -91,7 +92,8 @@ pub async fn enqueue_change_in(
         || policy.definition.action.assignment_behavior()
             == rss_mdm_policy::AssignmentBehavior::NativeCollectionRecovery
     {
-        rss_mdm_execution_service::sources::storage::wake_execution_in(tx, policy.id).await?;
+        rss_mdm_execution_service::sources::storage::wake_execution_in(reconcile, tx, policy.id)
+            .await?;
     }
     Ok(())
 }

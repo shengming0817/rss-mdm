@@ -9,10 +9,11 @@ WITH contract AS (
  SELECT * FROM jsonb_to_recordset($2->'functions') AS f(name text, search_path text)
 ), public_scope_functions AS (
  -- Mandatory RSS RLS predicates, not an exemption for the whole provider schema.
- SELECT p.oid FROM pg_proc p WHERE p.oid IN ('rss_transactional_messaging.consumer_domain_allowed(text)'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure)
+ SELECT p.oid FROM pg_proc p WHERE p.oid IN ('rss_transactional_messaging.consumer_scope_domain()'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure)
  AND p.prosecdef AND p.proowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user)
  AND p.proconfig @> ARRAY['search_path=pg_catalog, rss_transactional_messaging, pg_temp']
- AND p.prorettype='boolean'::regtype AND NOT p.proretset
+ AND p.prorettype=CASE WHEN p.oid='rss_transactional_messaging.consumer_scope_domain()'::regprocedure
+  THEN 'text'::regtype ELSE 'boolean'::regtype END AND NOT p.proretset
  AND has_function_privilege(current_user,p.oid,'EXECUTE')
 )
 SELECT current_user=$1 AND session_user=current_user

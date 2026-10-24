@@ -762,7 +762,7 @@ impl Planning {
             return Err(Error::Conflict.into());
         }
         let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
-        crate::compliance::group_changed(tx, id).await?;
+        crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         checked(
             self.sources
                 .advance_reference_in(

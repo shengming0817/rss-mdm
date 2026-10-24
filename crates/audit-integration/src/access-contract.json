@@ -14,7 +14,7 @@
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
-      "name": "rss_transactional_messaging.consumer_domain_allowed",
+      "name": "rss_transactional_messaging.consumer_scope_domain",
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
     {
