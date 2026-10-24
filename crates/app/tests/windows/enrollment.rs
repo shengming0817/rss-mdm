@@ -69,12 +69,19 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         csrf: Some(host.secret.csrf()),
         ..Default::default()
     };
+    // Issuance commits a durable Outbox fact. Drive the existing real consumer
+    // before asserting its audit read model, rather than racing the shared worker.
+    crate::audit_test_support::projection::drain(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        rss_audit_postgres::Integrity::Plain,
+    )
+    .await?;
     let (status, timeline) = admin
         .call(
             &host.browser,
             axum::http::Method::GET,
             &format!(
-                "/api/v1/devices/{}/timeline",
+                "/api/v1/devices/{}/timeline?action=enrollment_issue",
                 crate::test_support::case::name("tls-device")
             ),
             None,
@@ -82,13 +89,12 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         .await?;
     ensure!(status == StatusCode::OK);
     ensure!(
-        timeline["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v["source"] == "mdm.business"
+        timeline["items"].as_array().unwrap().iter().any(|v| {
+            v["source"] == "mdm.business"
                 && v["action"] == "enrollment_issue"
-                && !v["registrationId"].is_null())
+                && v["registrationId"] == peer.intent.registration.to_string()
+        }),
+        "missing registration-linked issuance fact: {timeline}"
     );
     // Certificate renewal discovery/XCEP have a distinct origin and require possession.
     let renewal = app
@@ -306,6 +312,10 @@ async fn discover_and_policy(
         .replace(
             "<p:preferredLanguage xsi:nil=\"true\"/>",
             "<p:preferredLanguage>en-US</p:preferredLanguage>",
+        )
+        .replace(
+            "</p:client>",
+            "<p:TPMManufacturer>IBM</p:TPMManufacturer><p:TPMFirmwareVersion>8217.4131.22.13878</p:TPMFirmwareVersion></p:client>",
         )
         .replace(
             &format!("<a:To>{}</a:To>", found.policy_url),

@@ -403,7 +403,14 @@ fn write_binary(w: &mut Output<'_>, data: &[u8], value_type: &str, l: &CodecLimi
 }
 fn context(p: &mut Input<'_>, name: &str) -> Result<Option<String>> {
     let s = p.start(TRUST, name)?;
-    s.attrs(&[("", "Context")])?;
+    // WS-Trust's Context plus xs:anyAttribute namespace=##other. Foreign
+    // attributes carry no enrollment authority and remain under XML budgets.
+    if s.attrs
+        .iter()
+        .any(|a| a.ns == TRUST || a.ns.is_empty() && a.name != "Context")
+    {
+        return Err(E::Unsupported);
+    }
     let v = s.attr("", "Context").map(str::to_owned);
     if let Some(v) = &v {
         text(v, p.limits.identifier_bytes, false)?;
@@ -473,6 +480,10 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
             }
             p.end(CONTEXT, "AdditionalContext")?;
             additional_context = Some(Secret(values));
+        } else if let Some((namespace, name)) = p.element_name()? {
+            // MS-WSTEP 3.1.4.1.3.3: unused elements SHOULD be ignored.
+            p.item()?;
+            p.skip(&namespace, &name)?;
         } else {
             break;
         }
@@ -546,25 +557,18 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
                     return Err(E::InvalidValue);
                 }
             }
-            "OfflineAutoPilotEnrollmentCorrelator" => {
+            "OfflineAutoPilotEnrollmentCorrelator"
                 if v.is_empty()
                     || v.len() > 100
                     || v.starts_with('-')
-                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                {
-                    return Err(E::InvalidValue);
-                }
+                    || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') =>
+            {
+                return Err(E::InvalidValue);
             }
-            "DeviceType"
-            | "EnrollmentType"
-            | "EnrollmentData"
-            | "MAC"
-            | "IMEI"
-            | "Locale"
-            | "HWDevID"
-            | "DomainName"
-            | "ExternalMgmtAgentHint" => {}
-            _ => return Err(E::Unsupported),
+            // AdditionalContext carries extra descriptive information. Unknown
+            // bounded claims cannot replace the required, uniquely named claims
+            // above or authorize a tenant/device/registration.
+            _ => {}
         }
     }
     if matches!(i.request, CertificateRequest::Pkcs10(_))
@@ -673,6 +677,10 @@ pub(super) fn read_issue_response(p: &mut Input<'_>) -> Result<IssueResponse> {
             p.end(TRUST, "RequestedSecurityToken")?;
         } else if p.is(WSTEP, "RequestID")? {
             once(&mut request_id, read_nillable(p, "RequestID")?)?;
+        } else if let Some((namespace, name)) = p.element_name()? {
+            // MS-WSTEP 3.1.4.1.3.4 has the same extensible content model.
+            p.item()?;
+            p.skip(&namespace, &name)?;
         } else {
             break;
         }

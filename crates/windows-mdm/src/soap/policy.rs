@@ -47,6 +47,15 @@ pub(super) fn read_request(p: &mut Input<'_>) -> Result<()> {
             return Err(E::InvalidValue);
         }
     }
+    // MS-XCEP Client's trailing xs:any includes Windows' TPMManufacturer and
+    // TPMFirmwareVersion. These hints are not attestation or identity evidence.
+    while let Some((namespace, name)) = p.element_name()? {
+        if namespace == XCEP && matches!(name.as_str(), "lastUpdate" | "preferredLanguage") {
+            return Err(E::Duplicate);
+        }
+        p.item()?;
+        p.skip(&namespace, &name)?;
+    }
     p.end(XCEP, "client")?;
     nil(p, XCEP, "requestFilter")?;
     p.end(XCEP, "GetPolicies")

@@ -506,15 +506,7 @@ fn read_fault(p: &mut Input<'_>) -> Result<FaultKind> {
         "EnrollmentServer" => FaultKind::EnrollmentServer,
         _ => return Err(E::Unsupported),
     };
-    if sub.0 != ENROLL
-        || code.0 != NS
-        || code.1
-            != if kind == FaultKind::EnrollmentServer {
-                "Receiver"
-            } else {
-                "Sender"
-            }
-    {
+    if sub.0 != NS || code.0 != NS || !matches!(code.1.as_str(), "Sender" | "Receiver") {
         return Err(E::InvalidValue);
     }
     p.open(NS, "Reason")?;
@@ -544,7 +536,7 @@ fn write_fault(w: &mut Output<'_>, kind: FaultKind, l: &CodecLimits) -> Result<(
     w.start("s:Subcode", &[])?;
     w.scalar(
         "s:Value",
-        &format!("e:{}", kind.subcode()),
+        &format!("s:{}", kind.subcode()),
         l.identifier_bytes,
         false,
     )?;

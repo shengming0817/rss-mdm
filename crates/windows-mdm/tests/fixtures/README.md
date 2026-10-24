@@ -14,9 +14,11 @@
 | discovery-native-windows11.xml | 2026-10-24 从 Windows 11 Pro ARM64 10.0.26300.9711 的原生 DiscoverManagementServiceEx 抓取；仅替换 MessageID、To 和 EmailAddress。RequestVersion=9.0，实际请求结构与版本协商由 HTTP/TLS T2 覆盖。 |
 | discovery-request.xml | 按 MS-MDE2 Discover 的 xsd:all 独立编写，含必需 OSEdition/AuthPolicies，固定 On-Premise/4.0/CIMClient_Windows 配置。 |
 | get.xml、status-details.xml | 按 MS-MDM Get 与 Status 内容模型独立编写，Status 含 Data 后的 Item 和 TargetRef。 |
-| fault-*.xml | 独立固定五种 Code/Subcode 与产品公开安全 Reason；恶意外部 Reason 由测试变异生成。 |
+| fault-*.xml | 按 MS-MDE2 §2.2.10 固定 SOAP 命名空间的五种 Subcode 与产品公开安全 Reason；恶意外部 Reason 由测试变异生成。 |
 | policy-request.xml、issue-request.xml | 按 MS-MDE2 On-Premise 章节独立编写；TEST-USER/TEST-SECRET 是合成标记，CSR 是字节 01 02 03。 |
 
 协议解析与输出以固定规范为准，不继承历史实现的 local-name 容错、重复覆盖或 deviceID 信任行为。SOAP golden 比较使用独立 namespace-aware XML 事件投影，不调用产品 codec 生成预期结果。大型攻击样本在测试中生成。
 
 `policy-official-on-premise.xml` / `issue-official-on-premise.xml` 提取自微软 On-premises authentication device enrollment 的完整请求样例；保留原始命名空间、展示缩进、PasswordText 内容和 TargetedUserLoggedIn=True。仅把 WSTEP 无效 CSR 占位文本替换为 AQID（字节 01 02 03）；不表示有效 CSR、签发或原生注册成功。来源及下载/样例摘要见 provenance.json。
+
+`policy-native-windows11.xml` 来自 2026-10-24T15:55:06 UTC Windows 11 Pro ARM64 10.0.26300.9711 原生注册向导的真实 GetPolicies 请求。仅替换 MessageID、To、Username、Password，保留 client 中的 TPMManufacturer / TPMFirmwareVersion 扩展；这些客户端声明不构成 TPM 证明或身份依据。
