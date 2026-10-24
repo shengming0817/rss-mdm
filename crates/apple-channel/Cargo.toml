@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+url.workspace=true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-http-contract.workspace = true
 rss-mdm-device-service.workspace=true

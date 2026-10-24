@@ -213,7 +213,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     .await?;
     let (status, list) = f.browser.call(&f.router, Method::GET, &path, None).await?;
     ensure!(status == StatusCode::OK);
-    let entries = list.as_array().unwrap();
+    let entries = list["items"].as_array().unwrap();
     ensure!(entries.len() == 1);
     ensure!(entries[0]["validity"] == "unverified" && entries[0]["escrowed"] == true);
     let read = format!(
@@ -239,7 +239,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     let password = payload["NewPassword"].as_string().unwrap().to_owned();
     peer.manage("Acknowledged", Some(attempt), None).await?;
     let (_, list) = f.browser.call(&f.router, Method::GET, &path, None).await?;
-    let lock = list
+    let lock = list["items"]
         .as_array()
         .unwrap()
         .iter()
@@ -259,7 +259,8 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     .await?;
     let (_, list) = f.browser.call(&f.router, Method::GET, &path, None).await?;
     ensure!(
-        list.as_array()
+        list["items"]
+            .as_array()
             .unwrap()
             .iter()
             .any(|v| v["id"] == lock["id"] && v["validity"] == "verified" && v["current"] == true)
@@ -396,7 +397,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     ensure!(payload["NewPassword"].as_string() == Some(""));
     peer.manage("Acknowledged", Some(attempt), None).await?;
     let (_, list) = f.browser.call(&f.router, Method::GET, &path, None).await?;
-    for version in list
+    for version in list["items"]
         .as_array()
         .unwrap()
         .iter()

@@ -525,7 +525,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         crate::test_support::software_execution::Platform::MacOs,
     );
     local["interactiveUser"] =
-        json!({"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":os_session,"administrator":false});
+        json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":os_session,"administrator":false});
     // Enterprise authentication cannot create an OS user or supply a missing user helper.
     for (revision, helper, user) in [
         (2, false, local["interactiveUser"].clone()),
@@ -1661,8 +1661,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     let mut local = software::context(software::Platform::Windows);
     let session = Uuid::new_v4();
     let sid = "S-1-5-21-1-2-3-1001";
-    local["interactiveUser"] =
-        json!({"generatedUid":null,"identity":sid,"sessionId":session,"administrator":false});
+    local["interactiveUser"] = json!({"windowsAuthority":null,"generatedUid":null,"identity":sid,"sessionId":session,"administrator":false});
     let mut f = software::Fixture::with_profiles(
         software::Platform::Windows,
         json!([

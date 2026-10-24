@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -16,14 +16,23 @@ use rss_mdm_recovery_credentials::{Credentials, Material};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes(service: Option<Arc<Credentials>>) -> Router {
+struct Services {
+    credentials: Arc<Credentials>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
+}
+pub fn routes(
+    service: Option<Arc<Credentials>>,
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> Router {
     let Some(service) = service else {
         return Router::new();
     };
     Router::new()
         .route(
             "/devices/{device}/recovery-credentials",
-            get(list).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::List])
+                .queried(&rss_mdm_recovery_credentials::directory::SCHEMA),
         )
         .route(
             "/devices/{device}/recovery-credentials/{id}/versions/{version}/secret",
@@ -36,42 +45,37 @@ pub fn routes(service: Option<Arc<Credentials>>) -> Router {
                 &[RouteOperation::Lifecycle],
             ),
         )
-        .with_state(service)
-}
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    after_id: Option<Uuid>,
-    after_version: Option<i64>,
+        .with_state(Arc::new(Services {
+            credentials: service,
+            cursor,
+        }))
 }
 async fn list(
-    State(service): State<Arc<Credentials>>,
+    State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    query: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Vec<Material>>, Error> {
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<serde_json::Value>>, Error> {
     audit.set_action("recovery_credential_list");
     audit.target_device(&device);
-    let q = query.map_err(|_| Error::Malformed)?.0;
-    let after = match (q.after_id, q.after_version) {
-        (None, None) => None,
-        (Some(id), Some(v)) if v > 0 => Some((id, v)),
-        _ => return Err(Error::Malformed),
-    };
-    service
-        .list(&auth.proof, &device, after)
+    let q = rss_mdm_recovery_credentials::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    s.credentials
+        .list(&auth.proof, &device, &q, &s.cursor)
         .await
         .map(Json)
         .map_err(Into::into)
 }
 async fn disclose(
-    State(service): State<Arc<Credentials>>,
+    State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, version)): Path<(String, Uuid, i64)>,
 ) -> Result<Response, Error> {
-    let value = service
+    let value = s
+        .credentials
         .disclose(&auth.proof, &device, id, version, &audit)
         .await?;
     let mut response = Json(value).into_response();
@@ -84,12 +88,12 @@ async fn disclose(
     Ok(response)
 }
 async fn revoke(
-    State(service): State<Arc<Credentials>>,
+    State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, version)): Path<(String, Uuid, i64)>,
 ) -> Result<Json<Material>, Error> {
-    service
+    s.credentials
         .revoke(&auth.proof, &device, id, version, &audit)
         .await
         .map(Json)

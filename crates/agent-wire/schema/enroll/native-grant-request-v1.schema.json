@@ -1,5 +1,69 @@
 {
   "$defs": {
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Capability": {
       "description": "Closed V1 capability set.",
       "oneOf": [
@@ -287,9 +351,21 @@
           },
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
+        },
+        "windowsAuthority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessWindowsAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Native Windows account authority when known; required for Device Access admission."
         }
       },
       "required": [
+        "windowsAuthority",
         "generatedUid",
         "identity",
         "sessionId",

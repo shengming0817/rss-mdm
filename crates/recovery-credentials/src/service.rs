@@ -10,6 +10,7 @@ pub struct Credentials {
     pool: PgPool,
     audit: Arc<AuditStore>,
     keys: Arc<KeyRing>,
+    access_audit: Option<Arc<AuditStore>>,
     login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
 }
 impl Credentials {
@@ -17,12 +18,14 @@ impl Credentials {
         pool: PgPool,
         audit: Arc<AuditStore>,
         keys: Arc<KeyRing>,
+        access_audit: Option<Arc<AuditStore>>,
         login_admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
     ) -> Self {
         Self {
             pool,
             audit,
             keys,
+            access_audit,
             login_admission,
         }
     }
@@ -34,32 +37,43 @@ impl Credentials {
         &self,
         principal: &AuthorizedPrincipal,
         device: &str,
-        after: Option<(Uuid, i64)>,
-    ) -> Result<Vec<Material>, Error> {
+        query: &rss_mdm_query::directory::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<serde_json::Value>, Error> {
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
         configure(&mut tx, principal.tenant_id()).await?;
         authorize(&mut tx, principal, device, Permission::InventoryRead).await?;
-        let (id, version) = after.unwrap_or((Uuid::nil(), 0));
-        let rows=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.device=$2 AND (e.id,v.version)>($3,$4) ORDER BY e.id,v.version LIMIT 100"))
-            .bind(principal.tenant_id()).bind(device).bind(id).bind(version).fetch_all(&mut *tx).await?;
-        let values = rows
-            .iter()
-            .map(storage::decode)
-            .collect::<Result<Vec<_>, _>>()?;
+        let page = crate::directory::read(&mut tx, principal, device, query, codec).await?;
         tx.rollback().await?;
         principal.check_live()?;
-        Ok(values)
+        Ok(page)
     }
 
-    /// Login plus the existing device Credentials grant is the entire disclosure policy.
-    /// No reauthentication window, MFA gate, reason, approval or unlock token is added.
+    /// Ordinary platform recovery disclosure. DA factor materials require the dedicated step-up path.
     pub async fn disclose(
         &self,
         principal: &AuthorizedPrincipal,
         device: &str,
         id: Uuid,
         version: i64,
+        audit: &RequestAudit,
+    ) -> Result<Disclosure, Error> {
+        self.disclose_inner(principal, device, id, version, None, false, audit)
+            .await
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Exact material version, actor, one-use proof and audit are separate disclosure coordinates"
+    )]
+    async fn disclose_inner(
+        &self,
+        principal: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        version: i64,
+        access: Option<&DisclosureRequest>,
+        replay: bool,
         audit: &RequestAudit,
     ) -> Result<Disclosure, Error> {
         principal.credentials(device)?;
@@ -69,7 +83,10 @@ impl Credentials {
         let identity = serde_json::to_vec(&(id, version)).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
             audit,
-            &format!("recovery:read:{}", audit.request_id()),
+            &format!(
+                "recovery:read:{}",
+                access.map(|v| v.operation_id).unwrap_or(audit.request_id())
+            ),
             &identity,
             200,
             "success",
@@ -77,22 +94,33 @@ impl Credentials {
         )
         .map_err(|_| Error::Audit)?;
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(4));
-        let attempt = self
-            .audit
+        let source = if access.is_some() {
+            self.access_audit.as_ref().ok_or(Error::Unsupported)?
+        } else {
+            &self.audit
+        };
+        let attempt = source
             .write(
                 rss_request_context::TenantId::parse(principal.tenant_id())
                     .map_err(|_| Error::Malformed)?,
                 &budget.source_control(),
-                (self, principal, device, id, version, audit, fact),
+                (self, principal, device, id, version, audit, fact, access, replay, source),
                 |context, tx| {
                     Box::pin(async move {
                         let response = tx
                             .with_connection_context(context, |context, c| {
                                 Box::pin(async move {
-                                    let (service, principal, device, id, version, _, _) = context;
+                                    let (service, principal, device, id, version, _, _, access, replay, _) = context;
+                                    if let Some(input)=access {
+                                        if *replay {rss_identity_postgres::recheck_authenticated_session_on(c,principal.session()?).await.map_err(|_|Error::Unauthorized)?;} else {rss_identity_postgres::consume_step_up_on(c,principal.session()?,&input.context(principal,device,*id,*version)?,input.proof.as_ref().ok_or(Error::Unauthorized)?.expose()).await.map_err(|e|match e.kind(){rss_transactional_messaging::error::MessagingErrorKind::Conflict=>Error::Unauthorized,_=>Error::Storage})?;}
+                                    }
                                     lock_publication(c, principal.tenant_id()).await?;
                                     authorize(c, principal, device, Permission::Credentials)
                                         .await?;
+                                    if let Some(input)=access {
+                                        let exists=disclosure_receipt(c,principal,device,*id,*version,input.operation_id).await?;
+                                        if exists!=*replay{return Err(Error::Conflict);}
+                                    }
                                     let (material, key, sealed) = read_locked(
                                         c,
                                         principal.tenant_id(),
@@ -104,11 +132,21 @@ impl Credentials {
                                     if !material.validity.readable() {
                                         return Err(Error::NotFound);
                                     }
+                                    if matches!(material.binding.subject,Subject::RssLogin{..})!=access.is_some(){return Err(Error::Forbidden);}
                                     if let Subject::RssLogin{binding,binding_generation,..}=&material.binding.subject {
                                         let tenant=Uuid::parse_str(principal.tenant_id()).map_err(|_|Error::Malformed)?;
                                         let current=rss_mdm_registration_service::device_access::storage::locked_in(c,tenant,*binding).await?;
                                         let selection=service.login_admission.policy(c,tenant,device,current.policy).await?;
-                                        if current.generation!=*binding_generation || !selection.configuration.enabled || selection.version!=current.policy_version {return Err(Error::Forbidden);}
+                                        rss_mdm_registration_service::device_access::lifecycle::require_subject_on(c,tenant,&current.person).await?;
+                                        let subject=rss_identity_postgres::platform::PlatformBinding{
+                                            instance:rss_identity_core::InstanceId::parse(&current.person.instance.to_string()).map_err(|_|Error::Integrity)?,
+                                            account:rss_identity_core::account::AccountKey{tenant:rss_request_context::TenantId::parse(principal.tenant_id()).map_err(|_|Error::Integrity)?,principal:rss_identity_core::PrincipalId::parse(&current.person.principal.to_string()).map_err(|_|Error::Integrity)?},
+                                            binding_id:current.id,binding_epoch:current.generation,source_id:current.id,source_version:current.generation,external_identity:None,
+                                        };
+                                        // Actor recheck/step-up already owns this tenant's Identity guard.
+                                        rss_identity_postgres::platform::admit_platform_subject_on(c,subject.instance,&subject,None).await.map_err(|e|match e{rss_identity_postgres::platform::PlatformSubjectAdmissionError::Rejected=>Error::Forbidden,_=>Error::Storage})?;
+
+                                        if current.state==rss_mdm_registration_service::device_access::State::Revoked || current.generation!=*binding_generation || !selection.configuration.enabled || selection.version!=current.policy_version {return Err(Error::Forbidden);}
                                     }
                                     let coordinates = Coordinates {
                                         tenant: Uuid::parse_str(principal.tenant_id())
@@ -125,6 +163,9 @@ impl Credentials {
                                     let value = std::str::from_utf8(secret.expose())
                                         .map_err(|_| Error::Integrity)?;
                                     principal.check_live()?;
+                                    if let Some(input)=access && !*replay {
+                                        sqlx::query("INSERT INTO mdm_recovery.disclosures(tenant_id,actor,operation,device,entry,version) VALUES($1::uuid,$2,$3,$4,$5,$6)").bind(principal.tenant_id()).bind(principal.principal_id()).bind(input.operation_id).bind(*device).bind(*id).bind(*version).execute(c).await?;
+                                    }
                                     Ok::<_, Error>(Disclosure {
                                         material,
                                         secret: Zeroizing::new(value.to_owned()),
@@ -132,7 +173,7 @@ impl Credentials {
                                 })
                             })
                             .await?;
-                        context.0.audit.append(tx, &context.6, false).await?;
+                        context.9.append(tx, &context.6, context.8).await?;
                         context.1.check_live()?;
                         context.5.mark_commit_started();
                         Ok::<_, Error>(response)
@@ -283,5 +324,117 @@ fn tx_error(value: rss_mdm_audit_integration::TransactionError<Error>) -> Error 
         rss_mdm_audit_integration::TransactionError::Operation(e) => e,
         rss_mdm_audit_integration::TransactionError::Storage(_) => Error::Audit,
         rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
+    }
+}
+
+/// One explicitly authorized DA material disclosure. Proof handles never enter its business digest.
+pub struct DisclosureRequest {
+    pub operation_id: Uuid,
+    pub proof: Option<rss_mdm_agent_wire::runtime::Secret>,
+}
+impl DisclosureRequest {
+    pub fn context(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        version: i64,
+    ) -> Result<rss_identity_core::step_up::StepUpContext, Error> {
+        use sha2::{Digest, Sha256};
+        if self.operation_id.is_nil() || id.is_nil() || version < 1 {
+            return Err(Error::Malformed);
+        }
+        p.credentials(device)?;
+        p.session()?;
+        let bytes = serde_json::to_vec(&(
+            "mdm.device_access.disclose.v1",
+            p.tenant_id(),
+            p.instance_id(),
+            p.principal_id(),
+            device,
+            id,
+            version,
+            self.operation_id,
+        ))
+        .map_err(|_| Error::Malformed)?;
+        rss_identity_core::step_up::StepUpContext::new(
+            "mdm.device_access.disclose".into(),
+            Sha256::digest(bytes).into(),
+        )
+        .map_err(|_| Error::Malformed)
+    }
+}
+async fn disclosure_receipt(
+    c: &mut PgConnection,
+    p: &AuthorizedPrincipal,
+    device: &str,
+    id: Uuid,
+    version: i64,
+    operation: Uuid,
+) -> Result<bool, Error> {
+    let row=sqlx::query("SELECT device,entry,version FROM mdm_recovery.disclosures WHERE tenant_id=$1::uuid AND actor=$2 AND operation=$3").bind(p.tenant_id()).bind(p.principal_id()).bind(operation).fetch_optional(c).await?;
+    if let Some(row) = row {
+        if row.try_get::<String, _>("device")? != device
+            || row.try_get::<Uuid, _>("entry")? != id
+            || row.try_get::<i64, _>("version")? != version
+        {
+            return Err(Error::Conflict);
+        }
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+impl Credentials {
+    async fn disclosure_committed(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        version: i64,
+        operation: Uuid,
+    ) -> Result<bool, Error> {
+        p.credentials(device)?;
+        let mut tx = self.pool.begin().await?;
+        configure(&mut tx, p.tenant_id()).await?;
+        authorize(&mut tx, p, device, Permission::Credentials).await?;
+        let found = disclosure_receipt(&mut tx, p, device, id, version, operation).await?;
+        tx.rollback().await?;
+        p.check_live()?;
+        Ok(found)
+    }
+    pub async fn disclose_device_access(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        id: Uuid,
+        version: i64,
+        input: &DisclosureRequest,
+        audit: &RequestAudit,
+    ) -> Result<Disclosure, Error> {
+        input.context(p, device, id, version)?;
+        audit.operation(input.operation_id, "device_access_material_read");
+        let replay = self
+            .disclosure_committed(p, device, id, version, input.operation_id)
+            .await?;
+        let result = self
+            .disclose_inner(p, device, id, version, Some(input), replay, audit)
+            .await;
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) if !replay => {
+                // Includes proof races and unknown commit: recover only this committed operation.
+                if self
+                    .disclosure_committed(p, device, id, version, input.operation_id)
+                    .await?
+                {
+                    self.disclose_inner(p, device, id, version, Some(input), true, audit)
+                        .await
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 }

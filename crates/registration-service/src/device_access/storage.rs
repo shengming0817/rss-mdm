@@ -87,26 +87,6 @@ pub async fn locked_observation_in(
     get_in(c, tenant, id).await
 }
 
-pub async fn page_in(
-    c: &mut PgConnection,
-    tenant: Uuid,
-    device: &str,
-    after: Option<Uuid>,
-) -> Result<Vec<Binding>, Error> {
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT 100")
-        .bind(tenant).bind(device).bind(after).fetch_all(c).await.map_err(db)?;
-    rows.into_iter()
-        .map(|v| {
-            let b: Binding = serde_json::from_value(v).map_err(|_| Error::Corrupt)?;
-            b.validate().map_err(|_| Error::Corrupt)?;
-            if b.tenant != tenant || b.device != device {
-                return Err(Error::Corrupt);
-            }
-            Ok(b)
-        })
-        .collect()
-}
-
 /// Historical bindings deliberately participate: an unlink never resets self-enrollment.
 pub async fn first_in(
     c: &mut PgConnection,
@@ -264,22 +244,33 @@ pub async fn result_in(
             }
             b.account = Some(account.clone());
             b.applied_windows = windows.clone();
-            if report.effect.complete() {
+            if report.effect.complete(&b.configuration) {
                 b.state = State::Active;
             }
         }
-        AccessEffect::Unbound if b.state != State::Revoked => return Err(Error::Conflict),
+        AccessEffect::Unbound { disposition }
+            if b.state != State::Revoked || *disposition != b.account_disposition =>
+        {
+            return Err(Error::Conflict);
+        }
         _ => {}
     }
-    if b.applied_revision == Some(b.revision) && !report.effect.complete() {
+    if b.applied_revision == Some(b.revision) && !report.effect.complete(&b.configuration) {
         return Ok(false);
     }
     b.received_revision = Some(b.revision);
-    if report.effect.complete() {
+    if report.effect.complete(&b.configuration) {
         b.applied_revision = Some(b.revision);
     }
     b.effect = Some(report.effect.clone());
     save_in(c, &b, b.revision).await?;
+    let phase = match &report.effect {
+        AccessEffect::Unknown => "unknown",
+        AccessEffect::Failed { .. } => "failed",
+        effect if effect.complete(&b.configuration) => "applied",
+        _ => "pending",
+    };
+    super::lifecycle::emit_on(c, &b, None, event, phase).await?;
     Ok(true)
 }
 
@@ -315,6 +306,7 @@ pub async fn retire_in(
         b.state = State::Revoked;
         b.configuration.enabled = false;
         save_in(c, &b, expected).await?;
+        super::lifecycle::emit_on(c, &b, None, b.id, "retired").await?;
     }
     Ok(())
 }
@@ -352,4 +344,47 @@ pub async fn prepared_in(
     }
     b.account = Some(value.account.clone());
     save_in(c, &b, b.revision).await
+}
+
+/// Resolve one current device-wide Mac configuration from eligible Policy publications.
+/// Multiple matching policies may agree; conflicting settings cannot be deployed.
+pub async fn mac_configuration_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    device: &str,
+) -> Result<rss_mdm_agent_wire::platform_sso::LoginConfiguration, Error> {
+    // Apply the budget to eligible Mac configurations, not unrelated tenant policies.
+    let candidates: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT q.result->'configuration' FROM mdm_policy.policies p
+         JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version)
+         CROSS JOIN LATERAL (SELECT mdm_commands.access_policy(p.id,$2,
+             floor(extract(epoch FROM statement_timestamp()))::bigint) AS result OFFSET 0) q
+         WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access'
+           AND q.result->>'state'='eligible'
+           AND q.result#>>'{configuration,enabled}'='true'
+           AND q.result#>'{configuration,mac}' IS NOT NULL
+           AND q.result#>'{configuration,mac}' <> 'null'::jsonb
+         ORDER BY p.id LIMIT 129",
+    )
+    .bind(tenant)
+    .bind(device)
+    .fetch_all(&mut *c)
+    .await
+    .map_err(db)?;
+    if candidates.len() > 128 {
+        return Err(Error::Capacity);
+    }
+    let mut selected = None;
+    for configuration in candidates {
+        let config: AccessConfiguration =
+            serde_json::from_value(configuration).map_err(|_| Error::Corrupt)?;
+        config.validate().map_err(|_| Error::Corrupt)?;
+        if let Some(mac) = config.mac {
+            if selected.as_ref().is_some_and(|old| old != &mac) {
+                return Err(Error::Conflict);
+            }
+            selected = Some(mac);
+        }
+    }
+    selected.ok_or(Error::NotFound)
 }

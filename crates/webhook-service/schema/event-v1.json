@@ -23,6 +23,7 @@
         "device.retired",
         "policy.execution.terminal",
         "compliance.status.changed",
+        "device.access.changed",
         "webhook.test"
       ]
     },
@@ -180,6 +181,86 @@
           "properties": {
             "kind": {
               "const": "test"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operationId",
+            "bindingId",
+            "registrationId",
+            "instanceId",
+            "principalId",
+            "previousPrincipal",
+            "registrationGeneration",
+            "bindingGeneration",
+            "factorGeneration",
+            "revision",
+            "revoked",
+            "phase"
+          ],
+          "properties": {
+            "kind": {
+              "const": "deviceAccess"
+            },
+            "operationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "bindingId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "registrationId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "instanceId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "principalId": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "previousPrincipal": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "uuid"
+            },
+            "registrationGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "bindingGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "factorGeneration": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "revoked": {
+              "type": "boolean"
+            },
+            "phase": {
+              "enum": [
+                "accepted",
+                "pending",
+                "applied",
+                "failed",
+                "unknown",
+                "retired"
+              ]
             }
           }
         }

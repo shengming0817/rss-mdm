@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "NativeProof": {
+      "additionalProperties": false,
+      "description": "Native signature over Identity's exact signing_payload, including RP purpose and nonce.",
+      "properties": {
+        "accessToken": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Secret"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Required native PSSO token on Mac; absent on Windows."
+        },
+        "signature": {
+          "description": "Unpadded base64url, exactly 64 decoded ES256 signature bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "signature"
+      ],
+      "type": "object"
+    },
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Completion carries proof only for its original one-use challenge.",
+  "properties": {
+    "challengeId": {
+      "description": "Identity challenge identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "nonce": {
+      "description": "Original Identity nonce.",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Original operation identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "proof": {
+      "$ref": "#/$defs/NativeProof",
+      "description": "Device signature and any required native protocol credential."
+    }
+  },
+  "required": [
+    "operationId",
+    "challengeId",
+    "nonce",
+    "proof"
+  ],
+  "title": "Complete",
+  "type": "object",
+  "$id": "https://rss.example/agent/enterprise/v1/Complete"
+}

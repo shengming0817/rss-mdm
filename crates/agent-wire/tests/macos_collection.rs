@@ -316,6 +316,7 @@ fn context() -> SoftwareExecutionContext {
         system_broker: true,
         user_helper: true,
         interactive_user: Some(SoftwareInteractiveUser {
+            windows_authority: None,
             generated_uid: Some("00000000-0000-0000-0000-000000000501".into()),
             identity: "501".into(),
             session_id: uuid::Uuid::from_u128(1),

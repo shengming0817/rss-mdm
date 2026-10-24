@@ -62,14 +62,16 @@ fn route(
         Router::new()
             .nest(
                 "/api/v1",
-                rss_mdm_management_http::recovery_credentials::routes(Some(Arc::new(
-                    Credentials::new(
+                rss_mdm_management_http::recovery_credentials::routes(
+                    Some(Arc::new(Credentials::new(
                         authority.pool.clone(),
                         authority.audit.clone(),
                         keys,
+                        None,
                         admission,
-                    ),
-                )))
+                    ))),
+                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+                )
                 .into_axum(),
             )
             .merge(authority.authorization()),
@@ -101,8 +103,13 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
             let tenant = Uuid::parse_str(case_tenant())?;
             let id = Uuid::new_v4();
             let sid = "S-1-5-21-100-200-300-1001".to_owned();
-            let account = AccessAccount::Windows { sid: sid.clone() };
+            let account = AccessAccount::Windows {
+                sid: sid.clone(),
+                authority: rss_mdm_agent_wire::runtime::AccessWindowsAuthority::Local,
+            };
             let b = access::Binding {
+                operation_id: Uuid::new_v4(),
+                account_disposition: rss_mdm_agent_wire::runtime::AccessAccountDisposition::Keep,
                 id,
                 tenant,
                 device: device.into(),
@@ -124,6 +131,8 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 policy: Uuid::new_v4(),
                 policy_version: Uuid::new_v4(),
                 configuration: AccessConfiguration {
+                    mac: Some(Default::default()),
+                    windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
                     self_enrollment: true,
                     enabled: true,
                     role: None,
@@ -373,7 +382,7 @@ async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result
         let container=std::env::var("MDM_TEST_PG_CONTAINER")?;
         let dump=command(&["exec","-i",&container,"pg_dump","-U","postgres","-d",&config.access_database.name,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
         ensure!(!dump.contains(secret));
-        pg("TRUNCATE mdm_recovery.rss_login_uses,mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
+        pg("TRUNCATE mdm_recovery.disclosures,mdm_recovery.rss_login_uses,mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
         command(&["exec","-i",&container,"psql","-Xq","-U","postgres","-d",&config.access_database.name,"-v","ON_ERROR_STOP=1"],Some(&dump))?;
         let mut tx=begin(&authority).await?;
         storage::validate_keys_in(&mut tx,c.tenant,&ring).await?;
@@ -528,4 +537,50 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
         observer.close().await?;
         Ok(())
     }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=recovery-credentials.http: metadata query, composite cursor, device and revision binding"]
+async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
+    authority
+        .resources
+        .extend(std::mem::take(&mut fixture.resources));
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async{
+ let ring=keys("first",true);
+ let router=route(&authority,ring.clone(),fixture.execution.clone())?;
+ let device=case::name("query-recovery");
+ let secret="recovery-directory-private-value";
+ let first=seed(&authority,&ring,device,secret).await?;
+ let mut tx=begin(&authority).await?;
+ let operation=Uuid::new_v4();
+ let second=storage::reserve_in(&mut tx,first.tenant,&first.binding,operation,1).await?;
+ storage::ingest_in(&mut tx,&ring,&second,operation,secret.as_bytes()).await?;
+ storage::verify_in(&mut tx,&second,operation).await?;
+ tx.commit().await?;
+ let mut admin=authority.browser("admin")?;
+ let principal=browser_subject(&admin,&router).await?;
+ identity::set_grants(case_tenant(),&principal,identity::device_grants(None,&["inventory_read","credentials","account_write"])?).await?;
+ let path=format!("/api/v1/devices/{device}/recovery-credentials");
+ let query="sort=-version&fields=id,version&limit=1";
+ let one=admin.call(&router,Method::GET,&format!("{path}?{query}"),None).await?;
+ ensure!(one.0==StatusCode::OK&&one.1["items"]==json!([{"id":second.material,"version":2}]),"first {one:?}");
+ ensure!(!one.1.to_string().contains(secret));
+ let cursor=one.1["nextCursor"].as_str().context("material cursor")?;
+ let two=admin.call(&router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?;
+ ensure!(two.0==StatusCode::OK&&two.1["items"]==json!([{"id":first.material,"version":1}])&&two.1["nextCursor"].is_null());
+ let current=admin.call(&router,Method::GET,&format!("{path}?filter=current==true&fields=id,version"),None).await?;
+ ensure!(current.0==StatusCode::OK&&current.1["items"]==json!([{"id":second.material,"version":2}]));
+ for bad in ["fields=secret","fields=sealed","sort=binding","afterId=x&afterVersion=1","limit=101","filter=validity==invalid"]{
+ ensure!(admin.call(&router,Method::GET,&format!("{path}?{bad}"),None).await?.0==StatusCode::BAD_REQUEST,"accepted {bad}");
+ }
+ ensure!(admin.call(&router,Method::GET,&format!("/api/v1/devices/another-device/recovery-credentials?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+ ensure!(admin.call(&router,Method::GET,&format!("{path}?fields=id&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+ let revoked=admin.call(&router,Method::POST,&format!("{path}/{}/versions/2/revoke",second.material),None).await?;
+ ensure!(revoked.0==StatusCode::OK,"revoke {revoked:?}");
+ ensure!(admin.call(&router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+ Ok(())
+ }).await
 }

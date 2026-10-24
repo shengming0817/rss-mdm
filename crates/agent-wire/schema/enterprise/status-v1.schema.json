@@ -1,0 +1,106 @@
+{
+  "$defs": {
+    "Phase": {
+      "description": "Business interaction progress, separate from Identity session state.",
+      "oneOf": [
+        {
+          "const": "preparing",
+          "description": "Intent committed; Identity challenge not yet durably attached.",
+          "type": "string"
+        },
+        {
+          "const": "awaiting_proof",
+          "description": "Waiting for native user interaction.",
+          "type": "string"
+        },
+        {
+          "const": "completing",
+          "description": "A single completion attempt owns the interaction.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "External exchange outcome is unknown; start a new interaction after reconciliation.",
+          "type": "string"
+        },
+        {
+          "const": "ready",
+          "description": "A bounded one-use backend handoff is available.",
+          "type": "string"
+        },
+        {
+          "const": "consumed",
+          "description": "The exact RP backend consumed the handoff.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "User cancelled the interaction; no new RP session may consume it.",
+          "type": "string"
+        },
+        {
+          "const": "expired",
+          "description": "The original deadline elapsed.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "A known failure did not establish an RP session.",
+          "type": "string"
+        }
+      ]
+    },
+    "Secret": {
+      "description": "Canonical 256-bit base64url secret. Debug output is always redacted.",
+      "maxLength": 43,
+      "minLength": 43,
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Public status never exposes assertions, Identity credentials or IdP access tokens.",
+  "properties": {
+    "callback": {
+      "description": "Fixed callback, present only for an available handoff.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "continuation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "One-use locator for the authenticated RP backend, never an Identity bearer token."
+    },
+    "expiresAt": {
+      "description": "Original deadline, never extended by polling.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "operationId": {
+      "description": "Original operation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "phase": {
+      "$ref": "#/$defs/Phase",
+      "description": "Product progress."
+    }
+  },
+  "required": [
+    "operationId",
+    "phase",
+    "expiresAt"
+  ],
+  "title": "Status",
+  "type": "object",
+  "$id": "https://rss.example/agent/enterprise/v1/Status"
+}

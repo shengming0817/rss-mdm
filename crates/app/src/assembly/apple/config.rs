@@ -66,6 +66,15 @@ pub struct PlatformSso {
     pub configuration: rss_mdm_agent_wire::platform_sso::Configuration,
     pub active_key: String,
     pub signing_keys: std::collections::BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    pub password_providers: Vec<PasswordProvider>,
+}
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PasswordProvider {
+    pub configuration: rss_mdm_apple_channel::platform_sso::password_provider::Configuration,
+    pub client_secret_file: PathBuf,
+    pub private_ca_file: Option<PathBuf>,
 }
 impl PlatformSso {
     pub(crate) fn load(
@@ -92,6 +101,29 @@ impl PlatformSso {
         }
         let tenant = uuid::Uuid::parse_str(&tenant.to_string())
             .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?;
+        let mut providers = Vec::new();
+        for config in &self.password_providers {
+            let bytes = crate::config::read(&config.client_secret_file, 4096, true)?;
+            let secret = zeroize::Zeroizing::new(
+                std::str::from_utf8(&bytes)
+                    .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?
+                    .trim_end()
+                    .to_owned(),
+            );
+            let ca = config
+                .private_ca_file
+                .as_ref()
+                .map(|path| crate::config::read(path, 65536, false))
+                .transpose()?;
+            providers.push(
+                rss_mdm_apple_channel::platform_sso::password_provider::Provider::new(
+                    config.configuration.clone(),
+                    secret,
+                    ca.as_deref().map(|v| v.as_slice()),
+                )
+                .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?,
+            );
+        }
         Ok(std::sync::Arc::new(
             rss_mdm_apple_channel::platform_sso::Runtime::new(
                 self.configuration.clone(),
@@ -100,6 +132,7 @@ impl PlatformSso {
                 self.active_key.clone(),
                 keys,
             )
+            .and_then(|runtime| runtime.with_password_providers(providers))
             .map_err(|_| Error::Configuration(ConfigIssue::ApplePlatformSso))?,
         ))
     }

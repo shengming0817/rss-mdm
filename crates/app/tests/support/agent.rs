@@ -86,6 +86,17 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
         tenant: fixture.identity.tenant,
         store: fixture.registration.clone(),
         audit: fixture.audit.clone(),
+        access_audit: Arc::new(
+            fixture
+                .audit
+                .on_runtime(
+                    fixture.identity.runtime.clone(),
+                    fixture.identity.tenant,
+                    &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
+                        .control(),
+                )
+                .await?,
+        ),
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
         protection: crate::test_support::identity::config(case_tenant())?.native_protector()?,
@@ -140,6 +151,7 @@ pub(crate) async fn complete_grant(
 }
 
 pub(crate) fn application_service(
+    access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pki: &crate::agent_pki::AgentPki,
     access: &crate::Database,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
@@ -149,6 +161,7 @@ pub(crate) fn application_service(
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32]).unwrap(),
         tenant: rss_request_context::TenantId::parse(case_tenant())?,
         store: access.registration(),
+        access_audit,
         audit,
         issuer: pki.issuer.clone(),
         clock: pki.pki_clock.clone(),
@@ -197,7 +210,7 @@ pub(crate) async fn seed_profile(
                 None,
             )?
             .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
-        let service = application_service(&pki, &access, audit, execution)?;
+        let service = application_service(audit.clone(), &pki, &access, audit, execution)?;
         seed_service(&service, label, device, profile).await
     }
     .await;

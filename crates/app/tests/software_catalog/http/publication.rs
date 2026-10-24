@@ -26,7 +26,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .unwrap()
         .push(target_config);
     let mut local = execution::context(Platform::Windows);
-    local["interactiveUser"] = json!({"generatedUid":null,"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
+    local["interactiveUser"] = json!({"windowsAuthority":null,"generatedUid":null,"identity":"S-1-5-21-100-200-300-1001","sessionId":Uuid::new_v4(),"administrator":true});
     let mut f = execution::Fixture::with_config(
         Platform::Windows,
         json!([

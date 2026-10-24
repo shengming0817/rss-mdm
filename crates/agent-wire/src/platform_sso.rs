@@ -10,7 +10,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/platform_sso/manifest.json");
 /// SHA-256 of the ordered generated schema bytes.
 pub const SCHEMA_FINGERPRINT: &str =
-    "56aab78c9f78a6371ef8e8584f099c599ec082f9b27f48ff2b44dcfccf1c3054";
+    "271c10c87f099d92f3c42cc2bb0df03b3237755e250c392db63b494101dc1ec4";
 
 /// One-use nonce lifetime in seconds.
 pub const NONCE_SECONDS: i64 = 120;
@@ -137,8 +137,8 @@ pub struct Registration {
     pub operation_id: Uuid,
     /// One-use bootstrap challenge.
     pub challenge_id: Uuid,
-    /// Public key whose possession is proved.
-    pub signing_key: PublicKey,
+    /// Device or SE user key; Password users explicitly supply no user signing key.
+    pub signing_key: Option<PublicKey>,
     /// Encryption public key bound into the proof.
     pub encryption_key: PublicKey,
     /// Signed registration JWT; never log.
@@ -278,8 +278,8 @@ pub struct SourceStatus {
     pub version: i64,
     /// Whether the source was revoked.
     pub revoked: bool,
-    /// Accepted signing public key.
-    pub signing_key: PublicKey,
+    /// Accepted device/SE signing key; absent for a Password user.
+    pub signing_key: Option<PublicKey>,
     /// Accepted encryption public key.
     pub encryption_key: PublicKey,
 }
@@ -287,6 +287,8 @@ pub struct SourceStatus {
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Status {
+    /// Latest exchange for this exact registered user source; not a local password effect.
+    pub password_exchange: Option<PasswordExchangeStatus>,
     /// Current MDM application inventory matches.
     pub application_observed: bool,
     /// Current MDM profile inventory matches.
@@ -481,4 +483,124 @@ mod tests {
 pub struct StatusQuery {
     /// Optional binding for this device's user status.
     pub binding_id: Option<Uuid>,
+}
+
+/// Device-wide login mode; every user on one Mac consumes the same system profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthenticationMode {
+    /// Existing Secure Enclave user-key protocol.
+    SecureEnclave,
+    /// Device-signed Apple Password request, verified by the selected password authority.
+    Password,
+}
+/// An explicit platform login policy, independent for login, unlock and FileVault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginPolicy {
+    /// Preserve native local login; do not emit an enforcing platform policy.
+    Local,
+    /// Try the configured password authority with Apple's offline behavior.
+    Attempt,
+    /// Require the configured authority; grace periods must be explicitly selected.
+    Require,
+}
+/// Business configuration compiled into one device-wide System profile. No deployment secrets.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoginConfiguration {
+    /// Chosen native authentication method.
+    pub authentication: AuthenticationMode,
+    /// Configured password provider identity; required only in Password mode.
+    pub password_provider: Option<Uuid>,
+    /// Policy for the login window.
+    pub login: LoginPolicy,
+    /// Policy for screen unlock.
+    pub unlock: LoginPolicy,
+    /// Policy for Apple silicon FileVault unlock.
+    pub filevault: LoginPolicy,
+    /// Explicit offline allowance, in seconds; never synthesized by the server.
+    pub offline_grace_seconds: Option<u32>,
+    /// Explicit allowance for unregistered accounts, in seconds.
+    pub registration_grace_seconds: Option<u32>,
+    /// Exact local maintenance account short names excluded from platform login policy.
+    pub maintenance_accounts: Vec<String>,
+}
+impl LoginConfiguration {
+    /// Validate the frozen PSSO 1.0/macOS 26.4 subset before profile generation.
+    pub fn validate(&self) -> Result<(), WireError> {
+        let enforcing = [self.login, self.unlock, self.filevault].contains(&LoginPolicy::Require);
+        let password = self.authentication == AuthenticationMode::Password;
+        if password != self.password_provider.is_some()
+            || self.password_provider.is_some_and(|v| v.is_nil())
+            || (!password
+                && [self.login, self.unlock, self.filevault]
+                    .iter()
+                    .any(|p| *p != LoginPolicy::Local))
+            || [self.offline_grace_seconds, self.registration_grace_seconds]
+                .iter()
+                .any(|v| v.is_some_and(|n| n == 0))
+            || (!enforcing
+                && (self.offline_grace_seconds.is_some()
+                    || self.registration_grace_seconds.is_some()))
+            || (enforcing && self.maintenance_accounts.is_empty())
+            || self.maintenance_accounts.len() > 16
+            || self.maintenance_accounts.iter().any(|v| {
+                v.is_empty()
+                    || v.len() > 64
+                    || !v
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+            })
+            || self
+                .maintenance_accounts
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.maintenance_accounts.len()
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}
+
+impl Default for LoginConfiguration {
+    fn default() -> Self {
+        Self {
+            authentication: AuthenticationMode::SecureEnclave,
+            password_provider: None,
+            login: LoginPolicy::Local,
+            unlock: LoginPolicy::Local,
+            filevault: LoginPolicy::Local,
+            offline_grace_seconds: None,
+            registration_grace_seconds: None,
+            maintenance_accounts: Vec::new(),
+        }
+    }
+}
+
+/// A server-side Password exchange result, independent from OS application facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordExchangeState {
+    /// Nonce consumed; external verification has not settled locally.
+    Verifying,
+    /// Server token issuance committed; no claim about local account or volume changes.
+    Succeeded,
+    /// The submitted credentials or bound authority were rejected.
+    Rejected,
+    /// No native token was issued because the dependency was unavailable.
+    Unavailable,
+    /// An interrupted exchange has no confirmed local outcome before its deadline.
+    Unknown,
+}
+/// Bounded diagnostic coordinates; contains no password, proof or token.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PasswordExchangeStatus {
+    /// Original server nonce identity.
+    pub attempt_id: Uuid,
+    /// Confirmed local state of this attempt.
+    pub state: PasswordExchangeState,
 }

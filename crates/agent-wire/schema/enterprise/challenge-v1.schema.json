@@ -1,0 +1,186 @@
+{
+  "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows account, with provenance reported by the authenticated native session.",
+          "properties": {
+            "authority": {
+              "$ref": "#/$defs/AccessWindowsAuthority",
+              "description": "Local machine, AD domain or Entra tenant authority; never inferred from a name."
+            },
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid",
+            "authority"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessLocalSession": {
+      "additionalProperties": false,
+      "description": "Exact account and login session attested by the authenticated native Agent ingress.",
+      "properties": {
+        "account": {
+          "$ref": "#/$defs/AccessAccount",
+          "description": "Current account, not selected by the browser."
+        },
+        "sessionId": {
+          "description": "Native login instance; logoff/switch invalidates the pending ceremony.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account",
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One challenge delivered through the controlled desktop Broker.",
+  "properties": {
+    "challengeId": {
+      "description": "Identity-owned challenge locator.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "expiresAt": {
+      "description": "UTC expiration seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "localSession": {
+      "$ref": "#/$defs/AccessLocalSession",
+      "description": "Frozen native interactive session; rechecked on completion."
+    },
+    "nonce": {
+      "description": "Identity nonce; not an authentication credential.",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Product operation identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "signingPayload": {
+      "description": "Exact bytes to sign, without re-encoding JSON.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "operationId",
+    "challengeId",
+    "nonce",
+    "signingPayload",
+    "localSession",
+    "expiresAt"
+  ],
+  "title": "Challenge",
+  "type": "object",
+  "$id": "https://rss.example/agent/enterprise/v1/Challenge"
+}

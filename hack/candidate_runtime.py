@@ -377,12 +377,12 @@ class Candidate:
         from t2_environment import private
         windows=generate(self.root,self.root/'server.crt',self.root/'server.key')
         for channel,port in [('enrollment',8443),('management',8444)]:
-            windows[channel]['origin']=f'https://windows-{channel}.{self.host}:{self.port}'
+            windows[channel]['origin']=f'https://windows-{channel}.{self.host}'
         private(self.root/'windows.json',windows)
         private(self.root/'case.json',dict(tenant=self.tenant))
         env={**os.environ}
         windows_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,windows=True, windows_template=self.directory/'deployment/windows-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root,instance_id=self.instance))
-        agent_origin=f'https://agent.{self.host}:{self.port}'
+        agent_origin=f'https://agent.{self.host}'
         self.agent_provider=self.pki_stack.enter_context(running(self.root,env,case=self.name,agent=True,agent_origin=agent_origin,
                                             agent_template=self.directory/'deployment/agent-leaf.tpl', compose_file=self.directory/'deployment/compose.yaml', providers=self.providers, owner_root=self.root,instance_id=self.instance))
         def copy_file(source):
@@ -410,7 +410,7 @@ class Candidate:
             config['origin']='https://'+provider.internal_host+':19443'
         self.config['device_pki']=copy(providers)
         self.agent_origin=agent_origin
-        self.agent_port=int(agent_origin.rsplit(':',1)[1])
+        self.agent_port=self.port
     def __enter__(self):
         try:
             from t2_environment import ROOT, project_name, private

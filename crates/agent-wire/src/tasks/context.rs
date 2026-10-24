@@ -35,6 +35,13 @@ pub struct SoftwareExecutionContext {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// One concrete live OS session.
 pub struct SoftwareInteractiveUser {
+    /// Native Windows account authority when known; required for Device Access admission.
+    #[serde(deserialize_with = "super::required_option")]
+    #[schemars(
+        required,
+        schema_with = "crate::self_service::nullable_schema::<crate::runtime::AccessWindowsAuthority>"
+    )]
+    pub windows_authority: Option<crate::runtime::AccessWindowsAuthority>,
     /// macOS GeneratedUID for this live account; Windows must explicitly report null.
     #[serde(deserialize_with = "super::required_option")]
     #[schemars(
@@ -70,11 +77,18 @@ impl SoftwareExecutionContext {
         if let Some(u) = &self.interactive_user {
             let valid = valid_os_identity(&u.identity, platform);
             let stable = match platform {
-                TaskPlatform::Windows => u.generated_uid.is_none(),
-                TaskPlatform::Macos => u
-                    .generated_uid
-                    .as_deref()
-                    .is_some_and(crate::runtime::generated_uid_valid),
+                TaskPlatform::Windows => {
+                    u.generated_uid.is_none()
+                        && u.windows_authority
+                            .as_ref()
+                            .is_none_or(|a| a.valid_for(&u.identity))
+                }
+                TaskPlatform::Macos => {
+                    u.windows_authority.is_none()
+                        && u.generated_uid
+                            .as_deref()
+                            .is_some_and(crate::runtime::generated_uid_valid)
+                }
             };
             if !valid || !stable {
                 return Err(WireError::InvalidValue);

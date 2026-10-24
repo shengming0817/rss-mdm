@@ -30,8 +30,9 @@ pub(super) async fn profile(
     app: &Context,
     registration: Uuid,
     generation: i64,
+    login: &rss_mdm_agent_wire::platform_sso::LoginConfiguration,
 ) -> Result<bool, Error> {
-    let expected = app.runtime()?.profile()?;
+    let expected = app.runtime()?.profile(login)?;
     let tenant = app.tenant.to_string();
     let operations:Vec<Uuid>=sqlx::query_scalar("SELECT operation FROM mdm_apple.profiles WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND user_key='' AND identifier=$4 AND profile=$5 AND present AND retired_at IS NULL AND observed_at IS NOT NULL LIMIT 2")
         .bind(&tenant).bind(registration).bind(generation).bind(expected.identifier).bind(expected.uuid).fetch_all(&mut *c).await.map_err(db)?;
@@ -54,8 +55,21 @@ pub(super) async fn ready(
         .iter()
         .find(|m| m.channel == rss_mdm_inventory::Channel::Mdm)
         .ok_or(Error::Unauthorized)?;
+    let agent = object
+        .members
+        .iter()
+        .find(|member| member.channel == rss_mdm_inventory::Channel::Agent)
+        .ok_or(Error::Unauthorized)?;
+    if !app
+        .execution
+        .platform_sso_supported_on(c, agent.registration_id)
+        .await?
+    {
+        return Err(Error::Unsupported);
+    }
+    let login = configuration_for_object(c, app.tenant, object).await?;
     if !application(c, app.runtime()?, app.tenant, member.registration_id, now).await?
-        || !profile(c, app, member.registration_id, member.generation).await?
+        || !profile(c, app, member.registration_id, member.generation, &login).await?
     {
         return Err(Error::Conflict);
     }
@@ -87,10 +101,43 @@ pub(crate) async fn admit_profile(
         return Ok(true);
     }
     let rt = apple.platform_sso.as_deref().ok_or(Error::Unsupported)?;
+    let object =
+        rss_mdm_device_service::planning::PlanningObjects::paired_in(c, p.tenant(), p.device())
+            .await
+            .map_err(db)?;
+    let login = configuration_for_object(c, p.tenant(), &object).await?;
+    if login.authentication == rss_mdm_agent_wire::platform_sso::AuthenticationMode::Password {
+        rt.password_provider(&login)?
+            .admit_on(c, p.tenant())
+            .await?;
+    }
     if serde_json::to_value(profile).map_err(|_| Error::Malformed)?
-        != serde_json::to_value(rt.profile()?).map_err(|_| Error::Malformed)?
+        != serde_json::to_value(rt.profile(&login)?).map_err(|_| Error::Malformed)?
     {
         return Err(Error::Conflict);
     }
     application(c, rt, p.tenant(), p.registration(), now).await
+}
+
+pub(super) async fn configuration_for_object(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    object: &rss_mdm_inventory_service::objects::DeviceObject,
+) -> Result<rss_mdm_agent_wire::platform_sso::LoginConfiguration, Error> {
+    let member = object
+        .members
+        .iter()
+        .find(|m| m.channel == rss_mdm_inventory::Channel::Agent)
+        .ok_or(Error::Conflict)?;
+    rss_mdm_registration_service::device_access::storage::mac_configuration_in(
+        c,
+        Uuid::parse_str(&tenant.to_string()).map_err(|_| Error::Malformed)?,
+        &member.device,
+    )
+    .await
+    .map_err(|error| match error {
+        rss_mdm_registration_service::Error::NotFound
+        | rss_mdm_registration_service::Error::Conflict => Error::Conflict,
+        other => other.into(),
+    })
 }
