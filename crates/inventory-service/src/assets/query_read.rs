@@ -7,7 +7,7 @@ use sqlx::Row;
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Position {
-    Items { key: Vec<u8>, device: String },
+    Items { device: String },
     Facet { facet: Facet, label: String },
 }
 struct QueryState {
@@ -113,18 +113,21 @@ impl AssetService {
         if !state.ready {
             return Err(Error::Conflict.into());
         }
-        let (after_key, after_device) = if let Some(token) = cursor {
+        // Completed results are immutable. Recover the key by their indexed identity
+        // within this signed task, rather than serializing a 1024-byte key as JSON
+        // numbers (which can exceed PageCursor even for a valid stored result).
+        let after_device = if let Some(token) = cursor {
             match self.query_cursor(token, task, scope)? {
-                Position::Items { key, device } => (Some(key), Some(device)),
+                Position::Items { device } => Some(device),
                 _ => return Err(Error::Conflict.into()),
             }
         } else {
-            (None, None)
+            None
         };
         let tenant = self.tenant.to_string();
         let metadata=tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT device,sort_key,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::bytea IS NULL OR (sort_key,device)>($3,$4 COLLATE \"C\")) ORDER BY sort_key,device LIMIT $5")
-                .bind(tenant).bind(task.to_string()).bind(after_key).bind(after_device).bind((limit + 1) as i64).fetch_all(c).await
+            sqlx::query("SELECT device,octet_length(document) AS bytes FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND ($3::text IS NULL OR (sort_key,device)>(SELECT sort_key,device FROM mdm_assets.asset_query_results WHERE tenant_id=$1::uuid AND run=$2::uuid AND device=$3 COLLATE \"C\")) ORDER BY sort_key,device LIMIT $4")
+                .bind(tenant).bind(task.to_string()).bind(after_device).bind((limit + 1) as i64).fetch_all(c).await
         })).await?;
         let mut more = metadata.len() > limit;
         let mut ids = Vec::new();
@@ -141,7 +144,6 @@ impl AssetService {
             }
             let device: String = row.try_get("device")?;
             next = Some(Position::Items {
-                key: row.try_get("sort_key")?,
                 device: device.clone(),
             });
             ids.push(device);
@@ -238,3 +240,7 @@ impl AssetService {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/assets/query_read_unit.rs"]
+mod tests;
