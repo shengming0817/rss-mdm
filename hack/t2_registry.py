@@ -470,7 +470,11 @@ add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='
              'crates/execution-service/src/device_access.rs','crates/registration-service/src/device/store.rs'),
     support=('crates/app/tests/apple/mod.rs','crates/app/tests/apple/lifecycle.rs','crates/app/tests/apple/policy.rs','crates/app/tests/apple/support/scep.rs'),
     tests=('crates/app/tests/apple/platform_sso.rs',))
-MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],scope='tenant')
+MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],scope='tenant',policies=(
+    CasePolicy('apple::tests::platform_sso::native_registration_login_browser_bridge_and_revocation', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
+    CasePolicy('apple::tests::platform_sso::third_party_profile_dispatch_with_rss_runtime', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
+    CasePolicy('apple::tests::platform_sso::third_party_profile_dispatch_without_rss_runtime', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
+))
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
     fixtures=('apple','identity','oracle','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
@@ -576,8 +580,8 @@ MODULES['planning.recovery'] = replace(MODULES['planning.recovery'], db_mode='re
 ))
 MODULES['planning.http'] = replace(MODULES['planning.http'], db_mode='fresh', scope='objects', policies=(
     CasePolicy('planning::t2::http::collection_blueprints_instantiate_replay_and_keep_tenant_versions', 'fresh', 'objects', ('identity','content','task_signing')),
-    CasePolicy('planning::t2::http::nested_groups_sources_references_and_authorized_pages', 'fresh', 'objects', ('identity','content','task_signing')),
-    CasePolicy('planning::t2::http::planning_routes_and_derived_result_authorization', 'fresh', 'objects', ('identity','content','task_signing')),
+    CasePolicy('planning::t2::http::nested_groups_sources_references_and_authorized_pages', 'fresh', 'objects', ('identity','content','task_signing','local_worker')),
+    CasePolicy('planning::t2::http::planning_routes_and_derived_result_authorization', 'fresh', 'objects', ('identity','content','task_signing','local_worker')),
 ))
 MODULES['planning.agent_policy'] = replace(MODULES['planning.agent_policy'], db_mode='reuse', scope='objects', policies=(
     CasePolicy('planning::t2::agent_policy::policy_scan_reaches_late_match', 'reuse', 'tenant'),
@@ -693,7 +697,9 @@ def case_fixtures(module, selector, marker):
 
 case_fixtures('windows.issuance', 'windows::t2::issuance::native_renewal_preserves_registration_and_activates_only_after_new_tls_proof', 'local_worker')
 # Template flows own Automation/Execution shutdown before durable recovery and retirement.
-case_fixtures('windows.management', 'windows::t2::management::collection::', 'local_worker')
+MODULES['windows.management'] = replace(MODULES['windows.management'], policies=(*MODULES['windows.management'].policies,
+    CasePolicy('windows::t2::management::collection::', 'reuse', 'tenant', ('identity','windows','content','local_worker')),
+))
 case_fixtures('diagnostics.http', 'api::t2::runtime_diagnostics::execution_first_scan_failure_recovers_only_after_real_success', None)
 case_fixtures('execution.agent.poll', 'execution::t2::agent::poll::cancellation_backlog_does_not_starve_live_offer', 'local_worker')
 case_fixtures('planning.http', 'planning::t2::http::console_scope_ready_tracks_current_admission', 'local_worker')
