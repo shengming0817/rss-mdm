@@ -434,11 +434,9 @@ fn management_response(
                     nonce,
                 )),
             }),
-            meta: Some(Meta {
-                max_message_size: Some(CodecLimits::default().syncml_bytes as u32),
-                max_object_size: Some(CodecLimits::default().object_bytes as u32),
-                ..Meta::default()
-            }),
+            // Windows ignores SyncHdr/Meta. Enforce the receiving budget by
+            // bounding dispatched commands and their possible replies instead.
+            meta: None,
         },
         commands: execution,
         final_message: true,

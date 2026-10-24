@@ -80,6 +80,7 @@ async fn native_challenge(partial: bool) -> anyhow::Result<()> {
     ensure!(response.status() == StatusCode::OK);
     let response = response.bytes().await?;
     let mut accepted = syncml::decode(&response, &CodecLimits::default())?;
+    ensure!(accepted.header.meta.is_none());
     for reference in [2, 3, 4] {
         ensure!(accepted.commands.iter().any(
             |c| matches!(c, Command::Status(s) if s.command_ref == reference && s.code == 200)
