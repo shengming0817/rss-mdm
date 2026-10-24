@@ -10,7 +10,7 @@ pub const API_VERSION: u8 = 1;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/platform_sso/manifest.json");
 /// SHA-256 of the ordered generated schema bytes.
 pub const SCHEMA_FINGERPRINT: &str =
-    "40f09ace0b645d989fd3ef56d17d8fde27e5500eb3b843547453eeba6422454e";
+    "56aab78c9f78a6371ef8e8584f099c599ec082f9b27f48ff2b44dcfccf1c3054";
 
 /// One-use nonce lifetime in seconds.
 pub const NONCE_SECONDS: i64 = 120;
@@ -248,6 +248,14 @@ pub struct RegistrationReceipt {
     pub hardware_attested: bool,
     /// Actual registration proof class.
     pub registration_trust: RegistrationTrust,
+}
+/// Retire only the source version observed by this caller; delayed cleanup cannot revoke a replacement.
+#[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Revocation {
+    /// Exact pre-revocation source version. A successful revocation advances it once.
+    #[schemars(extend("minimum" = 1))]
+    pub source_version: i64,
 }
 /// Revocation outcome; local system cleanup is a separate operation.
 #[derive(Clone, Serialize, Deserialize, schemars::JsonSchema)]

@@ -28,7 +28,7 @@ pub(super) enum Action {
     Register(Registration),
     Nonce,
     Login(String),
-    Revoke(Uuid),
+    Revoke(Uuid, Revocation),
 }
 pub(super) async fn mutate(
     app: &Context,
@@ -141,7 +141,16 @@ async fn apply(
             challenge(app, c, "login", &json!({}), now).await
         }
         Action::Login(token) => login(app, c, token, now).await,
-        Action::Revoke(id) => revoke(app, c, p.ok_or(Error::Unauthorized)?, *id).await,
+        Action::Revoke(id, input) => {
+            revoke(
+                app,
+                c,
+                p.ok_or(Error::Unauthorized)?,
+                *id,
+                input.source_version,
+            )
+            .await
+        }
     }
 }
 async fn challenge(
@@ -490,7 +499,11 @@ async fn revoke(
     c: &mut PgConnection,
     p: &DevicePrincipal,
     id: Uuid,
+    expected_version: i64,
 ) -> Result<Value, Error> {
+    if expected_version < 1 {
+        return Err(Error::Malformed);
+    }
     if p.tenant() != app.tenant {
         return Err(Error::Unauthorized);
     }
@@ -505,6 +518,13 @@ async fn revoke(
         .any(|m| m.registration_id == p.registration() && m.generation == p.generation())
     {
         return Err(Error::Unauthorized);
+    }
+    // The source row is locked by store::source in the same transaction as replacement.
+    // Replaying the exact already-completed revocation is allowed; a replacement is not.
+    if source.version != expected_version
+        && !(source.revoked && expected_version.checked_add(1) == Some(source.version))
+    {
+        return Err(Error::Conflict);
     }
     if !source.revoked {
         source.revoked = true;

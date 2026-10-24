@@ -3,6 +3,7 @@ use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
         "platform_sso": {
+            "Revocation": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Revocation),
             "Bootstrap": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Bootstrap),
             "BootstrapResponse": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BootstrapResponse),
             "Registration": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Registration),

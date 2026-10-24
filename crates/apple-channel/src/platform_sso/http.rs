@@ -188,11 +188,20 @@ async fn revoke(
     headers: HeaderMap,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
+    body: Result<
+        Json<rss_mdm_agent_wire::platform_sso::Revocation>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<Json<Value>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
-    service::mutate(&Context::new(&s.app), Some(&p), &audit, Action::Revoke(id))
-        .await
-        .map(Json)
+    service::mutate(
+        &Context::new(&s.app),
+        Some(&p),
+        &audit,
+        Action::Revoke(id, body.map_err(|_| Error::Malformed)?.0),
+    )
+    .await
+    .map(Json)
 }
 async fn jwks(
     State(app): State<Arc<HttpState>>,

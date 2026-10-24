@@ -48,6 +48,10 @@
     {
       "type": "BrowserClaims",
       "file": "browser-claims-v1.schema.json"
+    },
+    {
+      "type": "Revocation",
+      "file": "revocation-v1.schema.json"
     }
   ]
 }
