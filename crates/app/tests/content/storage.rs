@@ -1,6 +1,7 @@
 //! Real PostgreSQL plus the shared TLS S3 provider; product admission and HTTP are exercised.
 use crate::test_support::software::Fixture;
 use crate::test_support::{process::*, runtime::*, *};
+use anyhow::Context;
 use rss_mdm_content_service::{Binding, Purpose, ResourceBinding, StorageClass};
 
 #[tokio::test]
@@ -109,6 +110,7 @@ async fn connection_operations_bind_actor_material_and_provider_authority() -> R
 fn binding(bytes: &[u8], class: StorageClass) -> Binding {
     Binding {
         purpose: Purpose::Resource(ResourceBinding {
+            inspection: None,
             storage_class: class,
             resource: "storage-fixture".into(),
             version: "1".into(),
@@ -232,6 +234,7 @@ fn s3_storage() -> Result<(tempfile::TempDir, Value)> {
 }
 async fn stores(
     storage: Option<Value>,
+    transfer_seconds: u64,
 ) -> Result<(
     Resources,
     Arc<rss_mdm_content_service::Store>,
@@ -242,6 +245,7 @@ async fn stores(
     if let Some(storage) = storage {
         config["content"]["storage"] = storage;
     }
+    config["content"]["transfer_seconds"] = json!(transfer_seconds);
     config["content"]["max_artifact_bytes"] = json!(160 * 1024 * 1024);
     config["content"]["max_temporary_bytes"] = json!(512 * 1024 * 1024);
     let config: crate::config::Config = serde_json::from_value(config)?;
@@ -310,7 +314,8 @@ async fn s3_product_http_contract() -> Result<()> {
 #[ignore = "MODULE=content.storage: durable PG control, real S3 fixed chunks and native snapshots"]
 async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let (resources, store, second) = stores(Some(storage)).await?;
+    // The fixed 128 MiB seam is not a throughput assertion in a debug provider build.
+    let (resources, store, second) = stores(Some(storage), 180).await?;
     resources.finish(async {
     let now = crate::windows::test_support::now();
     let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
@@ -331,8 +336,8 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     ensure!(second.status(actor, id, now).await?.offset == 65539);
     second
         .append(actor, id, 65539, now, &bytes[65539..], second.upload_budget()?, )
-        .await?;
-    second.finish(actor, id, now, second.upload_budget()?, ).await?;
+        .await.context("append large S3 frontier")?;
+    second.finish(actor, id, now, second.upload_budget()?, ).await.context("finish S3 frontier")?;
     let digest = b
         .sha256
         .iter()
@@ -341,13 +346,13 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
     ensure!(pg(&format!("SELECT jsonb_array_length(document->'value'->'pieces') FROM mdm_content.manifests WHERE tenant_id='{}' AND class='artifact' AND encode(sha256,'hex')='{}'",case_tenant(),digest))?.trim()=="2");
     let mut stream = store
         .verify(&artifact)
-        .await?
+        .await.context("verify S3 frontier")?
         .stream(128 * 1024 * 1024 - 2, artifact.length())
-        .await?;
+        .await.context("open cross-chunk S3 range")?;
     use futures::StreamExt;
     let mut tail = Vec::new();
     while let Some(part) = stream.next().await {
-        tail.extend_from_slice(&part?);
+        tail.extend_from_slice(&part.context("consume cross-chunk S3 range")?);
     }
     ensure!(tail == vec![0x67; 5]);
     Ok(())
@@ -356,7 +361,7 @@ async fn s3_artifact_cross_chunk_frontier() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=content.storage: real PG multi-instance epoch and failed-body frontier"]
 async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result<()> {
-    let (resources, store, second) = stores(None).await?;
+    let (resources, store, second) = stores(None, 60).await?;
     resources.finish(async {
     let bytes = b"epoch-frontier-bytes";
     let b = binding(bytes, StorageClass::Artifact);
@@ -441,7 +446,7 @@ async fn volume_fences_a_stale_writer_and_keeps_failed_body_frontier() -> Result
 #[ignore = "MODULE=content.storage: physical S3 snapshot survives failed PG frontier commit"]
 async fn s3_failed_frontier_commit_preserves_acknowledged_native_prefix() -> Result<()> {
     let (_secrets, storage) = s3_storage()?;
-    let (resources, store, second) = stores(Some(storage)).await?;
+    let (resources, store, second) = stores(Some(storage), 60).await?;
     resources.finish(async {
 
     let bytes = b"confirmed-prefix-and-retry";
@@ -589,7 +594,7 @@ async fn s3_rejected_writes_release_quota_after_permission_recovery_and_expiry()
     cfg["content"]["storage"] = storage;
     cfg["content"]["max_artifact_bytes"] = json!(4096);
     cfg["content"]["max_temporary_bytes"] = json!(8192);
-    cfg["content"]["max_bundle_bytes"] = json!(4096);
+
     let cfg: crate::config::Config = serde_json::from_value(cfg)?;
     let mut scoped_provider=provider.clone();
     scoped_provider["accessKey"]=json!(access);
@@ -699,7 +704,7 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
     use sqlx::Connection;
     use std::str::FromStr;
     let (_private, storage) = s3_storage()?;
-    let (resources, store, _) = stores(Some(storage)).await?;
+    let (resources, store, _) = stores(Some(storage), 60).await?;
     resources
         .finish(async {
             let now = crate::windows::test_support::now();
@@ -908,4 +913,83 @@ async fn restored_provider_version_rebinds_atomically_without_reissuing_content(
             Ok(())
         })
         .await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=content.storage: auxiliary spool quota does not block completed integrity; explicit parse persists once"]
+async fn auxiliary_inspection_quota_is_optional_and_explicit_result_is_persistent() -> Result<()> {
+    let (resources, store, second) = stores(None, 60).await?;
+    resources.finish(async {
+        let now = crate::windows::test_support::now();
+        let bytes = vec![0x67; 128 * 1024 * 1024 + 3];
+        let mut b = binding(&bytes, StorageClass::Artifact);
+        b.purpose = Purpose::Software { resource: "quota-package".into(), filename: "package.pkg".into() };
+        let id = Uuid::new_v4();
+        let actor = b.actor.clone();
+        store.begin(id, b.clone(), now, store.upload_budget()?).await?;
+        store.append(&actor, id, 0, now, bytes.as_slice(), store.upload_budget()?).await?;
+        // Leave less than three bytes of temporary quota; the extra spool would exceed it.
+        let mut pending = binding(b"reserved", StorageClass::Artifact);
+        pending.length = 128 * 1024 * 1024 - 2;
+        pending.sha256 = [8; 32];
+        let pending_id = Uuid::new_v4();
+        store.begin(pending_id, pending, now, store.upload_budget()?).await?;
+        let completed = store.finish(&actor, id, now, store.upload_budget()?).await?;
+        ensure!(completed.complete);
+        let digest = b.sha256.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let query = format!("SELECT document->'value'->'inspections'->'pkg'->>'status' FROM mdm_content.manifests WHERE tenant_id='{}' AND sha256=decode('{digest}','hex') AND class='artifact'",case_tenant());
+        ensure!(pg(&query)?.trim().is_empty(), "quota failure must not pretend to have parsed");
+        // Prepare a live-file owner at expired lease/retention boundaries. Retry and GC
+        // below use the real public Store paths; the blocking guard itself has a T1 proof.
+        let row = format!("tenant_id='{}' AND document->'value'->'upload'->>'id'='{id}'", case_tenant());
+        let baseline: u64 = pg(&format!("SELECT reserved FROM mdm_content.uploads WHERE {row}"))?.trim().parse()?;
+        pg(&format!("UPDATE mdm_content.uploads SET expires=0 WHERE tenant_id='{}' AND document->'value'->'upload'->>'id'='{pending_id}'", case_tenant()))?;
+        let small_id = Uuid::new_v4();
+        let mut small = binding(b"p", StorageClass::Artifact);
+        small.purpose = Purpose::Software { resource: small_id.to_string(), filename: "small.pkg".into() };
+        store.begin(small_id, small.clone(), now, store.upload_budget()?).await?;
+        store.append(&small.actor, small_id, 0, now, &b"p"[..], store.upload_budget()?).await?;
+        let small_row = format!("tenant_id='{}' AND document->'value'->'upload'->>'id'='{small_id}'", case_tenant());
+        let epoch = Uuid::new_v4();
+        let length = b.length;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, stopped) = std::sync::mpsc::channel();
+        let work = tokio::task::spawn_blocking(move || {
+            let file = tempfile::tempfile()?;
+            file.set_len(length)?;
+            let small_file = tempfile::tempfile()?;
+            small_file.set_len(1)?;
+            entered.send(()).map_err(|_| std::io::Error::other("file owner abandoned"))?;
+            let _ = stopped.recv();
+            drop((file, small_file));
+            Ok::<_, std::io::Error>(())
+        });
+        started.await?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch='{epoch}',held_until=0,reserved={length} WHERE {row}"))?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch='{epoch}',held_until=0 WHERE {small_row}"))?;
+        let mut contender = (*second).clone();
+        // Old+new large copies would fit; a Conflict must come from owner fencing.
+        contender.config.max_temporary_bytes = length * 2 + 2;
+        ensure!(matches!(contender.parse_upload(&actor, id, now).await, Err(rss_mdm_content_service::Error::Conflict)));
+        ensure!(matches!(contender.finish(&small.actor, small_id, now, contender.upload_budget()?).await, Err(rss_mdm_content_service::Error::Conflict)));
+        ensure!(pg(&format!("SELECT epoch::text||':'||reserved::text FROM mdm_content.uploads WHERE {row}"))?.trim() == format!("{epoch}:{length}"));
+        pg(&format!("UPDATE mdm_content.uploads SET expires=0 WHERE {row} OR {small_row}"))?;
+        pg(&format!("UPDATE mdm_content.objects SET expires=0 WHERE tenant_id='{}' AND owner=(SELECT id FROM mdm_content.uploads WHERE {small_row})", case_tenant()))?;
+        contender.begin(Uuid::new_v4(), binding(b"x", StorageClass::Artifact), now, contender.upload_budget()?).await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE ({row} OR {small_row}) AND epoch='{epoch}'"))?.trim() == "2", "GC must not discard live file reservations after retention expiry");
+        ensure!(pg(&format!("SELECT reserved FROM mdm_content.uploads WHERE {row}"))?.trim() == length.to_string());
+        release.send(())?;
+        work.await??;
+        // Confirmation is supplied only after the fixture owner has closed both files.
+        pg(&format!("UPDATE mdm_content.uploads SET epoch=NULL,held_until=0,reserved={baseline},expires={} WHERE {row}", completed.expires))?;
+        pg(&format!("UPDATE mdm_content.uploads SET epoch=NULL,held_until=0 WHERE {small_row}"))?;
+        contender.begin(Uuid::new_v4(), binding(b"x", StorageClass::Artifact), now, contender.upload_budget()?).await?;
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_content.uploads WHERE {small_row}"))?.trim() == "0", "confirmed expired owners are reclaimable");
+        second.parse_upload(&actor, id, now).await?;
+        ensure!(pg(&query)?.trim() == "rejected", "malformed metadata must be recorded");
+        let no_parse_budget = store.clone();
+        no_parse_budget.parse_upload(&actor, id, now).await?;
+        ensure!(second.status(&actor, id, now).await?.complete);
+        Ok(())
+    }).await
 }

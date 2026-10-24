@@ -4,26 +4,55 @@ use futures::StreamExt;
 use journal::{Manifest, Piece};
 use uuid::Uuid;
 use zeroize::Zeroizing;
+/// A deletion pin on a previously completed signed content manifest. Does not read bytes.
+pub struct Pinned {
+    store: Store,
+    pin: Uuid,
+    pub(super) manifest: Manifest,
+    artifact: Artifact,
+}
+impl Pinned {
+    pub(super) fn new(store: Store, pin: Uuid, manifest: Manifest, artifact: Artifact) -> Self {
+        Self {
+            store,
+            pin,
+            manifest,
+            artifact,
+        }
+    }
+    pub fn matches(&self, artifact: &Artifact) -> bool {
+        self.artifact.length() == artifact.length() && self.artifact.digest() == artifact.digest()
+    }
+}
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let store = self.store.clone();
+            let pin = self.pin;
+            runtime.spawn(async move {
+                let _ = store.unpin(pin).await;
+            });
+        }
+    }
+}
 pub struct Verified {
     store: Store,
     pub artifact: Artifact,
-    class: StorageClass,
     manifest: Manifest,
     pin: Uuid,
     pub(super) deadline: Deadline,
     plaintext: Option<Zeroizing<Vec<u8>>>,
     _permit: Option<TransferLease>,
 }
-/// Release scarce transfer capacity at its absolute deadline, even when HTTP backpressure
-/// stops polling the body. The timer performs only this synchronous release; the lease
-/// owns and aborts it on drop. Storage pins already carry the same persisted deadline.
+/// Release idle body capacity at its deadline, even under HTTP backpressure.
+/// Actual blocking work owns a separate Arc until its buffers and files have closed.
 /// ref: tokio tokio/src/runtime/task/join.rs (owned task cancellation).
 struct TransferLease {
-    permit: Arc<std::sync::Mutex<Option<OwnedSemaphorePermit>>>,
+    permit: Arc<std::sync::Mutex<Option<Arc<OwnedSemaphorePermit>>>>,
     expiry: tokio::task::JoinHandle<()>,
 }
 impl TransferLease {
-    fn new(permit: OwnedSemaphorePermit, deadline: Deadline) -> Self {
+    fn new(permit: Arc<OwnedSemaphorePermit>, deadline: Deadline) -> Self {
         let permit = Arc::new(std::sync::Mutex::new(Some(permit)));
         let release = permit.clone();
         let expiry = tokio::spawn(async move {
@@ -31,6 +60,13 @@ impl TransferLease {
             release.lock().unwrap_or_else(|e| e.into_inner()).take();
         });
         Self { permit, expiry }
+    }
+    fn work(&self) -> Result<Arc<OwnedSemaphorePermit>, Error> {
+        self.permit
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or(Error::Deadline)
     }
 }
 impl Drop for TransferLease {
@@ -50,33 +86,78 @@ impl Drop for Verified {
         }
     }
 }
-pub(super) struct Temporary {
-    pub file: tempfile::NamedTempFile,
-    store: Store,
-    pin: Uuid,
-}
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let s = self.store.clone();
-            let id = self.pin;
-            runtime.spawn(async move {
-                let _ = s.unpin(id).await;
-            });
-        }
-    }
+// Return values (including buffers and open files) must drop before the work permit.
+pub(super) fn blocking<G: Send + 'static, T: Send + 'static>(
+    guard: G,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> tokio::task::JoinHandle<(T, G)> {
+    tokio::task::spawn_blocking(move || (work(), guard))
 }
 impl Store {
-    pub(super) async fn check_pieces(
+    pub async fn pin_ready(&self, a: &Artifact, c: StorageClass) -> Result<Pinned, Error> {
+        let (manifest, pin) = self.pin(a, c, self.deadline()?, 0).await?;
+        Ok(Pinned {
+            store: self.clone(),
+            pin,
+            manifest,
+            artifact: a.clone(),
+        })
+    }
+    pub async fn pin_materials(
+        &self,
+        artifacts: &[(Artifact, StorageClass)],
+    ) -> Result<Vec<Pinned>, Error> {
+        if artifacts.len() > 128 {
+            return Err(Error::Malformed);
+        }
+        let mut files = Vec::new();
+        for (a, c) in artifacts {
+            files.push(self.pin_ready(a, *c).await?);
+        }
+        Ok(files)
+    }
+    pub(super) async fn verify_ready_report(
+        &self,
+        a: &Artifact,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        let permit = Arc::new(
+            self.transfers
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Conflict)?,
+        );
+        let pin = self.pin_ready(a, StorageClass::Artifact).await?;
+        let (bytes, digest, _) = self
+            .check_pieces(
+                &pin.manifest.pieces,
+                a,
+                StorageClass::Artifact,
+                self.deadline()?,
+                None,
+                permit,
+            )
+            .await?;
+        if digest != a.digest().bytes() {
+            return Err(Error::Invariant);
+        }
+        bytes.ok_or(Error::Malformed)
+    }
+    pub(super) async fn check_pieces<G: Clone + Send + 'static>(
         &self,
         pieces: &[Piece],
         a: &Artifact,
         c: StorageClass,
         deadline: Deadline,
-    ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32]), Error> {
+        mut spool: Option<File>,
+        guard: G,
+    ) -> Result<(Option<Zeroizing<Vec<u8>>>, [u8; 32], Option<File>), Error> {
         if pieces.is_empty() || pieces.len() > 8193 || (c.protected() && pieces.len() != 1) {
             return Err(Error::Invariant);
         }
+        let available = deadline
+            .instant()
+            .saturating_duration_since(self.timer.now());
+        let spool_cutoff = deadline.instant() - available / 4;
         let mut offset = 0;
         let mut hash = Sha256::new();
         let mut small = if a.length() <= protected::NATIVE_LIMIT {
@@ -97,24 +178,49 @@ impl Store {
             }
             let physical = self
                 .backend
-                .read(&p.coordinate, p.content, 0, p.content.length, deadline)
+                .read(
+                    &p.coordinate,
+                    p.content,
+                    0,
+                    p.content.length,
+                    deadline,
+                    guard.clone(),
+                )
                 .await?;
-            if physical.len() as u64 != p.content.length
-                || Sha256::digest(&physical).as_slice() != p.content.sha256
-            {
-                return Err(Error::Invariant);
-            }
-            let logical = if c.protected() {
-                self.plaintext(&physical, a, c, p.length)?
-            } else {
-                Zeroizing::new(physical)
-            };
-            if logical.len() as u64 != p.length {
-                return Err(Error::Invariant);
-            }
-            hash.update(&logical);
+            let class = c;
+            let store = self.clone();
+            let artifact = a.clone();
+            let length = p.length;
+            let (checked, _work) = blocking(guard.clone(), move || {
+                let logical = if class.protected() {
+                    store.plaintext(&physical, &artifact, class, length)?
+                } else {
+                    Zeroizing::new(physical)
+                };
+                if logical.len() as u64 != length {
+                    return Err(Error::Invariant);
+                }
+                hash.update(&logical);
+                Ok((hash, logical))
+            })
+            .await
+            .map_err(|_| Error::Storage)?;
+            let (next_hash, logical) = checked?;
+            hash = next_hash;
+            self.check_deadline(deadline)?;
             if let Some(small) = &mut small {
                 small.extend_from_slice(&logical);
+            }
+            if let Some(mut file) = spool.take().filter(|_| self.timer.now() < spool_cutoff) {
+                let task = blocking(guard.clone(), move || {
+                    std::io::Write::write_all(&mut file, &logical)
+                        .ok()
+                        .map(|()| file)
+                });
+                spool = match tokio::time::timeout_at(spool_cutoff.into(), task).await {
+                    Ok(Ok((file, _work))) => file,
+                    _ => None,
+                };
             }
             offset = offset.checked_add(p.length).ok_or(Error::Invariant)?;
         }
@@ -122,7 +228,7 @@ impl Store {
         if offset != a.length() {
             return Err(Error::Invariant);
         }
-        Ok((small, hash.finalize().into()))
+        Ok((small, hash.finalize().into(), spool))
     }
     pub async fn verify(self: &Arc<Self>, a: &Artifact) -> Result<Verified, Error> {
         self.verify_class(a, StorageClass::Artifact, self.deadline()?)
@@ -134,12 +240,13 @@ impl Store {
         c: StorageClass,
         d: Deadline,
     ) -> Result<Verified, Error> {
-        let permit = self
-            .transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Conflict)?;
-        let mut v = self.verify_at(a, c, d).await?;
+        let permit = Arc::new(
+            self.transfers
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Conflict)?,
+        );
+        let mut v = self.verify_at(a, c, d, permit.clone()).await?;
         v._permit = Some(TransferLease::new(permit, d));
         Ok(v)
     }
@@ -148,6 +255,7 @@ impl Store {
         a: &Artifact,
         c: StorageClass,
         d: Deadline,
+        permit: Arc<OwnedSemaphorePermit>,
     ) -> Result<Verified, Error> {
         if a.length() > self.config.max_artifact_bytes
             || (c.protected() && a.length() > protected::NATIVE_LIMIT)
@@ -158,15 +266,14 @@ impl Store {
         let mut verified = Verified {
             store: self.clone(),
             artifact: a.clone(),
-            class: c,
             manifest,
             pin,
             deadline: d,
             plaintext: None,
             _permit: None,
         };
-        let (plaintext, digest) = self
-            .check_pieces(&verified.manifest.pieces, a, c, d)
+        let (plaintext, digest, _) = self
+            .check_pieces(&verified.manifest.pieces, a, c, d, None, permit)
             .await?;
         if digest != a.digest().bytes() {
             return Err(Error::Invariant);
@@ -174,34 +281,8 @@ impl Store {
         verified.plaintext = plaintext;
         Ok(verified)
     }
-    pub async fn verify_materials(
-        &self,
-        artifacts: &[(Artifact, StorageClass)],
-    ) -> Result<Vec<Verified>, Error> {
-        if artifacts.len() > 128 {
-            return Err(Error::Malformed);
-        }
-        let permit = self
-            .transfers
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Conflict)?;
-        let d = self.deadline()?;
-        let mut out = Vec::new();
-        for (a, c) in artifacts {
-            out.push(self.verify_at(a, *c, d).await?);
-        }
-        if let Some(v) = out.first_mut() {
-            v._permit = Some(TransferLease::new(permit, d));
-        }
-        Ok(out)
-    }
 }
 impl Verified {
-    /// Catalog validation has finished reading; retain identity and deletion pins only.
-    pub(crate) fn release_transfer(&mut self) {
-        self._permit.take();
-    }
     pub fn matches(&self, a: &Artifact) -> bool {
         self.store.check_deadline(self.deadline).is_ok()
             && self.artifact.length() == a.length()
@@ -222,46 +303,6 @@ impl Verified {
             .as_ref()
             .map(|b| Zeroizing::new(b.to_vec()))
             .ok_or(Error::Malformed)
-    }
-    pub(super) async fn materialize(&self, extra: u64) -> Result<Temporary, Error> {
-        if self.class.protected() {
-            return Err(Error::Malformed);
-        }
-        let (_, pin) = self
-            .store
-            .pin(
-                &self.artifact,
-                self.class,
-                self.deadline,
-                self.artifact
-                    .length()
-                    .checked_add(extra)
-                    .ok_or(Error::Malformed)?,
-            )
-            .await?;
-        let mut tmp = Temporary {
-            file: tempfile::NamedTempFile::new().map_err(|_| storage())?,
-            store: self.store.clone(),
-            pin,
-        };
-        use std::io::Write;
-        for p in &self.manifest.pieces {
-            self.store.check_deadline(self.deadline)?;
-            let bytes = self
-                .store
-                .backend
-                .read(&p.coordinate, p.content, 0, p.content.length, self.deadline)
-                .await?;
-            tmp.file
-                .as_file_mut()
-                .write_all(&bytes)
-                .map_err(|_| storage())?;
-        }
-        tmp.file
-            .as_file_mut()
-            .seek(SeekFrom::Start(0))
-            .map_err(|_| storage())?;
-        Ok(tmp)
     }
     pub async fn stream(
         self,
@@ -298,6 +339,7 @@ impl Verified {
                                     at - p.offset,
                                     (end - p.offset).min(p.length),
                                     v.deadline,
+                                    v._permit.as_ref().ok_or(Error::Invariant)?.work()?,
                                 )
                                 .await?
                         });
@@ -339,11 +381,45 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn cancelled_blocking_work_keeps_file_and_capacity_until_exit() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = Arc::new(slots.clone().try_acquire_owned().unwrap());
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let path = file.path().to_owned();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, stopped) = std::sync::mpsc::channel();
+        let task = blocking(permit, move || {
+            entered.send(()).unwrap();
+            let _ = stopped.recv();
+            std::io::Write::write_all(file.as_file_mut(), b"owned work").unwrap();
+            file
+        });
+        started.await.unwrap();
+        drop(task);
+        assert!(path.exists());
+        assert!(slots.clone().try_acquire_owned().is_err());
+        release.send(()).unwrap();
+        let restored =
+            tokio::time::timeout(std::time::Duration::from_secs(1), slots.acquire_owned())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(
+            !path.exists(),
+            "the file must close before capacity returns"
+        );
+        drop(restored);
+    }
+
+    #[tokio::test]
     async fn transfer_capacity_expires_without_polling_and_releases_on_drop() {
         let slots = Arc::new(Semaphore::new(1));
         let deadline = Deadline::at(RuntimeTimer.now() + std::time::Duration::from_millis(30));
-        let lease = TransferLease::new(slots.clone().try_acquire_owned().unwrap(), deadline);
+        let work = Arc::new(slots.clone().try_acquire_owned().unwrap());
+        let lease = TransferLease::new(work.clone(), deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(slots.clone().try_acquire_owned().is_err());
+        drop(work);
         let restored = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             slots.clone().acquire_owned(),
@@ -355,7 +431,7 @@ mod tests {
         assert_eq!(slots.available_permits(), 1);
         drop(lease);
         let lease = TransferLease::new(
-            slots.clone().try_acquire_owned().unwrap(),
+            Arc::new(slots.clone().try_acquire_owned().unwrap()),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         drop(lease);
@@ -366,7 +442,7 @@ mod tests {
     async fn cancelled_transfer_releases_capacity() {
         let slots = Arc::new(Semaphore::new(1));
         let lease = TransferLease::new(
-            slots.clone().try_acquire_owned().unwrap(),
+            Arc::new(slots.clone().try_acquire_owned().unwrap()),
             Deadline::at(RuntimeTimer.now() + std::time::Duration::from_secs(60)),
         );
         let task = tokio::spawn(async move {

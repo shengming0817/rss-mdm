@@ -9,6 +9,111 @@ use std::collections::BTreeSet;
 const METADATA: u64 = 1_048_576;
 mod cfb_budget;
 mod xar_metadata;
+/// Only normalized supported formats can address observations in the content manifest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Kind {
+    Exe,
+    Msi,
+    Msix,
+    Pkg,
+    Bundle,
+}
+impl Kind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+            "exe" => Some(Self::Exe),
+            "msi" => Some(Self::Msi),
+            "msix" | "msixbundle" => Some(Self::Msix),
+            "pkg" => Some(Self::Pkg),
+            "zip" => Some(Self::Bundle),
+            _ => None,
+        }
+    }
+    pub fn from_format(format: SoftwareFormat) -> Option<Self> {
+        match format {
+            SoftwareFormat::Exe => Some(Self::Exe),
+            SoftwareFormat::Msi => Some(Self::Msi),
+            SoftwareFormat::Msix => Some(Self::Msix),
+            SoftwareFormat::Pkg => Some(Self::Pkg),
+            SoftwareFormat::Bundle => Some(Self::Bundle),
+            _ => None,
+        }
+    }
+    pub fn format(self) -> SoftwareFormat {
+        match self {
+            Self::Exe => SoftwareFormat::Exe,
+            Self::Msi => SoftwareFormat::Msi,
+            Self::Msix => SoftwareFormat::Msix,
+            Self::Pkg => SoftwareFormat::Pkg,
+            Self::Bundle => SoftwareFormat::Bundle,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Exe => "installer.exe",
+            Self::Msi => "installer.msi",
+            Self::Msix => "installer.msix",
+            Self::Pkg => "installer.pkg",
+            Self::Bundle => "bundle.zip",
+        }
+    }
+}
+pub(super) const AUTO_LIMIT: u64 = 1_073_741_824;
+pub(super) fn automatic(kind: Option<Kind>, length: u64) -> bool {
+    kind.is_some() && length <= AUTO_LIMIT
+}
+
+pub(super) async fn observe(
+    mut file: File,
+    kind: Kind,
+    config: Config,
+    timer: Arc<dyn Clock>,
+    deadline: Deadline,
+    capacity: Arc<crate::budget::UploadLease>,
+    reservation: Option<crate::reader::Pinned>,
+) -> rss_mdm_software_service::management::content::InstallerInspection {
+    struct ParserClock {
+        timer: Arc<dyn Clock>,
+        cancel: tokio_util::sync::CancellationToken,
+        deadline: Deadline,
+    }
+    impl Clock for ParserClock {
+        fn now(&self) -> std::time::Instant {
+            if self.cancel.is_cancelled() {
+                self.deadline.instant()
+            } else {
+                self.timer.now()
+            }
+        }
+    }
+    // Auxiliary work must leave time for the required completion transaction.
+    let available = deadline.instant().saturating_duration_since(timer.now());
+    let deadline = Deadline::at(deadline.instant() - available / 4);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _cancel = cancel.clone().drop_guard();
+    let task = tokio::task::spawn_blocking(move || {
+        let clock = ParserClock {
+            timer,
+            cancel,
+            deadline,
+        };
+        let result = match inspect(&mut file, kind.name(), &config, &clock, deadline) {
+            Ok(facts) => {
+                rss_mdm_software_service::management::content::InstallerInspection::Parsed { facts }
+            }
+            Err(_) => rss_mdm_software_service::management::content::InstallerInspection::Rejected,
+        };
+        drop(file);
+        drop(reservation);
+        drop(capacity);
+        result
+    });
+    match tokio::time::timeout_at(deadline.instant().into(), task).await {
+        Ok(Ok(result)) => result,
+        _ => rss_mdm_software_service::management::content::InstallerInspection::Rejected,
+    }
+}
 fn invalid() -> Error {
     Error::Malformed
 }
@@ -34,6 +139,7 @@ pub(super) fn inspect(
         "msi" => msi(file, clock, deadline)?,
         "msix" => super::native::inspect_msix(file, config, clock, deadline)?,
         "pkg" => pkg(file, config, clock, deadline)?,
+        "zip" => bundle(file, config, clock, deadline)?,
         _ => return Err(invalid()),
     };
     if facts
@@ -325,5 +431,57 @@ fn pkg(
         } else {
             None
         },
+    })
+}
+
+fn bundle(
+    file: &mut File,
+    config: &Config,
+    clock: &dyn Clock,
+    deadline: Deadline,
+) -> Result<InstallerFacts, Error> {
+    let (count, _) = super::bundle::directory(file, config)?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|_| invalid())?;
+    if zip.len() as u64 != count {
+        return Err(invalid());
+    }
+    let mut entry = zip.by_name("manifest.json").map_err(|_| invalid())?;
+    let length = entry.size();
+    if !super::bundle::regular_entry(&entry)
+        || length > METADATA
+        || length
+            > entry
+                .compressed_size()
+                .max(1)
+                .saturating_mul(config.max_expansion_ratio)
+    {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    super::native::read_xml_bytes(&mut entry, length, clock, deadline, &mut bytes)?;
+    let manifest: rss_mdm_resource::BundleManifest =
+        serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if manifest.schema != 1
+        || manifest.entries.is_empty()
+        || manifest.entries.len() > config.max_bundle_entries
+    {
+        return Err(invalid());
+    }
+    let script = if manifest.platform == rss_mdm_resource::Platform::Windows {
+        "install.ps1"
+    } else {
+        "install.sh"
+    };
+    drop(entry);
+    if !manifest.entries.contains_key(script)
+        || !super::bundle::regular_entry(&zip.by_name(script).map_err(|_| invalid())?)
+    {
+        return Err(invalid());
+    }
+    Ok(InstallerFacts {
+        format: SoftwareFormat::Bundle,
+        version: None,
+        architectures: vec![manifest.architecture],
+        bundle_id: None,
     })
 }

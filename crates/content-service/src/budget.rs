@@ -33,15 +33,6 @@ impl UploadBudget {
             .await
             .map_err(|_| E::from(Error::Deadline))?
     }
-    pub(crate) async fn cleanup<T>(
-        self,
-        future: impl Future<Output = Result<T, Error>>,
-    ) -> Result<T, Error> {
-        let remaining = self.remaining().min(Duration::from_secs(6));
-        tokio::time::timeout(remaining, future)
-            .await
-            .map_err(|_| Error::Cleanup)?
-    }
 }
 impl Store {
     pub fn upload_budget(&self) -> Result<UploadBudget, Error> {
@@ -57,36 +48,41 @@ pub(crate) struct UploadLease {
     store: Store,
     key: uuid::Uuid,
     epoch: uuid::Uuid,
-    budget: UploadBudget,
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
     released: bool,
+    temporary: u64,
 }
 impl UploadLease {
     pub(crate) fn new(
         store: &Store,
         key: uuid::Uuid,
         epoch: uuid::Uuid,
-        budget: UploadBudget,
         permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Self {
         Self {
             store: store.clone(),
             key,
             epoch,
-            budget,
             permit: Some(permit),
             released: false,
+            temporary: 0,
         }
+    }
+    pub(crate) fn temporary(&mut self, length: u64) {
+        self.temporary = length;
     }
     pub(crate) fn complete(mut self) {
         self.released = true;
     }
     pub(crate) async fn release(mut self) -> Result<(), Error> {
-        let result = self
-            .budget
-            .cleanup(self.store.release(self.key, self.epoch))
-            .await;
-        // A failed bounded release remains fenced until its persisted expiry; don't spin/retry.
+        let result = tokio::time::timeout(
+            Duration::from_secs(6),
+            self.store.release(self.key, self.epoch, self.temporary),
+        )
+        .await
+        .map_err(|_| Error::Cleanup)
+        .and_then(|value| value);
+        // Unconfirmed work remains charged; expiry alone never proves its resources closed.
         self.released = true;
         if result.is_err() {
             tracing::warn!(upload=%self.key, epoch=%self.epoch, "upload lease cleanup unconfirmed");
@@ -100,17 +96,18 @@ impl Drop for UploadLease {
             return;
         }
         let store = self.store.clone();
-        let (key, epoch, budget) = (self.key, self.epoch, self.budget);
+        let (key, epoch) = (self.key, self.epoch);
         let permit = self.permit.take();
+        let temporary = self.temporary;
         if tokio::runtime::Handle::try_current().is_ok() {
             self.store.cleanup_tasks.spawn(async move {
                 let _permit = permit;
-                if budget.cleanup(store.release(key, epoch)).await.is_err() {
+                if !matches!(tokio::time::timeout(Duration::from_secs(6), store.release(key, epoch, temporary)).await, Ok(Ok(()))) {
                     tracing::warn!(upload=%key, epoch=%epoch, "cancelled upload cleanup unconfirmed");
                 }
             });
         } else {
-            tracing::warn!(upload=%key, epoch=%epoch, "upload cleanup unavailable; lease expiry fences recovery");
+            tracing::warn!(upload=%key, epoch=%epoch, "upload cleanup unavailable; reservation remains fenced");
         }
     }
 }
@@ -119,7 +116,7 @@ impl Drop for UploadLease {
 mod tests {
     use super::*;
     #[tokio::test(start_paused = true)]
-    async fn stages_share_cutoff_and_cleanup_uses_only_reserved_time() {
+    async fn stages_share_operation_cutoff() {
         let budget = UploadBudget::new(
             &rss_mdm_audit_integration::budget::RuntimeTimer,
             Duration::from_secs(12),
@@ -144,22 +141,6 @@ mod tests {
                 })
                 .await,
             Err(Error::Deadline)
-        ));
-        budget
-            .cleanup(async {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                Ok(())
-            })
-            .await
-            .unwrap();
-        assert!(matches!(
-            budget
-                .cleanup(async {
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    Ok(())
-                })
-                .await,
-            Err(Error::Cleanup)
         ));
     }
 }

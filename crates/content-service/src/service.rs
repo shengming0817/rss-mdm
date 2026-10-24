@@ -240,6 +240,12 @@ async fn resolve_in(
     };
     Ok(Binding {
         purpose: crate::Purpose::Resource(crate::ResourceBinding {
+            inspection: match variant.declaration() {
+                r::Declaration::Software { definition } if definition.primary() == &artifact => {
+                    Some(definition.spec().material.format)
+                }
+                _ => None,
+            },
             storage_class: if matches!(variant.declaration(), r::Declaration::Configuration { .. })
             {
                 crate::StorageClass::NativeConfiguration
@@ -355,11 +361,7 @@ pub async fn record(
 ) -> Result<(), Error> {
     audit.operation(upload.id, "management_write");
     let verified = budget
-        .work(store(app)?.verify_class(
-            &upload.binding.artifact()?,
-            upload.binding.class(),
-            budget.operation,
-        ))
+        .work(store(app)?.pin_ready(&upload.binding.artifact()?, upload.binding.class()))
         .await?;
     let fresh = session.refresh(app, budget).await?;
     let proof = &fresh;

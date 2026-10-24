@@ -264,7 +264,7 @@ fn additional_host_content_and_cold_snapshot_follow_its_own_deployment() {
         // Domain reconciliation has exported S3 while this host is still pending.
         // A restart/retry must observe that exact application, not reset to revision 1.
         let mut prepared = waiting;
-        prepared["content"] = json!({"storage":{"kind":"s3","revision":1,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_bytes":1073741824u64,"max_bundle_entries":1000,"max_expansion_ratio":100});
+        prepared["content"] = json!({"storage":{"kind":"s3","revision":1,"max_concurrent":8,"connect_seconds":5},"imports":{},"max_artifact_bytes":1073741824u64,"max_temporary_bytes":2147483648u64,"max_uploads":8,"transfer_seconds":60,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100});
         prepared["runtime_binding"] = json!({"host_id":progress.host_id,"operation_id":Uuid::new_v4(),"revision":2,"material_digest":super::super::application::fingerprint(&prepared).unwrap()});
         {
             let owner =

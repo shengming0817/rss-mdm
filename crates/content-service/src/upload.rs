@@ -30,6 +30,7 @@ pub enum Purpose {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceBinding {
+    pub inspection: Option<rss_mdm_resource::SoftwareFormat>,
     pub storage_class: StorageClass,
     pub resource: String,
     pub version: String,
@@ -41,6 +42,12 @@ pub struct ResourceBinding {
     pub origin: Option<String>,
 }
 impl Binding {
+    pub(super) fn inspection_kind(&self) -> Option<crate::installer::Kind> {
+        match &self.purpose {
+            Purpose::Software { filename, .. } => crate::installer::Kind::from_name(filename),
+            Purpose::Resource(r) => r.inspection.and_then(crate::installer::Kind::from_format),
+        }
+    }
     pub fn resource(&self) -> Result<&ResourceBinding, Error> {
         match &self.purpose {
             Purpose::Resource(v) => Ok(v),
@@ -186,24 +193,34 @@ impl Store {
             .map_err(|_| Error::Conflict)?;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let lease = Arc::new(crate::budget::UploadLease::new(self, key, epoch, permit));
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result = budget
             .work(async {
                 let (saved, epoch) = self
                     .claim(actor, id, Some(offset), now, epoch, budget)
                     .await?;
-                self.append_claimed(saved, epoch, body, budget.operation, &commit_started)
-                    .await
+                self.append_claimed(
+                    saved,
+                    (epoch, lease.clone()),
+                    body,
+                    budget.operation,
+                    &commit_started,
+                )
+                .await
             })
             .await;
         match result {
             Ok(value) => {
-                lease.complete();
+                if let Ok(lease) = Arc::try_unwrap(lease) {
+                    lease.complete();
+                }
                 Ok(value)
             }
             Err(error) => {
-                let _ = lease.release().await;
+                if let Ok(lease) = Arc::try_unwrap(lease) {
+                    let _ = lease.release().await;
+                }
                 if matches!(error, Error::Deadline)
                     && commit_started.load(std::sync::atomic::Ordering::Acquire)
                 {
@@ -218,13 +235,14 @@ impl Store {
     async fn append_claimed<R: tokio::io::AsyncRead + Unpin + Send>(
         &self,
         mut saved: journal::Saved,
-        epoch: Uuid,
+        lease: (Uuid, Arc<crate::budget::UploadLease>),
         mut body: R,
         deadline: Deadline,
         commit_started: &std::sync::atomic::AtomicBool,
     ) -> Result<Upload, Error> {
         use tokio::io::AsyncReadExt;
         use zeroize::Zeroizing;
+        let (epoch, capacity) = lease;
         let start = saved.upload.offset;
         if start >= saved.upload.binding.length {
             return Err(Error::Conflict);
@@ -243,6 +261,7 @@ impl Store {
                         0,
                         piece.content.length,
                         deadline,
+                        capacity.clone(),
                     )
                     .await?;
                 buffer = self.plaintext(&bytes, &artifact, saved.upload.binding.class(), start)?;
@@ -263,6 +282,7 @@ impl Store {
                         0,
                         tail.content.length,
                         deadline,
+                        capacity.clone(),
                     )
                     .await?,
             );
@@ -289,7 +309,7 @@ impl Store {
                 let offset = saved.pieces.last().map_or(0, |p| p.offset + p.length);
                 saved.pieces.push(
                     self.put_piece(
-                        (key, epoch),
+                        (key, epoch, capacity.clone()),
                         offset,
                         journal::CHUNK,
                         bytes,
@@ -317,7 +337,7 @@ impl Store {
             };
             saved.pieces.push(
                 self.put_piece(
-                    (key, epoch),
+                    (key, epoch, capacity.clone()),
                     offset,
                     length,
                     bytes,
@@ -330,6 +350,80 @@ impl Store {
         self.save_frontier(&saved, epoch, deadline, commit_started)
             .await?;
         Ok(saved.upload)
+    }
+    pub(super) async fn reserve_parse(
+        &self,
+        key: Uuid,
+        epoch: Uuid,
+        length: u64,
+    ) -> Result<(), Error> {
+        let mut tx = self.tx().await?;
+        let old: i64 = sqlx::query_scalar("SELECT reserved FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 FOR UPDATE")
+            .bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+        let required = length.checked_mul(2).ok_or(Error::Malformed)?;
+        self.quota(&mut tx, required.saturating_sub(old as u64))
+            .await?;
+        let changed = sqlx::query("UPDATE mdm_content.uploads SET reserved=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3")
+            .bind(self.tenant.to_string()).bind(key).bind(epoch).bind(required as i64).execute(&mut *tx).await.map_err(|_| storage())?.rows_affected();
+        if changed != 1 {
+            return Err(Error::Conflict);
+        }
+        journal::commit(tx).await
+    }
+    pub async fn parse_upload(&self, actor: &str, id: Uuid, now: i64) -> Result<(), Error> {
+        let budget = self.upload_budget()?;
+        let old = self.saved(actor, id, now).await?;
+        if !old.upload.complete {
+            return Err(Error::Conflict);
+        }
+        let kind = old
+            .upload
+            .binding
+            .inspection_kind()
+            .ok_or(Error::Malformed)?;
+        let artifact = old.upload.binding.artifact()?;
+        let pin = self
+            .pin_ready(&artifact, old.upload.binding.class())
+            .await?;
+        if pin.manifest.inspections.contains_key(&kind) {
+            return Ok(());
+        }
+        let epoch = Uuid::new_v4();
+        let key = storage_key(actor, id);
+        let lease = Arc::new(crate::budget::UploadLease::new(
+            self,
+            key,
+            epoch,
+            self.transfers
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| Error::Conflict)?,
+        ));
+        let result = budget.work(async {
+            self.claim_parse(actor, id, now, epoch, budget, artifact.length()).await?;
+            let (manifest, pin_id) = self.pin(&artifact, old.upload.binding.class(), budget.operation, 0).await?;
+            let reservation = crate::reader::Pinned::new(self.clone(), pin_id, manifest, artifact.clone());
+            let temporary = tempfile::tempfile().map_err(|_| storage())?;
+            let (_, digest, temporary) = self.check_pieces(&reservation.manifest.pieces, &artifact, old.upload.binding.class(), budget.operation, Some(temporary), lease.clone()).await?;
+            let temporary = temporary.ok_or(Error::Storage)?;
+            if digest != artifact.digest().bytes() { return Err(Error::Invariant); }
+            let result = crate::installer::observe(temporary, kind, self.config.clone(), self.timer.clone(), budget.operation, lease.clone(), Some(reservation)).await;
+            let mut tx = self.tx().await?;
+            let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+            if !owns { return Err(Error::Conflict); }
+            let class = old.upload.binding.class();
+            let document: serde_json::Value = sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
+                .bind(self.tenant.to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+            let mut current: journal::Manifest = self.unsign(&self.manifest_key(class,&artifact), document)?;
+            current.inspections.entry(kind).or_insert(result);
+            sqlx::query("UPDATE mdm_content.manifests SET document=$5 WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4")
+                .bind(self.tenant.to_string()).bind(journal::class(class)).bind(artifact.digest().bytes().as_slice()).bind(artifact.length() as i64).bind(self.sign(&self.manifest_key(class,&artifact), &current)?).execute(&mut *tx).await.map_err(|_| storage())?;
+            journal::commit(tx).await
+        }).await;
+        if let Ok(lease) = Arc::try_unwrap(lease) {
+            let _ = lease.release().await;
+        }
+        result
     }
     pub async fn finish(
         &self,
@@ -350,31 +444,61 @@ impl Store {
         let deadline = budget.operation;
         let epoch = Uuid::new_v4();
         let key = storage_key(actor, id);
-        let lease = crate::budget::UploadLease::new(self, key, epoch, budget, permit);
+        let mut lease = crate::budget::UploadLease::new(self, key, epoch, permit);
+        let kind = old.upload.binding.inspection_kind();
+        let automatic = crate::installer::automatic(kind, old.upload.binding.length);
+        let lease = if automatic {
+            lease.temporary(old.upload.binding.length);
+            Arc::new(lease)
+        } else {
+            Arc::new(lease)
+        };
         let commit_started = std::sync::atomic::AtomicBool::new(false);
         let result=budget.work(async {
         let (mut saved, epoch) = self.claim(actor, id, None, now, epoch, budget).await?;
    if saved.upload.offset!=saved.upload.binding.length{return Err(Error::Conflict)}
    let a=saved.upload.binding.artifact()?;let c=saved.upload.binding.class();
-   let (_,digest)=self.check_pieces(&saved.pieces,&a,c,deadline).await?;
+   let temporary = if automatic {
+       match self.reserve_parse(key, epoch, a.length()).await {
+           Ok(()) => tempfile::tempfile().ok(),
+           Err(Error::Conflict) => None,
+           Err(error) => return Err(error),
+       }
+   } else { None };
+   let (_,digest,temporary)=self.check_pieces(&saved.pieces,&a,c,deadline,temporary,lease.clone()).await?;
    if digest!=a.digest().bytes(){return Err(Error::Malformed)}
-   self.check_deadline(deadline)?;let mut tx=self.tx().await?;
-   let owns:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;if !owns{return Err(Error::Conflict)}
-   let manifest=journal::Manifest{pieces:saved.pieces.clone()};
-   sqlx::query("INSERT INTO mdm_content.manifests(tenant_id,class,sha256,length,document,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'ready') ON CONFLICT(tenant_id,class,sha256,length) DO UPDATE SET expires=EXCLUDED.expires, document=CASE WHEN mdm_content.manifests.state='deleted' THEN EXCLUDED.document ELSE mdm_content.manifests.document END,state='ready' WHERE mdm_content.manifests.state<>'deleting'")
+   self.check_deadline(deadline)?;
+   let mut inspections = std::collections::BTreeMap::new();
+   if let (Some(file), Some(kind)) = (temporary, kind) {
+       let outcome = crate::installer::observe(file, kind, self.config.clone(), self.timer.clone(), deadline, lease.clone(), None).await;
+       inspections.insert(kind, outcome);
+   }
+   let mut tx = self.tx().await?;
+   let owns: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_content.uploads WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3 AND NOT complete)").bind(self.tenant.to_string()).bind(key).bind(epoch).fetch_one(&mut *tx).await.map_err(|_| storage())?;
+   if !owns { return Err(Error::Conflict); }
+   let manifest=journal::Manifest{pieces:saved.pieces.clone(), inspections};
+   sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2886))").bind(self.manifest_key(c,&a)).execute(&mut *tx).await.map_err(|_| storage())?;
+   // Preserve the physical identity already in use; merge only observations for identical bytes.
+   let previous: Option<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 AND state='ready' FOR UPDATE")
+      .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_optional(&mut *tx).await.map_err(|_| storage())?;
+   let manifest = if let Some(document) = previous {
+       let mut existing: journal::Manifest = self.unsign(&self.manifest_key(c,&a), document)?;
+       for (kind, result) in manifest.inspections { existing.inspections.entry(kind).or_insert(result); }
+       existing
+   } else { manifest };
+   sqlx::query("INSERT INTO mdm_content.manifests(tenant_id,class,sha256,length,document,expires,state) VALUES($1::uuid,$2,$3,$4,$5,$6,'ready') ON CONFLICT(tenant_id,class,sha256,length) DO UPDATE SET expires=EXCLUDED.expires, document=EXCLUDED.document,state='ready' WHERE mdm_content.manifests.state<>'deleting'")
     .bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).bind(self.sign(&self.manifest_key(c,&a),&manifest)?).bind(saved.upload.expires).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    let state:String=sqlx::query_scalar("SELECT state FROM mdm_content.manifests WHERE tenant_id=$1::uuid AND class=$2 AND sha256=$3 AND length=$4 FOR UPDATE").bind(self.tenant.to_string()).bind(journal::class(c)).bind(a.digest().bytes().as_slice()).bind(a.length() as i64).fetch_one(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
    if state!="ready"{return Err(Error::Conflict)}saved.upload.complete=true;
-   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4,epoch=NULL,held_until=0 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
+   let changed=sqlx::query("UPDATE mdm_content.uploads SET complete=true,document=$4 WHERE tenant_id=$1::uuid AND id=$2 AND epoch=$3").bind(self.tenant.to_string()).bind(key).bind(epoch).bind(self.sign(&key.to_string(),&saved)?).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?.rows_affected();if changed!=1{return Err(Error::Conflict)}
    self.check_deadline(deadline)?;commit_started.store(true, std::sync::atomic::Ordering::Release);journal::commit(tx).await?;Ok(saved.upload)
   }).await;
+        if let Ok(lease) = Arc::try_unwrap(lease) {
+            let _ = lease.release().await;
+        }
         match result {
-            Ok(value) => {
-                lease.complete();
-                Ok(value)
-            }
+            Ok(value) => Ok(value),
             Err(error) => {
-                let _ = lease.release().await;
                 if matches!(error, Error::Deadline)
                     && commit_started.load(std::sync::atomic::Ordering::Acquire)
                 {

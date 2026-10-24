@@ -298,6 +298,24 @@ impl Store {
                 .await,
         ))
     }
+    /// Read and verify the exact complete object in one GET. Consumers must reach EOF before using it.
+    pub async fn read_complete(
+        &self,
+        object: &Object,
+        content: Content,
+        budget: Budget,
+    ) -> Result<ByteStreamOutput> {
+        self.read(
+            &Verified {
+                object: object.clone(),
+                content,
+            },
+            0,
+            content.length,
+            budget,
+        )
+        .await
+    }
     /// Range uses [start,end); the handle binds the already verified immutable version.
     /// The returned stream keeps its permit until EOF/drop, with terminal error on truncation.
     pub async fn read(

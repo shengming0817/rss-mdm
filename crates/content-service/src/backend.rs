@@ -208,21 +208,23 @@ impl Backend {
             }
         }
     }
-    pub fn write<'a>(
+    pub fn write<'a, G: Send + 'static>(
         &'a self,
         intent: &'a Intent,
         content: s3::Content,
         bytes: Vec<u8>,
         deadline: Deadline,
+        guard: G,
     ) -> futures::future::BoxFuture<'a, Result<Coordinate, WriteFailure>> {
-        Box::pin(self.write_inner(intent, content, bytes, deadline))
+        Box::pin(self.write_inner(intent, content, bytes, deadline, guard))
     }
-    async fn write_inner(
+    async fn write_inner<G: Send + 'static>(
         &self,
         intent: &Intent,
         content: s3::Content,
         bytes: Vec<u8>,
         deadline: Deadline,
+        guard: G,
     ) -> Result<Coordinate, WriteFailure> {
         match (self, intent) {
             (
@@ -241,7 +243,7 @@ impl Backend {
                     Self::Volume { timer, .. } => timer.clone(),
                     _ => unreachable!(),
                 };
-                tokio::task::spawn_blocking(move || {
+                crate::reader::blocking(guard, move || {
                     use std::io::Write;
                     let lock = volume_lock(&directory, id, timer.as_ref(), deadline)?;
                     if lock.metadata().map_err(|_| storage())?.len() != 0 {
@@ -272,9 +274,11 @@ impl Backend {
                 })
                 .await
                 .map_err(|_| WriteFailure::Unresolved(storage()))?
+                .0
                 .map_err(WriteFailure::Unresolved)
             }
             (Self::S3 { store, .. }, Intent::S3 { write }) => {
+                let _guard = guard;
                 let source =
                     futures::stream::once(async move { Ok(bytes::Bytes::from(bytes)) }).boxed();
                 let result = store
@@ -352,23 +356,25 @@ impl Backend {
             _ => Err(Error::Configuration),
         }
     }
-    pub fn read<'a>(
+    pub fn read<'a, G: Send + 'static>(
         &'a self,
         coordinate: &'a Coordinate,
         content: s3::Content,
         start: u64,
         end: u64,
         deadline: Deadline,
+        guard: G,
     ) -> futures::future::BoxFuture<'a, Result<Vec<u8>, Error>> {
-        Box::pin(self.read_inner(coordinate, content, start, end, deadline))
+        Box::pin(self.read_inner(coordinate, content, start, end, deadline, guard))
     }
-    async fn read_inner(
+    async fn read_inner<G: Send + 'static>(
         &self,
         coordinate: &Coordinate,
         content: s3::Content,
         start: u64,
         end: u64,
         deadline: Deadline,
+        guard: G,
     ) -> Result<Vec<u8>, Error> {
         if start > end || end > content.length {
             return Err(Error::Invariant);
@@ -388,27 +394,33 @@ impl Backend {
                     Self::Volume { timer, .. } => timer.clone(),
                     _ => unreachable!(),
                 };
-                tokio::task::spawn_blocking(move || {
+                crate::reader::blocking(guard, move || {
                     let bytes = read_volume(&path, content, timer.as_ref(), deadline)?;
-                    Ok(bytes[start as usize..end as usize].to_vec())
+                    Ok(if start == 0 && end == content.length {
+                        bytes
+                    } else {
+                        bytes[start as usize..end as usize].to_vec()
+                    })
                 })
                 .await
                 .map_err(|_| storage())?
+                .0
             }
             (Self::S3 { store, .. }, Coordinate::S3 { object }) => {
-                let v = store
-                    .verify(object, content, self.budget(store, deadline)?)
-                    .await
-                    .map_err(error)?;
+                let _guard = guard;
                 let mut stream = store
-                    .read(&v, start, end, self.budget(store, deadline)?)
+                    .read_complete(object, content, self.budget(store, deadline)?)
                     .await
                     .map_err(error)?;
-                let mut out = Vec::with_capacity((end - start) as usize);
+                let mut out = Vec::with_capacity(content.length as usize);
                 while let Some(chunk) = stream.next().await {
                     out.extend_from_slice(&chunk.map_err(error)?);
                 }
-                Ok(out)
+                Ok(if start == 0 && end == content.length {
+                    out
+                } else {
+                    out[start as usize..end as usize].to_vec()
+                })
             }
             _ => Err(Error::Configuration),
         }

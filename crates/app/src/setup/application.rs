@@ -26,7 +26,7 @@ async fn desired(c: &mut PgConnection, tenant: Uuid, runtime: &mut Value) -> Res
     let storage: Option<i64> = sqlx::query_scalar("SELECT desired_revision FROM mdm_content_connections.heads WHERE tenant_id=$1 AND desired_revision IS NOT NULL").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_| Error::Storage)?;
     if let Some(revision) = storage {
         if runtime["content"].is_null() {
-            runtime["content"] = json!({"storage":null,"imports":{},"max_artifact_bytes":8589934592u64,"max_temporary_bytes":17179869184u64,"max_uploads":8,"transfer_seconds":300,"retention_seconds":86400,"max_bundle_bytes":8589934592u64,"max_bundle_entries":1000,"max_expansion_ratio":100});
+            runtime["content"] = json!({"storage":null,"imports":{},"max_artifact_bytes":8589934592u64,"max_temporary_bytes":17179869184u64,"max_uploads":8,"transfer_seconds":300,"retention_seconds":86400,"max_bundle_entries":4096,"max_expansion_ratio":100});
         }
         runtime["content"]["storage"] =
             json!({"kind":"s3","revision":revision,"max_concurrent":8,"connect_seconds":5});
