@@ -5,6 +5,9 @@ use axum::{
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
+use rss_mdm_agent_wire::platform_sso::{
+    Bootstrap, BrowserBegin, BrowserChallenge, BrowserComplete, GRANT, StatusQuery,
+};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{
@@ -14,7 +17,7 @@ use rss_mdm_http_contract::{
 use rss_mdm_registration_service::{DevicePrincipal, agent::Service};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use service::{Action, Bootstrap};
+use service::Action;
 use uuid::Uuid;
 const COOKIE: &str = "__Host-rss-psso";
 #[derive(Clone)]
@@ -58,6 +61,13 @@ pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
 }
 pub fn browser_routes() -> Router<Arc<HttpState>> {
     Router::new()
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(association).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/api/v1/apple/platform-sso/{tenant}/jwks",
             get(jwks).owned(
@@ -158,7 +168,7 @@ async fn register(
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     body: Result<
-        Json<rss_mdm_apple_mdm::platform_sso::Registration>,
+        Json<rss_mdm_agent_wire::platform_sso::Registration>,
         axum::extract::rejection::JsonRejection,
     >,
 ) -> Result<Json<Value>, Error> {
@@ -178,11 +188,20 @@ async fn revoke(
     headers: HeaderMap,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
+    body: Result<
+        Json<rss_mdm_agent_wire::platform_sso::Revocation>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Result<Json<Value>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
-    service::mutate(&Context::new(&s.app), Some(&p), &audit, Action::Revoke(id))
-        .await
-        .map(Json)
+    service::mutate(
+        &Context::new(&s.app),
+        Some(&p),
+        &audit,
+        Action::Revoke(id, body.map_err(|_| Error::Malformed)?.0),
+    )
+    .await
+    .map(Json)
 }
 async fn jwks(
     State(app): State<Arc<HttpState>>,
@@ -216,7 +235,7 @@ async fn token(
 ) -> Result<Response, NativeError> {
     tenant(&app, t)?;
     let input = body.map_err(|_| Error::Malformed)?.0;
-    if input.platform_sso_version != "1.0" || input.grant_type != super::native::GRANT {
+    if input.platform_sso_version != "1.0" || input.grant_type != GRANT {
         return Err(Error::Malformed.into());
     }
     let result = service::mutate(
@@ -288,16 +307,11 @@ fn identity_error(e: rss_identity_postgres::AuthorityError) -> Error {
         _ => Error::Unavailable(crate::Failure::Database),
     }
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Begin {
-    binding_id: Uuid,
-}
 async fn begin(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     headers: HeaderMap,
-    body: Result<Json<Begin>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<BrowserBegin>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
     tenant(&app, t)?;
     origin(&app, &headers)?;
@@ -320,10 +334,12 @@ async fn begin(
         "{COOKIE}={}.{}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=120",
         challenge.id, browser
     );
-    let mut response = Json(json!({
-        "id": challenge.id, "nonce": challenge.nonce, "expiresAt": challenge.expires_at,
-        "audience": Context::new(&app).runtime()?.browser_audience
-    }))
+    let mut response = Json(BrowserChallenge {
+        id: challenge.id,
+        nonce: challenge.nonce,
+        expires_at: challenge.expires_at,
+        audience: Context::new(&app).runtime()?.browser_audience.clone(),
+    })
     .into_response();
     response.headers_mut().append(
         header::SET_COOKIE,
@@ -331,18 +347,11 @@ async fn begin(
     );
     Ok(response)
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Complete {
-    challenge_id: Uuid,
-    nonce: String,
-    proof: String,
-}
 async fn complete(
     State(app): State<Arc<HttpState>>,
     Path(t): Path<Uuid>,
     headers: HeaderMap,
-    body: Result<Json<Complete>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<BrowserComplete>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Response, Error> {
     tenant(&app, t)?;
     origin(&app, &headers)?;
@@ -398,20 +407,19 @@ async fn configuration(
     ))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Status {
-    binding_id: Option<Uuid>,
-}
 async fn status(
     State(s): State<AgentState>,
-    axum::extract::Query(query): axum::extract::Query<Status>,
+    axum::extract::Query(query): axum::extract::Query<StatusQuery>,
     headers: HeaderMap,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<Value>, Error> {
+) -> Result<Json<rss_mdm_agent_wire::platform_sso::Status>, Error> {
     let p = principal(&s, &headers, peer, &audit).await?;
     super::status::read(&Context::new(&s.app), &p, query.binding_id)
         .await
         .map(Json)
+}
+
+async fn association(State(app): State<Arc<HttpState>>) -> Result<Json<Value>, Error> {
+    Ok(Json(runtime(&app)?.association()))
 }

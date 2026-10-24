@@ -42,6 +42,8 @@ def verify(context):
             except OSError:pass
             if time.monotonic()>end:raise RuntimeError('gateway startup failed')
             time.sleep(.1)
+        if request('/.well-known/apple-app-site-association',method='GET')[0] != 200:
+            raise RuntimeError('AASA did not reach backend through the production console location')
         status,body=request(retry_path,expected_retry=537)
         if status!=429 or json.loads(body)!={'code':'rate_limited'}:raise RuntimeError('gateway replaced an upstream Identity 429 with its own admission error')
         # Synthetic route payload only; registry-backed production generation is covered by management_tenant.

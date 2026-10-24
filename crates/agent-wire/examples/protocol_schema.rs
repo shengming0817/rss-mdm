@@ -2,6 +2,21 @@
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
+        "platform_sso": {
+            "Revocation": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Revocation),
+            "Bootstrap": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Bootstrap),
+            "BootstrapResponse": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BootstrapResponse),
+            "Registration": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Registration),
+            "RegistrationReceipt": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::RegistrationReceipt),
+            "RegistrationClaims": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::RegistrationClaims),
+            "RevocationReceipt": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::RevocationReceipt),
+            "StatusQuery": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::StatusQuery),
+            "Status": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::Status),
+            "BrowserBegin": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BrowserBegin),
+            "BrowserChallenge": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BrowserChallenge),
+            "BrowserComplete": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BrowserComplete),
+            "BrowserClaims": schemars::schema_for!(rss_mdm_agent_wire::platform_sso::BrowserClaims),
+        },
         "connections": {
             "SignedConfiguration": schemars::schema_for!(rss_mdm_agent_wire::connections::SignedConfiguration),
             "Acknowledgement": schemars::schema_for!(rss_mdm_agent_wire::connections::Acknowledgement),

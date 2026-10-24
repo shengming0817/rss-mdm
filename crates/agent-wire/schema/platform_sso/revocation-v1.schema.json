@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Retire only the source version observed by this caller; delayed cleanup cannot revoke a replacement.",
+  "properties": {
+    "sourceVersion": {
+      "description": "Exact pre-revocation source version. A successful revocation advances it once.",
+      "format": "int64",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sourceVersion"
+  ],
+  "title": "Revocation",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/Revocation"
+}

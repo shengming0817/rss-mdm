@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Status selector over the authenticated Agent channel.",
+  "properties": {
+    "bindingId": {
+      "description": "Optional binding for this device's user status.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "StatusQuery",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/StatusQuery"
+}

@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "Which system-owned keys are being registered.",
+      "oneOf": [
+        {
+          "const": "device",
+          "description": "Shared device keys; no user binding.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "Secure Enclave signing key and user encryption key.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Start one registration through the authenticated Agent channel.",
+  "properties": {
+    "bindingGeneration": {
+      "description": "Required only for user registration.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bindingId": {
+      "description": "Required only for user registration.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "$ref": "#/$defs/Kind",
+      "description": "Device or user scope."
+    },
+    "operationId": {
+      "description": "Audit/idempotency operation.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "kind"
+  ],
+  "title": "Bootstrap",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/Bootstrap"
+}

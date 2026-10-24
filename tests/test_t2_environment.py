@@ -34,6 +34,11 @@ class EnvironmentTests(unittest.TestCase):
             origins=[console,'https://agent.example.test:9445']
             host(identity,console,origins)
             original=mappings()
+            configuration=(root/'nginx.conf').read_text()
+            association=configuration.split('location = /.well-known/apple-app-site-association {',1)[1].split('}',1)[0]
+            self.assertIn('proxy_pass',association)
+            self.assertNotIn('web:8080',association)
+            self.assertEqual(configuration.count('location = /.well-known/apple-app-site-association {'),1)
             self.assertEqual(original[443],8443)
             host(identity,console,origins+['https://agent.example.test:9443'])
             self.assertEqual({p:mappings()[p] for p in original},original)

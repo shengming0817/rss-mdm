@@ -7,8 +7,8 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private},
 };
+use rss_mdm_agent_wire::platform_sso::{Configuration, PublicKey};
 use rss_mdm_apple_channel::platform_sso::crypto;
-use rss_mdm_apple_mdm::platform_sso::{Configuration, PublicKey};
 use serde_json::Value;
 use sqlx::Connection;
 
@@ -65,6 +65,11 @@ async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value
 async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
     let f = Fixture::with_options(None, None, false, None, false, true).await?;
     let result=async {
+        let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
+        let response = f.router.clone().oneshot(association).await?;
+        ensure!(response.status()==StatusCode::OK);
+        let association: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+        ensure!(association == json!({"authsrv":{"apps":["ABCDEFGHIJ.com.rss.psso"]}}));
         let base=format!("/api/v1/apple/platform-sso/{}",case_tenant());
         let (status,value)=call(&f,&format!("{base}/nonce"),json!({})).await?;
         ensure!(status==StatusCode::OK,"nonce {status}: {value}");
@@ -272,6 +277,8 @@ async fn register_key(
         status == StatusCode::OK,
         "bootstrap {kind}: {status} {challenge}"
     );
+    let _: rss_mdm_agent_wire::platform_sso::BootstrapResponse =
+        serde_json::from_value(challenge.clone())?;
     let now = f.app.clock.unix_seconds()?;
     let proof=signing.signer.sign("rss-mdm-platform-sso-registration+jwt",&json!({"iss":registration,"aud":format!("{}/register",challenge["endpoints"]["base"].as_str().unwrap()),"challengeId":challenge["id"],"sourceId":challenge["sourceId"],"sourceVersion":challenge["sourceVersion"],"nonce":challenge["nonce"],"encryptionKeyId":crypto::kid(&encryption.public)?,"iat":now,"exp":now+120}))?;
     let input = json!({"operationId":Uuid::new_v4(),"challengeId":challenge["id"],"signingKey":signing.public,"encryptionKey":encryption.public,"proof":proof});
@@ -280,6 +287,9 @@ async fn register_key(
         status == StatusCode::OK,
         "register {kind}: {status} {receipt}"
     );
+    let accepted: rss_mdm_agent_wire::platform_sso::RegistrationReceipt =
+        serde_json::from_value(receipt.clone())?;
+    ensure!(accepted.registered && !accepted.hardware_attested);
     ensure!(
         agent(f, "register", input).await?.0 == StatusCode::UNAUTHORIZED,
         "one-use registration proof"
@@ -335,7 +345,7 @@ async fn login_request(
     encryption: &Key,
     id: &Value,
 ) -> Result<String> {
-    use rss_mdm_apple_mdm::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
+    use rss_mdm_agent_wire::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
     let rt = f.ade.platform_sso.as_ref().context("PSSO")?;
     let (status, nonce) = call(
         f,
@@ -478,7 +488,7 @@ async fn browser_exchange(
     registered: &Value,
     access: &str,
 ) -> Result<(StatusCode, axum::http::HeaderMap, Value)> {
-    use rss_mdm_apple_mdm::platform_sso::BRIDGE_TYPE;
+    use rss_mdm_agent_wire::platform_sso::BRIDGE_TYPE;
     let base = format!("/api/v1/apple/platform-sso/{}", case_tenant());
     let request = Request::builder()
         .method(Method::POST)
@@ -565,8 +575,15 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"ACK is not observed readiness");
-        let payload=&profile.payloads[0];
-        let observed=plist::Value::Array(vec![protocol::dictionary([("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(vec![protocol::dictionary([("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),("PayloadVersion",1.into()),("PayloadType","com.apple.extensiblesso".into())]).into()]))]).into()]);
+        let payloads = profile.payloads.iter().map(|payload| Ok(protocol::dictionary([
+            ("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),
+            ("PayloadVersion",1.into()),("PayloadType",payload.payload_type()?.into())]).into())).collect::<Result<Vec<plist::Value>>>()?;
+        let report = |children: Vec<plist::Value>| plist::Value::Array(vec![protocol::dictionary([
+            ("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),
+            ("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(children))]).into()]);
+        let incomplete = protocol::dictionary([("ProfileList", report(payloads[..1].to_vec()))]);
+        ensure!(!profile.observed(&incomplete)?, "missing required associated domains cannot qualify");
+        let observed = report(payloads);
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
         let device=Key::new()?;let device_encryption=Key::new()?;let user=Key::new()?;let encryption=Key::new()?;
@@ -639,13 +656,17 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
         let repaired=register_key(&f,"user",Some(binding),agent_registration,&user,&encryption).await?;
         ensure!(repaired["sourceVersion"]==2);
+        let path=format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap());
+        ensure!(agent(&f,&path,json!({"sourceVersion":1})).await?.0==StatusCode::CONFLICT,"delayed teardown must not revoke the replacement");
         let valid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
         let (status,response)=token(&f,&valid).await?;ensure!(status==StatusCode::OK);
         let current_tokens=decrypt(&encryption,&response)?;
         let current_access=current_tokens["access_token"].as_str().context("current native token")?;
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::OK,"token is valid immediately before logout");
-        let revoked=agent(&f,&format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap()),json!({})).await?;
-        ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true);
+        let revoked=agent(&f,&path,json!({"sourceVersion":2})).await?;
+        ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true&&revoked.1["sourceVersion"]==3);
+        let repeated=agent(&f,&path,json!({"sourceVersion":2})).await?;
+        ensure!(repeated.0==StatusCode::OK&&repeated.1["sourceVersion"]==3,"same retirement is idempotent");
         let invalid=login_request(&f,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::UNAUTHORIZED);
         Ok(())
@@ -678,7 +699,8 @@ async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
             application_version: "1.0".into(),
             client_id: Uuid::new_v4(),
         };
-        let mut profile = configuration.profile(
+        let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
+            &configuration,
             "https://vendor.example",
             Uuid::parse_str(case_tenant())?,
             Uuid::new_v4(),

@@ -1,8 +1,8 @@
 //! Diagnostic snapshots never serve as an admission credential.
 use super::*;
 use crate::database::db;
+use rss_mdm_agent_wire::platform_sso::{RegistrationTrust, SourceStatus, Status};
 use rss_mdm_registration_service::DevicePrincipal;
-use serde_json::{Value, json};
 use uuid::Uuid;
 
 fn admitted<T>(result: Result<T, Error>) -> Result<bool, Error> {
@@ -19,7 +19,7 @@ pub(super) async fn read(
     app: &Context,
     p: &DevicePrincipal,
     binding: Option<Uuid>,
-) -> Result<Value, Error> {
+) -> Result<Status, Error> {
     let rt = app.runtime()?;
     if p.tenant() != app.tenant {
         return Err(Error::Unauthorized);
@@ -86,10 +86,22 @@ pub(super) async fn read(
     } else {
         false
     };
-    Ok(
-        json!({"applicationObserved":application_observed,"profileObserved":profile_observed,"deviceRegistered":device_registered,"userRegistered":user_registered,"loginReady":login_ready,
-        "deviceSource":device.map(|s|json!({"id":s.id,"version":s.version,"revoked":s.revoked,"signingKey":s.signing,"encryptionKey":s.encryption})),
-        "userSource":user.map(|s|json!({"id":s.id,"version":s.version,"revoked":s.revoked,"signingKey":s.signing,"encryptionKey":s.encryption})),
-        "registrationTrust":"mdm_bootstrap_pop","hardwareAttested":false}),
-    )
+    let public = |s: store::Source| SourceStatus {
+        id: s.id,
+        version: s.version,
+        revoked: s.revoked,
+        signing_key: s.signing,
+        encryption_key: s.encryption,
+    };
+    Ok(Status {
+        application_observed,
+        profile_observed,
+        device_registered,
+        user_registered,
+        login_ready,
+        device_source: device.map(public),
+        user_source: user.map(public),
+        registration_trust: RegistrationTrust::MdmBootstrapPop,
+        hardware_attested: false,
+    })
 }

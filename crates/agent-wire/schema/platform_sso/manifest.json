@@ -1,0 +1,57 @@
+{
+  "apiVersion": 1,
+  "schemas": [
+    {
+      "type": "Bootstrap",
+      "file": "bootstrap-v1.schema.json"
+    },
+    {
+      "type": "BootstrapResponse",
+      "file": "bootstrap-response-v1.schema.json"
+    },
+    {
+      "type": "Registration",
+      "file": "registration-v1.schema.json"
+    },
+    {
+      "type": "RegistrationReceipt",
+      "file": "registration-receipt-v1.schema.json"
+    },
+    {
+      "type": "RegistrationClaims",
+      "file": "registration-claims-v1.schema.json"
+    },
+    {
+      "type": "RevocationReceipt",
+      "file": "revocation-receipt-v1.schema.json"
+    },
+    {
+      "type": "StatusQuery",
+      "file": "status-query-v1.schema.json"
+    },
+    {
+      "type": "Status",
+      "file": "status-v1.schema.json"
+    },
+    {
+      "type": "BrowserBegin",
+      "file": "browser-begin-v1.schema.json"
+    },
+    {
+      "type": "BrowserChallenge",
+      "file": "browser-challenge-v1.schema.json"
+    },
+    {
+      "type": "BrowserComplete",
+      "file": "browser-complete-v1.schema.json"
+    },
+    {
+      "type": "BrowserClaims",
+      "file": "browser-claims-v1.schema.json"
+    },
+    {
+      "type": "Revocation",
+      "file": "revocation-v1.schema.json"
+    }
+  ]
+}

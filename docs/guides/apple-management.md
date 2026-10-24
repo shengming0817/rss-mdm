@@ -198,11 +198,13 @@ publication 或 synchronized 不证明设置生效、合规或卸载。未注册
 
 管理员读取 `GET /api/v1/apple/platform-sso/configuration`（`registration_configuration_read`）取得当前 profile 和端点。先通过既有软件发布部署签名应用，再通过既有配置策略部署返回的 ExtensibleSSO profile。服务端要求当前 MDM 来源最近 24 小时内观察到精确应用 ID/版本且不处于安装中，才发出该 profile；要求 ProfileList 的匹配证据才开放注册。命令 Acknowledged、应用存在与扩展实际加载是不同事实。配置策略由原有调度器恢复，无独立 PSSO 调度器。
 
+PSSO 跨进程 DTO 和证明输入由 `rss-mdm-agent-wire::platform_sso` 单一持有，Agent 固定完整 Git revision 消费；服务端不保留旧类型导出。返回的 profile 同时包含 Associated Domains，将 `authsrv:<配置 origin 的域名>?mode=managed` 关联至精确 `TeamID.ApplicationID`。容器须声明 associated-domains 及 MDM-managed entitlement；部署域名必须提供系统信任的 HTTPS，`/.well-known/apple-app-site-association` 返回配置的唯一 authsrv 应用，不按请求参数扩展。此接口与 profile 均不证明设备已加载扩展。
+
 Agent mTLS 入口 `/api/v1/agent/runtime/platform-sso` 提供 `POST /bootstrap`、`POST /register`、`POST /sources/{id}/revoke` 和 `GET /status?bindingId=<UUID>`。设备与 Agent 必须属于当前已验证的关联；用户注册还要求 P1 当前人员绑定、策略和本地账户会话。注册准入允许尚未 Applied 的集成状态，登录准入要求 Applied，避免注册与集成互相等待。
 
 bootstrap 请求为 `{operationId,kind:"device"|"user",bindingId?,bindingGeneration?}`。响应给出一次性 120 秒 challenge（`id`、`nonce`）、`sourceId`、`sourceVersion`、`loginUserName` 和端点。register 请求为 `{operationId,challengeId,signingKey,encryptionKey,proof}`；两把公钥使用 P-256 JWK 的 `kty/crv/x/y`。proof 为新 signing key 签署的 ES256 JWT，typ 为 `rss-mdm-platform-sso-registration+jwt`，kid 为 X9.63 公钥 SHA-256 的标准 Base64；claims 绑定 `iss`（Agent registration UUID）、`aud`（返回 base + `/register`）、`challengeId/sourceId/sourceVersion/nonce/encryptionKeyId`、整数 `iat/exp`（最长 300 秒）。bootstrap 仅通过受认证 Agent 与扩展的本地 IPC 交付，profile 不嵌入可跨设备重放的 bootstrap secret。
 
-设备先注册共享密钥，再注册用户密钥；重新 bootstrap/register 即修复或替换密钥，并增加 sourceVersion。设备换钥使原用户注册失效；用户换钥、注销、P1 撤销、人员停用、策略失效、关联/注册换代均阻断后续使用。注销设备同时使所属用户令牌失效。注册响应丢失时先以 status 中的 source ID、版本和公钥核对结果，不重放已消费 challenge；未完成则申请新 challenge。status 分别返回 `applicationObserved/profileObserved/deviceRegistered/userRegistered/loginReady`，只用于诊断，登录时仍重新校验全部事实。
+设备先注册共享密钥，再注册用户密钥；重新 bootstrap/register 即修复或替换密钥，并增加 sourceVersion。设备换钥使原用户注册失效；用户换钥、注销、P1 撤销、人员停用、策略失效、关联/注册换代均阻断后续使用。注销设备同时使所属用户令牌失效。注销请求必须携带 `{sourceVersion}`；服务端在同一事务锁内核对源版本，延迟清理不能撤销已重新注册的新版本。成功注销将版本推进一次，相同旧版本请求可核对已完成的注销回执。注册响应丢失时先以 status 中的 source ID、版本和公钥核对结果，不重放已消费 challenge；未完成则申请新 challenge。status 分别返回 `applicationObserved/profileObserved/deviceRegistered/userRegistered/loginReady`，只用于诊断，登录时仍重新校验全部事实。
 
 原生客户端 `POST .../{tenant}/nonce` 获取 nonce，再向 `/token` 提交 form `platform_sso_version=1.0`、jwt-bearer `grant_type` 与双签名 `assertion`。设备/用户签名分别使用 Apple login-request/login-assertion typ，aud 分别为 token URL/issuer，sub 与 username 使用注册返回的 loginUserName；`request_nonce` 必须匹配一次性服务端 nonce。响应为 `application/jose` compact JWE，使用用户加密公钥、ECDH-ES/A256GCM 和 Apple apu/apv 构造，含 id_token、300 秒 access token 和 opaque refresh token。原生续期通过新 nonce 与新的 SE 登录完成，不开放普通 refresh-token grant，也不把 refresh token 当作 MFA 事实。
 
