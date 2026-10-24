@@ -1258,6 +1258,7 @@ T1_INPUTS = (
     'crates/app/tests/agent/unit.rs',
     'crates/app/tests/apple/webhook_unit.rs',
     'crates/inventory-service/tests/assets/query_sort_unit.rs',
+    'crates/inventory-service/tests/assets/query_read_unit.rs',
     'crates/inventory-service/tests/assets/rsql_unit.rs',
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
