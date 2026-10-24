@@ -155,6 +155,7 @@ pub(crate) async fn groups(m: &Planning) -> rss_mdm_inventory_service::groups::G
         .await
         .unwrap();
     rss_mdm_inventory_service::groups::Groups {
+        reconcile_messaging: m.reconcile_messaging.clone(),
         objects: m.objects.clone(),
         tenant: m.tenant,
         groups: m.groups.clone(),
@@ -402,9 +403,14 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     )
     .await
     .unwrap();
-    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
     task
 }
 

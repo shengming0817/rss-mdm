@@ -111,11 +111,9 @@ impl DurableStore for PlanningWork {
                                 if let Some(partition) = partition {
                                     tx.prepare_outbox_partitions(&[partition]).await?;
                                 }
-                                rss_reconcile_postgres::messaging::protect_in(
-                                    tx,
-                                    claim,
-                                    context,
-                                    |service, tx| {
+                                service
+                                    .reconcile_messaging
+                                    .protect_in(tx, claim, context, |service, tx| {
                                         Box::pin(async move {
                                             let result = match id {
                                                 Some(id) => {
@@ -134,9 +132,8 @@ impl DurableStore for PlanningWork {
                                             };
                                             result.map_err(|e| fault(e, &Mutex::new(None)))
                                         })
-                                    },
-                                )
-                                .await
+                                    })
+                                    .await
                             })
                         },
                     )

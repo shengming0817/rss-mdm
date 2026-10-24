@@ -555,7 +555,7 @@ impl ExecutionService {
             db::receipt(tx, &actor, input.operation_id, hash.clone(), &response, None).await?;
             if let Some(proof) = proof { proof.check_live()?; }
             let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;
-            crate::sources::storage::wake_execution_in(tx, policy.id).await?;
+            crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id).await?;
             Ok(response)
         })).await
     }

@@ -219,7 +219,7 @@ impl Groups {
             }
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
-        crate::compliance::group_changed(tx, id).await?;
+        crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         if matches!(op.input, GroupChange::Delete) {
             self.register_fields_in(tx, id, None).await?;
         }

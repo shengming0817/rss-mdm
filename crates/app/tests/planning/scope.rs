@@ -352,9 +352,14 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     let worker = crate::automation::PlanningWork::connect(first.clone(), options())
         .await
         .unwrap();
-    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &first.reconcile_messaging,
+        &first.runtime,
+        first.tenant,
+        &first.audit_store,
+    )
+    .await
+    .unwrap();
     // Hold the upstream computation pending. This exercises the downstream wait
     // contract independently of the upstream capacity/retry policy.
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
@@ -417,9 +422,14 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         .await
         .unwrap();
     let old = Uuid::parse_str(old["task"].as_str().unwrap()).unwrap();
-    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &second.reconcile_messaging,
+        &second.runtime,
+        second.tenant,
+        &second.audit_store,
+    )
+    .await
+    .unwrap();
     let old_claim = claim_job(&worker, old, Duration::from_secs(300)).await;
     let diff = worker.observe(&old_claim, &control).await.unwrap();
     worker.apply(&old_claim, diff, &control).await.unwrap();
@@ -438,9 +448,14 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         tenant()
     ));
     let replacement = Uuid::parse_str(&replacement).unwrap();
-    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &second.reconcile_messaging,
+        &second.runtime,
+        second.tenant,
+        &second.audit_store,
+    )
+    .await
+    .unwrap();
     let changed_claim = claim_job(&worker, replacement, Duration::from_secs(300)).await;
     for _ in 0..20 {
         let diff = worker.observe(&changed_claim, &control).await.unwrap();
@@ -515,9 +530,14 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         tenant()
     ));
     let replacement = Uuid::parse_str(&replacement).unwrap();
-    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &second.reconcile_messaging,
+        &second.runtime,
+        second.tenant,
+        &second.audit_store,
+    )
+    .await
+    .unwrap();
     let ready = claim_job(&worker, replacement, Duration::from_secs(300)).await;
     for _ in 0..20 {
         let diff = worker.observe(&ready, &control).await.unwrap();

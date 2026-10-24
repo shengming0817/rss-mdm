@@ -26,6 +26,7 @@ pub use rss_mdm_policy::{Change, Policy};
 pub struct Policies {
     cursor_key: ring::hmac::Key,
     runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
     tenant: rss_request_context::TenantId,
     policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
@@ -35,6 +36,7 @@ impl Policies {
     pub fn new(
         cursor_key: &[u8],
         runtime: std::sync::Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
         audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,
         tenant: rss_request_context::TenantId,
         policy_store: std::sync::Arc<rss_mdm_policy_postgres::PolicyStore>,
@@ -43,6 +45,7 @@ impl Policies {
         Self {
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             runtime,
+            reconcile_messaging,
             audit_store,
             tenant,
             policy_store,
@@ -162,7 +165,7 @@ impl Policies {
                         tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.policy_source_grants(tenant_id,version,read_grant) VALUES($1::uuid,$2,$3)").bind(tenant).bind(version).bind(grant).execute(c).await?;Ok(())})).await?;
                     }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
-                    storage::enqueue_change_in(tx, &policy, old.as_ref()).await?;
+                    storage::enqueue_change_in(&s.reconcile_messaging, tx, &policy, old.as_ref()).await?;
                     let value = storage::view(&policy)?;
                     checked(
                         s.policy_store

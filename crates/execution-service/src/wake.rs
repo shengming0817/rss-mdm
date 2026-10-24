@@ -7,11 +7,12 @@ pub(crate) fn configuration_key(device: &str) -> String {
 }
 
 pub async fn wake_native_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     source: std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
     tx: &mut PgTransaction<'_>,
     device: &str,
 ) -> Result<()> {
-    crate::unmanage::wake_device_in(tx, device).await?;
+    crate::unmanage::wake_device_in(reconcile, tx, device).await?;
     let source_tenant = tx.tenant_id();
     let tenant = source_tenant.to_string();
     let name = device.to_owned();
@@ -45,7 +46,8 @@ pub async fn wake_native_in(
         configuration_key(device),
     )
     .map_err(|_| Error::Malformed)?;
-    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+    reconcile
+        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     Ok(())

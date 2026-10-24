@@ -323,7 +323,9 @@ pub async fn advance_run(
         )
         .await?;
     let target = crate::service::target(tx.tenant_id(), &run.target.device);
-    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+    service
+        .reconcile_messaging
+        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     audit.finalize(None);
     run.state.claim(run.id, now)?;

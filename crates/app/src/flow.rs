@@ -135,6 +135,7 @@ impl Config {
                     Arc::new(crate::automation::inventory_tasks::InventoryTasks),
                 ));
                 let groups = Arc::new(rss_mdm_inventory_service::groups::Groups {
+                    reconcile_messaging: service.reconcile_messaging.clone(),
                     objects: service.objects.clone(),
                     tenant,
                     groups: service.groups.clone(),

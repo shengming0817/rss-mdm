@@ -234,6 +234,26 @@ class CodecFixtures(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest, name)
 
 class AdvisoryPolicy(unittest.TestCase):
+    def test_dependency_changes_select_the_security_gate_without_business_tests(self):
+        for source in ('Cargo.lock', 'Cargo.toml:normal:rss-contract',
+                       'crates/app/Cargo.toml:dev:tokio'):
+            packages = [] if source == 'Cargo.lock' else ['rss-mdm-app']
+            selection = make_selection(packages, [], reasons=[
+                dict(kind='tool', input=source, modules=[], detail='dependency')])
+            with self.subTest(source=source):
+                self.assertTrue(ci.selected_gate('advisories', selection))
+                self.assertEqual(selection['t2']['modules'], [])
+
+    def test_security_gate_selection_preserves_policy_full_and_unrelated_cases(self):
+        policy = make_selection([], [], reasons=[
+            dict(kind='tool', input='deny.toml', modules=[])])
+        self.assertTrue(ci.selected_gate('advisories', policy))
+        full = make_selection([], [], cargo_mode='all')
+        self.assertTrue(ci.selected_gate('advisories', full))
+        unrelated = make_selection(['rss-mdm-app'], [], reasons=[
+            dict(kind='business', input='crates/app/src/lib.rs', modules=[])])
+        self.assertFalse(ci.selected_gate('advisories', unrelated))
+
     def test_advisory_acceptance_is_exact(self):
         manifest=ci.tomllib.loads((ci.ROOT/'Cargo.toml').read_text())
         policy=ci.tomllib.loads((ci.ROOT/'deny.toml').read_text())

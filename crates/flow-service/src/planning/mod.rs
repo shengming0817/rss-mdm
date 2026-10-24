@@ -31,6 +31,7 @@ pub struct Planning {
     automation_observation: std::sync::Mutex<automation::health::AutomationObservation>,
     pub(crate) automation_task: std::sync::OnceLock<rss_runtime::TaskStatus>,
     pub runtime: Arc<PgRuntime>,
+    pub reconcile_messaging: rss_reconcile_postgres::PgMessagingStore,
     cursor_key: ring::hmac::Key,
     pub asset_reader: assets::planning::SnapshotReader,
     pub objects: Arc<dyn rss_mdm_inventory_service::objects::ObjectReader>,
@@ -54,6 +55,10 @@ impl Planning {
         let groups = rss_mdm_group_postgres::GroupStore::new(runtime.clone(), tenant, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
+        let reconcile_messaging =
+            rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
+                .await
+                .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         let policy_store =
             rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, deadline())
                 .await
@@ -65,6 +70,7 @@ impl Planning {
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, cursor_key),
             asset_reader: assets::planning::SnapshotReader { tenant },
             objects,
+            reconcile_messaging,
             runtime,
             tenant,
             clock,

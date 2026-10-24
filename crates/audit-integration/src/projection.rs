@@ -1,4 +1,5 @@
 //! MDM's fixed source consumer. RSS owns effect/Inbox/Outbox settlement and recovery identity.
+//! ref: RSS transactional-messaging-postgres/src/projection.rs@d0202b30379a067a94ef386e4c071b7f6cc3d47c.
 use crate::{
     Error,
     budget::RuntimeTimer,
@@ -22,6 +23,7 @@ use rss_transactional_messaging_postgres::{
     PgTransaction,
 };
 use std::{
+    collections::VecDeque,
     num::NonZeroUsize,
     sync::{Arc, OnceLock},
 };
@@ -176,7 +178,7 @@ pub struct AuditProjectionReport {
 pub struct AuditProjection<K> {
     projection: PgLocalProjection<Effect, K>,
     validator: Validator,
-    pending: tokio::sync::Mutex<Option<PgProjectionRecovery>>,
+    pending: tokio::sync::Mutex<VecDeque<PgProjectionRecovery>>,
     fatal: Arc<OnceLock<AuditProjectionError>>,
 }
 impl<K: Aead + Send + Sync> AuditProjection<K> {
@@ -239,7 +241,7 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
         Ok(Self {
             projection,
             validator: Validator { tenants },
-            pending: tokio::sync::Mutex::new(None),
+            pending: tokio::sync::Mutex::new(VecDeque::new()),
             fatal,
         })
     }
@@ -265,7 +267,7 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
     fn consume(
         &self,
         attempt: PgProjectionAttempt,
-        pending: &mut Option<PgProjectionRecovery>,
+        pending: &mut VecDeque<PgProjectionRecovery>,
         report: &mut AuditProjectionReport,
     ) -> Result<(), AuditProjectionError> {
         use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
@@ -276,7 +278,7 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
             outcome.status(),
             Status::CommitUnknown | Status::RollbackFailed
         ) {
-            *pending = Some(identity);
+            pending.push_back(identity);
         }
         self.check()?;
         let projected = outcome.fold(
@@ -297,6 +299,8 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
         }
         Ok(())
     }
+    /// Resolve pending identities and claim one bounded batch under the supplied deadline.
+    /// Each claimed event receives its own original timeout; all outcomes are consumed before returning.
     pub async fn run_once(
         &self,
         limit: NonZeroUsize,
@@ -309,7 +313,7 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
             .await
             .map_err(|_| AuditProjectionError::Unavailable)?;
         let mut report = AuditProjectionReport::default();
-        if let Some(identity) = pending.as_ref() {
+        while let Some(identity) = pending.front() {
             let result = self.projection.resolve(identity, remaining(cutoff)).await;
             observe(
                 "resolve",
@@ -327,35 +331,51 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
                 }
                 None => report.resolution = Some("unresolved"),
             }
-            *pending = None;
+            pending.pop_front();
         }
-        for _ in 0..limit.get() {
-            if cutoff.is_expired(RuntimeTimer.now()) {
-                break;
-            }
-            let outcome = self
-                .projection
-                .project_one(&self.validator, remaining(cutoff))
-                .await
-                .map_err(|error| {
-                    self.fatal
-                        .get()
-                        .copied()
-                        .unwrap_or_else(|| AuditProjectionError::pg(error))
-                })?;
-            match outcome {
-                PgProjectionOutcome::Empty => break,
-                PgProjectionOutcome::InProgress => report.deferred += 1,
-                PgProjectionOutcome::Attempt(attempt) => {
-                    self.consume(*attempt, &mut pending, &mut report)?
+        if cutoff.is_expired(RuntimeTimer.now()) {
+            return Ok(report);
+        }
+        let batch = self
+            .projection
+            .project_batch(
+                &self.validator,
+                limit,
+                remaining(cutoff),
+                deadline.timeout(),
+            )
+            .await
+            .map_err(|error| {
+                self.fatal
+                    .get()
+                    .copied()
+                    .unwrap_or_else(|| AuditProjectionError::pg(error))
+            })?;
+        let mut failure = None;
+        for item in batch {
+            let result = match item.into_outcome() {
+                Ok(PgProjectionOutcome::InProgress) => {
+                    report.deferred += 1;
+                    Ok(())
                 }
-                PgProjectionOutcome::Rejected(_) | PgProjectionOutcome::DeliveryExpired => {
+                Ok(PgProjectionOutcome::Attempt(attempt)) => {
+                    self.consume(*attempt, &mut pending, &mut report)
+                }
+                Ok(PgProjectionOutcome::Rejected(_) | PgProjectionOutcome::DeliveryExpired) => {
                     let _ = self.fatal.set(AuditProjectionError::Quarantined);
-                    return Err(AuditProjectionError::Quarantined);
+                    Err(AuditProjectionError::Quarantined)
                 }
+                Err(error) => Err(AuditProjectionError::pg(error)),
+            };
+            // Every sibling may carry an uncertain transaction identity. Never short-circuit.
+            if let Err(error) = result
+                && failure.is_none_or(|previous: AuditProjectionError| previous.is_retryable())
+            {
+                failure = Some(error);
             }
         }
-        Ok(report)
+        self.check()?;
+        failure.map_or(Ok(report), Err)
     }
 }
 fn remaining(cutoff: Deadline) -> OperationDeadline {

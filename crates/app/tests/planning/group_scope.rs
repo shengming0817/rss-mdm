@@ -815,9 +815,14 @@ async fn ingress_batches_reuse_published_group_coverage() {
     .await
     .unwrap();
     let task = accepted["task"].as_str().unwrap();
-    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
     while service.forward_asset_changes().await.unwrap() > 0 {}
     let mut claims = worker
         .claim_due(&scope, 64, Duration::from_secs(30), &control)
@@ -1212,9 +1217,14 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     .await
     .unwrap();
     let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
-    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &first.reconcile_messaging,
+        &first.runtime,
+        first.tenant,
+        &first.audit_store,
+    )
+    .await
+    .unwrap();
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -1247,9 +1257,14 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     .await
     .unwrap();
     let source_task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
-    crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &first.reconcile_messaging,
+        &first.runtime,
+        first.tenant,
+        &first.audit_store,
+    )
+    .await
+    .unwrap();
     let source_claim = claim_job(&worker, source_task, Duration::from_secs(300)).await;
     for _ in 0..16 {
         let diff = worker.observe(&source_claim, &control).await.unwrap();
@@ -1311,9 +1326,14 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
         .finish(&restored, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    crate::automation::jobs::forward_jobs(&second.runtime, second.tenant, &second.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &second.reconcile_messaging,
+        &second.runtime,
+        second.tenant,
+        &second.audit_store,
+    )
+    .await
+    .unwrap();
     let current = claim_job(&resumed, replacement, Duration::from_secs(300)).await;
     for _ in 0..20 {
         let diff = resumed.observe(&current, &control).await.unwrap();
@@ -1493,9 +1513,14 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     )
     .await
     .unwrap();
-    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
     let timer = automation::Timer::new();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -1550,9 +1575,14 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
     .await
     .unwrap();
     let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
-    crate::automation::jobs::forward_jobs(&service.runtime, service.tenant, &service.audit_store)
-        .await
-        .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
     let diff = worker.observe(&claim, &control).await.unwrap();
     worker.apply(&claim, diff, &control).await.unwrap();
