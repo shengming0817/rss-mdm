@@ -143,6 +143,9 @@ pub struct TaskEventAck {
     permit: Option<SignedTask>,
     /// Stop this attempt; execution effects may remain unknown.
     cancel_requested: bool,
+    /// Exact durable coordinates for a credential escrow event; empty for other events.
+    #[serde(deserialize_with = "credential_receipts")]
+    credentials: Vec<super::CredentialReceipt>,
 }
 impl TaskEventAck {
     /// Construct a durable accepted receipt with the fixed wire version.
@@ -152,7 +155,17 @@ impl TaskEventAck {
             accepted: true,
             permit,
             cancel_requested,
+            credentials: Vec::new(),
         }
+    }
+    /// Attach durable escrow coordinates from the same transaction as this acknowledgement.
+    pub fn with_credentials(mut self, credentials: Vec<super::CredentialReceipt>) -> Self {
+        self.credentials = credentials;
+        self
+    }
+    /// Exact accepted material coordinates.
+    pub fn credentials(&self) -> &[super::CredentialReceipt] {
+        &self.credentials
     }
     /// The event was durably accepted.
     pub const fn accepted(&self) -> bool {
@@ -180,6 +193,8 @@ impl TaskEventAck {
     deny_unknown_fields
 )]
 pub enum TaskEvent {
+    /// Nonterminal actual-account preparation for a started Device Access task.
+    DeviceAccessPrepared(super::AccessPrepared),
     /// Exact Device Access effect, separate from delivery acknowledgements.
     DeviceAccessResult(super::AccessResult),
     /// Encrypted material batch; acknowledgment proves durable escrow only.
@@ -1536,4 +1551,19 @@ fn cancellations<'de, D: serde::Deserializer<'de>>(
         return Err(serde::de::Error::custom(WireError::InvalidValue));
     }
     Ok(value)
+}
+
+fn credential_receipts<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<super::CredentialReceipt>, D::Error> {
+    let receipts = Vec::<super::CredentialReceipt>::deserialize(deserializer)?;
+    let mut seen = std::collections::BTreeSet::new();
+    if receipts.len() > 512
+        || receipts
+            .iter()
+            .any(|r| r.validate().is_err() || !seen.insert(r.subject.clone()))
+    {
+        return Err(serde::de::Error::custom("invalid credential receipt"));
+    }
+    Ok(receipts)
 }

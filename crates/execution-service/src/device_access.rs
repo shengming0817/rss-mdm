@@ -1,4 +1,5 @@
 //! Per-account desired effects reuse signed action runs, not a second queue.
+pub(crate) mod provisioning;
 use crate::{
     actions::storage::{self as runs, Source, TaskIssue},
     *,
@@ -11,6 +12,44 @@ use rss_mdm_registration_service::{
 use sqlx::Row;
 
 impl Admission for ExecutionService {
+    fn policies<'a>(
+        &'a self,
+        c: &'a mut sqlx::PgConnection,
+        tenant: Uuid,
+        device: &'a str,
+        after: Option<Uuid>,
+    ) -> rss_mdm_registration_service::agent::Pending<
+        'a,
+        (Vec<wire::AccessPolicyOption>, Option<Uuid>),
+    > {
+        Box::pin(async move {
+            if tenant.to_string() != self.tenant.to_string() {
+                return Err(AccessError::Forbidden);
+            }
+            let ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64")
+                .bind(tenant).bind(after).fetch_all(&mut *c).await.map_err(|_| AccessError::Storage)?;
+            let after = if ids.len() == 64 {
+                ids.last().copied()
+            } else {
+                None
+            };
+            let mut values = Vec::new();
+            for id in ids {
+                match self.policy(c, tenant, device, id).await {
+                    Ok(p) if p.configuration.enabled && p.configuration.self_enrollment => values
+                        .push(wire::AccessPolicyOption {
+                            policy: p.policy,
+                            version: p.version,
+                            configuration: p.configuration,
+                        }),
+                    Ok(_) | Err(AccessError::Forbidden) => (),
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok((values, after))
+        })
+    }
+
     fn policy<'a>(
         &'a self,
         c: &'a mut sqlx::PgConnection,
@@ -425,9 +464,11 @@ impl Plan {
             instance_id: b.person.instance,
             principal_id: b.person.principal,
             binding_generation: b.generation,
+            factor_generation: b.factor_generation,
             revision: b.revision,
             definition_digest: b.definition_digest().map_err(Error::from)?,
             action,
+            windows: provisioning::plan(service, tx, b).await?,
             authorization: wire::TaskAuthorization::Policy {
                 policy_id: b.policy,
                 policy_version: b.policy_version,
@@ -693,6 +734,7 @@ pub async fn finish_in(
     {
         return Err(Error::Conflict.into());
     }
+    provisioning::finish(tx, run, input.attempt_id(), value, project).await?;
     let tenant = plan.binding.tenant;
     let value = value.clone();
     let run = run.id;
@@ -700,7 +742,25 @@ pub async fn finish_in(
     let event = input.operation_id();
     tx.with_connection(move |c| {
         Box::pin(async move {
-            Ok(access::storage::result_in(c, tenant, run, attempt, event, &value, project).await)
+            let result = async {
+                let applied =
+                    access::storage::result_in(c, tenant, run, attempt, event, &value, project)
+                        .await?;
+                if applied && matches!(value.effect, wire::AccessEffect::Unbound) {
+                    rss_mdm_recovery_credentials::storage::access_unbound_in(
+                        c,
+                        tenant,
+                        value.binding_id,
+                        value.binding_generation,
+                        value.revision,
+                    )
+                    .await
+                    .map_err(crate::recovery_credentials::error)?;
+                }
+                Ok::<_, Error>(applied)
+            }
+            .await;
+            Ok(result)
         })
     })
     .await??;

@@ -1584,8 +1584,6 @@ fn credential_envelope(
     subject: rss_mdm_agent_wire::runtime::CredentialSubject,
     secret: &[u8],
 ) -> Result<rss_mdm_agent_wire::runtime::CredentialEnvelope> {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    use openssl::{encrypt::Encrypter, hash::MessageDigest, pkey::PKey, rsa::Padding};
     let revision = task
         .expected
         .iter()
@@ -1593,9 +1591,20 @@ fn credential_envelope(
         .map(|v| v.revision)
         .unwrap_or(0);
     let aad = task.material_aad(&subject, revision)?;
+    encrypted_envelope(&task.recipient, subject, revision, &aad, secret)
+}
+fn encrypted_envelope(
+    recipient: &rss_mdm_agent_wire::runtime::CredentialRecipient,
+    subject: rss_mdm_agent_wire::runtime::CredentialSubject,
+    revision: i64,
+    aad: &[u8],
+    secret: &[u8],
+) -> Result<rss_mdm_agent_wire::runtime::CredentialEnvelope> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use openssl::{encrypt::Encrypter, hash::MessageDigest, pkey::PKey, rsa::Padding};
     let key = [71; 32];
     let nonce = [19; 12];
-    let public = PKey::public_key_from_der(&STANDARD.decode(&task.recipient.public_key)?)?;
+    let public = PKey::public_key_from_der(&STANDARD.decode(&recipient.public_key)?)?;
     let mut encrypt = Encrypter::new(&public)?;
     encrypt.set_rsa_padding(Padding::PKCS1_OAEP)?;
     encrypt.set_rsa_oaep_md(MessageDigest::sha256())?;
@@ -1851,15 +1860,31 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         };
         crate::test_support::task_signature::verify(&signed,&verification)?;
         let spec=&claim.1["task"]["payload"]["task"];
-        for event in [json!({"kind":"received"}),json!({"kind":"start"}),json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null}})] {
+        let mut started = None;
+        for event in [json!({"kind":"received"}),json!({"kind":"start"})] {
             let starting=event["kind"]=="start";
             let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",spec["taskId"].as_str().context("access task")?),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":spec["attemptId"],"executionContext":context,"event":event}))).await?;
-            ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
+            ensure!(reply.0==StatusCode::OK,"access start {reply:?}");
             if starting {
                 let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
-                crate::test_support::task_signature::verify(&ack.into_permit().context("access start permit")?,&crate::test_support::task_signature::TaskVerification{permit:wire::TaskPermit::Start,..verification})?;
+                let permit=ack.into_permit().context("access start permit")?;
+                crate::test_support::task_signature::verify(&permit,&crate::test_support::task_signature::TaskVerification{permit:wire::TaskPermit::Start,..verification})?;
+                let wire::TaskPayload::DeviceAccess(task) = permit.payload else {anyhow::bail!("access permit")};
+                started=Some(task);
             }
         }
+        let access=started.context("started access")?;
+        let wire::AccessWindowsPlan::Initialize { recipient,expected_revision }=access.windows.as_ref().context("Windows plan")? else {anyhow::bail!("initialization required")};
+        let subject=wire::CredentialSubject::RssLogin{binding,binding_generation:1,sid:sid.into()};
+        let envelope=encrypted_envelope(recipient,subject.clone(),*expected_revision,&access.material_aad(&subject,*expected_revision)?,b"JycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJyc")?;
+        let escrow=wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow{definition_digest:access.definition_digest,materials:vec![envelope]});
+        let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",access.task_id),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":access.attempt_id,"executionContext":context,"event":escrow}))).await?;
+        ensure!(reply.0==StatusCode::OK,"initial escrow {reply:?}");
+        let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
+        let receipt=ack.credentials().first().context("initial custody receipt")?;
+        let event=json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":access.definition_digest,"effect":{"state":"applied","account":{"platform":"windows","sid":sid},"role":"standard","mac":null,"windows":{"factorGeneration":access.factor_generation,"recovery":receipt}}});
+        let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",access.task_id),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":access.attempt_id,"executionContext":context,"event":event}))).await?;
+        ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
         credential_policy(&mut f,json!({"kind":"rotate_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;
         let original=claim_credential(&f,&context).await?;
         for kind in ["received","start"] {ensure!(credential_event(&f,&context,&original,json!({"kind":kind})).await?.0==StatusCode::OK);}
@@ -1883,7 +1908,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let list=format!("/api/v1/devices/{}/recovery-credentials",case_device_id());
         let materials=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(materials.0==StatusCode::OK,"materials {materials:?}");
-        let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login").context("RSS material")?;
+        let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
         let secret_path=format!("{list}/{}/versions/{}/secret",material["id"].as_str().context("material id")?,material["version"]);
         let disclosed=f.author.call(&f.router,Method::GET,&secret_path,None).await?;
         ensure!(disclosed.0==StatusCode::OK && disclosed.1["secret"]==secret,"disclose {disclosed:?}");

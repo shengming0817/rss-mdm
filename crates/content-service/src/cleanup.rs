@@ -155,7 +155,7 @@ impl Store {
             // Unresolved recovery is never evidence that a write did not happen.
         }
         let mut tx = self.tx().await?;
-        sqlx::query("DELETE FROM mdm_content.uploads u WHERE u.expires<=$1 AND u.held_until<=$1 AND NOT EXISTS(SELECT 1 FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))").bind(now).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
+        sqlx::query("DELETE FROM mdm_content.uploads u WHERE u.expires<=$1 AND u.held_until<=$1 AND (u.epoch IS NULL OR (u.document->'value'->'upload'->>'offset')::bigint<(u.document->'value'->'upload'->'binding'->>'length')::bigint) AND NOT EXISTS(SELECT 1 FROM mdm_content.objects o WHERE o.owner=u.id AND o.state<>'deleted' AND NOT EXISTS(SELECT 1 FROM mdm_content.manifests m WHERE m.state<>'deleted' AND m.document->'value'->'pieces' @> jsonb_build_array(jsonb_build_object('id',o.id))))").bind(now).execute(&mut *tx).await.map_err(|e|journal::pg_error(concat!(file!(), ":", line!()),e))?;
         commit(tx).await
     }
     pub async fn garbage(&self, now: i64) -> Result<Vec<Garbage>, Error> {

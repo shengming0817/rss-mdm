@@ -1,0 +1,483 @@
+{
+  "$defs": {
+    "AccessAccount": {
+      "description": "Stable local account identity, never a display name or a transient Unix UID.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Windows local SAM account. Domain/cloud accounts are not admitted.",
+          "properties": {
+            "platform": {
+              "const": "windows",
+              "type": "string"
+            },
+            "sid": {
+              "description": "SID returned by the authenticated native account operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "macOS local directory account.",
+          "properties": {
+            "generatedUid": {
+              "description": "Persistent directory identity, distinct from numeric UID.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "platform": {
+              "const": "macos",
+              "type": "string"
+            }
+          },
+          "required": [
+            "platform",
+            "generatedUid"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessConfiguration": {
+      "additionalProperties": false,
+      "description": "Common product configuration; Apple protocol payloads remain with the Apple owner.",
+      "properties": {
+        "enabled": {
+          "description": "Enable the platform's RSS login integration.",
+          "type": "boolean"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessRole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Explicit role convergence; null preserves existing role, new accounts default standard."
+        },
+        "selfEnrollment": {
+          "description": "Permit the first association to the currently authenticated interactive local account.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selfEnrollment",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "AccessEffect": {
+      "description": "Effect receipt. Received/start ACKs are carried by the existing task protocol separately.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The exact requested configuration has been durably installed and read back.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Identity actually changed or confirmed."
+            },
+            "mac": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessMacFacts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "macOS-specific facts; required on macOS and absent on Windows."
+            },
+            "role": {
+              "$ref": "#/$defs/AccessRole",
+              "description": "Actual native privilege after the operation."
+            },
+            "state": {
+              "const": "applied",
+              "type": "string"
+            },
+            "windows": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AccessWindowsFacts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Installed Windows factors and exact durable escrow coordinates."
+            }
+          },
+          "required": [
+            "state",
+            "account",
+            "role"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The integration was removed, preserving the OS account and its data.",
+          "properties": {
+            "state": {
+              "const": "unbound",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "The device cannot yet establish the effect of the original attempt.",
+          "properties": {
+            "state": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A known failure without claiming the requested state was installed.",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/AccessFailure",
+              "description": "Bounded public failure reason."
+            },
+            "state": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AccessFailure": {
+      "description": "Closed native failure classes; never include command output or user credentials.",
+      "oneOf": [
+        {
+          "const": "unsupported",
+          "description": "The native integration is not installed or supported.",
+          "type": "string"
+        },
+        {
+          "const": "account_changed",
+          "description": "The exact local identity or current login changed.",
+          "type": "string"
+        },
+        {
+          "const": "name_conflict",
+          "description": "A requested name already belongs to a different account.",
+          "type": "string"
+        },
+        {
+          "const": "recovery_account_protected",
+          "description": "An operation would remove the last administrator or recovery-capable account.",
+          "type": "string"
+        },
+        {
+          "const": "needs_user",
+          "description": "User input is needed locally; no password is returned to the server.",
+          "type": "string"
+        },
+        {
+          "const": "native_failure",
+          "description": "Native persistence or read-back failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessMacFacts": {
+      "additionalProperties": false,
+      "description": "Apple account facts are separate from PSSO registration and Secure Enclave keys.",
+      "properties": {
+        "filevaultUnlock": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
+        },
+        "secureToken": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "The account's Secure Token status, not Bootstrap Token custody."
+        },
+        "volumeOwner": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Apple silicon volume ownership."
+        }
+      },
+      "required": [
+        "secureToken",
+        "volumeOwner",
+        "filevaultUnlock"
+      ],
+      "type": "object"
+    },
+    "AccessObservation": {
+      "description": "One independent native capability observation, never inferred from transport success.",
+      "oneOf": [
+        {
+          "const": "present",
+          "description": "The capability has been verified for this exact local account.",
+          "type": "string"
+        },
+        {
+          "const": "absent",
+          "description": "Native inspection verified the capability is absent.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Inspection could not establish the capability.",
+          "type": "string"
+        },
+        {
+          "const": "needs_administrator",
+          "description": "A qualified local administrator must authorize the operation.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessRole": {
+      "description": "Requested account privilege. Absence preserves an existing account's privilege.",
+      "oneOf": [
+        {
+          "const": "standard",
+          "description": "Ordinary local user.",
+          "type": "string"
+        },
+        {
+          "const": "administrator",
+          "description": "Local administrator, requiring explicit RSS device-account authorization.",
+          "type": "string"
+        }
+      ]
+    },
+    "AccessWindowsFacts": {
+      "additionalProperties": false,
+      "description": "Installed factor identity is independent of the account association and configuration revision.",
+      "properties": {
+        "factorGeneration": {
+          "description": "Exact installed factor generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "recovery": {
+          "$ref": "#/$defs/CredentialReceipt",
+          "description": "Exact recovery material retained on this endpoint."
+        }
+      },
+      "required": [
+        "factorGeneration",
+        "recovery"
+      ],
+      "type": "object"
+    },
+    "CredentialReceipt": {
+      "additionalProperties": false,
+      "description": "Durable escrow coordinates returned only for the exact accepted task event.",
+      "properties": {
+        "material": {
+          "description": "Server-assigned entry identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material subject."
+        },
+        "version": {
+          "description": "Immutable material version.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject",
+        "material",
+        "version"
+      ],
+      "type": "object"
+    },
+    "CredentialSubject": {
+      "description": "An exact Windows object, never an account display name or drive letter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS additional-factor recovery material, separate from local-account passwords.",
+          "properties": {
+            "binding": {
+              "description": "Stable Device Access association.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "bindingGeneration": {
+              "description": "Exact association generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_login",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable local account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "bindingGeneration",
+            "sid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Numerical recovery protector on a stable volume.",
+          "properties": {
+            "kind": {
+              "const": "bitlocker",
+              "type": "string"
+            },
+            "protector": {
+              "description": "Recovery protector identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "volume": {
+              "description": "Stable WMI volume DeviceID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "volume",
+            "protector"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit RSS-managed local account.",
+          "properties": {
+            "kind": {
+              "const": "local_administrator",
+              "type": "string"
+            },
+            "sid": {
+              "description": "Stable Windows account SID.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "sid"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Safe employee-facing binding projection. This is not a login credential.",
+  "properties": {
+    "account": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AccessAccount"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Actual native account, if known."
+    },
+    "appliedRevision": {
+      "description": "Last confirmed applied revision.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bindingGeneration": {
+      "description": "Association generation.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "configuration": {
+      "$ref": "#/$defs/AccessConfiguration",
+      "description": "Desired configuration."
+    },
+    "effect": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AccessEffect"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Native effect, not inferred from transport acknowledgement."
+    },
+    "factorGeneration": {
+      "description": "Factor replacement generation.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "id": {
+      "description": "Stable binding.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "receivedRevision": {
+      "description": "Last received desired revision.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "revision": {
+      "description": "Desired revision.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "revoked": {
+      "description": "Whether this association is revoked on the server.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "bindingGeneration",
+    "factorGeneration",
+    "revision",
+    "revoked",
+    "configuration"
+  ],
+  "title": "AccessBindingStatus",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/access-binding-status.schema.json"
+}

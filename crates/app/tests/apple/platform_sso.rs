@@ -431,7 +431,9 @@ async fn binding(f: &mut Fixture, device: &str) -> Result<Uuid> {
     let status = response.status();
     let receipt: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
     ensure!(
-        status == StatusCode::OK && receipt["state"] == "pending",
+        status == StatusCode::OK
+            && receipt["revoked"] == false
+            && receipt["appliedRevision"].is_null(),
         "P1 confirm {status}: {receipt}"
     );
     Ok(serde_json::from_value(receipt["id"].clone())?)
@@ -455,6 +457,7 @@ async fn applied_binding(id: Uuid) -> Result<()> {
     b.applied_revision = Some(b.revision);
     b.received_revision = Some(b.revision);
     b.effect = Some(AccessEffect::Applied {
+        windows: None,
         account: b.account.clone().context("local account")?,
         role: AccessRole::Standard,
         mac: Some(AccessMacFacts {

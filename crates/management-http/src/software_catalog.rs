@@ -31,7 +31,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/agent-packages/uploads/{id}",
-            get(inspect_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+            get(inspect_agent_upload)
+                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action])
+                .post(parse_agent_upload)
+                .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
         )
         .route(
             "/agent-packages/save",
@@ -237,6 +240,16 @@ async fn inspect_agent_upload(
     Path(id): Path<uuid::Uuid>,
 ) -> Result<Json<Value>, Error> {
     rss_mdm_software_service::management::installers::inspect(&app, &auth.proof, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn parse_agent_upload(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_software_service::management::installers::parse(&app, &auth.proof, id)
         .await
         .map(Json)
         .map_err(Into::into)

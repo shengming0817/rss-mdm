@@ -114,6 +114,7 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 },
                 origin: access::Origin::SelfEnrollment,
                 generation: 1,
+                factor_generation: 1,
                 revision: 1,
                 state: access::State::Active,
                 intent: access::AccountIntent::Existing {
@@ -129,7 +130,20 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 },
                 received_revision: Some(1),
                 applied_revision: Some(1),
+                applied_windows: None,
                 effect: Some(AccessEffect::Applied {
+                    windows: Some(rss_mdm_agent_wire::runtime::AccessWindowsFacts {
+                        factor_generation: 1,
+                        recovery: rss_mdm_agent_wire::runtime::CredentialReceipt {
+                            subject: rss_mdm_agent_wire::runtime::CredentialSubject::RssLogin {
+                                binding: id,
+                                binding_generation: 1,
+                                sid: sid.clone(),
+                            },
+                            material: Uuid::new_v4(),
+                            version: 1,
+                        },
+                    }),
                     account,
                     role: AccessRole::Standard,
                     mac: None,

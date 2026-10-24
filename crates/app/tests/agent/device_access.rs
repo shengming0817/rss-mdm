@@ -36,8 +36,18 @@ fn verification<'a>(
         device_id: registration["deviceId"]
             .as_str()
             .context("enrolled device")?,
-        platform: wire::TaskPlatform::Macos,
-        architecture: wire::TaskArchitecture::Aarch64,
+        platform: if matches!(&task.payload,wire::TaskPayload::DeviceAccess(v) if v.platform == wire::TaskPlatform::Windows)
+        {
+            wire::TaskPlatform::Windows
+        } else {
+            wire::TaskPlatform::Macos
+        },
+        architecture: if matches!(&task.payload,wire::TaskPayload::DeviceAccess(v) if v.platform == wire::TaskPlatform::Windows)
+        {
+            wire::TaskArchitecture::X86_64
+        } else {
+            wire::TaskArchitecture::Aarch64
+        },
         registration_id: serde_json::from_value(registration["registrationId"].clone())?,
         generation: registration["generation"]
             .as_u64()
@@ -111,6 +121,9 @@ async fn setup(f: &mut Fixture) -> Result<(Uuid, Value)> {
     setup_profile(f, false).await
 }
 async fn setup_profile(f: &mut Fixture, retiring: bool) -> Result<(Uuid, Value)> {
+    setup_platform(f, retiring, false).await
+}
+async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Result<(Uuid, Value)> {
     let capabilities = if retiring {
         json!([
             "inventory.collect.v1",
@@ -120,7 +133,13 @@ async fn setup_profile(f: &mut Fixture, retiring: bool) -> Result<(Uuid, Value)>
     } else {
         json!(["inventory.collect.v1", "device_access.v1"])
     };
-    let registration = f.register_profile(capabilities).await?;
+    let registration = if windows {
+        seed_profile(&f.base,f.execution.clone(),execution::case_credential(),execution::case_device_id(),
+            json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64",
+                "executionContext":windows_context()})).await?
+    } else {
+        f.register_profile(capabilities).await?
+    };
     if retiring {
         f.grants
             .extend(crate::test_support::identity::device_grants(
@@ -193,7 +212,7 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
         ensure!(restarted.0==StatusCode::OK);
         let confirm=json!({"operationId":Uuid::new_v4(),"challenge":restarted.1["id"],"nonce":restarted.1["nonce"],"localSession":restarted.1["localSession"]});
         let accepted=user_call(&f,"confirm",confirm.clone(),true).await?;ensure!(accepted.0==StatusCode::OK,"confirm: {accepted:?}");
-        ensure!(accepted.1["state"]=="pending" && accepted.1["appliedRevision"].is_null());
+        ensure!(accepted.1["revoked"]==false && accepted.1["bindingGeneration"]==1 && accepted.1["factorGeneration"]==1 && accepted.1["appliedRevision"].is_null());
         let switched_again=context(4,Uuid::new_v4(),account);
         ensure!(claim(&f,&switched_again).await?.0==StatusCode::OK);
         ensure!(user_call(&f,"confirm",confirm,true).await?.1==accepted.1);
@@ -323,7 +342,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.1["task"].is_null(),"started creation must block another delivery");
         let revised=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
-        ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==2,"new binding generation {revised:?}");
+        ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==1,"configuration preserves binding generation {revised:?}");
         let account=Uuid::new_v4();let spec=&task["payload"]["task"];
         let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
@@ -409,4 +428,251 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         ensure!(claim(&f,&c).await?.0==StatusCode::OK,"uncertain unmanage must retain communication");
         Ok(())
     }).await
+}
+
+fn windows_context() -> Value {
+    let mut c = crate::test_support::software_execution::context(
+        crate::test_support::software_execution::Platform::Windows,
+    );
+    c["revision"] = json!(2);
+    c["interactiveUser"] = json!({"identity":"S-1-5-21-100-200-300-1001","generatedUid":null,"sessionId":Uuid::from_u128(100),"administrator":false});
+    c
+}
+async fn directory(f: &Fixture, user: bool) -> Result<(StatusCode, Value)> {
+    let mut r = Request::builder()
+        .method(Method::GET)
+        .uri("/api/v1/agent/runtime/device-access")
+        .header("host", "mdm.example.test:9445")
+        .extension(evidence(execution::case_credential()).unwrap());
+    if user {
+        r = r.header(
+            "x-rss-user-session",
+            &f.author.cookies["__Host-identity-session"],
+        );
+    }
+    let response = f.router.clone().oneshot(r.body(Body::empty())?).await?;
+    let status = response.status();
+    let bytes = response.into_body().collect().await?.to_bytes();
+    Ok((status, serde_json::from_slice(&bytes)?))
+}
+fn pending_binding(
+    reply: &(StatusCode, Value),
+    id: Uuid,
+    account: &wire::AccessAccount,
+) -> Result<()> {
+    ensure!(reply.0 == StatusCode::OK, "directory failed: {}", reply.0);
+    let bindings = reply
+        .1
+        .get("bindings")
+        .and_then(Value::as_array)
+        .context("binding list")?;
+    let binding = bindings
+        .iter()
+        .find(|b| b.get("id") == Some(&json!(id)))
+        .context("target binding")?;
+    ensure!(
+        binding.get("account") == Some(&serde_json::to_value(account)?),
+        "account mismatch"
+    );
+    ensure!(
+        binding.get("appliedRevision") == Some(&Value::Null),
+        "not an explicit pending revision"
+    );
+    Ok(())
+}
+fn access_envelope(task: &wire::AccessTaskSpec, sid: &str) -> Result<wire::CredentialEnvelope> {
+    use base64::{
+        Engine,
+        engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    };
+    use openssl::{encrypt::Encrypter, hash::MessageDigest, pkey::PKey, rsa::Padding};
+    let Some(wire::AccessWindowsPlan::Initialize {
+        recipient,
+        expected_revision,
+    }) = &task.windows
+    else {
+        anyhow::bail!("initialization required")
+    };
+    let subject = wire::CredentialSubject::RssLogin {
+        binding: task.binding_id,
+        binding_generation: task.binding_generation,
+        sid: sid.into(),
+    };
+    let aad = task.material_aad(&subject, *expected_revision)?;
+    let key = [71; 32];
+    let nonce = [19; 12];
+    let public = PKey::public_key_from_der(&STANDARD.decode(&recipient.public_key)?)?;
+    let mut encrypt = Encrypter::new(&public)?;
+    encrypt.set_rsa_padding(Padding::PKCS1_OAEP)?;
+    encrypt.set_rsa_oaep_md(MessageDigest::sha256())?;
+    encrypt.set_rsa_mgf1_md(MessageDigest::sha256())?;
+    let mut wrapped = vec![0; encrypt.encrypt_len(&key)?];
+    let size = encrypt.encrypt(&key, &mut wrapped)?;
+    wrapped.truncate(size);
+    let cipher = ring::aead::LessSafeKey::new(
+        ring::aead::UnboundKey::new(&ring::aead::AES_256_GCM, &key)
+            .map_err(|_| anyhow::anyhow!("test key"))?,
+    );
+    let mut ciphertext = URL_SAFE_NO_PAD.encode([39; 32]).into_bytes();
+    cipher
+        .seal_in_place_append_tag(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+            ring::aead::Aad::from(aad),
+            &mut ciphertext,
+        )
+        .map_err(|_| anyhow::anyhow!("test encryption"))?;
+    Ok(wire::CredentialEnvelope {
+        subject,
+        expected_revision: *expected_revision,
+        wrapped_key: STANDARD.encode(wrapped),
+        nonce,
+        ciphertext: STANDARD.encode(ciphertext),
+    })
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device-access.http: Windows initialization escrows and applies within one authenticated task"]
+async fn windows_first_setup_is_one_recoverable_task() -> Result<()> {
+    windows_setup(false, false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device-access.http: newly created SID is prepared without prematurely marking applied"]
+async fn windows_created_account_is_prepared_before_escrow() -> Result<()> {
+    windows_setup(true, false).await
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=device-access.http: withdrawn initialization settles custody without restoring access"]
+async fn windows_withdrawn_setup_settles_only_its_attempt() -> Result<()> {
+    windows_setup(false, true).await
+}
+async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        let (policy,registration) = setup_platform(&mut f,false,true).await?;
+        let c = windows_context();
+        ensure!(claim(&f,&c).await?.0 == StatusCode::OK);
+        ensure!(directory(&f,false).await?.0 == StatusCode::UNAUTHORIZED);
+        let options = directory(&f,true).await?;
+        ensure!(options.0 == StatusCode::OK && options.1["policies"].as_array().context("policies")?.iter().any(|p| p["policy"] == policy.to_string()),"directory {options:?}");
+        let id = if create {
+            let id = Uuid::new_v4();
+            let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
+            let reply = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"windows","name":"workuser"}}}))).await?;
+            ensure!(reply.0 == StatusCode::OK,"create {reply:?}"); id
+        } else {
+            let begun = user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?;
+            ensure!(begun.0 == StatusCode::OK,"begin {begun:?}");
+            let confirm = json!({"operationId":Uuid::new_v4(),"challenge":begun.1["id"],"nonce":begun.1["nonce"],"localSession":begun.1["localSession"]});
+            let bound = user_call(&f,"confirm",confirm.clone(),true).await?;
+            ensure!(bound.0 == StatusCode::OK,"confirm {bound:?}");
+            ensure!(user_call(&f,"confirm",confirm,true).await? == bound);
+            serde_json::from_value(bound.1["id"].clone())?
+        };
+        let offered = offer(&f,&c,&registration).await?.1["task"].clone();
+        ensure!(event(&f,&offered,&c,&registration,json!({"kind":"received"})).await?.0 == StatusCode::OK);
+        let start = event(&f,&offered,&c,&registration,json!({"kind":"start"})).await?;
+        ensure!(start.0 == StatusCode::OK,"start {start:?}");
+        let signed: wire::SignedTask = serde_json::from_value(start.1["permit"].clone())?;
+        let wire::TaskPayload::DeviceAccess(task) = &signed.payload else { anyhow::bail!("access task") };
+        let sid = if create { "S-1-5-21-100-200-300-1002" } else { "S-1-5-21-100-200-300-1001" };
+        let account = wire::AccessAccount::Windows { sid:sid.into() };
+        let envelope = access_envelope(task,sid)?;
+        let escrow = wire::TaskEvent::CredentialEscrow(wire::CredentialEscrow { definition_digest:task.definition_digest,materials:vec![envelope] });
+        if create { ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(&escrow)?).await?.0.is_success()); }
+        let prepared = wire::TaskEvent::DeviceAccessPrepared(wire::AccessPrepared { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,account:account.clone() });
+        let p = event(&f,&offered,&c,&registration,serde_json::to_value(&prepared)?).await?;
+        ensure!(p.0 == StatusCode::OK,"prepared {p:?}");
+        let pending = directory(&f,true).await?;
+        pending_binding(&pending,id,&account)?;
+        ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[]})),id,&account).is_err());
+        ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[{"id":id,"account":account}]})),id,&account).is_err());
+        let path = format!("/api/v1/agent/runtime/tasks/{}/events",task.task_id);
+        let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":task.attempt_id,"executionContext":c,"event":escrow});
+        let ack = agent_call(&f.router,Method::POST,&path,Some(execution::case_credential()),Some(input.clone())).await?;
+        ensure!(ack.0 == StatusCode::OK,"escrow {ack:?}");
+        ensure!(agent_call(&f.router,Method::POST,&path,Some(execution::case_credential()),Some(input)).await? == ack);
+        let ack: wire::TaskEventAck = serde_json::from_value(ack.1)?;
+        ensure!(ack.credentials().len() == 1);
+        let receipt = ack.credentials()[0].clone();
+        pending_binding(&directory(&f,true).await?,id,&account)?;
+        let result = wire::AccessResult { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,
+            effect:wire::AccessEffect::Applied { account:account.clone(),role:wire::AccessRole::Standard,mac:None,
+                windows:Some(wire::AccessWindowsFacts { factor_generation:task.factor_generation,recovery:receipt.clone() }) } };
+        let mut wrong = result.clone();
+        if let wire::AccessEffect::Applied { windows:Some(facts),.. } = &mut wrong.effect { facts.recovery.version += 1; }
+        ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(wrong))?).await?.0.is_success());
+        if withdraw {
+            let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
+            let reply = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind"}}))).await?;
+            ensure!(reply.0 == StatusCode::OK,"unbind {reply:?}");
+        }
+        let done = event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(result))?).await?;
+        ensure!(done.0 == StatusCode::OK,"applied {done:?}");
+        if withdraw {
+            let state = directory(&f,true).await?;
+            ensure!(state.1["bindings"][0]["revoked"] == true && state.1["bindings"][0]["appliedRevision"].is_null());
+            let pending = pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND pending",case_tenant(),task.task_id))?;
+            ensure!(pending.trim() == "0","withdrawn task left pending materials: {pending}");
+            let unbind = offer(&f,&c,&registration).await?.1["task"].clone();
+            for kind in ["received","start"] { ensure!(event(&f,&unbind,&c,&registration,json!({"kind":kind})).await?.0 == StatusCode::OK); }
+            let spec=&unbind["payload"]["task"];
+            let mut cleared=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"unknown"}});
+            ensure!(event(&f,&unbind,&c,&registration,cleared.clone()).await?.0 == StatusCode::OK);
+            let retained=pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND invalidated_at IS NULL AND sealed IS NOT NULL",case_tenant(),task.task_id))?;
+            ensure!(retained.trim() == "1","Unknown must retain material");
+            cleared["effect"]=json!({"state":"unbound"});
+            ensure!(event(&f,&unbind,&c,&registration,cleared).await?.0 == StatusCode::OK);
+            verify_unbound_retention(&f.base,&receipt).await?;
+            return Ok(());
+        }
+        let ready = directory(&f,true).await?;
+        ensure!(ready.1["bindings"][0]["appliedRevision"] == 1 && ready.1["policies"] == json!([]));
+        // An ordinary configuration update preserves both identity and factors.
+        let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
+        let changed = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":account}}}))).await?;
+        ensure!(changed.0 == StatusCode::OK && changed.1["bindingGeneration"] == 1 && changed.1["factorGeneration"] == 1,"configure {changed:?}");
+        let preserved = offer(&f,&c,&registration).await?.1["task"].clone();
+        ensure!(preserved["payload"]["task"]["windows"]["kind"] == "preserve");
+        let reset = f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"reset_factors"}}))).await?;
+        ensure!(reset.0 == StatusCode::OK && reset.1["bindingGeneration"] == 1 && reset.1["factorGeneration"] == 2,"reset {reset:?}");
+        ensure!(event(&f,&preserved,&c,&registration,json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
+        Ok(())
+    }).await
+}
+
+async fn verify_unbound_retention(base: &Value, receipt: &wire::CredentialReceipt) -> Result<()> {
+    use rss_mdm_recovery_credentials::storage;
+    use sqlx::Connection;
+    let config: crate::config::Config = serde_json::from_value(base.clone())?;
+    let mut connection = sqlx::PgConnection::connect_with(&config.access_options()?).await?;
+    let mut c = connection.begin().await?;
+    let tenant = Uuid::parse_str(case_tenant())?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *c)
+        .await?;
+    let invalidated:bool=sqlx::query_scalar("SELECT invalidated_at IS NOT NULL AND NOT pending AND sealed IS NOT NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut *c).await?;
+    ensure!(invalidated, "native Unbound must start retention");
+    ensure!(
+        !storage::expired_in(&mut c, tenant)
+            .await?
+            .iter()
+            .any(|m| m.id == receipt.material && m.version == receipt.version)
+    );
+    sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).execute(&mut *c).await?;
+    ensure!(
+        storage::expired_in(&mut c, tenant)
+            .await?
+            .iter()
+            .any(|m| m.id == receipt.material && m.version == receipt.version)
+    );
+    storage::clear_expired_in(&mut c, tenant, receipt.material, receipt.version).await?;
+    let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND version=$3")
+        .bind(tenant).bind(receipt.material).bind(receipt.version).fetch_one(&mut *c).await?;
+    ensure!(erased, "expired material must be erased");
+    c.commit().await?;
+    connection.close().await?;
+    Ok(())
 }

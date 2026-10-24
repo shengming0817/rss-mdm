@@ -18,6 +18,7 @@ pub(crate) fn content_owned(route: &str, method: &Method) -> bool {
                 "/api/v1/resources/{id}/uploads/{upload}/complete"
                     | "/api/v1/resources/{id}/content/mirror"
                     | "/api/v1/agent-packages"
+                    | "/api/v1/agent-packages/uploads/{id}"
             ))
 }
 
@@ -155,6 +156,14 @@ mod tests {
     fn budgets_match_methods_and_matched_paths() {
         assert!(content_owned("/api/v1/agent-packages", &Method::POST));
         assert!(!content_owned("/api/v1/agent-packages", &Method::GET));
+        assert!(content_owned(
+            "/api/v1/agent-packages/uploads/{id}",
+            &Method::POST
+        ));
+        assert!(!content_owned(
+            "/api/v1/agent-packages/uploads/{id}",
+            &Method::GET
+        ));
         assert_eq!(
             for_route("/api/v1/agent-packages", &Method::POST),
             BodyPolicy::Buffered(1024 * 1024)

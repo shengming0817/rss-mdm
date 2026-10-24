@@ -188,18 +188,25 @@ impl ExecutionService {
                 let fact=if let Some(details)=db::audit_details(tx,&actor,input.operation_id()).await? {fact.with_details(details)?}else{fact};
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);}
             let mut permit=None;
+            let mut credentials=Vec::new();
             let mut software_audit=None;
             match input.event() {
+                wire::TaskEvent::DeviceAccessPrepared(value) => {
+                    if !matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
+                    crate::device_access::provisioning::prepared(tx,&run,input,value).await?;
+                }
                 wire::TaskEvent::DeviceAccessResult(value) => {
                     if !matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
                     crate::device_access::finish_in(tx,&run,input,value,effect_allowed).await?;
-                    if matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !value.effect.complete() {run.state.uncertain_result(input.attempt_id())?;}
+                    if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. }) || value.effect.complete())).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..}) && !value.effect.complete() {run.state.uncertain_result(input.attempt_id())?;}
                     else {run.state.result(input.attempt_id(),value.effect.complete())?;}
                     run.result=Some(checked_input(serde_json::to_value(value))?);
                 }
                 wire::TaskEvent::CredentialEscrow(value) => {
-                    if !matches!(plan,db::ScheduledPolicy::Credential(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
-                    crate::credential_tasks::escrow(service,tx,&run,input.attempt_id(),value).await?;
+                    if !matches!(plan,db::ScheduledPolicy::Credential(_) | db::ScheduledPolicy::DeviceAccess(_)) || !effect_allowed || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
+                    credentials = if matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) {
+                        crate::device_access::provisioning::escrow(service,tx,&run,input.attempt_id(),value).await?
+                    } else { crate::credential_tasks::escrow(service,tx,&run,input.attempt_id(),value).await? };
                     if !run.state.trusts_result(now,plan.timeout_seconds()) {
                         run.state.uncertain_result(input.attempt_id())?;
                         let tenant=checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
@@ -260,7 +267,11 @@ impl ExecutionService {
                     super::evidence::persist_in(tx, id, input.attempt_id(), &signed.payload).await?;
                     permit=Some(signed);
                 },
-                wire::TaskEvent::Cancelled=>{run.state.cancel();run.state.cancelled(input.attempt_id())?;super::collection::abandon(service,tx,input.attempt_id(),"revoked").await?;},
+                wire::TaskEvent::Cancelled=>{run.state.cancel();
+                    if matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) && run.state.started_at.is_some()
+                        && crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),true).await? {
+                        run.state.uncertain_result(input.attempt_id())?;
+                    } else { run.state.cancelled(input.attempt_id())?; }super::collection::abandon(service,tx,input.attempt_id(),"revoked").await?;},
                 wire::TaskEvent::Result(result)=>{
                     let db::ScheduledPolicy::Script(script)=&plan else {return Err(Error::Malformed.into());};
                     super::collection::finish(tx,&script.frozen,&mut run,result,allowed,effect_allowed,now).await?;
@@ -317,7 +328,7 @@ impl ExecutionService {
                     run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect,"effectObservedAt":observed_at}));
                 },
             }
-            db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None)))?;
+            db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
             let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;

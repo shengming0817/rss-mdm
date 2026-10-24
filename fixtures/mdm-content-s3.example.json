@@ -11,7 +11,7 @@
   "max_uploads": 8,
   "transfer_seconds": 300,
   "retention_seconds": 86400,
-  "max_bundle_bytes": 8589934592,
-  "max_bundle_entries": 1000,
+
+  "max_bundle_entries": 4096,
   "max_expansion_ratio": 100
 }

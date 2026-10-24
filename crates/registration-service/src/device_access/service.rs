@@ -55,6 +55,68 @@ async fn authorize(
 }
 
 impl Service {
+    pub async fn device_access_directory(
+        &self,
+        device: &crate::DevicePrincipal,
+        employee: &AuthorizedPrincipal,
+        after: Option<Uuid>,
+        admission: &dyn Admission,
+        sessions: &SessionAuthority,
+    ) -> Result<rss_mdm_agent_wire::runtime::AccessDirectory, Error> {
+        if device.tenant() != self.tenant || employee.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        let who = person(employee)?;
+        let reference = employee
+            .session()?
+            .reference()
+            .map_err(|_| Error::Unauthorized)?;
+        sessions.recheck(&reference).await?;
+        let mut tx = self.store.begin(employee.tenant_id()).await?;
+        crate::device::store::revalidate_management(&mut tx, device).await?;
+        crate::lifecycle::require_work_in(&mut tx, employee.tenant_id(), device.device()).await?;
+        let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND instance=$4 AND principal=$5 ORDER BY id LIMIT 129")
+            .bind(tenant_uuid(device.tenant())?).bind(device.device()).bind(device.registration()).bind(who.instance).bind(who.principal)
+            .fetch_all(&mut *tx).await.map_err(db)?;
+        if rows.len() > 128 {
+            return Err(Error::Capacity);
+        }
+        let mut bindings = Vec::new();
+        for row in rows {
+            let b: Binding = serde_json::from_value(row).map_err(|_| Error::Corrupt)?;
+            b.validate()?;
+            bindings.push(b.status());
+        }
+        let local = admission.local_session(&mut tx, device).await?;
+        let first = storage::first_in(
+            &mut tx,
+            tenant_uuid(device.tenant())?,
+            device.device(),
+            device.registration(),
+            &who,
+            &local.account,
+        )
+        .await?;
+        let (policies, after) = if first {
+            admission
+                .policies(
+                    &mut tx,
+                    tenant_uuid(device.tenant())?,
+                    device.device(),
+                    after,
+                )
+                .await?
+        } else {
+            (Vec::new(), None)
+        };
+        tx.rollback().await.map_err(db)?;
+        Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
+            policies,
+            after,
+            bindings,
+        })
+    }
+
     pub async fn device_access_operation(
         &self,
         actor: &AuthorizedPrincipal,
@@ -190,7 +252,7 @@ impl Service {
             let selected=admission.policy(c,tenant_uuid(device.tenant())?,device.device(),policy).await?;
             if selected.version!=row.try_get::<Uuid,_>("policy_version").map_err(db)? || !selected.configuration.self_enrollment || !selected.configuration.enabled { return Err(Error::Forbidden); }
             if !storage::first_in(c,tenant_uuid(device.tenant())?,device.device(),device.registration(),who,&local.account).await? {return Err(Error::Conflict);}
-            let binding=Binding{id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,created_by_rss:false};
+            let binding=Binding{id:Uuid::new_v4(),tenant:tenant_uuid(device.tenant())?,device:device.device().into(),registration:device.registration(),registration_generation:device.generation(),person:who.clone(),origin:Origin::SelfEnrollment,generation:1,factor_generation:1,revision:1,state:State::Pending,intent:AccountIntent::Existing{account:local.account.clone()},account:Some(local.account),policy:selected.policy,policy_version:selected.version,configuration:selected.configuration,received_revision:None,applied_revision:None,effect:None,applied_windows:None,created_by_rss:false};
             storage::insert_in(c,&binding).await?;
             sqlx::query("UPDATE mdm_access.device_access_ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,&serde_json::to_string(&binding.id).map_err(|_|Error::Corrupt)?,audit).await?;
@@ -315,10 +377,11 @@ impl Service {
                             }) {
                                 return Err(Error::Conflict);
                             }
-                            let generation = old
-                                .as_ref()
-                                .map_or(Some(1), |b| b.generation.checked_add(1))
-                                .ok_or(Error::Capacity)?;
+                            let rebound = old.as_ref().is_some_and(|b| b.person != *person || b.state == State::Revoked);
+                            let generation = old.as_ref().map_or(Some(1), |b|
+                                if rebound { b.generation.checked_add(1) } else { Some(b.generation) }).ok_or(Error::Capacity)?;
+                            let factor_generation = old.as_ref().map_or(Some(1), |b|
+                                if rebound { b.factor_generation.checked_add(1) } else { Some(b.factor_generation) }).ok_or(Error::Capacity)?;
                             let revision = input
                                 .expected_revision
                                 .checked_add(1)
@@ -334,6 +397,7 @@ impl Service {
                                     &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,
                                     actor,device,Permission::AccountWrite)? },
                                 generation,
+                                factor_generation,
                                 revision,
                                 state: State::Pending,
                                 intent: intent.clone(),
@@ -344,9 +408,24 @@ impl Service {
                                 received_revision: old.as_ref().and_then(|b| b.received_revision),
                                 applied_revision: old.as_ref().and_then(|b| b.applied_revision),
                                 effect: old.as_ref().and_then(|b| b.effect.clone()),
+                                applied_windows: old.as_ref().and_then(|b| b.applied_windows.clone()),
                                 created_by_rss: old.as_ref().is_some_and(|b| b.created_by_rss)
                                     || matches!(intent, AccountIntent::Create { .. }),
                             }
+                        }
+                        Action::ResetFactors => {
+                            let mut b = old.clone().ok_or(Error::NotFound)?;
+                            if b.state == State::Revoked || b.intent.platform() != TaskPlatform::Windows { return Err(Error::Conflict); }
+                            let selected = admission.policy(c,tenant,device,b.policy).await?;
+                            if !selected.configuration.enabled { return Err(Error::Forbidden); }
+                            b.factor_generation = b.factor_generation.checked_add(1).ok_or(Error::Capacity)?;
+                            b.revision = b.revision.checked_add(1).ok_or(Error::Capacity)?;
+                            b.policy_version = selected.version;
+                            b.configuration = selected.configuration;
+                            b.origin = Origin::Administrator { authority: rss_mdm_authorization_service::OperationAuthority::from_proof(
+                                &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,actor,device,Permission::AccountWrite)? };
+                            b.state = State::Pending;
+                            b
                         }
                         Action::Unbind => {
                             let mut b = old.clone().ok_or(Error::NotFound)?;

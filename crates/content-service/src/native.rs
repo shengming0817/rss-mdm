@@ -2,8 +2,7 @@
 //! ref: microsoft/msix-packaging src/msix/common/AppxManifestObject.cpp
 use super::*;
 use quick_xml::{events::Event, name::ResolveResult, reader::NsReader};
-use rss_mdm_resource::{MsixArchitecture, MsixContainer, MsixIdentity, MsixSoftware};
-use std::{collections::BTreeMap, io::Write};
+use std::collections::BTreeMap;
 
 fn invalid() -> Error {
     Error::Malformed
@@ -19,41 +18,15 @@ fn archive<'a>(
     config: &Config,
 ) -> Result<zip::ZipArchive<&'a mut File>, Error> {
     let (count, _) = super::bundle::directory(file, config)?;
-    let mut archive = zip::ZipArchive::with_config(
+    let archive = zip::ZipArchive::with_config(
         zip::read::Config {
             archive_offset: zip::read::ArchiveOffset::Known(0),
         },
         file,
     )
     .map_err(|_| invalid())?;
-    if archive.len() as u64 != count || archive.has_overlapping_files().map_err(|_| invalid())? {
+    if archive.len() as u64 != count {
         return Err(invalid());
-    }
-    let mut expanded = 0u64;
-    for i in 0..archive.len() {
-        let entry = archive.by_index_raw(i).map_err(|_| invalid())?;
-        if entry.encrypted()
-            || !entry.is_file()
-            || entry
-                .unix_mode()
-                .is_some_and(|m| !matches!(m & 0o170000, 0 | 0o100000))
-            || !matches!(
-                entry.compression(),
-                zip::CompressionMethod::Stored | zip::CompressionMethod::Deflated
-            )
-        {
-            return Err(invalid());
-        }
-        expanded = expanded.checked_add(entry.size()).ok_or_else(invalid)?;
-        if expanded > config.max_bundle_bytes
-            || entry.size()
-                > entry
-                    .compressed_size()
-                    .max(1)
-                    .saturating_mul(config.max_expansion_ratio)
-        {
-            return Err(invalid());
-        }
     }
     Ok(archive)
 }
@@ -234,36 +207,6 @@ fn version(value: &str) -> Result<[u16; 4], Error> {
 fn field<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, Error> {
     values.get(key).map(String::as_str).ok_or_else(invalid)
 }
-fn match_identity(
-    values: &BTreeMap<String, String>,
-    expected: &MsixIdentity,
-    bundle: bool,
-) -> Result<(), Error> {
-    if field(values, "Name")? != expected.name
-        || field(values, "Publisher")? != expected.publisher
-        || version(field(values, "Version")?)? != expected.version
-    {
-        return Err(invalid());
-    }
-    if !bundle {
-        let architecture = match values
-            .get("ProcessorArchitecture")
-            .map(String::as_str)
-            .unwrap_or("neutral")
-        {
-            "x64" => MsixArchitecture::X86_64,
-            "arm64" => MsixArchitecture::Aarch64,
-            "neutral" => MsixArchitecture::Neutral,
-            _ => return Err(invalid()),
-        };
-        if architecture != expected.architecture
-            || values.get("ResourceId").map(String::as_str).unwrap_or("") != expected.resource_id
-        {
-            return Err(invalid());
-        }
-    }
-    Ok(())
-}
 pub(super) fn read_xml_bytes(
     reader: &mut impl Read,
     length: u64,
@@ -301,156 +244,16 @@ fn read_xml(
 ) -> Result<Facts, Error> {
     check_time(timer, deadline)?;
     let mut entry = archive.by_name(path).map_err(|_| invalid())?;
-    if entry.size() > 1_048_576 {
+    if !super::bundle::regular_entry(&entry) {
+        return Err(invalid());
+    }
+    if !entry.is_file() || entry.size() > 1_048_576 {
         return Err(invalid());
     }
     let length = entry.size();
     let mut bytes = Vec::with_capacity(length as usize);
     read_xml_bytes(&mut entry, length, timer, deadline, &mut bytes)?;
     facts(&bytes)
-}
-fn package(
-    file: &mut File,
-    identity: &MsixIdentity,
-    expected: &MsixSoftware,
-    config: &Config,
-    timer: &dyn Clock,
-    deadline: Deadline,
-) -> Result<(), Error> {
-    let mut archive = archive(file, config)?;
-    let f = read_xml(&mut archive, "AppxManifest.xml", timer, deadline)?;
-    match_identity(&f.identities[0], identity, false)?;
-    if f.dependencies.len() != expected.dependencies.len() {
-        return Err(invalid());
-    }
-    for d in &f.dependencies {
-        let min = version(field(d, "MinVersion")?)?;
-        if !expected.dependencies.iter().any(|i| {
-            i.name == field(d, "Name").unwrap_or("")
-                && i.publisher == field(d, "Publisher").unwrap_or("")
-                && i.version >= min
-        }) {
-            return Err(invalid());
-        }
-    }
-    if f.families.is_empty()
-        || f.families.iter().any(|f| {
-            version(field(f, "MinVersion").unwrap_or("")).ok() != Some(expected.minimum_os)
-                || !matches!(
-                    field(f, "Name"),
-                    Ok("Windows.Desktop" | "Windows.Universal")
-                )
-        })
-    {
-        return Err(invalid());
-    }
-    Ok(())
-}
-/// Verify the actual MSIX identity/member/dependency material, without executing or validating OS trust.
-pub(super) fn msix(
-    file: &mut File,
-    expected: &MsixSoftware,
-    config: &Config,
-    timer: &dyn Clock,
-    deadline: Deadline,
-) -> Result<(), Error> {
-    check_time(timer, deadline)?;
-    let MsixContainer::Bundle { members, .. } = &expected.container else {
-        return package(file, &expected.identity, expected, config, timer, deadline);
-    };
-    let mut archive = archive(file, config)?;
-    let f = read_xml(
-        &mut archive,
-        "AppxMetadata/AppxBundleManifest.xml",
-        timer,
-        deadline,
-    )?;
-    match_identity(&f.identities[0], &expected.identity, true)?;
-    let actual = f
-        .members
-        .iter()
-        .map(|m| field(m, "FileName").map(str::to_lowercase))
-        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
-    let declared = members
-        .iter()
-        .map(|m| m.path.to_lowercase())
-        .collect::<std::collections::BTreeSet<_>>();
-    if actual != declared || f.members.len() != members.len() {
-        return Err(invalid());
-    }
-
-    let total = members
-        .iter()
-        .try_fold(0u64, |sum, m| sum.checked_add(m.length))
-        .ok_or_else(invalid)?;
-    if total > config.max_temporary_bytes || total > config.max_bundle_bytes {
-        return Err(invalid());
-    }
-    for member in members {
-        check_time(timer, deadline)?;
-        let header = f
-            .members
-            .iter()
-            .find(|p| p.get("FileName") == Some(&member.path))
-            .ok_or_else(invalid)?;
-        let architecture = match member.identity.architecture {
-            MsixArchitecture::X86_64 => "x64",
-            MsixArchitecture::Aarch64 => "arm64",
-            MsixArchitecture::Neutral => "neutral",
-        };
-        let kind = if member.identity.resource_id.is_empty() {
-            "application"
-        } else {
-            "resource"
-        };
-        if field(header, "Type")? != kind
-            || field(header, "Architecture")? != architecture
-            || version(field(header, "Version")?)? != member.identity.version
-            || header.get("ResourceId").map(String::as_str).unwrap_or("")
-                != member.identity.resource_id
-            || field(header, "Size")?
-                .parse::<u64>()
-                .map_err(|_| invalid())?
-                != member.length
-        {
-            return Err(invalid());
-        }
-        let mut input = archive.by_name(&member.path).map_err(|_| invalid())?;
-        if input.size() != member.length {
-            return Err(invalid());
-        }
-        let mut spool = tempfile::tempfile().map_err(|_| storage())?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0; 64 * 1024];
-        let mut length = 0u64;
-        loop {
-            check_time(timer, deadline)?;
-            let n = input.read(&mut buffer).map_err(|_| invalid())?;
-            if n == 0 {
-                break;
-            }
-            length = length.checked_add(n as u64).ok_or_else(invalid)?;
-            if length > member.length {
-                return Err(invalid());
-            }
-            hasher.update(&buffer[..n]);
-            spool.write_all(&buffer[..n]).map_err(|_| storage())?;
-        }
-        if length != member.length || <[u8; 32]>::from(hasher.finalize()) != member.sha256 {
-            return Err(invalid());
-        }
-        drop(input);
-        spool.seek(SeekFrom::Start(0)).map_err(|_| storage())?;
-        package(
-            &mut spool,
-            &member.identity,
-            expected,
-            config,
-            timer,
-            deadline,
-        )?;
-    }
-    Ok(())
 }
 /// Discover the same namespace-checked MSIX identity used by publication verification.
 pub(super) fn inspect_msix(
@@ -460,7 +263,23 @@ pub(super) fn inspect_msix(
     deadline: Deadline,
 ) -> Result<rss_mdm_software_service::management::content::InstallerFacts, Error> {
     let mut archive = archive(file, config)?;
-    let facts = read_xml(&mut archive, "AppxManifest.xml", timer, deadline)?;
+    let path = if archive.index_for_name("AppxManifest.xml").is_some() {
+        "AppxManifest.xml"
+    } else {
+        "AppxMetadata/AppxBundleManifest.xml"
+    };
+    {
+        let entry = archive.by_name(path).map_err(|_| invalid())?;
+        if entry.size()
+            > entry
+                .compressed_size()
+                .max(1)
+                .saturating_mul(config.max_expansion_ratio)
+        {
+            return Err(invalid());
+        }
+    }
+    let facts = read_xml(&mut archive, path, timer, deadline)?;
     let identity = &facts.identities[0];
     let version = field(identity, "Version")?;
     self::version(version)?;

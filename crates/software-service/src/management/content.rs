@@ -34,14 +34,33 @@ pub struct InstallerFacts {
     pub architectures: Vec<r::Architecture>,
     pub bundle_id: Option<String>,
 }
+/// Optional observations, never an installation admission proof.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstallerInspection {
+    Parsed { facts: InstallerFacts },
+    SkippedSizeLimit,
+    NotRequested,
+    Rejected,
+}
+impl InstallerInspection {
+    pub fn facts(&self) -> Option<&InstallerFacts> {
+        match self {
+            Self::Parsed { facts } => Some(facts),
+            _ => None,
+        }
+    }
+}
 pub struct InspectedUpload<D> {
-    pub facts: InstallerFacts,
+    pub inspection: InstallerInspection,
+    pub format: r::SoftwareFormat,
     pub artifact: r::SoftwareArtifact,
     pub filename: String,
     pub _pin: D,
 }
 pub trait ManagementContentPort: ContentPort {
     type Download: Send;
+    type UploadPin: Send;
     type StagedImport: Send;
     type ImportEvidence: ImportedContent;
     fn prepare_upload(
@@ -56,13 +75,14 @@ pub trait ManagementContentPort: ContentPort {
         upload: Uuid,
         actor: &str,
         resource: &str,
-    ) -> impl Future<Output = Result<InspectedUpload<Self::Download>, Error>> + Send;
+    ) -> impl Future<Output = Result<InspectedUpload<Self::UploadPin>, Error>> + Send;
 
-    fn inspect_installer(
+    fn parse_upload(
         &self,
-        artifact: &r::Artifact,
-        filename: &str,
-    ) -> impl Future<Output = Result<InstallerFacts, Error>> + Send;
+        upload: Uuid,
+        actor: &str,
+        resource: &str,
+    ) -> impl Future<Output = Result<(), Error>> + Send;
     fn verify_artifact(
         &self,
         artifact: &r::Artifact,

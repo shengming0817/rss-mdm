@@ -763,3 +763,50 @@ pub async fn cleanup_visited_in(
     sqlx::query("UPDATE mdm_recovery.versions SET cleanup_checked_at=(extract(epoch FROM clock_timestamp())*1000000)::bigint WHERE tenant_id=$1 AND entry=$2 AND version=$3").bind(tenant).bind(id).bind(version).execute(c).await?;
     Ok(())
 }
+
+/// Current verified/pending state for one exact subject; callers cannot select another device.
+pub async fn current_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    binding: &Binding,
+) -> Result<Option<Material>, Error> {
+    active_in(c, tenant, binding).await?;
+    sqlx::query(select_material!(" WHERE e.tenant_id=$1 AND e.device=$2 AND e.registration=$3 AND e.generation=$4 AND e.subject=$5 AND e.current_version=v.version AND NOT e.retired FOR UPDATE OF e,v"))
+        .bind(tenant).bind(&binding.device).bind(binding.registration).bind(binding.generation)
+        .bind(serde_json::to_value(&binding.subject).map_err(|_| Error::Malformed)?)
+        .fetch_optional(c).await?.as_ref().map(decode).transpose()
+}
+
+/// Start retention only after the current binding has a correlated native Unbound fact.
+/// Unknown candidates retain their pending barrier; this does not alter generic settlement.
+/// ref: vault-plugin-secrets-kv path_delete.go (persist invalidation before physical cleanup).
+pub async fn access_unbound_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    id: Uuid,
+    generation: i64,
+    revision: i64,
+) -> Result<(), Error> {
+    use rss_mdm_registration_service::device_access::{State, storage};
+    let b = storage::locked_observation_in(c, tenant, id).await?;
+    if b.state != State::Revoked
+        || b.generation != generation
+        || b.revision != revision
+        || b.applied_revision != Some(revision)
+        || !matches!(
+            b.effect,
+            Some(rss_mdm_agent_wire::runtime::AccessEffect::Unbound)
+        )
+    {
+        return Err(Error::Conflict);
+    }
+    let entries: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM mdm_recovery.entries WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND generation=$4 AND subject->>'kind'='rss_login' AND subject->>'binding'=$5 AND (subject->>'bindingGeneration')::bigint<$6 ORDER BY id FOR UPDATE")
+        .bind(tenant).bind(&b.device).bind(b.registration).bind(b.registration_generation).bind(id.to_string()).bind(generation).fetch_all(&mut *c).await?;
+    for entry in entries {
+        sqlx::query("UPDATE mdm_recovery.versions SET validity='revoked',invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) WHERE tenant_id=$1 AND entry=$2 AND NOT pending")
+            .bind(tenant).bind(entry).execute(&mut *c).await?;
+        sqlx::query("UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND pending)")
+            .bind(tenant).bind(entry).execute(&mut *c).await?;
+    }
+    Ok(())
+}

@@ -77,13 +77,6 @@ impl Compliance {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize) = *ctx;
-                    let tenant = tx.tenant_id();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                        })
-                    })
-                    .await?;
                     crate::transaction::lock(tx).await?;
                     authorize()?;
                     s.audit_store.prepare_in(tx, audit, &[]).await?;

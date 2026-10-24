@@ -74,12 +74,14 @@ snapshot、partial、failed 分别表达完整快照、部分结果和失败。�
 
 ## 固定安装包发布与匿名下载
 
-服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。管理员选择文件并确认识别出的版本/目标；无法唯一识别的值允许补填，明确的格式或目标冲突不能覆盖。PKG 只通过单一受限 XAR 元数据入口读取 PackageInfo/Distribution，接受相同解码 name 的重复项和 Apple zlib；不解压 Payload 或执行脚本。TOC、条目、路径、声明数据范围与累计元数据均受预算限制。解析沿用 Content 限额；MSI 还在打开容器前限制 FAT 为 16 MiB、目录为 4096 槽、MiniFAT 为 1 MiB、mini-stream 为 16 MiB，并拒绝重复元数据扇区和循环链。未签名、ad-hoc 或未公证均可上传、保存和发布，不要求证明材料、manifest、豁免或二次确认。
+服务器接收外部构建的 Windows EXE/MSI/MSIX 与 macOS PKG，不在 Linux 构建、签名或执行安装包。上传完成时验证原文件长度和摘要；默认只对不超过 1 GiB 的文件尝试辅助识别，较大文件跳过解析，不为解析复制临时文件。目录安全预算统一为 4096（含清单），超限仅停止解析。PKG 只读取 PackageInfo/Distribution，MSIX 只读取固定清单，MSI/EXE 只读取必要属性；不展开 Payload/CAB 或逐个验证业务载荷。
+
+识别结果与原文件一起持久保存。查看、保存和发布复用既有结果，不重新读取或解析安装包；原文件下载仍校验本次读取的完整性。未解析、预算超限或解析失败的包可由管理员补填版本和目标后保存、发布；具有完整合法执行定义时可生成安装任务。辅助识别不构成软件可信、签名有效或可成功安装的证明，实际效果由终端/OS核实。未签名、ad-hoc 或未公证均不因该原因被拒绝。
 
 管理客户端自动生成并保留稳定 operationId：
 
 1. `POST /api/v1/agent-packages/uploads` 提交 filename、length、sha256，取得系统生成的 package/resource/upload 坐标和上传 href。摘要只保证文件完整性，不证明作者可信。
-2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/agent-packages/uploads/{packageId}` 读取真实格式、可识别版本和架构。
+2. 沿现有 Content href 使用 GET 查询、PATCH `?offset=N` 续传和 POST `/complete` 完成；响应丢失先读取原上传状态，不换操作。`GET /api/v1/agent-packages/uploads/{packageId}` 读取持久解析状态和可选观察结果；GET 不触发解析。有效上传可显式 POST 同一路径请求解析（包括大文件），已存在结果直接复用。
 3. `POST /api/v1/agent-packages/save` 提交 operationId、packageId、可选 version、target 与可选完整 behavior（既有 SoftwareBehavior 合同，主安装材料键固定为 package）。behavior 与材料一次保存为不可变版本，由 Resource 校验格式、目标、引用、参数和检测规则；省略或 null 表示没有执行定义。系统保存既有 Software Resource、私有来源和版本，返回可回读的软件 href；文件原名归 Resource 展示，文件事实与软件生命周期仍由原 owner 持有。未提供安装执行定义不阻塞保存或发布；实际生成安装任务时才要求完整执行定义，不能猜测 EXE 静默参数。
 4. `POST /api/v1/agent-packages` 只提交 operationId、packageId，要求 release_publish；自动启用软件仍检查 software_write。发布绑定真实安装文件与当前软件生命周期，显式启用后的正常 ARM64 EXE 与 PKG 沿用同一链路；领域拒绝与权限拒绝分别返回闭合原因。首用采用 production。四个原生目标及同目标多个版本可共存，一个已发布包即可满足首用包条件。
 5. `GET /api/v1/agent-packages/operations/{operationId}` 查询原保存、发布或撤回结果；null 表示仍未知，不证明未提交。`POST /api/v1/agent-packages/{releaseId}/withdraw` 要求 software_withdraw，禁止该 release 的新交换与下载。
@@ -224,7 +226,8 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 ## Device Access 账号关联与应用
 
 `device_access.v1` 是独立原生能力。首次开通使用设备认证与 `x-rss-user-session` 的真实 RSS 会话，
-依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
+先通过 `GET /api/v1/agent/runtime/device-access` 查询可开通 Policy 及本人绑定（Policy 游标为 `after`），
+再依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
 不接受 principal 或本地账号；返回 120 秒挑战及当前交互会话。Agent 必须从受保护的本机 broker
 重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认；Windows 域/Entra/MSA、RDP 不属于本期。
 普通进程上报、软件清单和最近登录记录不能替代该核验。用户名仅用于显示或新建目标，不能接管同名账号。
@@ -240,7 +243,13 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 Secure Token、volume ownership 和
 FileVault 解锁观察，未知必须保持 unknown。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
 
-Windows RSS 恢复使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
+Windows 首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
+以 `device_access_prepared` 报告真实 SID（尚非 Applied），再用既有加密 escrow 托管恢复材料。
+托管 ACK 的材料 ID/version 与签名任务的 factorGeneration 一起用于本机原子激活及读回，最终 Applied 必须回报这些精确坐标。
+中断后重放同一任务与候选，未决材料不能通过失败或取消回执丢弃。普通配置 revision 不重置因子；
+配置失败观察也不抹去最后已验证的因子事实。
+
+Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
 每账号绑定及代际独立。材料是 CSPRNG 生成的 32 字节、规范无填充 base64url 编码；
 没有到期或一次性消费语义。托管确认后才能原子替换本机 verifier，旧版保留至实际应用确认。
 `/device-access/recovery-uses` 接收无秘密的离线使用事实，operationId 去重；每个材料 entry 最多 4096 条事实，
