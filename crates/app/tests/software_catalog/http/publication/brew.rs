@@ -31,6 +31,10 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     let snapshot = frozen.snapshot.unwrap();
     let directory = Arc::new(
         rss_mdm_software_service::management::publication::service::PublicationDirectory {
+            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                ring::hmac::HMAC_SHA256,
+                &[9; 32],
+            )),
             services: std::collections::BTreeMap::from([(peer.logical.clone(), service.clone())]),
             tenant: p::pg::tenant(),
             runtime: runtime.clone(),

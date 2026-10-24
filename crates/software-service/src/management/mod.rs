@@ -1,6 +1,7 @@
 //! Software management use cases; HTTP projection and process assembly remain outside.
 pub mod catalog;
 pub mod content;
+pub mod directory;
 pub mod installers;
 pub mod publication;
 pub(crate) mod transaction;
@@ -14,3 +15,10 @@ pub trait Clock: Send + Sync {
 #[cfg(test)]
 #[path = "../../tests/management/publication.rs"]
 mod publication_contract;
+
+pub(crate) fn query_error(e: rss_mdm_query::Error) -> Error {
+    match e {
+        rss_mdm_query::Error::CursorInvalidated => Error::Conflict,
+        _ => Error::Malformed,
+    }
+}

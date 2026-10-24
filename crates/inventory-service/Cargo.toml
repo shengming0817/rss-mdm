@@ -7,6 +7,8 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+rss-mdm-query-postgres.workspace = true
+rss-mdm-query.workspace = true
 rss-mdm-webhook-service.workspace = true
 rss-mdm-agent-wire.workspace = true
 rss-mdm-resource.workspace = true
@@ -34,7 +36,7 @@ rss-contract.workspace = true
 rss-runtime.workspace = true
 rss-transactional-messaging.workspace = true
 rss-transactional-messaging-postgres.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

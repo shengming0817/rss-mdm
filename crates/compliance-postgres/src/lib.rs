@@ -1,5 +1,6 @@
 //! Compliance persistence. Every operation borrows the host tenant transaction.
 //! No worker, transaction settlement or audit producer lives here.
+pub mod directory;
 use rss_mdm_compliance::{Assessment, Definition};
 use rss_request_context::TenantId;
 use serde::{Serialize, de::DeserializeOwned};
@@ -63,11 +64,21 @@ pub async fn rules<C: DeserializeOwned>(
     if !(1..=101).contains(&limit) {
         return Err(corrupt());
     }
-    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND ($2::uuid IS NULL OR r.id>$2::uuid) ORDER BY r.id LIMIT $3")
+    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND NOT r.deleted AND ($2::uuid IS NULL OR r.id>$2::uuid) ORDER BY r.id LIMIT $3")
  .bind(t.to_string()).bind(after.map(|v|v.to_string())).bind(limit as i64).fetch_all(c).await?.into_iter().map(decode::<C>).collect()
 }
 /// Read a rule, optionally serializing changes to its current pointer.
 pub async fn rule<C: DeserializeOwned>(
+    c: &mut PgConnection,
+    t: TenantId,
+    id: Uuid,
+) -> Result<Option<Rule<C>>> {
+    tenant(c, t).await?;
+    sqlx::query("SELECT r.id::text,r.revision,r.enabled,r.desired::text,r.current_run::text,v.definition::text FROM mdm_compliance.rules r JOIN mdm_compliance.versions v ON (v.tenant_id,v.rule_id,v.revision)=(r.tenant_id,r.id,r.revision) WHERE r.tenant_id=$1::uuid AND NOT r.deleted AND r.id=$2::uuid")
+ .bind(t.to_string()).bind(id.to_string()).fetch_optional(c).await?.map(decode::<C>).transpose()
+}
+/// Read retained current pointer only for settling already-admitted jobs.
+pub async fn retained_rule<C: DeserializeOwned>(
     c: &mut PgConnection,
     t: TenantId,
     id: Uuid,
@@ -87,6 +98,7 @@ pub async fn put<C: Serialize>(
     groups: &[Uuid],
 ) -> Result<bool> {
     tenant(c, t).await?;
+    if sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM mdm_compliance.rules WHERE tenant_id=$1::uuid AND id=$2::uuid AND deleted)").bind(t.to_string()).bind(r.id.to_string()).fetch_one(&mut *c).await? {return Ok(false);}
     r.definition.validate().map_err(|_| corrupt())?;
     if r.enabled != r.definition.enabled {
         return Err(corrupt());
@@ -330,4 +342,21 @@ pub async fn webhook_changes(
             Ok((r.try_get("device")?, a))
         })
         .collect()
+}
+
+/// Terminal removal of the current rule; immutable versions/results remain readable.
+pub async fn delete(c: &mut PgConnection, t: TenantId, id: Uuid) -> Result<()> {
+    tenant(c, t).await?;
+    sqlx::query("UPDATE mdm_compliance.rules SET deleted=true,enabled=false,desired=NULL,current_run=NULL WHERE tenant_id=$1::uuid AND id=$2::uuid").bind(t.to_string()).bind(id.to_string()).execute(&mut *c).await?;
+    for statement in [
+        "DELETE FROM mdm_compliance.fields WHERE tenant_id=$1::uuid AND rule_id=$2::uuid",
+        "DELETE FROM mdm_compliance.groups WHERE tenant_id=$1::uuid AND rule_id=$2::uuid",
+    ] {
+        sqlx::query(statement)
+            .bind(t.to_string())
+            .bind(id.to_string())
+            .execute(&mut *c)
+            .await?;
+    }
+    Ok(())
 }

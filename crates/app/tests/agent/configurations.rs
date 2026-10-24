@@ -400,6 +400,40 @@ async fn read(f: &Fixture, user: &mut Browser, id: Uuid) -> Result<Value> {
     );
     Ok(out.1)
 }
+async fn assert_configuration_metadata(f: &Fixture, user: &mut Browser, id: Uuid) -> Result<()> {
+    let detail = read(f, user, id).await?;
+    let (status, page) = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-configurations?filter=configurationId=={id}"),
+            None,
+        )
+        .await?;
+    ensure!(status == StatusCode::OK, "configuration metadata: {page}");
+    let rows = page["items"].as_array().unwrap();
+    ensure!(rows.len() == 1);
+    let row = &rows[0];
+    ensure!(
+        row["configurationId"] == id.to_string()
+            && row["state"] == detail["state"]
+            && row["remaining"] == detail["remaining"]
+            && row["reserved"] == detail["reserved"]
+            && row["consumed"] == detail["consumed"]
+    );
+    for forbidden in [
+        "secret",
+        "secretDigest",
+        "signature",
+        "document",
+        "configuration",
+        "connections",
+        "requestDigest",
+    ] {
+        ensure!(row.get(forbidden).is_none(), "metadata exposed {forbidden}");
+    }
+    Ok(())
+}
 struct Tls {
     address: std::net::SocketAddr,
     owner: rss_runtime::ShutdownStack,
@@ -575,6 +609,70 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     );
 
     let macos = publish(&f, &mut user, false).await?;
+    let package_query = "/api/v1/agent-packages?sort=version&fields=releaseId&limit=1";
+    let first = user
+        .call(&f.router, Method::GET, package_query, None)
+        .await?;
+    ensure!(first.0 == StatusCode::OK, "package page: {first:?}");
+    let next = first.1["nextCursor"].as_str().unwrap();
+    let last = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{package_query}&cursor={next}"),
+            None,
+        )
+        .await?;
+    ensure!(last.0 == StatusCode::OK && last.1["nextCursor"].is_null());
+    let found = std::collections::BTreeSet::from([
+        first.1["items"][0]["releaseId"].as_str().unwrap(),
+        last.1["items"][0]["releaseId"].as_str().unwrap(),
+    ]);
+    let expected = [windows.release_id.to_string(), macos.release_id.to_string()];
+    ensure!(found == expected.iter().map(String::as_str).collect());
+
+    let (msix, _) = publish_bytes(
+        &f,
+        &mut user,
+        "windows",
+        "x86_64",
+        "msix",
+        Some("2.3.4.5"),
+        &installer_fixtures::msix("2.3.4.5", false),
+    )
+    .await?;
+    let filtered = user
+        .call(
+            &f.router,
+            Method::GET,
+            "/api/v1/agent-packages?filter=format==windows_msix&fields=releaseId,format",
+            None,
+        )
+        .await?;
+    ensure!(
+        filtered.0 == StatusCode::OK
+            && filtered.1["items"]
+                == json!([{"releaseId":msix.release_id,"format":"windows_msix"}])
+    );
+    let base = "/api/v1/agent-packages?sort=-format&fields=releaseId,format&limit=1";
+    let first = user.call(&f.router, Method::GET, base, None).await?;
+    ensure!(
+        first.0 == StatusCode::OK
+            && first.1["items"][0]["releaseId"] == msix.release_id.to_string(),
+        "MSIX order: {first:?}"
+    );
+    let cursor = first.1["nextCursor"]
+        .as_str()
+        .context("MSIX continuation")?;
+    let second = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{base}&cursor={cursor}"),
+            None,
+        )
+        .await?;
+    ensure!(second.0 == StatusCode::OK && second.1["items"][0]["format"] == "windows_exe");
     let mut authority = authority::Authority::open().await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
@@ -587,6 +685,18 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     ensure!(updated.0 == StatusCode::OK && updated.1["limits"]["agent"] == 1);
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let (unlimited, _) = configuration(&f, &mut user, json!({"kind":"unlimited"}), None).await?;
+    assert_configuration_metadata(&f,&mut user,file.configuration.configuration_id).await?;
+    let query="/api/v1/agent-configurations?filter=platform==windows&sort=createdAt&fields=configurationId,state&limit=1";
+    let first=user.call(&f.router,Method::GET,query,None).await?;ensure!(first.0==StatusCode::OK,"first configurations: {first:?}");
+    let cursor=first.1["nextCursor"].as_str().context("configuration next cursor")?;
+    let last=user.call(&f.router,Method::GET,&format!("{query}&cursor={cursor}"),None).await?;ensure!(last.0==StatusCode::OK,"last configurations: {last:?}");
+    let found=std::collections::BTreeSet::from([first.1["items"][0]["configurationId"].as_str().unwrap(),last.1["items"][0]["configurationId"].as_str().unwrap()]);
+    let expected=[file.configuration.configuration_id.to_string(),unlimited.configuration.configuration_id.to_string()];
+    ensure!(found==expected.iter().map(String::as_str).collect()&&last.1["nextCursor"].is_null());
+    ensure!(first.1["items"][0].get("createdAt").is_none());
+    for invalid in ["fields=secret","filter=signature==x","sort=platform","after=1"]{ensure!(user.call(&f.router,Method::GET,&format!("/api/v1/agent-configurations?{invalid}"),None).await?.0==StatusCode::BAD_REQUEST);}
+    ensure!(user.call(&f.router,Method::GET,&format!("{}&cursor={cursor}",query.replace("platform==windows","platform==macos")),None).await?.0==StatusCode::CONFLICT);
+
     let tls = Tls::start(&authority).await?;
     let mut devices = std::collections::BTreeSet::new();
     for (index, config) in [&file, &unlimited].into_iter().enumerate() {
@@ -655,6 +765,14 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
     let package = publish(&f, &mut user, false).await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let mut other = authority::Authority::prepared_browser("other")?;
+    ensure!(
+        other
+            .call(&f.router, Method::GET, "/api/v1/agent-configurations", None)
+            .await?
+            .0
+            == StatusCode::FORBIDDEN
+    );
+
     ensure!(other.call(&f.router,Method::POST,"/api/v1/agent-configurations",Some(json!({"operationId":Uuid::new_v4(),"secret":credential("forbidden"),"quantity":{"kind":"unlimited"},"targets":[{"platform":"macos","architecture":"aarch64"}]}))).await?.0==StatusCode::FORBIDDEN);
     for quantity in [
         json!({"kind":"finite","count":0}),
@@ -1320,6 +1438,22 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
         )
         .await?;
     ensure!(withdrawn.0 == StatusCode::NO_CONTENT);
+    let managed = user
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/agent-packages/{}", old.release_id),
+            None,
+        )
+        .await?;
+    ensure!(managed.0 == StatusCode::OK && managed.1["state"] == "withdrawn");
+    let withdrawn_page=user.call(&f.router,Method::GET,"/api/v1/agent-packages?filter=state==withdrawn&sort=version&fields=releaseId,state&limit=1",None).await?;
+    ensure!(
+        withdrawn_page.0 == StatusCode::OK
+            && withdrawn_page.1["items"]
+                == json!([{"releaseId":old.release_id,"state":"withdrawn"}])
+    );
+
     let receipt = user
         .call(
             &f.router,

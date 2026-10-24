@@ -323,8 +323,171 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .iter()
             .all(|v| tasks.contains(v["task"].as_str().unwrap()))
     );
+
+    let another = Uuid::new_v4();
+    let another_path = format!("/api/v1/compliance-rules/{another}");
+    let mut disabled = definition(json!({"kind":"all"}));
+    disabled["enabled"] = json!(false);
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &another_path,
+        Some(request(0, disabled)),
+    )
+    .await?;
+    let base = "/api/v1/compliance-rules?filter=enabled==false;severity==high&sort=revision&fields=id,revision&limit=1";
+    let page = ok(&mut browser, router, Method::GET, base, None).await?;
+    ensure!(page["items"] == json!([{"id":another,"revision":1}]));
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let last = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{base}&cursor={cursor}"),
+        None,
+    )
+    .await?;
+    ensure!(last["items"][0]["revision"] == 2 && last["nextCursor"].is_null());
+    let deletion = request(2, json!({}));
+    let receipt = ok(
+        &mut browser,
+        router,
+        Method::DELETE,
+        &path,
+        Some(deletion.clone()),
+    )
+    .await?;
+    ensure!(receipt["deleted"] == true && receipt["revision"] == 3);
+    ensure!(ok(&mut browser, router, Method::DELETE, &path, Some(deletion)).await? == receipt);
+    ensure!(browser.call(router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::PUT,
+                &path,
+                Some(request(3, definition(json!({"kind":"all"}))))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    ensure!(
+        ok(
+            &mut browser,
+            router,
+            Method::GET,
+            &format!("{path}/versions/1"),
+            None
+        )
+        .await?["definition"]["enabled"]
+            == true
+    );
+    let removed = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        "/api/v1/compliance-rules?filter=deleted==true",
+        None,
+    )
+    .await?;
+    ensure!(
+        removed["items"].as_array().unwrap().len() == 1 && removed["items"][0]["enabled"] == false
+    );
+    ensure!(
+        ok(
+            &mut browser,
+            router,
+            Method::GET,
+            "/api/v1/devices/compliance-a/compliance/history",
+            None
+        )
+        .await?["items"]
+            == retained["items"]
+    );
     ensure!(audit_count(|r| r.action() == "compliance_read").await? > 0);
     crate::test_support::runtime::stop_worker(automation).await?;
+    fixture.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=compliance.http: queued Delete must recheck authorization before writes"]
+async fn queued_delete_observes_permission_revocation() -> Result<()> {
+    use sqlx::Connection;
+    let fixture = Fixture::open().await?;
+    let (id, path, _) = fixture.rule().await?;
+    let mut browser = fixture.browser.clone();
+    let mut observer =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut hold = observer.begin().await?;
+    crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(
+        &mut hold,
+        rss_request_context::TenantId::parse(case_tenant())?,
+    )
+    .await?;
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(3),async{
+            loop{
+                let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND usename='mdm_flow_runtime' AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%mdm.lock_asset_watermark%')").fetch_one(&mut *hold).await?;
+                if waiting{break;}
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::task::yield_now().await;
+            }
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        // Authentication and its original snapshot completed before the write reached the barrier.
+        grants(&fixture.subject, Some("compliance-a")).await?;
+        hold.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (response, released) = tokio::join!(
+        browser.call(
+            &fixture.router,
+            Method::DELETE,
+            &path,
+            Some(request(1, json!({})))
+        ),
+        release
+    );
+    released?;
+    observer.close().await?;
+    ensure!(
+        response?.0 == StatusCode::FORBIDDEN,
+        "queued delete ignored revoked write permission"
+    );
+    let deleted: bool = serde_json::from_str(&pg(&format!(
+        "SELECT deleted::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
+        case_tenant()
+    ))?)?;
+    ensure!(!deleted);
+
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        &fixture.subject,
+        vec![crate::authorization::Grant {
+            operation: crate::authorization::Permission::ComplianceWrite,
+            scope: crate::authorization::Scope::Tenant,
+        }],
+    )
+    .await?;
+    let attempted = browser
+        .call(
+            &fixture.router,
+            Method::PUT,
+            &path,
+            Some(request(1, definition(json!({"kind":"all"})))),
+        )
+        .await?;
+    ensure!(
+        attempted.0 == StatusCode::FORBIDDEN,
+        "ComplianceWrite without InventoryRead changed an asset rule"
+    );
+    grants(&fixture.subject, None).await?;
+    ensure!(ok(&mut browser, &fixture.router, Method::GET, &path, None).await?["revision"] == 1);
     fixture.close().await;
     Ok(())
 }

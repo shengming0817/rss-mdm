@@ -1,20 +1,56 @@
 use super::*;
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DirectoryQuery {
-    pub cursor: Option<String>,
-    #[serde(default = "limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub descending: bool,
-    pub state: Option<rss_mdm_policy::State>,
-    pub category: Option<String>,
-    pub action: Option<rss_mdm_policy::ActionKind>,
-    pub scope: Option<Uuid>,
-    pub resource: Option<String>,
+use rss_mdm_query::{
+    cursor::CursorCodec,
+    directory::{Field, Kind, Query, Schema},
+};
+pub static SCHEMA: Schema = Schema {
+    id: "policies",
+    keys: &["id"],
+    default_limit: 64,
+    max_limit: 1000,
+    fields: &[
+        Field::scalar("id", Kind::Uuid),
+        Field::scalar("revision", Kind::Integer),
+        Field::scalar("version", Kind::Integer),
+        Field::scalar("state", Kind::Enum(&["enabled", "disabled", "archived"])),
+        Field::scalar(
+            "action",
+            Kind::Enum(&[
+                "device_access",
+                "unmanage_device",
+                "credential",
+                "execution",
+                "native_collection",
+                "agent_collection",
+                "telemetry_profile",
+                "configuration",
+                "software",
+                "ensure_agent_installed",
+                "request_mdm_enrollment",
+            ]),
+        ),
+        Field::scalar("scope", Kind::Uuid),
+        Field::scalar("resource", Kind::Text),
+        Field::scalar("category", Kind::Text),
+        Field::output("versionId"),
+        Field::output("definition"),
+    ],
+};
+pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
+    SCHEMA.parse(raw)
 }
-fn limit() -> usize {
-    64
+fn column(name: &str) -> &'static str {
+    match name {
+        "id" => "id::text COLLATE \"C\"",
+        "revision" => "revision",
+        "version" => "version_number",
+        "state" => "state COLLATE \"C\"",
+        "action" => "(definition->'action'->>'kind') COLLATE \"C\"",
+        "scope" => "(definition->>'scope') COLLATE \"C\"",
+        "resource" => "(definition->'action'->'resource'->>'id') COLLATE \"C\"",
+        "category" => "(definition->'selfService'->'presentation'->>'category') COLLATE \"C\"",
+        _ => unreachable!("checked Policy field"),
+    }
 }
 pub async fn read(
     service: &Policies,
@@ -56,79 +92,27 @@ pub async fn read(
     )
     .await
 }
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    family: String,
-    tenant: String,
-    authority: String,
-    query: Value,
-    after: Uuid,
-}
-impl DirectoryQuery {
-    fn binding(&self) -> std::result::Result<Value, Error> {
-        let mut binding = serde_json::to_value(self).map_err(|_| Error::Malformed)?;
-        binding
-            .as_object_mut()
-            .ok_or(Error::Malformed)?
-            .remove("cursor");
-        binding
-            .as_object_mut()
-            .ok_or(Error::Malformed)?
-            .remove("limit");
-        Ok(binding)
-    }
-}
+
 pub async fn list(
     service: &Policies,
     auth: &AuthorizedPrincipal,
     audit: &RequestAudit,
-    query: &DirectoryQuery,
+    query: &Query,
 ) -> std::result::Result<Value, Error> {
-    if !(1..=1000).contains(&query.limit)
-        || query.scope.is_some_and(|v| v.is_nil())
-        || query
-            .resource
-            .as_ref()
-            .is_some_and(|v| resource::Id::new(v).is_err())
-        || query
-            .category
-            .as_ref()
-            .is_some_and(|v| v.trim().is_empty() || v.len() > 128)
-        || query.cursor.as_ref().is_some_and(|v| v.len() > 4096)
-    {
-        return Err(Error::Malformed);
-    }
+    query.require_schema(&SCHEMA).map_err(crate::query_error)?;
     auth.manage(Permission::PolicyRead)?;
     audit.set_action("management_read");
-    crate::transaction::inspect(&service.runtime, service.tenant,(service,auth,audit,query),|ctx,tx|Box::pin(async move {
-        let (s,a,audit,q)=*ctx;
-        let snapshot=crate::action_admission::current(tx,a).await?;
-        snapshot.require(a,Permission::PolicyRead,None)?;
-        let authority=snapshot.query_binding(a)?;let binding=q.binding()?;
-        let after=if let Some(token)=&q.cursor {
-            let bytes=URL_SAFE_NO_PAD.decode(token).map_err(|_|Error::Malformed)?;
-            if bytes.len()<=32 {return Err(Error::Malformed.into())}
-            let (body,signature)=bytes.split_at(bytes.len()-32);
-            ring::hmac::verify(&s.cursor_key,body,signature).map_err(|_|Error::Conflict)?;
-            let cursor:Cursor=serde_json::from_slice(body).map_err(|_|Error::Conflict)?;
-            if cursor.family!="policies" || cursor.tenant!=s.tenant.to_string() || cursor.authority!=authority || cursor.query!=binding {return Err(Error::Conflict.into())}
-            Some(cursor.after)
-        }else{None};
-        let tenant=s.tenant.to_string();let query=q.clone();
-        let mut items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar("SELECT jsonb_build_object('id',id,'revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition) FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND CASE WHEN $4::text IS NULL THEN state<>'archived' ELSE state=$4 END AND ($5::text IS NULL OR definition->'action'->>'kind'=$5) AND ($6::uuid IS NULL OR definition->>'scope'=$6::text) AND ($7::text IS NULL OR definition->'action'->'resource'->>'id'=$7) AND ($9::text IS NULL OR definition->'selfService'->'presentation'->>'category'=$9) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $8")
-            .bind(tenant).bind(after).bind(query.descending).bind(query.state.map(rss_mdm_policy::State::as_str)).bind(query.action.map(rss_mdm_policy::ActionKind::as_str)).bind(query.scope).bind(query.resource).bind((query.limit+1) as i64).bind(query.category).fetch_all(c).await
-        })).await?;
-        let more=items.len()>q.limit;items.truncate(q.limit);
-        for item in &items {let view:rss_mdm_policy::View=stored(serde_json::from_value(item.clone()))?;view.definition.validate()?;}
-        let next=if more {
-            let after=stored(Uuid::parse_str(items.last().and_then(|v|v["id"].as_str()).ok_or(Error::Conflict)?))?;
-            let mut bytes=checked_input(serde_json::to_vec(&Cursor{family:"policies".into(),tenant:s.tenant.to_string(),authority,query:binding,after}))?;
-            bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
-        }else{None};
-        a.check_live()?;audit.require_request_settlement();
-        Ok(json!({"items":items,"nextCursor":next}))
-    }),TransactionOwner::Planning).await
+    crate::transaction::inspect(&service.runtime,service.tenant,(service,auth,audit,query),|ctx,tx|Box::pin(async move{
+  let(s,a,audit,q)=*ctx;let snapshot=crate::action_admission::current(tx,a).await?;
+  snapshot.require(a,Permission::PolicyRead,None)?;
+  let binding=q.binding(&(a.tenant_id(),a.instance_id(),snapshot.query_binding(a)?)).map_err(crate::query_error)?;
+  let codec=CursorCodec::from_key(s.cursor_key.clone());let after=q.after(&codec,&binding).map_err(crate::query_error)?;
+  let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'revision',revision,'version',version_number,'versionId',current_version,'state',state,'definition',definition,'action',definition->'action'->>'kind','scope',definition->>'scope','resource',definition->'action'->'resource'->>'id','category',definition->'selfService'->'presentation'->>'category') FROM mdm_policy.policies WHERE tenant_id=");
+  sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
+  if !q.mentions("state"){sql.push(" AND state<>'archived'");}
+  rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
+  let items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+  for item in &items {let view:rss_mdm_policy::View=stored(serde_json::from_value(json!({"id":item["id"],"revision":item["revision"],"version":item["version"],"versionId":item["versionId"],"state":item["state"],"definition":item["definition"]})))?;view.definition.validate()?;}
+  a.check_live()?;audit.require_request_settlement();Ok(json!(q.page(items,&codec,&binding).map_err(crate::query_error)?))
+ }),TransactionOwner::Planning).await
 }

@@ -13,6 +13,13 @@ pub struct Parameters {
 }
 impl Parameters {
     pub fn parse(raw: &str) -> Result<Self> {
+        Self::parse_with_context(raw, &[]).map(|(parameters, _)| parameters)
+    }
+    /// Explicit resource context parameters share strict decoding and duplicate checks.
+    pub fn parse_with_context(
+        raw: &str,
+        context_names: &[&str],
+    ) -> Result<(Self, BTreeMap<String, String>)> {
         if raw.len() > crate::MAX_RAW_QUERY_BYTES {
             return Err(Error::Budget);
         }
@@ -24,7 +31,8 @@ impl Parameters {
                 if !matches!(
                     key.as_str(),
                     "filter" | "sort" | "fields" | "limit" | "cursor"
-                ) {
+                ) && !context_names.contains(&key.as_str())
+                {
                     return Err(Error::Invalid);
                 }
                 let value = decode(value)?;
@@ -33,6 +41,10 @@ impl Parameters {
                 }
             }
         }
+        let context = context_names
+            .iter()
+            .filter_map(|name| values.remove(*name).map(|v| ((*name).to_owned(), v)))
+            .collect();
         let filter = values.remove("filter");
         if filter
             .as_ref()
@@ -71,13 +83,16 @@ impl Parameters {
             .remove("cursor")
             .map(|s| PageCursor::parse(&s).map_err(|_| Error::Invalid))
             .transpose()?;
-        Ok(Self {
-            filter,
-            sort,
-            fields,
-            limit,
-            cursor,
-        })
+        Ok((
+            Self {
+                filter,
+                sort,
+                fields,
+                limit,
+                cursor,
+            },
+            context,
+        ))
     }
 }
 fn names(raw: &str) -> Result<Vec<String>> {

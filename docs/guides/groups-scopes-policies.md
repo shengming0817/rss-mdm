@@ -3,34 +3,34 @@
 Group 持有成员求值；Scope 组合目标并集、限制并集和排除并集；Policy 持续引用 Scope 并分配闭合 Action；资源绑定位于需要资源的 Action 内。管理入口是 `/api/v1`，资源入口是 `/api/v1`。写入带 operationId、expectedRevision、input；提交未知时重试原身份和原文档。
 
 目录读取使用 `GET /api/v1/groups`、`/scopes`、`/policies` 和 `/resources`，返回 `items/nextCursor`。
-Group、Scope 保持 `limit/after/descending` 的 ID 分页；Policy 使用 `limit/cursor/descending`，
-将 `nextCursor` 原样传入 `cursor`，不接受 `after`。Policy 游标绑定筛选、租户、主体和当前权限；筛选或权限变化后从首页重新查询。
-Group 可筛选 `kind/deleted/name`，Scope 可筛选 `deleted/ready`；
-Policy 可筛选 `state/action/scope/resource/category`，category 来自已有 `definition.selfService.presentation.category`。
-Resource 使用 `filter/sort/fields/limit/cursor`，例如
-`/api/v1/resources?filter=kind==script;active==false&sort=kind,-revision&fields=id,presentation&limit=20`。
+这些目录统一使用 `filter/sort/fields/limit/cursor`，不再接受 `after/descending` 或旧的散列过滤参数。
+例如 `/api/v1/groups?filter=kind==static;name=icontains=office&sort=name&fields=id,presentation&limit=20`，
+`/api/v1/scopes?filter=ready==true`，以及
+`/api/v1/policies?filter=state==disabled;category==selfservice&sort=-revision`。
+Group、Scope 缺省排除删除记录；需要墓碑时显式使用 `filter=deleted==true`。
+Resource 示例为 `/api/v1/resources?filter=kind==script;active==false&sort=kind,-revision&fields=id,presentation&limit=20`。
 `filter` 是有界 RSQL 子集，分号表示 AND、逗号表示 OR（AND 优先），支持括号、引号、转义及
-`== != =lt= =le= =gt= =ge= =in= =out=`；不支持的字段、类型、操作和重复参数返回 400。
+`== != =lt= =le= =gt= =ge= =in= =out=`；新增目录的 Text 字段还支持字面、不区分大小写的 `=icontains=`；不支持的字段、类型、操作和重复参数返回 400。
 完整字段与类型、过滤／排序／返回能力由 [Resource 字段定义](../../crates/resource/src/directory.rs) 持有；
 开发者可用 `python3 hack/build_run.py -- cargo run --locked -p rss-mdm-management-http --example resource_query`
 读取同源契约说明。解析预算见 [query 参数入口](../../crates/query/src/parameters.rs)和[解析器](../../crates/query/src/parser.rs)。
 
-Resource 缺省按 ID 升序；显式排序缺少唯一键时追加 ID 升序，同值排序可以稳定续页。
+目录缺省按唯一身份升序；显式排序缺少唯一键时追加 ID 升序，同值排序可以稳定续页。
 缺省 fields 返回完整目录头；显式空 fields 拒绝，部分投影只包含所选字段，不能用来覆盖完整编辑对象。
 `presentation` 整体保留扩展键，不能用任意扩展 key 过滤或排序。没有无条件总数查询。
 续页将 nextCursor 原样作为 cursor，保持过滤、排序、投影不变；可以调整合法页大小。
-末页返回 null；签名或查询／主体／授权上下文失效返回 409 `resource_cursor_invalidated`，应从首页重查；
+末页返回 null；签名或查询／主体／授权上下文失效返回 409（Resource 为 `resource_cursor_invalidated`，其余目录使用所属服务的 conflict 错误），应从首页重查；
 当前权限不满足仍返回 403。游标不是权限证明，也不要求客户端解析。
 每页读取当前状态，数据不变时不重不漏；跨页修改排序值或集合内容可能使结果移动，不提供快照一致性。
 管理能力声明位于 [资源目录](../../crates/http-contract/src/catalog.rs)和[现有集合描述](../../crates/http-contract/src/collections.rs)。
 运行 `python3 hack/build_run.py -- cargo run --locked -p rss-mdm-management-http --example management_capabilities`
-可读取类别、当前分页／默认排序、字段 owner 引用与迁移缺口。只有 Resource 从领域 `FIELDS` 直接导出机器可读字段；
-其他集合不在中央复制过滤、排序或输出字段表，具体字段以引用的 query／response owner 为准。声明明确区分完整集合、变化事件流、异步结果页和当前选项；
+可读取类别、当前分页／默认排序、字段 owner 引用与迁移缺口。已迁移目录的 List 注册绑定执行所用的领域字段声明；缺绑定、错资源或缺必需入口均拒绝。
+中央目录不复制过滤、排序或输出字段表，字段以实际 owner 的 `SCHEMA` 为准。声明明确区分完整集合、变化事件流、异步结果页和当前选项；
 `Pending` 表示已有执行路径仍待迁移，缺少排序、无分页或无续页标记都不算标准查询已完成。
 
-旧 Resource 查询参数直接退出；前端消费迁移由 #2901 承接，完成前不能将新后端与旧前端作为已完成组合发布。
+旧查询参数与列表 DTO 直接退出；本批仅交付后端，前端由 #2903 承接。前端应同步参数、字段投影与不透明游标，完成前不能将新后端与旧前端作为已完成组合发布。
 
-Policy 默认不列出 archived；指定 `state=archived` 查询历史对象。目录每页读取当前一致视图，不冻结跨页业务状态。
+Policy 默认不列出 archived；指定 `filter=state==archived` 查询历史对象。目录每页读取当前一致视图，不冻结跨页业务状态。
 
 Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled 布尔字段。
 创建/更新仍通过 POST 的 put，输入 enabled 表达本次启停意图；enable/disable 为显式变更。
@@ -52,7 +52,7 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 详情返回 freshness，结果页返回 sources 来源坐标；过期结果的 current 为 false，历史证据仍可读取。
 字段、注册、关联或来源权限失效也会使嵌套组及其 Scope/Policy/Compliance 消费失效。
 
-引用选择复用 `GET /api/v1/groups?assetContext=endpoint|associated_device`；编辑时传
+引用选择复用 `GET /api/v1/groups?filter=assetContext==endpoint`；编辑时传
 `referenceableFor=<group-id>`，会排除本组、会产生循环和上下文不匹配的候选。保存仍执行事务内复核。
 
 `GET /api/v1/groups/{id}/references?kind&relation&limit&cursor` 查询当前依赖。
@@ -203,3 +203,6 @@ Resource 通过现有写入口的 `action: "present"` 和完整 `presentation` �
 operationId/expectedRevision；详情和目录返回 presentation。软件版本详情同时返回
 presentation/resourceRevision，展示只从 Resource 读取。原生软件发布文案是冻结发布材料，
 由完整材料摘要绑定，修改目录展示不会改写已发布 Winget/Brew 制品。
+
+用户属性定义目录使用相同查询参数，返回 `items/nextCursor/sources`，保留 fieldId 身份；
+`sources` 是当前来源可用性元数据，不参与字段投影。列表默认不返回已删除定义。

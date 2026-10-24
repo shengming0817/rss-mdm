@@ -10,7 +10,7 @@ use rss_mdm_http_contract::{
     routing::{get, post},
 };
 use std::sync::Arc;
-type Page = rss_mdm_flow_service::planning::policies::read::DirectoryQuery;
+
 pub fn routes(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
@@ -42,7 +42,9 @@ pub fn routes(
         )
         .route(
             "/policies",
-            get(list).owned(&contracts::POLICIES, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::POLICIES, &[RouteOperation::List])
+                .queried(&rss_mdm_flow_service::planning::policies::read::SCHEMA),
         )
         .route(
             "/policies/{id}",
@@ -98,9 +100,10 @@ async fn list(
     State(service): State<Arc<Policies>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    page: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> std::result::Result<Json<Value>, Error> {
-    let Query(page) = page.map_err(|_| Error::Malformed)?;
+    let page =
+        super::read::parse(raw.as_deref().unwrap_or_default()).map_err(|_| Error::Malformed)?;
     super::read::list(&service, &auth.proof, &audit, &page)
         .await
         .map(Json)

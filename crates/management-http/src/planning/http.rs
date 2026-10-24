@@ -24,7 +24,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/groups",
-            get(group_directory).owned(&contracts::GROUPS, &[RouteOperation::List]),
+            get(group_directory)
+                .owned(&contracts::GROUPS, &[RouteOperation::List])
+                .queried(rss_mdm_inventory_service::groups::directory::schema()),
         )
         .route(
             "/devices/{device}/groups",
@@ -32,7 +34,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/scopes",
-            get(scope_directory).owned(&contracts::SCOPES, &[RouteOperation::List]),
+            get(scope_directory)
+                .owned(&contracts::SCOPES, &[RouteOperation::List])
+                .queried(&rss_mdm_flow_service::planning::directory::SCHEMA),
         )
         .route(
             "/groups/{id}",
@@ -171,26 +175,22 @@ async fn group_directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: Result<
-        Query<rss_mdm_inventory_service::groups::directory::DirectoryQuery>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error::Malformed)?;
+    let q = rss_mdm_inventory_service::groups::directory::parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
 }
 async fn scope_directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    query: Result<
-        Query<rss_mdm_flow_service::planning::directory::ScopeQuery>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
     audit.set_action("management_read");
-    let Query(q) = query.map_err(|_| Error::Malformed)?;
+    let q = rss_mdm_flow_service::planning::directory::parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.planning.scope_directory(&auth.proof, &q, &audit).await?,
     ))

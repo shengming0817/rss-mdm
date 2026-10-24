@@ -57,6 +57,7 @@ pub struct Resource {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum QueryPolicy {
+    Unified,
     ResourceV1,
     Pending(u32),
     FixedWindow,
@@ -70,6 +71,7 @@ pub struct Endpoint {
     pub method: &'static str,
     pub resource: &'static Resource,
     pub operations: &'static [Operation],
+    pub query: Option<&'static rss_mdm_query::directory::Schema>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -92,6 +94,25 @@ pub struct Gap {
 /// The expected resource set is independent from the endpoints; deleting both a list and
 /// its descriptor cannot erase its resource's required operation.
 pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) -> Vec<Violation> {
+    let mut violations = validate_ownership(endpoints, expected, gaps);
+    for endpoint in endpoints {
+        if endpoint.resource.query == QueryPolicy::Unified
+            && endpoint.operations.contains(&Operation::List)
+            && !endpoint
+                .query
+                .is_some_and(|s| s.id == endpoint.resource.id && s.parse("").is_ok())
+        {
+            violations.push(Violation::MissingQuery(endpoint.resource.id.into()));
+        }
+    }
+    violations
+}
+/// Static registration proves ownership; mounted descriptors additionally prove field binding.
+pub fn validate_ownership(
+    endpoints: &[Endpoint],
+    expected: &[&Resource],
+    gaps: &[Gap],
+) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut resources = BTreeSet::new();
     for resource in expected {

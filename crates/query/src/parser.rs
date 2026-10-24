@@ -101,6 +101,7 @@ impl Parser<'_> {
             ("=ge=", Operator::Ge),
             ("=in=", Operator::In),
             ("=out=", Operator::Out),
+            ("=icontains=", Operator::Icontains),
         ]
         .into_iter()
         .find(|(s, _)| self.rest().starts_with(s))

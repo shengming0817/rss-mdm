@@ -90,7 +90,7 @@ pub struct ProfileQuery {
 }
 #[derive(Clone, Serialize)]
 pub enum Command {
-    Definitions(Option<Uuid>),
+    Definitions(String),
     Definition(Uuid),
     Change(Uuid, Change),
     Operation(Uuid),
@@ -98,6 +98,7 @@ pub enum Command {
     Person(Uuid, ProfileQuery),
 }
 pub trait Source: Send + Sync {
+    fn directory_schema(&self) -> &'static rss_mdm_query::directory::Schema;
     fn execute<'a>(
         &'a self,
         proof: Arc<AuthorizedPrincipal>,
@@ -109,7 +110,9 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
     Router::new()
         .route(
             "/user-attribute-definitions",
-            get(definitions).owned(&contracts::USER_ATTRIBUTES, &[RouteOperation::List]),
+            get(definitions)
+                .owned(&contracts::USER_ATTRIBUTES, &[RouteOperation::List])
+                .queried(source.directory_schema()),
         )
         .route(
             "/user-attribute-definitions/{id}",
@@ -146,18 +149,13 @@ type Response = Result<Json<Value>, Error>;
 async fn call(s: Arc<dyn Source>, a: RequestAuth, audit: RequestAudit, c: Command) -> Response {
     s.execute(a.proof, audit, c).await.map(Json)
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
 async fn definitions(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    Query(page): Query<Page>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Response {
-    call(s, a, audit, Command::Definitions(page.after)).await
+    call(s, a, audit, Command::Definitions(raw.unwrap_or_default())).await
 }
 async fn definition(
     State(s): State<Arc<dyn Source>>,

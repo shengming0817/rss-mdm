@@ -5,11 +5,13 @@ use rss_mdm_management_http::{Error, Failure, user_profiles::*};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
+pub(crate) mod directory;
 mod model;
 mod projection;
 mod store;
 pub(crate) const ACCESS_CONTRACT: &str = include_str!("user_profiles/access-contract.json");
 pub(crate) struct Backend {
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub identity: rss_identity_postgres::Authority,
     pub tenant: rss_request_context::TenantId,
     pub instance: rss_identity_core::InstanceId,
@@ -38,6 +40,9 @@ fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     )
 }
 impl Source for Backend {
+    fn directory_schema(&self) -> &'static rss_mdm_query::directory::Schema {
+        &directory::SCHEMA
+    }
     fn execute<'a>(
         &'a self,
         p: Arc<AuthorizedPrincipal>,
@@ -54,31 +59,20 @@ impl Source for Backend {
             p.bind_audit(&audit)?;
             audit.set_action("user_profile_read");
             match command {
-                Command::Definitions(after) => {
+                Command::Definitions(raw) => {
                     p.require(Permission::UserAttributeDefinitionsRead, None)?;
                     let sources = self
                         .identity
                         .profile_sources(p.session()?, deadline())
                         .await
                         .map_err(identity_error)?;
-                    let (mut definitions, _) = store::definitions(
-                        &self.audit,
-                        &p,
-                        &audit,
-                        Some(Permission::UserAttributeDefinitionsRead),
-                        false,
-                        after,
-                    )
-                    .await?;
-                    let next_cursor = if definitions.len() > 128 {
-                        definitions.truncate(128);
-                        definitions.last().map(|v| v.field_id)
-                    } else {
-                        None
-                    };
+                    let query = directory::SCHEMA
+                        .parse(&raw)
+                        .map_err(|_| Error::Malformed)?;
+                    let page = directory::list(self, &p, &audit, &query).await?;
                     p.check_live()?;
                     Ok(
-                        json!({"definitions":definitions,"nextCursor":next_cursor,"sources":sources.into_iter().map(|v|json!({"source":model::source_dto(v.source),"providerConfigVersion":v.provider_config_version,"extensionsRoot":v.extensions_root,"maxAgeSeconds":v.max_age_seconds})).collect::<Vec<_>>()}),
+                        json!({"items":page.items,"nextCursor":page.next_cursor,"sources":sources.into_iter().map(|v|json!({"source":model::source_dto(v.source),"providerConfigVersion":v.provider_config_version,"extensionsRoot":v.extensions_root,"maxAgeSeconds":v.max_age_seconds})).collect::<Vec<_>>()}),
                     )
                 }
                 Command::Definition(id) => store::one(&self.audit, &p, &audit, id, false).await,

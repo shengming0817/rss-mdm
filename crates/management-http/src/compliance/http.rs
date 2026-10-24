@@ -1,5 +1,5 @@
 use super::*;
-use crate::authorization::{Permission, context::RequestAuth};
+use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -9,31 +9,7 @@ use rss_mdm_http_contract::{
     Router,
     routing::{get, post},
 };
-use serde::Deserialize;
 type Response = std::result::Result<Json<Value>, Error>;
-fn authorize(
-    auth: &RequestAuth,
-    c: &Command,
-) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
-    let (permission, device) = match c {
-        Command::Put { .. } => (Permission::ComplianceWrite, None),
-        Command::Recompute { .. } => (Permission::ComplianceRecompute, None),
-        Command::Current { device } | Command::History { device, .. } => {
-            (Permission::ComplianceRead, Some(device.as_str()))
-        }
-        _ => (Permission::ComplianceRuleRead, None),
-    };
-    auth.proof.require(permission, device)?;
-    if let Command::Put { request, .. } = c
-        && !request.input.groups().is_empty()
-    {
-        auth.proof.manage(Permission::GroupRead)?;
-    }
-    if matches!(c, Command::Task { .. }) {
-        auth.proof.require_all_devices(Permission::ComplianceRead)?;
-    }
-    Ok(())
-}
 async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) -> Response {
     audit.set_action(if c.operation().is_some() {
         "compliance_write"
@@ -47,15 +23,14 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
         Command::Read { id }
         | Command::Version { id, .. }
         | Command::Put { id, .. }
+        | Command::Delete { id, .. }
         | Command::Recompute { id, .. }
         | Command::Task { id, .. } => audit.target(&id.to_string()),
-        _ => {}
     }
     if let Some(id) = c.operation() {
         audit.operation(id, audit.snapshot().action)
     }
-    authorize(a, &c)?;
-    s.execute(&c, audit, &|| authorize(a, &c))
+    s.execute(&c, audit, &a.proof)
         .await
         .map(Json)
         .map_err(Error::from)
@@ -64,12 +39,16 @@ pub fn routes() -> Router<Arc<Compliance>> {
     Router::new()
         .route(
             "/compliance-rules",
-            get(list).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List])
+                .queried(rss_mdm_inventory_service::compliance::directory::schema()),
         )
         .route(
             "/compliance-rules/{id}",
             get(read)
                 .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Get])
+                .delete(remove)
+                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Delete])
                 .put(put)
                 .owned(
                     &contracts::COMPLIANCE_RULES,
@@ -97,23 +76,37 @@ pub fn routes() -> Router<Arc<Compliance>> {
             get(history).owned(&contracts::DEVICES, &[RouteOperation::Action]),
         )
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
 async fn list(
     State(s): State<Arc<Compliance>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    q: std::result::Result<Query<Page>, axum::extract::rejection::QueryRejection>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Response {
+    let q =
+        rss_mdm_inventory_service::compliance::directory::parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+    s.directory(&a.proof, &q, &audit)
+        .await
+        .map(Json)
+        .map_err(Error::from)
+}
+async fn remove(
+    State(s): State<Arc<Compliance>>,
+    Extension(a): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<Uuid>,
+    body: std::result::Result<
+        Json<rss_mdm_inventory_service::operation::Operation<Empty>>,
+        axum::extract::rejection::JsonRejection,
+    >,
 ) -> Response {
     run(
         &s,
         &a,
         &audit,
-        Command::List {
-            after: q.map_err(|_| Error::Malformed)?.0.after,
+        Command::Delete {
+            id,
+            request: body.map_err(Error::from)?.0,
         },
     )
     .await
@@ -141,8 +134,6 @@ async fn put(
         &a,
         &audit,
         Command::Put {
-            sensitive: rss_mdm_inventory_service::assets::ReadScope::from_proof(&a.proof)?
-                .sensitive,
             id,
             request: Box::new(body.map_err(Error::from)?.0),
         },

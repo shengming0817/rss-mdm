@@ -3639,6 +3639,8 @@ dependencies = [
  "rss-mdm-pki-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -3902,6 +3904,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rss-mdm-compliance",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-request-context",
  "serde",
  "serde_json",
@@ -4130,6 +4134,7 @@ dependencies = [
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
  "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
@@ -4170,6 +4175,8 @@ dependencies = [
  "ordered-float",
  "rss-contract",
  "rss-mdm-group",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-request-context",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
@@ -4190,6 +4197,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http 1.5.0",
+ "rss-mdm-query",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -4246,6 +4254,8 @@ dependencies = [
  "rss-mdm-group-postgres",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
@@ -4443,6 +4453,16 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
+ "uuid",
+]
+
+[[package]]
+name = "rss-mdm-query-postgres"
+version = "0.1.0"
+dependencies = [
+ "rss-mdm-query",
+ "serde_json",
+ "sqlx",
 ]
 
 [[package]]
@@ -4490,6 +4510,8 @@ dependencies = [
  "rss-mdm-inventory",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-webhook-service",
  "rss-observation",
  "rss-request-context",
@@ -4535,6 +4557,7 @@ dependencies = [
  "rss-contract",
  "rss-mdm-backend-postgres-support",
  "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-resource",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -4603,6 +4626,8 @@ dependencies = [
  "rss-mdm-brew-source",
  "rss-mdm-content-service",
  "rss-mdm-native-protection",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
  "rss-mdm-software-release",

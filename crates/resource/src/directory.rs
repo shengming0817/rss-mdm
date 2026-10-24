@@ -320,7 +320,10 @@ fn bind(expr: Expression<String, String>) -> Result<Expression<Field, Scalar>> {
             values,
         } => {
             let f = field(&name)?;
-            if !f.filter || (operator.range() && !matches!(f.field, Field::Id | Field::Revision)) {
+            if operator == rss_mdm_query::Operator::Icontains
+                || !f.filter
+                || (operator.range() && !matches!(f.field, Field::Id | Field::Revision))
+            {
                 return Err(Error::Invalid);
             }
             let mut values = values
@@ -340,3 +343,19 @@ fn bind(expr: Expression<String, String>) -> Result<Expression<Field, Scalar>> {
         }
     })
 }
+
+/// Nested version metadata has its own query identity; the aggregate remains its sole owner.
+pub static VERSION_SCHEMA: rss_mdm_query::directory::Schema = rss_mdm_query::directory::Schema {
+    id: "software_versions",
+    keys: &["version"],
+    default_limit: 64,
+    max_limit: 1000,
+    fields: &[
+        rss_mdm_query::directory::Field::scalar("version", rss_mdm_query::directory::Kind::Text),
+        rss_mdm_query::directory::Field::scalar(
+            "state",
+            rss_mdm_query::directory::Kind::Enum(&["frozen", "active", "deprecated", "archived"]),
+        ),
+        rss_mdm_query::directory::Field::output("resource"),
+    ],
+};

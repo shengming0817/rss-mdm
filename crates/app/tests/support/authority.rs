@@ -93,7 +93,12 @@ impl Authority {
     }
 
     pub(crate) fn browser(&self, login: &str) -> Result<Browser> {
-        Self::prepared_browser(login)
+        let secret = identity::credential(&self.identity, login)?;
+        Ok(Browser {
+            cookies: BTreeMap::from([("__Host-identity-session".into(), secret.expose().into())]),
+            csrf: Some(secret.csrf()),
+            ..Browser::default()
+        })
     }
 
     pub(crate) fn authorization(&self) -> Router {

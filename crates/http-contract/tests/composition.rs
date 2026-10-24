@@ -111,3 +111,36 @@ fn changing_migration_status_cannot_replace_missing_query_description() {
         "another resource borrowed the Resource field contract"
     );
 }
+
+#[test]
+fn unified_list_requires_an_execution_field_owner() {
+    use rss_mdm_http_contract::catalog::SAVED_QUERIES;
+    let routes = Router::<()>::new().route(
+        "/saved-queries",
+        get(|| async {}).owned(&SAVED_QUERIES, &[Operation::List]),
+    );
+    assert!(
+        validate(routes.endpoints(), &[&SAVED_QUERIES], &[])
+            .contains(&Violation::MissingQuery("saved_queries".into()))
+    );
+    static SCHEMA: rss_mdm_query::directory::Schema = rss_mdm_query::directory::Schema {
+        id: "saved_queries",
+        keys: &["id"],
+        default_limit: 1,
+        max_limit: 2,
+        fields: &[rss_mdm_query::directory::Field::scalar(
+            "id",
+            rss_mdm_query::directory::Kind::Integer,
+        )],
+    };
+    let routes = Router::<()>::new().route(
+        "/saved-queries",
+        get(|| async {})
+            .owned(&SAVED_QUERIES, &[Operation::List])
+            .queried(&SCHEMA),
+    );
+    assert!(
+        !validate(routes.endpoints(), &[&SAVED_QUERIES], &[])
+            .contains(&Violation::MissingQuery("saved_queries".into()))
+    );
+}

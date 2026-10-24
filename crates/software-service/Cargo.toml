@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-query-postgres.workspace = true
+rss-mdm-query.workspace = true
 rss-audit-postgres.workspace = true
 rss-ledger-postgres.workspace = true
 rss-mdm-authorization-service.workspace = true
@@ -26,7 +28,7 @@ sha2.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json"] }
 uuid.workspace = true
 thiserror.workspace = true
 url.workspace = true

@@ -1,5 +1,5 @@
 //! The source check finds unowned registration; mounted-router checks own composition behavior.
-use rss_mdm_http_contract::{Endpoint, Operation, catalog, validate};
+use rss_mdm_http_contract::{Endpoint, Operation, catalog, validate_ownership};
 use std::path::{Path, PathBuf};
 use syn::visit::{self, Visit};
 fn root() -> PathBuf {
@@ -47,9 +47,19 @@ fn operations(expr: &syn::Expr) -> Vec<Operation> {
 struct Bindings {
     path: String,
     endpoints: Vec<Endpoint>,
+    queried: std::collections::BTreeSet<String>,
 }
 impl<'ast> Visit<'ast> for Bindings {
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if node.method == "queried" {
+            let syn::Expr::MethodCall(owner) = node.receiver.as_ref() else {
+                panic!("query must bind owned List")
+            };
+            assert_eq!(owner.method, "owned");
+            assert!(operations(&owner.args[1]).contains(&Operation::List));
+            self.queried
+                .insert(path_name(&owner.args[0]).to_lowercase());
+        }
         if node.method == "owned" {
             let name = path_name(&node.args[0]).to_lowercase();
             let resource = catalog::ALL
@@ -79,6 +89,7 @@ impl<'ast> Visit<'ast> for Bindings {
                 method,
                 resource,
                 operations: ops,
+                query: None,
             });
         }
         visit::visit_expr_method_call(self, node);
@@ -149,6 +160,7 @@ impl<'ast> Visit<'ast> for Inventory {
                 _ => panic!("literal route required: {}", self.file),
             };
             let mut bindings = Bindings {
+                queried: Default::default(),
                 path: format!("{}:{}", self.file, path),
                 endpoints: Vec::new(),
             };
@@ -159,6 +171,17 @@ impl<'ast> Visit<'ast> for Inventory {
                 self.file,
                 path
             );
+            for endpoint in &bindings.endpoints {
+                if endpoint.resource.query == rss_mdm_http_contract::QueryPolicy::Unified
+                    && endpoint.operations.contains(&Operation::List)
+                {
+                    assert!(
+                        bindings.queried.contains(endpoint.resource.id),
+                        "unbound query field owner: {}",
+                        endpoint.resource.id
+                    );
+                }
+            }
             self.endpoints.extend(bindings.endpoints);
         }
         visit::visit_expr_method_call(self, node);
@@ -191,7 +214,7 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
         count += inventory.registrations;
     }
     assert!(count > 0, "no production registration was examined");
-    let violations = validate(&endpoints, catalog::ALL, catalog::GAPS);
+    let violations = validate_ownership(&endpoints, catalog::ALL, catalog::GAPS);
     assert!(
         violations.is_empty(),
         "resource inventory violations: {violations:?}"

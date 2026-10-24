@@ -99,7 +99,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
             ensure!(directory_ids.len()<=26,"directory repeated pages");
         }
         ensure!(directory_ids.len()==26 && directory_ids.windows(2).all(|pair|pair[0]>pair[1]));
-        let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?action=execution&resource={resource}&limit=1"),None).await?;
+        let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?filter=action==execution;resource=={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
         crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;

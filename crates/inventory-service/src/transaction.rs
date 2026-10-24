@@ -274,3 +274,26 @@ impl From<rss_mdm_registration_service::Error> for Fault {
         Self::Request(e.into())
     }
 }
+
+/// Re-read authorization inside the transaction before binding a directory continuation.
+pub async fn query_authority(
+    tx: &mut PgTransaction<'_>,
+    p: &crate::authorization::context::AuthorizedPrincipal,
+) -> Result<crate::authorization::Snapshot> {
+    let tenant = p.tenant_id().to_owned();
+    let instance = p.instance_id().to_owned();
+    if tenant != tx.tenant_id().to_string() {
+        return Err(Error::Forbidden.into());
+    }
+    let snapshot = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                crate::authorization::lock_on(c, &tenant, &instance)
+                    .await
+                    .map_err(|_| sqlx::Error::Protocol("authorization lock".into()))?;
+                Ok(crate::authorization::snapshot_on(c, &tenant, &instance).await)
+            })
+        })
+        .await??;
+    Ok(snapshot)
+}

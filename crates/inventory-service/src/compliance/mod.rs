@@ -1,5 +1,6 @@
 //! Product composition: Inventory owns facts, Group owns predicates and membership,
 //! Compliance owns assessments. Existing automation owns all task progress.
+use crate::authorization::{Permission, Snapshot, context::AuthorizedPrincipal};
 use crate::transaction::*;
 use crate::{Error, Failure};
 use rss_mdm_audit_integration::RequestAudit;
@@ -10,6 +11,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use std::sync::Arc;
 use uuid::Uuid;
+pub mod directory;
 mod dispatch;
 mod evaluation;
 mod freshness;
@@ -65,20 +67,30 @@ impl Compliance {
         &self,
         command: &Command,
         audit: &RequestAudit,
-        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        proof: &AuthorizedPrincipal,
     ) -> std::result::Result<Value, Error> {
-        authorize()?;
+        proof.check_live()?;
+        proof.bind_audit(audit)?;
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
             self.tenant(),
             audit,
-            (self, command, audit, authorize),
+            (self, command, audit, proof),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, command, audit, authorize) = *ctx;
+                    let (s, command, audit, proof) = *ctx;
+                    let current = query_authority(tx, proof).await?;
+                    authorize(&current, proof, command)?;
+                    let sensitive =
+                        match current.require(proof, Permission::InventorySensitiveRead, None) {
+                            Ok(()) => true,
+                            Err(crate::authorization::error::AuthorizationError::Forbidden) => {
+                                false
+                            }
+                            Err(e) => return Err(e.into()),
+                        };
                     crate::transaction::lock(tx).await?;
-                    authorize()?;
                     s.audit_store.prepare_in(tx, audit, &[]).await?;
                     let actor = audit.snapshot();
                     let hash = fingerprint(&(
@@ -104,11 +116,11 @@ impl Compliance {
                                 return Err(Error::Conflict.into());
                             }
                             s.audit(tx, audit, operation, &hash, true).await?;
-                            authorize()?;
+                            proof.check_live()?;
                             return Ok(response);
                         }
                     }
-                    let response = s.handle(tx, command).await?;
+                    let response = s.handle(tx, command, sensitive).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = response.clone();
@@ -118,7 +130,7 @@ impl Compliance {
                         .await?;
                     }
                     s.audit(tx, audit, operation, &hash, false).await?;
-                    authorize()?;
+                    proof.check_live()?;
                     Ok(response)
                 })
             },
@@ -149,28 +161,14 @@ impl Compliance {
         }
         Ok(())
     }
-    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Value> {
+    async fn handle(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        command: &Command,
+        sensitive: bool,
+    ) -> Result<Value> {
         let t = self.tenant();
         match command {
-            Command::List { after } => {
-                let after = *after;
-                let mut rows: Vec<Rule> = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            pg::rules::<crate::assets::InventoryCondition>(c, t, after, 51).await
-                        })
-                    })
-                    .await?;
-                let more = rows.len() > 50;
-                rows.truncate(50);
-                let next = if more {
-                    rows.last().map(|r| r.id)
-                } else {
-                    None
-                };
-                let items: Vec<RuleView> = rows.into_iter().map(Into::into).collect();
-                Ok(json!({"items":items,"nextCursor":next}))
-            }
             Command::Read { id } => json(&RuleView::from(self.rule(tx, *id).await?)),
             Command::Version { id, revision } => {
                 let id = *id;
@@ -189,11 +187,28 @@ impl Compliance {
                     .ok_or(Error::NotFound)?;
                 Ok(json!({"id":id,"revision":revision,"definition":row}))
             }
-            Command::Put {
-                id,
-                request,
-                sensitive,
-            } => self.put(tx, *id, request, *sensitive).await,
+            Command::Put { id, request } => self.put(tx, *id, request, sensitive).await,
+            Command::Delete { id, request } => {
+                let mut rule = self.rule(tx, *id).await?;
+                if rule.revision as u64 != request.expected_revision {
+                    return Err(Error::Conflict.into());
+                }
+                rule.revision = rule.revision.checked_add(1).ok_or(Error::Malformed)?;
+                rule.enabled = false;
+                rule.definition.enabled = false;
+                let copy = rule.clone();
+                let id = *id;
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        if !pg::put(c, t, &copy, &[], &[]).await? {
+                            return Err(sqlx::Error::Protocol("rule deletion rejected".into()));
+                        }
+                        pg::delete(c, t, id).await
+                    })
+                })
+                .await?;
+                Ok(json!({"id":id,"revision":rule.revision,"deleted":true}))
+            }
             Command::Recompute { id, request } => {
                 let r = self.rule(tx, *id).await?;
                 if r.revision as u64 != request.expected_revision || !r.enabled {
@@ -295,4 +310,32 @@ impl Compliance {
         };
         Ok(json!({"id":id,"revision":revision,"task":task}))
     }
+}
+
+fn authorize(
+    current: &Snapshot,
+    proof: &AuthorizedPrincipal,
+    command: &Command,
+) -> std::result::Result<(), Error> {
+    let (permission, device) = match command {
+        Command::Put { .. } | Command::Delete { .. } => (Permission::ComplianceWrite, None),
+        Command::Recompute { .. } => (Permission::ComplianceRecompute, None),
+        Command::Current { device } | Command::History { device, .. } => {
+            (Permission::ComplianceRead, Some(device.as_str()))
+        }
+        _ => (Permission::ComplianceRuleRead, None),
+    };
+    current.require(proof, permission, device)?;
+    if matches!(command, Command::Put { .. }) {
+        current.inventory_devices(proof)?;
+    }
+    if let Command::Put { request, .. } = command
+        && !request.input.groups().is_empty()
+    {
+        current.require(proof, Permission::GroupRead, None)?;
+    }
+    if matches!(command, Command::Task { .. }) {
+        current.require_all_devices(proof, Permission::ComplianceRead)?;
+    }
+    Ok(())
 }

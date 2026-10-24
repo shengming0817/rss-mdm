@@ -99,6 +99,7 @@ pub trait NativeAdmission: Send + Sync {
     ) -> Pending<'a, ()>;
 }
 pub struct Service {
+    cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) tenant: rss_request_context::TenantId,
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,
@@ -111,6 +112,7 @@ pub struct Service {
     bootstrap: Option<Arc<bootstrap::Configuration>>,
 }
 pub struct Assembly {
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub tenant: rss_request_context::TenantId,
     pub store: Arc<Store>,
     pub audit: Arc<AuditStore>,
@@ -131,6 +133,7 @@ impl Service {
     pub fn new(a: Assembly) -> Result<Self, Error> {
         Ok(Self {
             tenant: a.tenant,
+            cursor: a.cursor,
             store: a.store,
             audit: a.audit,
             issuer: a.issuer,

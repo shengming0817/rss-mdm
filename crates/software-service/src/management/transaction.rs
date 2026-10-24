@@ -186,6 +186,9 @@ pub(crate) async fn current(
     tx: &mut PgTransaction<'_>,
     proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
 ) -> Result<rss_mdm_authorization_service::Snapshot> {
+    if proof.tenant_id() != tx.tenant_id().to_string() {
+        return Err(crate::management::Error::Forbidden.into());
+    }
     let tenant = proof.tenant_id().to_owned();
     let instance = proof.instance_id().to_owned();
     let snapshot = tx

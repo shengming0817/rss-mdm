@@ -78,6 +78,12 @@ impl Source for Directory {
                 match item.id {
                     "user-attributes" if business => {
                         let backend = crate::user_profiles::Backend {
+                            cursor: rss_mdm_query::cursor::CursorCodec::from_key(
+                                ring::hmac::Key::new(
+                                    ring::hmac::HMAC_SHA256,
+                                    &self.state.flow.cursor_key,
+                                ),
+                            ),
                             identity: self.state.identity.authority.clone(),
                             tenant: self.state.identity.tenant,
                             instance: self.state.identity.instance,

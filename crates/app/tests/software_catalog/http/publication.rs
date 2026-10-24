@@ -113,12 +113,12 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(targets.0 == StatusCode::OK && targets.1["items"].as_array().unwrap().len() == 1);
     let target = targets.1["items"][0].clone();
     ensure!(target["id"] == server.logical);
-    ensure!(targets.1["nextCursor"] == server.logical);
+    ensure!(targets.1["nextCursor"].is_string());
     let target_page = discovery_page(
         &mut f,
         &format!(
-            "/api/v1/software/publication-targets?limit=1&after={}",
-            server.logical
+            "/api/v1/software/publication-targets?limit=1&cursor={}",
+            targets.1["nextCursor"].as_str().unwrap()
         ),
     )
     .await?;
@@ -130,10 +130,17 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     let secondary_target = target_page["items"][0].clone();
     let empty = discovery_page(
         &mut f,
-        &format!("/api/v1/software/publication-targets?after={secondary}"),
+        &format!("/api/v1/software/publication-targets?filter=id=gt={secondary}"),
     )
     .await?;
     ensure!(empty["items"] == json!([]) && empty["nextCursor"].is_null());
+
+    let versions = discovery_page(
+        &mut f,
+        &format!("/api/v1/software/resources/{resource}/versions?fields=version&limit=1"),
+    )
+    .await?;
+    ensure!(versions["items"] == json!([{"version":"v1"}]) && versions["nextCursor"].is_null());
     let source = Uuid::new_v4().to_string();
     for revision in ["a", "b"] {
         write(&mut f.author, &f.router, &format!("/api/v1/software/sources/{source}/revisions/{revision}"), 0,
@@ -147,7 +154,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         json!({"action":"disable"}),
     )
     .await?;
-    let source_url = format!("/api/v1/software/sources?source={source}&limit=1");
+    let source_url = format!("/api/v1/software/sources?filter=id=={source}&limit=1");
     let sources = discovery_page(&mut f, &source_url).await?;
     ensure!(
         sources["items"].as_array().unwrap().len() == 1
@@ -155,7 +162,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     );
     let cursor = sources["nextCursor"].as_str().unwrap();
     let query = url::form_urlencoded::Serializer::new(String::new())
-        .append_pair("after", cursor)
+        .append_pair("cursor", cursor)
         .finish();
     let sources = discovery_page(&mut f, &format!("{source_url}&{query}")).await?;
     ensure!(
@@ -164,14 +171,14 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     );
     ensure!(sources["nextCursor"].is_null());
     for (filter, expected) in [
-        ("protocol=private", 2),
-        ("protocol=winget_rest", 0),
-        ("state=enabled", 1),
-        ("state=disabled", 1),
+        ("protocol==private", 2),
+        ("protocol==winget_rest", 0),
+        ("state==enabled", 1),
+        ("state==disabled", 1),
     ] {
         let page = discovery_page(
             &mut f,
-            &format!("/api/v1/software/sources?source={source}&{filter}"),
+            &format!("/api/v1/software/sources?filter=id=={source};{filter}"),
         )
         .await?;
         ensure!(
@@ -180,13 +187,13 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         );
         if expected == 1 {
             ensure!(
-                page["items"][0]["lifecycle"]["state"] == filter.strip_prefix("state=").unwrap()
+                page["items"][0]["lifecycle"]["state"] == filter.strip_prefix("state==").unwrap()
             );
         }
     }
     let missing = discovery_page(
         &mut f,
-        &format!("/api/v1/software/sources?source={}", Uuid::new_v4()),
+        &format!("/api/v1/software/sources?filter=id=={}", Uuid::new_v4()),
     )
     .await?;
     ensure!(missing["items"] == json!([]));
@@ -252,7 +259,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .call(
             &f.router,
             Method::GET,
-            &format!("{collection}?operationId={operation}"),
+            &format!("{collection}?filter=operationId=={operation}"),
             None,
         )
         .await?;
@@ -273,16 +280,24 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     ensure!(other.0 == StatusCode::ACCEPTED, "second target: {other:?}");
     let mut ids = [operation.to_string(), other_operation.to_string()];
     ids.sort();
-    let first_page =
-        discovery_page(&mut f, &format!("{collection}?resource={resource}&limit=1")).await?;
+    let first_page = discovery_page(
+        &mut f,
+        &format!("{collection}?filter=resource=={resource}&limit=1"),
+    )
+    .await?;
     ensure!(
         first_page["items"].as_array().unwrap().len() == 1
             && first_page["items"][0]["id"] == ids[0]
     );
-    ensure!(first_page["nextCursor"] == ids[0] && first_page["items"][0].get("document").is_none());
+    ensure!(
+        first_page["nextCursor"].is_string() && first_page["items"][0].get("document").is_none()
+    );
     let last_page = discovery_page(
         &mut f,
-        &format!("{collection}?resource={resource}&limit=1&after={}", ids[0]),
+        &format!(
+            "{collection}?filter=resource=={resource}&limit=1&cursor={}",
+            first_page["nextCursor"].as_str().unwrap()
+        ),
     )
     .await?;
     ensure!(
@@ -290,17 +305,17 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
     );
     ensure!(last_page["nextCursor"].is_null());
     for (filter, expected) in [
-        (format!("target={}", server.logical), Some(operation)),
-        (format!("target={secondary}"), Some(other_operation)),
-        ("target=missing".into(), None),
-        ("version=v1".into(), Some(operation)),
-        ("version=missing".into(), None),
-        (format!("operationId={operation}"), Some(operation)),
-        (format!("operationId={}", Uuid::new_v4()), None),
+        (format!("target=={}", server.logical), Some(operation)),
+        (format!("target=={secondary}"), Some(other_operation)),
+        ("target==missing".into(), None),
+        ("version==v1".into(), Some(operation)),
+        ("version==missing".into(), None),
+        (format!("operationId=={operation}"), Some(operation)),
+        (format!("operationId=={}", Uuid::new_v4()), None),
     ] {
         let page = discovery_page(
             &mut f,
-            &format!("{collection}?resource={resource}&{filter}"),
+            &format!("{collection}?filter=resource=={resource};{filter}"),
         )
         .await?;
         let items = page["items"].as_array().unwrap();
@@ -309,15 +324,18 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
                 items.iter().any(|item| item["id"] == id.to_string()),
                 "record filter {filter}: {page}"
             );
-            if !filter.starts_with("version=") {
+            if !filter.starts_with("version==") {
                 ensure!(items.len() == 1);
             }
         } else {
             ensure!(items.is_empty(), "record filter {filter}: {page}");
         }
     }
-    let missing =
-        discovery_page(&mut f, &format!("{collection}?resource={}", Uuid::new_v4())).await?;
+    let missing = discovery_page(
+        &mut f,
+        &format!("{collection}?filter=resource=={}", Uuid::new_v4()),
+    )
+    .await?;
     ensure!(missing["items"] == json!([]));
     let id = pending["publication"]
         .as_array()
@@ -368,7 +386,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             &f.router,
             Method::GET,
             &format!(
-                "{collection}?operationId={}",
+                "{collection}?filter=operationId=={}",
                 recovery["operationId"].as_str().unwrap()
             ),
             None,

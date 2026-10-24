@@ -62,6 +62,8 @@ pub enum Description {
     /// The current query decoder and generated documentation consume Resource::FIELDS directly.
     /// Only the ResourceV1 policy may use this owner, never another resource's exemption.
     ResourceOwner,
+    /// The registered List method supplies its actual query field catalog.
+    QueryOwner,
     Current(&'static Current),
 }
 macro_rules! describe {
@@ -102,24 +104,8 @@ describe!(
     false,
     "organization bound by route; excess is Capacity, not a continuation"
 );
-describe!(
-    AGENT_CONFIGURATIONS,
-    "crates/management-http/src/agent_enrollment.rs",
-    page(Paging::Missing, &[], None, None, None, None),
-    &[],
-    None,
-    false,
-    "no collection route; signed metadata Get is not List"
-);
-describe!(
-    AGENT_PACKAGES,
-    "crates/software-service/src/agent_packages.rs",
-    page(Paging::Unbounded, &[], None, None, None, None),
-    &["releaseId"],
-    None,
-    false,
-    "published and currently admitted only; top-level array; no next-page envelope"
-);
+pub static AGENT_CONFIGURATIONS: Description = Description::QueryOwner;
+pub static AGENT_PACKAGES: Description = Description::QueryOwner;
 describe!(
     API_KEYS,
     "crates/authorization-service/src/store.rs",
@@ -252,22 +238,7 @@ describe!(
     false,
     "latest version selected descending within each entry"
 );
-describe!(
-    COMPLIANCE_RULES,
-    "crates/inventory-service/src/compliance/mod.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(50),
-        Some(50),
-        None,
-        Some("nextCursor")
-    ),
-    &["id"],
-    None,
-    false,
-    ""
-);
+pub static COMPLIANCE_RULES: Description = Description::QueryOwner;
 describe!(
     DEVICES,
     "crates/registration-service/src/device/directory.rs",
@@ -360,38 +331,8 @@ describe!(
     false,
     "continuation is an id/kind object"
 );
-describe!(
-    GROUPS,
-    "crates/inventory-service/src/groups/directory.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(64),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    Some("descending"),
-    false,
-    "name is a case-insensitive literal substring; referenceableFor also applies visibility and dependency checks"
-);
-describe!(
-    POLICIES,
-    "crates/flow-service/src/planning/policies/read.rs",
-    page(
-        Paging::Keyset,
-        &[f("cursor", "string")],
-        Some(64),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    Some("descending"),
-    false,
-    "archived excluded when state is absent"
-);
+pub static GROUPS: Description = Description::QueryOwner;
+pub static POLICIES: Description = Description::QueryOwner;
 describe!(
     PROVISIONINGS,
     "crates/app/src/tenant_http.rs",
@@ -408,38 +349,8 @@ describe!(
     false,
     "provisioning receipts only; after rejects nil"
 );
-describe!(
-    PUBLICATIONS,
-    "crates/software-service/src/management/publication/service.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "string")],
-        Some(20),
-        Some(100),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    None,
-    false,
-    "record ID uses C collation; directory omits the immutable document"
-);
-describe!(
-    PUBLICATION_TARGETS,
-    "crates/software-service/src/management/publication/service.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "string")],
-        Some(20),
-        Some(100),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    None,
-    false,
-    "configured services BTreeMap order; Query accepts other publication parameters but targets only uses after/limit"
-);
+pub static PUBLICATIONS: Description = Description::QueryOwner;
+pub static PUBLICATION_TARGETS: Description = Description::QueryOwner;
 describe!(
     RECOVERY_CREDENTIALS,
     "crates/recovery-credentials/src/service.rs",
@@ -456,63 +367,10 @@ describe!(
     false,
     "both after values required together; version >0; array without lookahead/continuation; no secret"
 );
-describe!(
-    SAVED_QUERIES,
-    "crates/inventory-service/src/assets/store.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(100),
-        Some(100),
-        None,
-        Some("next")
-    ),
-    &["id"],
-    None,
-    false,
-    "bound to current tenant, instance and principal"
-);
-describe!(
-    SCOPES,
-    "crates/flow-service/src/planning/directory.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(64),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    Some("descending"),
-    false,
-    ""
-);
-describe!(
-    SOFTWARE_SOURCES,
-    "crates/software-service/src/management/catalog.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "JSON pair of strings")],
-        Some(20),
-        Some(100),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id", "revision"],
-    None,
-    false,
-    "ID and revision use C collation"
-);
-describe!(
-    SOFTWARE_VERSIONS,
-    "crates/management-http/src/software_catalog.rs",
-    page(Paging::Missing, &[], None, None, None, None),
-    &[],
-    None,
-    false,
-    "no collection route; Resource aggregate owns existing version discovery"
-);
+pub static SAVED_QUERIES: Description = Description::QueryOwner;
+pub static SCOPES: Description = Description::QueryOwner;
+pub static SOFTWARE_SOURCES: Description = Description::QueryOwner;
+pub static SOFTWARE_VERSIONS: Description = Description::QueryOwner;
 describe!(
     TENANTS,
     "crates/app/src/tenant_registry.rs",
@@ -522,22 +380,7 @@ describe!(
     false,
     "deleted excluded; no SQL page limit"
 );
-describe!(
-    USER_ATTRIBUTES,
-    "crates/app/src/user_profiles/store.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "uuid")],
-        Some(128),
-        Some(128),
-        None,
-        Some("nextCursor")
-    ),
-    &["fieldId"],
-    None,
-    false,
-    "envelope definitions/nextCursor/sources"
-);
+pub static USER_ATTRIBUTES: Description = Description::QueryOwner;
 describe!(
     USER_GROUPS,
     "crates/management-http/src/authorization/http.rs",
@@ -620,6 +463,9 @@ pub fn valid(resource: &crate::Resource, gaps: &[crate::Gap]) -> bool {
             && resource.query != QueryPolicy::FixedWindow
             && resource.query != QueryPolicy::SourceCatalog;
     };
+    if matches!(description, Description::QueryOwner) {
+        return resource.query == QueryPolicy::Unified;
+    }
     let Description::Current(current) = description else {
         return resource.id == "resource" && resource.query == QueryPolicy::ResourceV1;
     };
@@ -665,6 +511,9 @@ pub fn valid(resource: &crate::Resource, gaps: &[crate::Gap]) -> bool {
                 && pagination.mode == Paging::StaticCatalog
                 && !current.default_sort.is_empty()
         }
-        QueryPolicy::ResourceV1 | QueryPolicy::NotCollection | QueryPolicy::Protocol => false,
+        QueryPolicy::Unified
+        | QueryPolicy::ResourceV1
+        | QueryPolicy::NotCollection
+        | QueryPolicy::Protocol => false,
     }
 }

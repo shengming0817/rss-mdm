@@ -1,43 +1,64 @@
 use super::*;
 use crate::authorization::context::AuthorizedPrincipal;
 use rss_mdm_authorization_service::Permission;
-use serde::Deserialize;
+use rss_mdm_query::{
+    cursor::CursorCodec,
+    directory::{Field, Kind, Query, Schema},
+};
 use serde_json::json;
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ScopeQuery {
-    pub after: Option<Uuid>,
-    #[serde(default = "limit")]
-    pub limit: usize,
-    #[serde(default)]
-    pub descending: bool,
-    #[serde(default)]
-    pub deleted: bool,
-    pub ready: Option<bool>,
+pub static SCHEMA: Schema = Schema {
+    id: "scopes",
+    keys: &["id"],
+    default_limit: 64,
+    max_limit: 1000,
+    fields: &[
+        Field::scalar("id", Kind::Uuid),
+        Field::scalar("revision", Kind::Integer),
+        Field::scalar("deleted", Kind::Boolean),
+        Field::scalar("calculationRevision", Kind::Integer),
+        Field::scalar("resolutionRevision", Kind::Integer),
+        Field::output("resolution"),
+        Field::filter_only("ready", Kind::Boolean),
+    ],
+};
+pub fn parse(raw: &str) -> rss_mdm_query::Result<Query> {
+    let mut q = SCHEMA.parse(raw)?;
+    q.default_filter("deleted", "false")?;
+    Ok(q)
 }
-fn limit() -> usize {
-    64
+fn column(name: &str) -> &'static str {
+    match name {
+        "id" => "id::text COLLATE \"C\"",
+        "revision" => "revision",
+        "deleted" => "deleted",
+        "calculationRevision" => "calculation_revision",
+        "resolutionRevision" => "resolution_revision",
+        "ready" => "(mdm_planning.scope_admission(id,NULL)->>'state'='fresh')",
+        _ => unreachable!("checked Scope field"),
+    }
 }
 impl Planning {
     pub async fn scope_directory(
         &self,
         proof: &AuthorizedPrincipal,
-        q: &ScopeQuery,
+        q: &Query,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if !(1..=1000).contains(&q.limit) || q.after.is_some_and(|v| v.is_nil()) {
-            return Err(Error::Malformed);
-        }
+        q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         proof.manage(Permission::ScopeRead)?;
-        crate::transaction::inspect(&self.runtime, self.tenant,(proof,q,audit),|ctx,tx|Box::pin(async move {
-            let (p,q,audit)=*ctx;p.manage(Permission::ScopeRead)?;let tenant=tx.tenant_id().to_string();let query=q.clone();
-            let mut items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move {
-                sqlx::query_scalar("SELECT jsonb_build_object('id',id,'revision',revision,'deleted',deleted,'calculationRevision',calculation_revision,'resolution',resolution,'resolutionRevision',resolution_revision) FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND ($2::uuid IS NULL OR CASE WHEN $3 THEN id<$2 ELSE id>$2 END) AND deleted=$4 AND ($5::boolean IS NULL OR (mdm_planning.scope_admission(id,NULL)->>'state'='fresh')=$5) ORDER BY CASE WHEN NOT $3 THEN id END ASC,CASE WHEN $3 THEN id END DESC LIMIT $6")
-                    .bind(tenant).bind(query.after).bind(query.descending).bind(query.deleted).bind(query.ready).bind((query.limit+1) as i64).fetch_all(c).await
-            })).await?;
-            let more=items.len()>q.limit;items.truncate(q.limit);let next=if more{items.last().map(|v|v["id"].clone())}else{None};
+        crate::transaction::inspect(&self.runtime, self.tenant, (self, proof, q, audit), |ctx, tx| Box::pin(async move {
+            let (s,p,q,audit) = *ctx;
+            let current = crate::action_admission::current(tx,p).await?;
+            current.require(p,Permission::ScopeRead,None)?;
+            let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(crate::query_error)?;
+            let codec=CursorCodec::from_key(s.cursor_key.clone());
+            let after=q.after(&codec,&binding).map_err(crate::query_error)?;
+            let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'revision',revision,'deleted',deleted,'calculationRevision',calculation_revision,'resolution',resolution,'resolutionRevision',resolution_revision) FROM mdm_planning.scopes WHERE tenant_id=");
+            sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
+            rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
+            let rows:Vec<Value>=tx.with_connection(move |c| Box::pin(async move {sql.build_query_scalar().fetch_all(c).await})).await?;
             p.check_live()?;audit.require_request_settlement();
-            Ok(json!({"items":items,"nextCursor":next}))
+            Ok(json!(q.page(rows,&codec,&binding).map_err(crate::query_error)?))
         }),crate::transaction::TransactionOwner::Planning).await
     }
 }

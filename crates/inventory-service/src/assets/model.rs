@@ -292,8 +292,9 @@ pub enum Response {
         query: SavedView,
     },
     SavedList {
-        items: Vec<SavedView>,
-        next: Option<Uuid>,
+        items: Vec<Value>,
+        #[serde(rename = "nextCursor")]
+        next_cursor: Option<String>,
     },
 }
 #[derive(Clone, Debug, Serialize)]
@@ -376,10 +377,6 @@ pub enum Command {
         field: FieldKey,
         change: Operation<ManualChange>,
         owner: Owner,
-    },
-    SavedList {
-        owner: Owner,
-        after: Option<Uuid>,
     },
     SavedRead {
         owner: Owner,

@@ -3,7 +3,7 @@ REVOKE ALL ON SCHEMA mdm_compliance FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_compliance TO mdm_flow_runtime;
 CREATE TABLE mdm_compliance.rules (
  tenant_id uuid NOT NULL, id uuid NOT NULL, revision bigint NOT NULL CHECK(revision>0),
- enabled boolean NOT NULL, desired uuid, current_run uuid,
+ enabled boolean NOT NULL, desired uuid, current_run uuid, deleted boolean NOT NULL DEFAULT false,
  PRIMARY KEY(tenant_id,id)
 );
 CREATE TABLE mdm_compliance.versions (
@@ -41,5 +41,5 @@ DO $$ DECLARE t text; BEGIN
   EXECUTE format('GRANT SELECT,INSERT ON mdm_compliance.%I TO mdm_flow_runtime',t);
  END LOOP;
 END $$;
-GRANT UPDATE(revision,enabled,desired,current_run) ON mdm_compliance.rules TO mdm_flow_runtime;
+GRANT UPDATE(revision,enabled,desired,current_run,deleted) ON mdm_compliance.rules TO mdm_flow_runtime;
 GRANT DELETE ON mdm_compliance.fields,mdm_compliance.groups TO mdm_flow_runtime;

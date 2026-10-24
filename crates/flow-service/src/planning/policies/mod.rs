@@ -6,7 +6,6 @@ use crate::{
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_policy::Action;
-use rss_mdm_resource as resource;
 use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

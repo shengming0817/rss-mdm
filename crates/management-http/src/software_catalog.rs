@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -22,8 +22,13 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/agent-packages",
             get(managed_packages)
                 .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::List])
+                .queried(&rss_mdm_software_service::agent_packages::directory::SCHEMA)
                 .post(publish_agent)
                 .owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Create]),
+        )
+        .route(
+            "/agent-packages/{id}",
+            get(managed_package).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Get]),
         )
         .route(
             "/agent-packages/uploads",
@@ -54,7 +59,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/software/sources",
-            get(sources).owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::List]),
+            get(sources)
+                .owned(&contracts::SOFTWARE_SOURCES, &[RouteOperation::List])
+                .queried(&rss_mdm_software_service::management::directory::SOURCES),
         )
         .route(
             "/software/resources/{id}/versions/{version}/content",
@@ -78,6 +85,12 @@ pub fn routes() -> Router<Arc<HttpState>> {
                 ),
         )
         .route(
+            "/software/resources/{id}/versions",
+            get(versions)
+                .owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::List])
+                .queried(&rss_mdm_resource::directory::VERSION_SCHEMA),
+        )
+        .route(
             "/software/resources/{id}/versions/{version}",
             get(read_version)
                 .owned(&contracts::SOFTWARE_VERSIONS, &[RouteOperation::Get])
@@ -96,17 +109,42 @@ pub fn routes() -> Router<Arc<HttpState>> {
 async fn managed_packages(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-) -> Result<Json<Vec<rss_mdm_agent_wire::enroll::configuration::Package>>, Error> {
-    auth.proof.require(
-        rss_mdm_authorization_service::Permission::AgentEnrollmentRead,
-        None,
-    )?;
-    if auth.proof.tenant_id() != app.tenant.to_string() {
-        return Err(Error::Forbidden);
-    }
-    let result = rss_mdm_software_service::agent_packages::list(&app).await?;
-    auth.proof.check_live()?;
-    Ok(Json(result))
+    Extension(audit): Extension<RequestAudit>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Result<Json<Value>, Error> {
+    let q = rss_mdm_software_service::agent_packages::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
+    rss_mdm_software_service::agent_packages::directory::list(&app, &auth.proof, &audit, q)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn managed_package(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<Value>, Error> {
+    rss_mdm_software_service::agent_packages::directory::get(&app, &auth.proof, &audit, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn versions(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(id): Path<String>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Result<Json<Value>, Error> {
+    let q = rss_mdm_resource::directory::VERSION_SCHEMA
+        .parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
+    rss_mdm_software_service::management::directory::versions(&app, &auth.proof, &audit, &id, q)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
 async fn read_source(
     State(app): State<Arc<HttpState>>,
@@ -380,18 +418,13 @@ async fn sources(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    q: Result<
-        Query<rss_mdm_software_service::management::catalog::SourceQuery>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
-    rss_mdm_software_service::management::catalog::sources(
-        &app,
-        &auth.proof,
-        &audit,
-        q.map_err(|_| Error::Malformed)?.0,
-    )
-    .await
-    .map(Json)
-    .map_err(Into::into)
+    let q = rss_mdm_software_service::management::directory::SOURCES
+        .parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
+    rss_mdm_software_service::management::directory::sources(&app, &auth.proof, &audit, q)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }

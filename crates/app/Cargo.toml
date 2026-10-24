@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-query-postgres.workspace = true
+rss-mdm-query.workspace = true
 rss-mdm-http-contract.workspace = true
 rss-mdm-telemetry-service.workspace = true
 rss-timeseries.workspace = true
@@ -91,7 +93,7 @@ tower.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["json"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "signal", "sync", "fs", "io-util", "process"] }
 tokio-util = { workspace = true, features = ["io"] }
 

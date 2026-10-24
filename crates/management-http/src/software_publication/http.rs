@@ -2,7 +2,7 @@ use super::wire;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -10,7 +10,7 @@ use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_software_service::{
     catalog::Operation,
     management::publication::{
-        model::{Change, Query as DirectoryQuery},
+        model::Change,
         service::{self, PublicationDirectory},
     },
 };
@@ -21,6 +21,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
             "/software/publications",
             get(list)
                 .owned(&contracts::PUBLICATIONS, &[RouteOperation::List])
+                .queried(
+                    &rss_mdm_software_service::management::publication::directory::PUBLICATIONS,
+                )
                 .post(create)
                 .owned(&contracts::PUBLICATIONS, &[RouteOperation::Create]),
         )
@@ -33,7 +36,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/software/publication-targets",
-            get(targets).owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List]),
+            get(targets)
+                .owned(&contracts::PUBLICATION_TARGETS, &[RouteOperation::List])
+                .queried(&rss_mdm_software_service::management::publication::directory::TARGETS),
         )
 }
 async fn read(
@@ -89,14 +94,16 @@ async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    q: Result<Query<DirectoryQuery>, axum::extract::rejection::QueryRejection>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<serde_json::Value>, Error> {
     service::list(
         &app.publications,
         &app.access,
         &auth.proof,
         &audit,
-        q.map_err(|_| Error::Malformed)?.0,
+        rss_mdm_software_service::management::publication::directory::PUBLICATIONS
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?,
     )
     .await
     .map(Json)
@@ -105,13 +112,15 @@ async fn list(
 async fn targets(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    q: Result<Query<DirectoryQuery>, axum::extract::rejection::QueryRejection>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<serde_json::Value>, Error> {
     service::targets(
         &app.publications,
         &app.access,
         &auth.proof,
-        q.map_err(|_| Error::Malformed)?.0,
+        rss_mdm_software_service::management::publication::directory::TARGETS
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?,
     )
     .await
     .map(Json)

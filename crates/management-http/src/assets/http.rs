@@ -102,7 +102,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/saved-queries",
-            get(saved_list).owned(&contracts::SAVED_QUERIES, &[RouteOperation::List]),
+            get(saved_list)
+                .owned(&contracts::SAVED_QUERIES, &[RouteOperation::List])
+                .queried(&rss_mdm_inventory_service::assets::saved_directory::SCHEMA),
         )
         .route(
             "/saved-queries/{id}",
@@ -335,28 +337,16 @@ async fn manual(
     )
     .await
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct After {
-    after: Option<Uuid>,
-}
 async fn saved_list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    parameters: ParamInput<After>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let after = params(parameters)?;
-    run(
-        &app,
-        &auth,
-        &audit,
-        Command::SavedList {
-            owner: owner(&auth),
-            after: after.after,
-        },
-    )
-    .await
+    let q = saved_directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(app.assets.saved_directory(&auth.proof, &q, &audit).await?).into_response())
 }
 async fn saved_read(
     State(app): State<Arc<HttpState>>,

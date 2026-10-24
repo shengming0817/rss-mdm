@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use uuid::Uuid;
+pub mod directory;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
 pub const ACCESS_CONTRACT: &str = include_str!("agent_packages_access.json");
 /// Safe domain reasons after authorization; no storage/provider details cross the HTTP boundary.
