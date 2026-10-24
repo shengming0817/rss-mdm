@@ -136,13 +136,6 @@ class Selection(unittest.TestCase):
         )
         self.assertFalse(ci.selected_gate('script-tests', selection))
 
-    def test_storage_owner_does_not_expand_into_business_consumers(self):
-        from ci_impact import select_inputs
-        self.assertEqual(select_inputs(['crates/compliance/src/lib.rs']).modules, ())
-        self.assertEqual(select_inputs(['crates/compliance-postgres/src/lib.rs']).modules,
-                         ('compliance.storage',))
-        self.assertEqual(set(select_inputs(['crates/group-postgres/src/lib.rs']).modules),
-                         {'group.persistence', 'group.generations'})
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:

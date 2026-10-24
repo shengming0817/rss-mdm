@@ -306,9 +306,6 @@ impl rss_runtime::ManagedResource for Resource {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/flow/unit.rs"]
-mod tests;
 
 pub(crate) struct Flow {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,

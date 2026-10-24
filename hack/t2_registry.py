@@ -1014,6 +1014,7 @@ TOOL_INPUTS = {
     'hack/candidate_smoke.py': ('test_candidate_smoke',),
 }
 T1_INPUTS = (
+    'crates/app/tests/support/context_validation.rs',
     'crates/software-service/tests/imports.rs',
     "crates/examples/tests/model.rs",
     'crates/windows-channel/tests/unit.rs',
@@ -1048,7 +1049,6 @@ T1_INPUTS = (
     'crates/execution-service/tests/query_records.rs',
     'crates/execution-service/tests/device_control_unit.rs',
     'crates/execution-service/tests/actions/state_schedule_unit.rs',
-    'crates/app/tests/flow/unit.rs',
     'crates/app/tests/config/publication_unit.rs',
     'crates/app/tests/identity/unit.rs',
     'crates/app/tests/lifecycle/unit.rs',

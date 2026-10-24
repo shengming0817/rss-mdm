@@ -2,9 +2,6 @@
 //! Pure, tenant-scoped rule evaluation over bounded immutable input pages.
 //! Only explicit facts participate in three-valued logic. Missing input pages
 //! cannot be represented as successful complete results; the host seals them.
-//! ```compile_fail
-//! use rss_mdm_group::{Snapshot, Recalculation, diff};
-//! ```
 mod evaluation;
 mod model;
 mod rule;

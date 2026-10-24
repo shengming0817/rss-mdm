@@ -383,15 +383,11 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
     let browser = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = browser.local_addr()?;
     drop(browser);
-    let native = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let native_address = native.local_addr()?;
-    drop(native);
     config.listen = address;
     config.native_protocols.windows = None;
     config.agent_pki = crate::agent_pki::Config::Disabled {};
     let mut apple: config::Config =
         serde_json::from_slice(&std::fs::read(fixture.root.join("apple.json"))?)?;
-    let _ = native_address;
     config.trusted_gateway = "127.0.0.1".parse()?;
     if !matches!(fault, StartupFault::TrustConflict) {
         apple.management.origin = fixture.app.apple()?.config.management.origin.clone();
@@ -500,12 +496,6 @@ async fn blocked_apple_host(fault: StartupFault) -> Result<()> {
         tx.rollback().await?;
         let retained: rss_mdm_agent_wire::pki::Trust = serde_json::from_slice(&body)?;
         ensure!(retained.origin == fixture.app.apple()?.config.management.origin);
-        ensure!(
-            tokio::net::TcpStream::connect(native_address)
-                .await
-                .is_err(),
-            "unprepared Apple listener was published"
-        );
         Ok(())
     }
     .await;

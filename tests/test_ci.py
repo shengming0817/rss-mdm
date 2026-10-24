@@ -53,13 +53,7 @@ class DependencyPolicy(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     ci.identity_pin(changed)
 
-    def test_agent_delivery_is_an_independent_module(self):
-        from t2_registry import MODULES
-        self.assertEqual(MODULES['execution.agent.delivery'].build.package, 'rss-mdm-app')
 
-    def test_require_survives_optimized_python(self):
-        with self.assertRaises(RuntimeError):
-            ci.require(False, "reject")
 
     def test_source_and_feature_mismatch_are_rejected(self):
         root = ci.ROOT

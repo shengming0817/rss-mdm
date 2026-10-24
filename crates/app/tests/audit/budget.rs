@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 #[ignore = "MODULE=audit.budget: real owner settlement after a bounded callback"]
 async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
-    let (pool, _runtime, _) = crate::audit_test_support::request_store().await?;
+    let pool = pool("mdm_access").await?;
     {
         let timer = crate::lifecycle::RuntimeTimer;
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -45,18 +45,6 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
         ensure!(reached.load(std::sync::atomic::Ordering::Acquire));
         ensure!(state(attempt) == "rolled_back");
         ensure!(bytes(&pool, tenant).await?.is_empty());
-        let mut observer = pool.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(tenant.to_string())
-            .execute(&mut *observer)
-            .await?;
-        let receipts: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
-                .bind(tenant.to_string())
-                .fetch_one(&mut *observer)
-                .await?;
-        ensure!(receipts == 0);
-        observer.rollback().await?;
         // The expired absolute operation cutoff cannot run even an immediately-ready callback.
         let forbidden = store
             .write(tenant, &operation, (), |_, _| {

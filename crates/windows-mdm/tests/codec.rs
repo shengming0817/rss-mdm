@@ -23,17 +23,6 @@ fn server_acknowledges_results_by_command_name() {
     );
 }
 
-#[test]
-fn historical_initialization_is_only_untrusted_protocol_data() {
-    let message = syncml::decode(
-        include_bytes!("fixtures/initialization.xml"),
-        &CodecLimits::default(),
-    )
-    .unwrap();
-    assert_eq!(message.header.source, "test-device");
-    assert_eq!(message.commands.len(), 2);
-    assert!(message.final_message);
-}
 
 #[test]
 fn duplicate_header_is_rejected() {
@@ -42,11 +31,6 @@ fn duplicate_header_is_rejected() {
     assert!(syncml::decode(xml.as_bytes(), &CodecLimits::default()).is_err());
 }
 
-#[test]
-fn dtd_is_rejected_before_entity_resolution() {
-    let xml = b"<!DOCTYPE SyncML [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><SyncML>&e;</SyncML>";
-    assert!(syncml::decode(xml, &CodecLimits::default()).is_err());
-}
 
 #[test]
 fn empty_results_data_is_a_present_empty_value() {

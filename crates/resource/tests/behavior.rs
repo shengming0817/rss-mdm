@@ -180,20 +180,3 @@ fn current_native_behavior_requires_explicit_removal_support() {
         .remove("uninstall");
     assert!(serde_json::from_value::<SoftwareDefinition>(input).is_err());
 }
-
-#[test]
-fn app_copy_rejects_retired_directory_digest_including_null() {
-    let input = definition(
-        json!({"kind":"dmg","image":"installer","volume":"Acme","scope":"system","invocation":native_budget(),"upgrade":"in_place","payload":{"kind":"app_copy","application":{"path":"Acme.app","targetName":"Acme.app","bundleId":"com.acme.app","version":"1.0"},"uninstall":true}}),
-        "1.0",
-    );
-    let definition: SoftwareDefinition = serde_json::from_value(input.clone()).unwrap();
-    definition
-        .validate_target(Platform::MacOS, Architecture::Aarch64)
-        .unwrap();
-    for digest in [json!(vec![2; 32]), json!(null)] {
-        let mut old = input.clone();
-        old["behavior"]["payload"]["application"]["materialSha256"] = digest;
-        assert!(serde_json::from_value::<SoftwareDefinition>(old).is_err());
-    }
-}

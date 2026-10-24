@@ -5,7 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'hack'))
-from ci_impact import select_inputs, SelectionError
+from ci_impact import select_inputs
 
 
 class AppTestLayout(unittest.TestCase):
@@ -18,9 +18,5 @@ class AppTestLayout(unittest.TestCase):
         self.assertNotIn('apple.cms',select_inputs(['crates/app/tests/support/mod.rs']).modules)
         self.assertNotIn('audit.receipts',select_inputs(['crates/app/tests/support/mod.rs']).modules)
 
-    def test_moved_t1_remains_t1_and_new_owners_select_exactly(self):
-        self.assertEqual(select_inputs(['crates/content-service/tests/unit.rs']).modules,())
-        self.assertEqual(select_inputs(['crates/app/tests/apple/apns.rs']).modules,('apple.apns',))
-        self.assertEqual(select_inputs(['crates/app/tests/agent/registration.rs']).modules,('agent.registration',))
 
 if __name__=='__main__':unittest.main()

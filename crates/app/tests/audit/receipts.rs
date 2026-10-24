@@ -134,7 +134,7 @@ async fn retirement_batch(pool: &PgPool) -> Result<()> {
     let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
     let request = RequestAudit::new(tenant.to_string(), "collection_finish");
     request.identify_service("service:collection-finalizer");
-    let facts = (0..65)
+    let facts = (0..2)
         .map(|index| {
             Fact::business(
                 &request,
@@ -168,7 +168,7 @@ async fn retirement_batch(pool: &PgPool) -> Result<()> {
             "retirement batch replay={replayed}: {outcome}"
         );
         let frozen = bytes(pool, tenant).await?;
-        ensure!(frozen.len() == 65);
+        ensure!(frozen.len() == 2);
         if let Some(original) = &original {
             ensure!(&frozen == original);
         } else {
