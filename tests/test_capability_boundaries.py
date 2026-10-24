@@ -14,6 +14,14 @@ class CapabilityBoundaries(unittest.TestCase):
         packages = [dict(id=n, name='rss-mdm-' + n, dependencies=[]) for n in names]
         data = dict(packages=packages, workspace_members=names)
         verify_capability_boundaries(data)
+        # Platform SSO consumes canonical wire DTOs, whose pure production closure is separately checked.
+        apple = next(p for p in packages if p['id'] == 'apple-mdm')
+        apple['dependencies'] = [dict(name='rss-mdm-agent-wire', kind=None)]
+        verify_capability_boundaries(data)
+        apple['dependencies'] = [dict(name='rss-mdm-registration-service', kind=None)]
+        with self.assertRaisesRegex(RuntimeError, 'apple-mdm'):
+            verify_capability_boundaries(data)
+        apple['dependencies'] = []
         for owner, name in (('inventory-service', 'axum'), ('query', 'rss-identity-core'),
                             ('http-contract', 'rss-mdm-resource'), ('resource', 'rss-mdm-http-contract')):
             package = next(p for p in packages if p['id'] == owner)

@@ -326,6 +326,9 @@ fn authorize(
         _ => (Permission::ComplianceRuleRead, None),
     };
     current.require(proof, permission, device)?;
+    if matches!(command, Command::Put { .. }) {
+        current.inventory_devices(proof)?;
+    }
     if let Command::Put { request, .. } = command
         && !request.input.groups().is_empty()
     {

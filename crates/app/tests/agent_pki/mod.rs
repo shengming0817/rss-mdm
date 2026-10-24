@@ -111,6 +111,7 @@ async fn service_with_provider(
         .admit(rss_request_context::TenantId::parse(case_a())?, now())
         .await?;
     Ok(Arc::new(Service::new(Assembly {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
         tenant: rss_request_context::TenantId::parse(case_a())?,
         store: db.registration(),
         audit,
@@ -210,6 +211,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
     let time = Arc::new(Time(AtomicI64::new(now())));
     let assemble = |tenant: &str| -> anyhow::Result<Arc<Service>> {
         Ok(Arc::new(Service::new(Assembly {
+            cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32])?,
             tenant: rss_request_context::TenantId::parse(tenant)?,
             store: db.registration(),
             audit: audit_store.clone(),

@@ -464,6 +464,28 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
         case_tenant()
     ))?)?;
     ensure!(!deleted);
+
+    crate::test_support::identity::set_grants(
+        case_tenant(),
+        &fixture.subject,
+        vec![crate::authorization::Grant {
+            operation: crate::authorization::Permission::ComplianceWrite,
+            scope: crate::authorization::Scope::Tenant,
+        }],
+    )
+    .await?;
+    let attempted = browser
+        .call(
+            &fixture.router,
+            Method::PUT,
+            &path,
+            Some(request(1, definition(json!({"kind":"all"})))),
+        )
+        .await?;
+    ensure!(
+        attempted.0 == StatusCode::FORBIDDEN,
+        "ComplianceWrite without InventoryRead changed an asset rule"
+    );
     grants(&fixture.subject, None).await?;
     ensure!(ok(&mut browser, &fixture.router, Method::GET, &path, None).await?["revision"] == 1);
     fixture.close().await;

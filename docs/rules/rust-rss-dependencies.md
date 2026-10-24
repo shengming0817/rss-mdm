@@ -8,7 +8,9 @@ RSS 直接依赖固定同一完整 Git rev，Identity 公共组件固定其独�
 
 ## 产品边界
 
-纯决策核心不依赖 HTTP/PG/设备通道，各核心不泄漏其它业务类型；平台源只带自身必要接缝。PG adapter 依赖对应核心及 RSS/PG，组合根持有跨 owner 映射与事务。边界理由见 [基础 ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md)。
+纯决策核心不依赖 HTTP/PG/设备通道，各核心不泄漏其它业务类型；
+Apple MDM 的 Platform SSO 配置消费 agent-wire 的公共协议 DTO（#2872），不依赖注册或其它业务服务；wire 生产闭包继续由 CI 校验纯协议边界。
+平台源只带自身必要接缝。PG adapter 依赖对应核心及 RSS/PG，组合根持有跨 owner 映射与事务。边界理由见 [基础 ADR](../architecture/adr/202609072231-001-rust-rss-product-foundation.md)。
 
 Policy、Resource、Software Release 的 PG adapter 可依赖同 workspace 的 backend-postgres-support。支持包不依赖 MDM 核心/adapter/app/identity，不扩张为通用平台或迫使其它能力接入。实际禁止依赖与安全 allow-list 由 [CI](../../hack/ci.py) 持有。
 
