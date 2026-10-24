@@ -14,7 +14,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
         f.grants.push(crate::authorization::Grant { operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant });
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
-        let registration=seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
+        let registration=seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
         f.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
         let (id,engines)=collection(&mut f).await?;

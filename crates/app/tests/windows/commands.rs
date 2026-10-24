@@ -6,7 +6,7 @@ async fn current_credential_to_native_command_wiring() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let warm = native::begin(&peer.mutual, &peer.url, &peer.message, &peer.ack, 1, None).await?;
     anyhow::ensure!(
         native::post(

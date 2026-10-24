@@ -24,7 +24,13 @@ pub(crate) fn case_device() -> &'static str {
 pub(crate) struct Client {
     pub(crate) browser: Browser,
     pub(crate) router: Router,
-    pub(crate) app: Arc<crate::api::Assembly>,
+    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    pub(crate) execution_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub(crate) sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    pub(crate) tenant: rss_request_context::TenantId,
+    pub(crate) clock: Arc<dyn crate::clock::Clock>,
+    pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
     pub(crate) operation: Uuid,
     rule: Uuid,
     rule_revision: u64,
@@ -32,7 +38,7 @@ pub(crate) struct Client {
 impl Client {
     pub(crate) async fn start(
         router: Router,
-        app: Arc<crate::api::Assembly>,
+        app: &crate::api::Assembly,
     ) -> anyhow::Result<Self> {
         let secret = crate::test_support::identity::credential_for(case_tenant(), "admin")?;
         Ok(Self::with_browser(
@@ -51,7 +57,7 @@ impl Client {
 
     pub(crate) fn with_browser(
         router: Router,
-        app: Arc<crate::api::Assembly>,
+        app: &crate::api::Assembly,
         browser: Browser,
     ) -> Self {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -60,7 +66,10 @@ impl Client {
         Self {
             browser,
             router,
-            app,
+            execution: app.execution.clone(), execution_runtime: app.execution_runtime.clone(),
+            audit_store: app.audit_store.clone(), tenant: app.identity.tenant, clock: app.clock.clone(),
+            protection: app.protection.clone(),
+            sessions: Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(app.identity.authority.clone(), app.identity.tenant)),
             operation: Uuid::new_v4(),
             rule: Uuid::new_v4(),
             rule_revision: 0,
@@ -101,10 +110,10 @@ impl Client {
     }
     pub(crate) async fn publish_operation(&self, id: Uuid) -> anyhow::Result<()> {
         for _ in 0..16 {
-            self.app.execution.relay_once().await?;
+            self.execution.relay_once().await?;
         }
         let audit = RequestAudit::new(case_tenant().into(), "management_read");
-        let service = self.app.execution.as_ref();
+        let service = self.execution.as_ref();
         let result = service.recover_operation(id, &audit).await;
         audit.finalize(None);
         result?;
@@ -122,7 +131,7 @@ impl Client {
     }
     pub(crate) async fn accept_authorized(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
-        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.clock.unix_seconds()?+300});
         ensure!(self.call(Method::POST, "", Some(request)).await?.0 == StatusCode::ACCEPTED);
         ensure!(
             self.call(
@@ -147,8 +156,7 @@ impl Client {
         )?;
         let mut launch = owner.startup()?.commit();
         launch.stage_deferred_task_with_token(
-            self.app
-                .execution
+            self.execution
                 .clone()
                 .registration(signals.execution())
                 .critical(),
@@ -159,16 +167,126 @@ impl Client {
 }
 pub(crate) async fn ordinary(
     command_clock: rss_device_command_postgres::CommandClock,
-) -> anyhow::Result<(crate::windows::test_support::Host, Client)> {
-    let host = crate::windows::test_support::Host::with_agent(None, command_clock).await?;
-    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    let credential =
-        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 91);
-    crate::device::test_support::bind(&host.app.devices, &proof, &credential, case_device(), 0)
-        .await?;
-    let client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    client.known_windows_capability(case_device()).await?;
-    Ok((host, client))
+) -> anyhow::Result<(crate::test_support::authority::Authority, Client)> {
+    use crate::test_support::runtime::Resources;
+    let (resources, (mut authority, client)) = Resources::build(move |resources| Box::pin(async move {
+        let config = crate::test_support::identity::config(case_tenant())?;
+        let mut authority = crate::test_support::authority::Authority::open().await?;
+        resources.extend(std::mem::take(&mut authority.resources));
+        let tenant = authority.identity.tenant;
+        let protection = config.native_protector()?;
+        let content = None;
+        let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+                    let built = async {
+                    let audit_store = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+                    let task_signing_audit = authority.audit.clone();
+                    let (outbox, store, reconcile) = crate::execution_assembly::open_storage(runtime.clone(), config.execution.database.options()?, tenant, &protection, command_clock).await?;
+                    let channels = Arc::new(crate::channel_status::Channels::new(&config));
+                    let signer = None;
+                    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant));
+        let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
+            Arc::new(
+                rss_mdm_flow_service::planning::execution_source::ExecutionSource {
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                        audit_store.clone(),
+                    )),
+                    mdm_software_enabled: config.software_distribution.mdm_enabled,
+                },
+            );
+        let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
+            Arc::new(rss_mdm_agent_channel::Bindings);
+        let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        });
+        let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
+            rss_mdm_software_service::catalog::Reader::new(tenant),
+            std::collections::BTreeMap::<String, Arc<rss_mdm_software_service::publication::PublicationService>>::new()
+                .into_iter()
+                .map(|(name, service)| (name, Arc::new(service.exports())))
+                .collect(),
+        ));
+        let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
+            rss_mdm_execution_service::InputDependencies {
+                software_distribution: config.software_distribution,
+                product_origin: config.product_origin.clone(),
+                recovery_enabled: config.recovery_credentials.is_some(),
+                protection: protection.clone(),
+                software,
+                bootstrap: None,
+                enrollment_entries: config.enrollment_entries.clone(),
+                runtime: runtime.clone(),
+                tenant,
+                content: content.clone(),
+                signing_enabled: signer.is_some(),
+                agent_installation: channels.clone(),
+            },
+        ));
+        let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
+            rss_mdm_execution_service::queries::Dependencies {
+                source: source.clone(),
+                protection: protection.clone(),
+                agent_store: agent_store.clone(),
+                apple_results: apple_store.clone(),
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                runtime: runtime.clone(),
+                tenant,
+                inputs: inputs.clone(),
+                signed: signer.is_some(),
+                content_available: content.is_some(),
+            },
+        ));
+        let service = Arc::new(rss_mdm_execution_service::ExecutionService::new(
+            rss_mdm_execution_service::Dependencies {
+                recovery_credentials: None,
+                sessions: sessions.clone(),
+                source,
+                protection: protection.clone(),
+                inputs: inputs.clone(),
+                agent_store,
+                apple_profiles: apple_store.clone(),
+                apple_push: apple_store.clone(),
+                apple_collections: apple_store.clone(),
+                apple_results: apple_store.clone(),
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                audit_store,
+                task_signing_audit,
+                runtime: runtime.clone(),
+                outbox,
+                store,
+                reconcile,
+                tenant,
+                instance: config.identity.instance_id.clone(),
+                content: content.clone(),
+                signer,
+            },
+        ));
+
+                    Ok::<_, anyhow::Error>((service, queries, sessions))
+                    }.await;
+                    let (service, queries, sessions) = match built {
+                        Ok(value) => value,
+                        Err(error) => { runtime.close().await; return Err(error); }
+                    };
+                    resources.resource(rss_mdm_execution_service::Resource(service.clone()));
+
+        let cursor = rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?;
+        let router = authority.router(Router::new().nest("/api/v1", rss_mdm_management_http::execution::http::routes(queries, cursor)
+            .with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState { execution: service.clone(), windows: true, apple: false })).into_axum()).merge(authority.authorization()))?;
+        let devices = crate::device::DeviceService::new(authority.registration.clone(), tenant.to_string(), authority.audit.clone());
+        let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+        let credential = crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 91);
+        crate::device::test_support::bind(&devices, &proof, &credential, case_device(), 0).await?;
+        let client = Client {
+            router, browser: authority.browser("admin")?, execution: service, execution_runtime: runtime,
+            audit_store: authority.audit.clone(), sessions, tenant, clock: Arc::new(crate::clock::SystemClock), protection,
+            operation: Uuid::new_v4(), rule: Uuid::new_v4(), rule_revision: 0,
+        };
+        client.known_windows_capability(case_device()).await?;
+        Ok((authority, client))
+    })).await?;
+    authority.resources = resources;
+    Ok((authority, client))
 }
 #[cfg(feature = "integration")]
 #[tokio::test]

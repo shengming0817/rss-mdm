@@ -125,6 +125,9 @@ pub(crate) fn policy_definition(resource: Uuid, scope: Uuid) -> Value {
     json!({"scope":scope,"action": {"resource": {"id":resource,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"kind":"execution","parameters":{},"runLifetimeSeconds":300}})
 }
 pub(crate) struct Fixture {
+    pub(crate) authority: authority::Authority,
+    pub(crate) enrollment: Arc<rss_mdm_registration_service::agent::Service>,
+    pub(crate) command_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) resources: super::runtime::Resources,
     pub(crate) base: Value,
     pub(crate) builtin_collections: Vec<Value>,
@@ -163,35 +166,163 @@ impl Fixture {
                             .unwrap();
                     // Store startup recovery and fixture uploads share the content directory.
                     let content_setup = super::software::content_setup_guard().await?;
-                    let access = database(&base).await?;
-                    let audit = access
-                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                        .await?;
-                    #[cfg(feature = "integration")]
-                    let enterprise_identity=if !base["identity"]["enterprise"].is_null() {
-                        let config=serde_json::from_value(base.clone())?;
-                        Some(crate::identity::Identity::for_oidc_fixture(&config,Arc::new(crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?),Default::default(),|r|resources.acquire(r)).await?)
-                    }else{None};
-                    #[cfg(not(feature = "integration"))]
-                    let enterprise_identity=None;
-                    let (router, execution, plan_runtime, planning, application_resources) =
-                        crate::api::application_fixture(
-                            serde_json::from_value(base.clone())?,
-                            Arc::new(crate::clock::SystemClock),
-                            monotonic(),
-                            access,
-                            enterprise_identity,
-                            audit,
-                        )
-                        .await
-                        .map_err(|error| {
-                            anyhow::anyhow!("application fixture rejected: {error:?}")
-                        })?;
-                    resources.extend(application_resources);
+                    let config: Config = serde_json::from_value(base.clone())?;
+                    let mut authority = authority::Authority::from_config(base.clone()).await?;
+                    resources.extend(std::mem::take(&mut authority.resources));
+                    let tenant = authority.identity.tenant;
+                    let protection = config.native_protector()?;
+                    let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
+                    if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+                    let plan_runtime = crate::planning::test_support::runtime(tenant).await;
+                    resources.resource(SourceResource(plan_runtime.clone()));
+                    let cursor_key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+                    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+                    let plan_audit = Arc::new(authority.audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
+                    let clock = Arc::new(crate::clock::SystemClock);
+                    let planning = Arc::new(rss_mdm_flow_service::planning::Planning::new(
+                        plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone(), &cursor_key,
+                        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone())),
+                    ).await?);
+                    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+                    let built = async {
+                    let audit_store = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+                    let task_signing_audit = authority.audit.clone();
+                    let (outbox, store, reconcile) = crate::execution_assembly::open_storage(runtime.clone(), config.execution.database.options()?, tenant, &protection, rss_device_command_postgres::CommandClock::Postgres).await?;
+                    let channels = Arc::new(crate::channel_status::Channels::new(&config));
+                    let signer = crate::task_signing::prepare(config.task_signing.as_ref(), &config.access_database, tenant, &protection, &channels).await?.map(|loaded| Arc::new(loaded.task));
+                    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant));
+        let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
+            Arc::new(
+                rss_mdm_flow_service::planning::execution_source::ExecutionSource {
+                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                        audit_store.clone(),
+                    )),
+                    mdm_software_enabled: config.software_distribution.mdm_enabled,
+                },
+            );
+        let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
+            Arc::new(rss_mdm_agent_channel::Bindings);
+        let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
+            protection: protection.clone(),
+        });
+        let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
+            rss_mdm_software_service::catalog::Reader::new(tenant),
+            std::collections::BTreeMap::<String, Arc<rss_mdm_software_service::publication::PublicationService>>::new()
+                .into_iter()
+                .map(|(name, service)| (name, Arc::new(service.exports())))
+                .collect(),
+        ));
+        let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
+            rss_mdm_execution_service::InputDependencies {
+                software_distribution: config.software_distribution,
+                product_origin: config.product_origin.clone(),
+                recovery_enabled: config.recovery_credentials.is_some(),
+                protection: protection.clone(),
+                software,
+                bootstrap: None,
+                enrollment_entries: config.enrollment_entries.clone(),
+                runtime: runtime.clone(),
+                tenant,
+                content: content.clone(),
+                signing_enabled: signer.is_some(),
+                agent_installation: channels.clone(),
+            },
+        ));
+        let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
+            rss_mdm_execution_service::queries::Dependencies {
+                source: source.clone(),
+                protection: protection.clone(),
+                agent_store: agent_store.clone(),
+                apple_results: apple_store.clone(),
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                runtime: runtime.clone(),
+                tenant,
+                inputs: inputs.clone(),
+                signed: signer.is_some(),
+                content_available: content.is_some(),
+            },
+        ));
+        let service = Arc::new(rss_mdm_execution_service::ExecutionService::new(
+            rss_mdm_execution_service::Dependencies {
+                recovery_credentials: config
+                    .recovery_credentials
+                    .as_ref()
+                    .map(crate::recovery_credentials::Config::open)
+                    .transpose()?,
+                sessions,
+                source,
+                protection: protection.clone(),
+                inputs: inputs.clone(),
+                agent_store,
+                apple_profiles: apple_store.clone(),
+                apple_push: apple_store.clone(),
+                apple_collections: apple_store.clone(),
+                apple_results: apple_store.clone(),
+                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+                audit_store,
+                task_signing_audit,
+                runtime: runtime.clone(),
+                outbox,
+                store,
+                reconcile,
+                tenant,
+                instance: config.identity.instance_id.clone(),
+                content: content.clone(),
+                signer,
+            },
+        ));
+
+                    Ok::<_, anyhow::Error>((service, queries, inputs))
+                    }.await;
+                    let (service, queries, inputs) = match built {
+                        Ok(value) => value,
+                        Err(error) => { runtime.close().await; return Err(error); }
+                    };
+                    resources.resource(rss_mdm_execution_service::Resource(service.clone()));
+                    authority.identity.enterprise_platform.bind(service.clone())?;
+                    let pki = config.agent_pki.load(&config.identity.instance_id, authority.audit.clone(), clock.clone(), crate::device_pki::providers(&config.device_pki)?, None)?.ok_or_else(|| anyhow::anyhow!("Agent PKI missing"))?;
+                    let access_audit = Arc::new(authority.audit.on_runtime(authority.identity.runtime.clone(), tenant, &budget.control()).await?);
+                    let enrollment = application_service(access_audit, &pki, authority.registration.clone(), authority.audit.clone(), service.clone())?;
+                    let agent_store = Arc::new(rss_mdm_agent_channel::Store::from_pool(authority.pool.clone()));
+                    let native = rss_mdm_agent_channel::task_router(Arc::new(crate::agent::TaskState {
+                        access: agent_store, enrollment: enrollment.clone(), execution: service.clone(),
+                        identity: Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant)),
+                        authorization: authority.authorization.clone(),
+                    }), rss_mdm_agent_channel::boundary::Envelope {
+                        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)),
+                        host: "mdm.example.test:9445".into(), clock: monotonic(), audit_store: authority.audit.clone(), tenant: tenant.to_string(),
+                    });
+                    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+                        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
+                        authorization: authority.authorization.clone(), catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+                        runtime: plan_runtime.clone(), audit_store: plan_audit.clone(), tenant, content: content.clone(),
+                        clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+                    });
+        let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?);
+        let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
+            runtime: plan_runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key)),
+            audit: authority.audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(plan_runtime.clone(), tenant, authority.audit.clone()),
+            resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
+            imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
+                transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
+            },
+        });
+                    let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
+                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), plan_audit, tenant, planning.policy_store.clone(), inputs.clone()));
+                    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+                    let routes = Router::new().nest("/api/v1",
+                        rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum()
+                        .merge(rss_mdm_management_http::planning::policies::http::routes(queries.clone()).with_state(policies).into_axum())
+                        .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() })).into_axum())
+                        .merge(rss_mdm_management_http::software_catalog::routes().with_state(software).into_axum())
+                        .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum())
+                        .merge(rss_mdm_management_http::execution::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState { execution: service.clone(), apple: false, windows: false })).into_axum()),
+                    ).merge(authority.authorization()).merge(authority.enrollment());
+                    let router = authority.router_with_public(routes, Router::new().nest("/api/v1/agent/runtime", native.into_axum()))?;
                     drop(content_setup);
-                    let router = router.layer(axum::Extension(
-                        rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
-                    ));
                     let author = crate::test_support::authority::Authority::prepared_browser("other")?;
                     let author_id = prepared_subject(&author)?;
                     let mut grants = crate::test_support::identity::device_grants(
@@ -239,9 +370,12 @@ impl Fixture {
                         builtin_collections: Vec::new(),
                         base,
                         router,
-                        queries: execution.queries,
-                        content: execution.content,
-                        execution: execution.service,
+                        queries,
+                        content,
+                        execution: service,
+                        authority,
+                        enrollment,
+                        command_runtime: runtime,
                         plan_runtime,
                         planning,
                         author,
@@ -262,7 +396,7 @@ impl Fixture {
     }
     pub(crate) async fn register_profile(&mut self, capabilities: Value) -> Result<Value> {
         let old_device = case_device_id();
-        let registration = crate::test_support::agent::seed_profile(&self.base, self.execution.clone(),
+        let registration = crate::test_support::agent::seed_service(&self.enrollment,
             case_credential(), old_device, json!({"capabilities":capabilities,"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
         for grant in &mut self.grants {
             if let crate::authorization::Scope::Device { id } = &mut grant.scope

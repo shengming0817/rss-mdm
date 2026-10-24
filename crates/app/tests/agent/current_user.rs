@@ -1,6 +1,15 @@
 //! Device mTLS and the existing enterprise session jointly bind the current user.
 use crate::test_support::{agent::*, agent_execution::Fixture, http::Browser, runtime::*, *};
 use anyhow::Context;
+async fn fixture() -> Result<Fixture> {
+    let mut f = Fixture::new().await?;
+    let tenant = f.authority.identity.tenant;
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(f.authority.audit.clone(), tenant, &[7; 32])?);
+    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(f.authority.identity.authority.clone(), tenant));
+    let routes = rss_mdm_management_http::device_views::routes(sessions, f.authority.identity.authority.clone(), None).with_state(associations).into_axum();
+    f.router = f.router.merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    Ok(f)
+}
 const CURRENT: &str = "/api/v1/agent/runtime/current-user";
 async fn call(
     f: &Fixture,
@@ -65,7 +74,7 @@ async fn owner(f: &mut Fixture, change: Option<Value>) -> Result<Value> {
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: real identity, device authority, atomic owner initialization and CAS"]
 async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -124,7 +133,7 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: directory people authorization, session revocation and device generation/credential fences"]
 async fn directory_people_are_verified_and_authorized_before_search() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let registered=f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -206,7 +215,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
 #[ignore = "MODULE=agent.current_user: Identity management can take product authorization while directory rechecks a session"]
 async fn directory_releases_product_locks_before_identity_recheck() -> Result<()> {
     use sqlx::{Connection, Executor, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -262,7 +271,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
 #[ignore = "MODULE=agent.current_user: GET releases device locks for logout while Identity waits, then rejects its stale binding"]
 async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Result<()> {
     use sqlx::{Connection, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;

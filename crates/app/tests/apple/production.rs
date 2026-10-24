@@ -36,7 +36,7 @@ impl Fixture {
         ensure!(reply.0 == StatusCode::OK);
         peer.token().await?;
         self.native_context().await?;
-        self.grant_native_actions(&["device_control"]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
         let operation = self.create_restart().await?;
         let participant = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
         let mut config = crate::test_support::identity::config(case_tenant())?;

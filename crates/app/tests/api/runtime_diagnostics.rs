@@ -79,7 +79,7 @@ impl Fixture {
     async fn open() -> Result<Self> {
         let authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
-        let inventory = agent_runtime(&authority.base).await?;
+        let inventory = agent_runtime(&authority).await?;
         let mut resources = Vec::new();
         let flow = config
             .flow

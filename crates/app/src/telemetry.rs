@@ -158,17 +158,17 @@ impl Config {
     }
     pub(crate) async fn open(
         &self,
-        flow: &Arc<crate::flow::Flow>,
+        planning: Arc<rss_mdm_flow_service::planning::Planning>,
         execution: Arc<rss_mdm_execution_service::ExecutionService>,
     ) -> Result<Arc<Service>, Error> {
-        let tenant = flow.planning.tenant;
+        let tenant = planning.tenant;
         let backend = self.open_backend(tenant).await?;
         let admitted = async {
             let binding =
                 tokio::time::timeout(Duration::from_secs(6), self.configuration_binding())
                     .await
                     .map_err(|_| unavailable())??;
-            rss_mdm_telemetry_service::admit_configuration(&flow.runtime, tenant, binding)
+            rss_mdm_telemetry_service::admit_configuration(&planning.runtime, tenant, binding)
                 .await
                 .map_err(|_| invalid())
         }
@@ -181,8 +181,8 @@ impl Config {
         }
         match Service::new(
             tenant,
-            flow.runtime.clone(),
-            flow.planning.clone(),
+            planning.runtime.clone(),
+            planning,
             backend,
             execution,
             self.ingress.clone(),

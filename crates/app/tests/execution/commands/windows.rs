@@ -46,7 +46,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let _peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     // IDs belong to their original owners; equal IDs must not lose either kind.
     client.operation = id;
     client.known_windows_capability(case_device()).await?;
@@ -133,9 +133,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let revision_sql = "SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=current_setting('rss.tenant_id')::uuid),0)";
     let before = crate::test_support::process::pg(revision_sql)?;
     let rejected = Uuid::new_v4();
-    client
-        .app
-        .execution
+    client.execution
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
     ensure!(
@@ -192,7 +190,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .ok_or_else(|| anyhow::anyhow!("mixed continuation"))?;
     let continuation = format!("{selected}&cursor={cursor}");
     let audit = RequestAudit::new(case_tenant().into(), "management_read");
-    client.app.execution.recover_operation(id, &audit).await?;
+    client.execution.recover_operation(id, &audit).await?;
     audit.finalize(None);
     ensure!(
         fixture

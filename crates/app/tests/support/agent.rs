@@ -185,38 +185,6 @@ pub(crate) fn csr() -> Result<String> {
         std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?).join("agent.der"),
     )?))
 }
-/// Seed current credentials while preserving certificate, TLS, and request verification.
-pub(crate) async fn seed_profile(
-    base: &Value,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    label: &str,
-    device: &str,
-    profile: Value,
-) -> Result<Value> {
-    let config: crate::agent_pki::Config = serde_json::from_value(base["agent_pki"].clone())?;
-    let (pool, runtime, audit) = crate::audit_test_support::request_store().await?;
-    let access = Arc::new(rss_mdm_registration_service::Store::from_pool(pool.clone(), Arc::new(crate::registration_lifecycle::Bridge)));
-    let result = async {
-        let pki = config
-            .load(
-                base["identity"]["instance_id"].as_str().unwrap(),
-                audit.clone(),
-                Arc::new(crate::clock::SystemClock),
-                crate::device_pki::providers(&serde_json::from_value::<
-                    Vec<crate::device_pki::Provider>,
-                >(base["device_pki"].clone())?)?,
-                None,
-            )?
-            .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
-        let service = application_service(audit.clone(), &pki, access, audit, execution)?;
-        seed_service(&service, label, device, profile).await
-    }
-    .await;
-    runtime.close().await;
-    pool.close().await;
-    result
-}
-
 pub(crate) async fn seed_service(
     service: &Service,
     label: &str,
@@ -360,9 +328,10 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
         registration,
     })
 }
-pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
+pub(crate) async fn router(fixture: &mut authority::Authority) -> Result<Router> {
     let service = service(fixture).await?;
-    let runtime = agent_runtime(&fixture.base).await?;
+    let runtime = agent_runtime(fixture).await?;
+    fixture.resources.resource(InventoryFixtureResource(runtime.clone()));
     let envelope = rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: "mdm.example.test:9445".into(),
@@ -549,18 +518,12 @@ pub(crate) async fn wait_agent_status(
 }
 
 pub(crate) async fn agent_runtime(
-    config: &Value,
+    authority: &authority::Authority,
 ) -> Result<Arc<crate::inventory_runtime::InventoryRuntime>> {
-    let access = database(config).await?;
-    let config: Config = serde_json::from_value(config.clone())?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.inventory(),
-        rss_request_context::TenantId::parse(case_tenant())?,
-        monotonic(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .await?)
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone())),
+        authority.identity.tenant, monotonic(), authority.audit.clone(),
+    ).await?)
 }

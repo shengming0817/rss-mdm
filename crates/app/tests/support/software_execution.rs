@@ -173,6 +173,7 @@ pub(crate) enum Platform {
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     pub(crate) resources: super::runtime::Resources,
+    pub(crate) enrollment: Arc<rss_mdm_registration_service::agent::Service>,
     platform: Platform,
     pub(crate) source_snapshot: Value,
     pub(crate) dependency: Uuid,
@@ -332,26 +333,10 @@ impl Fixture {
         base: Value,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
-        let setup_guard = super::software::content_setup_guard().await?;
-        let access = database(&base).await?;
-        let audit = access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?;
-        let (router, execution, _, planning, application_resources) = crate::api::application_fixture(
-            serde_json::from_value(base.clone())?,
-            Arc::new(crate::clock::SystemClock),
-            monotonic(),
-            access,
-            None,
-            audit,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("software fixture application: {e:?}"))?;
-        resources.extend(application_resources);
-        drop(setup_guard);
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
+        let mut agent = super::agent_execution::Fixture::from_config(base.clone()).await?;
+        resources.extend(std::mem::take(&mut agent.resources));
+        let router = agent.router;
+        let planning = agent.planning;
         let author = crate::test_support::authority::Authority::prepared_browser("other")?;
         let subject = prepared_subject(&author)?;
         let mut grants = crate::test_support::identity::device_grants(
@@ -394,7 +379,7 @@ impl Fixture {
                 crate::test_support::runtime::credential("windows-software"),
             ),
         };
-        let registration=crate::test_support::agent::seed_profile(&base,execution.service.clone(),&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
+        let registration=crate::test_support::agent::seed_service(&agent.enrollment,&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
         let device = registration["deviceId"].as_str().unwrap();
         let scope = prepared_scope(&planning, &[device])
             .await
@@ -443,9 +428,10 @@ impl Fixture {
             dependency,
             dependency_digest: Value::Null,
             base,
-            queries: execution.queries,
-            content: execution.content,
-            execution: execution.service,
+            enrollment: agent.enrollment,
+            queries: agent.queries,
+            content: agent.content,
+            execution: agent.execution,
             router,
             author,
             resource,

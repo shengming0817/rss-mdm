@@ -11,23 +11,17 @@ use rss_mdm_http_contract::{
 };
 use std::sync::Arc;
 
-pub fn routes(
+pub fn previews(
     queries: Arc<rss_mdm_execution_service::queries::Queries>,
     telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
-) -> Router<Arc<Policies>> {
+) -> Router {
+    Router::new().route("/policies/previews", post(super::http_preview::preview)
+        .owned(&contracts::POLICIES, &[RouteOperation::Action]))
+        .with_state(Arc::new(super::http_preview::StateServices { queries, telemetry }))
+}
+
+pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<Policies>> {
     Router::new()
-        .merge(
-            Router::new()
-                .route(
-                    "/policies/previews",
-                    post(super::http_preview::preview)
-                        .owned(&contracts::POLICIES, &[RouteOperation::Action]),
-                )
-                .with_state(Arc::new(super::http_preview::StateServices {
-                    queries: queries.clone(),
-                    telemetry,
-                })),
-        )
         .merge(
             Router::new()
                 .route(

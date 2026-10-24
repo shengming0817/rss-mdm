@@ -196,9 +196,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
                 .with_state(execution),
         )
         .merge(
-            crate::planning::policies::http::routes(state.queries.clone(), state.telemetry.clone())
+            crate::planning::policies::http::routes(state.queries.clone())
                 .with_state(policies.clone()),
         )
+        .merge(crate::planning::policies::http::previews(state.queries.clone(), state.telemetry.clone()))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))

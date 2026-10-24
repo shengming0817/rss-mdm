@@ -168,7 +168,7 @@ pub(crate) async fn application_fixture(
             .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         let telemetry = match &compiled.config.telemetry {
             Some(config) => {
-                let service = config.open(&planning, execution.service.clone()).await?;
+                let service = config.open(planning.planning.clone(), execution.service.clone()).await?;
                 resources.resource(crate::telemetry::Resource(service.clone()));
                 resources.resource(crate::telemetry::fixture_task(
                     service.clone(),

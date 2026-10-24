@@ -238,6 +238,9 @@ def run_normal(input_file, output):
                 require(all(isinstance(value,str) and len(value)<=2000 for value in diagnostic.values()),'invalid diagnostic')
                 # Do not persist dynamic cookies/callback values from a failed browser.
                 secrets=private+raw.get('privateValues',[])
+                scenarios=raw.get('scenarios',[])
+                require(isinstance(scenarios,list) and len(scenarios)<=64,'invalid scenario failures')
+                failure['scenarios']=safe_evidence(scenarios,secrets)
                 for key,value in diagnostic.items():
                     try:failure[key]=safe_evidence(value,secrets)
                     except RuntimeError:failure[key]='diagnostic-withheld'

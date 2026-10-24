@@ -518,7 +518,7 @@ impl Fixture {
         pg.close().await?;
         Ok(())
     }
-    async fn grant_native_actions(&self, extra: &[&str]) -> Result<()> {
+    fn native_grants(extra: &[&str]) -> Result<Vec<crate::authorization::Grant>> {
         let mut operations = vec![
             "enrollment",
             "credentials",
@@ -529,12 +529,7 @@ impl Fixture {
             "operation_cancel",
         ];
         operations.extend_from_slice(extra);
-        crate::test_support::identity::change_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            crate::test_support::identity::device_grants(Some(case_device()), &operations)?,
-        )
-        .await
+        crate::test_support::identity::device_grants(Some(case_device()), &operations)
     }
     async fn enrollment(&mut self) -> Result<(Uuid, Uuid, String)> {
         self.enrollment_source(false).await

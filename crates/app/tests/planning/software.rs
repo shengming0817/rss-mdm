@@ -17,7 +17,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
     let first_device = case::name("rollout-first");
     let first_credential = crate::test_support::runtime::credential("rollout-first");
-    crate::test_support::agent::seed_profile(&fixture.base, fixture.execution.clone(), &first_credential, first_device,
+    crate::test_support::agent::seed_service(&fixture.enrollment, &first_credential, first_device,
         json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
     let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
     let root_scope = prepared_scope(&fixture.planning, &[first_device, crate::test_support::software_execution::case_device()]).await?;

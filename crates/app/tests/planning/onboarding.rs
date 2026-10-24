@@ -65,6 +65,16 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
 async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_identity()
 -> Result<()> {
     let mut f = fixture().await?;
+    let runtime = agent_runtime(&f.authority).await?;
+    f.resources.resource(InventoryFixtureResource(runtime.clone()));
+    let reports = rss_mdm_agent_channel::router(Arc::new(crate::agent::HttpState {
+        content: None, enrollment: f.enrollment.clone(), audit_store: f.authority.audit.clone(),
+        access: Arc::new(rss_mdm_agent_channel::Store::from_pool(f.authority.pool.clone())), inventory: runtime, telemetry: None,
+    }), rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test:9445".into(),
+        clock: monotonic(), audit_store: f.authority.audit.clone(), tenant: case_tenant().into(),
+    });
+    f.router = f.router.merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let id = publish(&mut f).await?;
@@ -162,7 +172,8 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
             publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
             let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-            report(&f, 0, "unenrolled").await?;
+            inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
             let task = claim(&f.router).await?;
             let grants = f
                 .grants
@@ -199,7 +210,8 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             let id = publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
             let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-            report(&f, 0, "unenrolled").await?;
+            inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
             let task = claim(&f.router).await?;
             task_event(&f.router, &task, json!({"kind":"received"})).await?;
             task_event(&f.router, &task, json!({"kind":"start"})).await?;
@@ -275,7 +287,8 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
     resources.finish(async {
         let automation = start_automation(&f.base).await?;
         let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-        report(&f, 0, "unenrolled").await?;
+        inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
         let directory = "/api/v1/agent/runtime/self-service?source=human";
         let invoke = "/api/v1/agent/runtime/self-service/invocations";
         ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
@@ -389,7 +402,8 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         identity::independent_source_read(case_tenant(), &f.author_id, management).await?;
         let automation = start_automation(&f.base).await?;
         let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-        report(&f, 0, "unenrolled").await?;
+        inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
         let id = Uuid::new_v4();
         let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
             "scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},

@@ -41,7 +41,7 @@ async fn expiry_worker_and_fatal_storage_diagnostic() -> anyhow::Result<()> {
     ))
     .await?;
     client.expiry_recovery(clock).await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 #[cfg(feature = "integration")]
@@ -68,8 +68,8 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let config = crate::test_support::identity::config(case_tenant())?;
-        let audit = self.app.audit_store.clone();
-        let identity = self.app.identity.clone();
+        let audit = self.audit_store.clone();
+        let sessions = self.sessions.clone();
         let restart_clock = clock.clone();
         let (resources, restarted) =
             crate::test_support::runtime::Resources::build(move |resources| {
@@ -90,12 +90,7 @@ impl Client {
                         content,
                         std::collections::BTreeMap::new(),
                         rss_device_command_postgres::CommandClock::Controlled(restart_clock),
-                        Arc::new(
-                            rss_mdm_authorization_service::session::SessionAuthority::new(
-                                identity.authority.clone(),
-                                identity.tenant,
-                            ),
-                        ),
+                        sessions,
                     )
                     .await?;
                     resources.resource(rss_mdm_execution_service::Resource(
@@ -131,10 +126,10 @@ impl Client {
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
         })?;
-        let scope = recovery_scope(self.app.identity.tenant);
+        let scope = recovery_scope(self.tenant);
         let mut fence = pg.begin().await?;
         crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
-        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.app.identity.tenant).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.tenant).await?;
         let release = async {
             tokio::time::timeout(Duration::from_secs(1),async {
                 loop {
@@ -147,7 +142,7 @@ impl Client {
                 // Exercise the real producer wake while the worker is waiting for its
                 // earlier business fence. The old protect-before-watermark path times out.
                 sqlx::query("SET LOCAL lock_timeout='250ms'").execute(&mut *fence).await?;
-                let target = rss_mdm_execution_service::target(self.app.identity.tenant,case_device());
+                let target = rss_mdm_execution_service::target(self.tenant,case_device());
                 sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
                     .bind(case_tenant()).bind(target.scope().reconciler()).bind(target.entity())
                     .execute(&mut *fence).await?;
@@ -178,11 +173,11 @@ impl Client {
         );
         // Empty discovery defers structural checks. Make an actual operation due
         // before corrupting the catalog, so the worker must reject its claim.
-        let target = rss_mdm_execution_service::target(self.app.identity.tenant, case_device());
+        let target = rss_mdm_execution_service::target(self.tenant, case_device());
         restarted
             .runtime
             .local_tx_with_context(
-                self.app.identity.tenant,
+                self.tenant,
                 deadline(),
                 target,
                 |target, tx| {

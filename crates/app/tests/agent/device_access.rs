@@ -11,6 +11,26 @@ use anyhow::Context;
 use ring::signature::KeyPair;
 use rss_mdm_agent_wire::runtime as wire;
 
+async fn fixture() -> Result<Fixture> {
+    let mut f = Fixture::new().await?;
+    f.mount_access().await?;
+    Ok(f)
+}
+impl Fixture {
+    pub(crate) async fn mount_access(&mut self) -> Result<()> {
+    let f = self;
+    let config: Config = serde_json::from_value(f.base.clone())?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let access_audit = Arc::new(f.authority.audit.on_runtime(f.authority.identity.runtime.clone(), f.authority.identity.tenant, &budget.control()).await?);
+    let recovery = config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?.map(|p| Arc::new(rss_mdm_recovery_credentials::Credentials::new(f.authority.pool.clone(), f.authority.audit.clone(), p.keys.clone(), Some(access_audit), f.execution.clone())));
+    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+    let routes = rss_mdm_management_http::device_access::routes(rss_mdm_query::cursor::CursorCodec::new(&key)?, f.authority.authorization.clone(), recovery.clone(), Some(f.enrollment.clone()), f.execution.clone(), f.authority.identity.browser()).into_axum()
+        .merge(rss_mdm_management_http::recovery_credentials::routes(recovery, rss_mdm_query::cursor::CursorCodec::new(&key)?).into_axum());
+    f.router = f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    Ok(())
+}
+}
+
 fn context(revision: u64, session: Uuid, account: Uuid) -> Value {
     let mut c = crate::test_support::software_execution::context(
         crate::test_support::software_execution::Platform::MacOs,
@@ -133,7 +153,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
         json!(["inventory.collect.v1", "device_access.v1"])
     };
     let registration = if windows {
-        seed_profile(&f.base,f.execution.clone(),execution::case_credential(),execution::case_device_id(),
+        seed_service(&f.enrollment,execution::case_credential(),execution::case_device_id(),
             json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64",
                 "executionContext":windows_context()})).await?
     } else {
@@ -193,7 +213,7 @@ async fn event(
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: real HTTP/PG association ceremony, session switch and replay"]
 async fn first_binding_requires_current_device_and_human_then_stays_admin_only() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,_registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
@@ -232,7 +252,7 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: real task delivery, separate applied state, policy invalidation"]
 async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
@@ -275,7 +295,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: administrator creation, pending Secure Token, late result after unlink"]
 async fn administrator_creation_and_late_completion_cannot_revive_unlinked_binding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
@@ -318,7 +338,7 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: expired unstarted renewal, late creation after policy edit, scope-exit cleanup"]
 async fn offline_delivery_and_late_creation_converge_without_recreating_account() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration)=setup(&mut f).await?;
@@ -371,7 +391,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: binding administrator revocation independent of policy publisher"]
 async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
@@ -399,7 +419,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: accepted retirement keeps cleanup polling open with an existing binding"]
 async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration)=setup_profile(&mut f,true).await?;
@@ -547,7 +567,7 @@ async fn windows_withdrawn_setup_settles_only_its_attempt() -> Result<()> {
     windows_setup(false, true).await
 }
 async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,registration) = setup_platform(&mut f,false,true).await?;
@@ -772,7 +792,7 @@ impl Fixture {
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: operation proof concurrency, replay and rollback"]
 async fn step_up_is_atomic_with_receipts_and_concurrent_duplicates() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy, _) = setup(&mut f).await?;
@@ -817,7 +837,7 @@ async fn binding_rollback_releases_session_guard() -> Result<()> {
 
 async fn binding_settlement_serializes_revocation(wrong_nonce: bool) -> Result<()> {
     use sqlx::{Connection, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy, _) = setup(&mut f).await?;

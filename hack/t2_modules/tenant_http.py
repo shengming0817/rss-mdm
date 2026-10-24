@@ -70,12 +70,7 @@ def administrator(fixture):
         require(operator['tenantId'] == management, 'source actor lost')
         stored = sql(f"SELECT request::text FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'")
         require(password not in stored and 'fingerprint' in stored, 'password persisted in receipt request')
-        target_config = deepcopy(config)
-        target_config['identity']['tenant_id'] = tenant
-        target_config['identity']['oidc'] = None
-        target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host',require_ready=False)
-        stack.callback(target_host.close)
-        target_admin = Browser(target_host,config['product_origin'])
+        target_admin = Browser(h.host,config['product_origin'])
         login(target_admin,tenant,'tenant-admin-one')
         status, effective = target_admin.call('GET','/api/v1/authorization')
         permissions = {g['operation'] for g in effective.get('grants',[])}
@@ -161,12 +156,14 @@ def audit_backpressure(fixture):
         rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=h.business,principalId=h.business_actor['principal'])),grants=[dict(operation='webhook_write',scope=dict(kind='tenant')),dict(operation='inventory_read',scope=dict(kind='all_devices'))])
         encoded=json.dumps(rule).replace("'","''")
         h.sql(f"SET rss.tenant_id='{h.business}'; INSERT INTO mdm_access.authorization_rules VALUES('{h.business}','{INSTANCE}','{uuid.uuid4()}',1,'{encoded}'::jsonb)")
+        h.host.close()
         _audit_backpressure(h.config,h.admin,h.normal,h.management,h.business,h.password,h.sql,h.builds,h.root,h.stack,fixture.owner,fixture.database)
 
 
 def lost_commit_ack(fixture):
     from t2_modules.management_tenant import management_host
     with management_host(fixture) as h:
+        h.host.close()
         _lost_commit_ack(h.config,h.password,h.sql,h.builds,h.root,h.stack,h.admin,h.business)
 
 

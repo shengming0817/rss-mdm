@@ -24,6 +24,7 @@ async function request(page,path,method='GET',body,headers={}){
     const text=await r.text();let value=null;try{value=JSON.parse(text)}catch{}
     return {status:r.status,value,id:r.headers.get('x-request-id')};
   },{path,method,body,headers});
+  for(const cookie of await page.context().cookies())privateValues.push(cookie.value);
   requests.push({stage,origin:new URL(page.url()).origin,method,path:path.split('?')[0],status:result.status,requestId:result.id});
   return result;
 }
@@ -60,18 +61,33 @@ async function keycloak(page,user){
 }
 let admin,member;
 async function closeContexts(){
+  const errors=[];
   for(const context of browser.contexts()){
-    for(const page of context.pages())assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
-    for(const cookie of await context.cookies())privateValues.push(cookie.value);
-    await context.close();
+    try {
+      for(const cookie of await context.cookies())privateValues.push(cookie.value);
+      for(const page of context.pages())assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
+    } catch(error){ errors.push(error); }
+    finally { try { await context.close(); } catch(error){ errors.push(error); } }
   }
+  if(errors.length)throw new AggregateError(errors,errors.map(error=>error.message).join('; '));
 }
 async function localUsers(){
   admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();await login(member,'member',input.memberPassword);
 }
+const failures=[];
+async function scenario(name, action){
+  stage=name;
+  try { await action(); }
+  catch(error){ failures.push({scenario:name,stage,errorClass:error.name,reason:error.message}); }
+  finally {
+    try { await closeContexts(); }
+    catch(error){ failures.push({scenario:name,stage:'cleanup',errorClass:error.name,reason:error.message}); }
+  }
+}
 try{
   browser=await chromium.launch({headless:true,chromiumSandbox:input.mode==='normal'});
+  await scenario('local_ui', async()=>{
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
@@ -81,16 +97,20 @@ try{
   assert(await member.locator(`nav a[href$='/accounts'],nav a[href$='/providers']`).count()===0,'member navigation permissions');
   for(const path of ['/api','/api/not-a-route'])assert((await request(member,path)).status===404,'unknown API became SPA');
   checks.local_ui=true;
+  });
 
-  await closeContexts();
+  await scenario('account_ui', async()=>{
+
   admin=await pageAt();await login(admin,'admin',input.adminPassword);
   stage='account_ui';await admin.goto(origin+`/tenants/${input.tenant}/accounts`);
   await admin.locator('#account-login').fill('ui-created-'+crypto.randomUUID());await admin.locator('#account-password').fill(input.memberPassword);
   const created=admin.waitForResponse(r=>new URL(r.url()).pathname===api+'/accounts'&&r.request().method()==='POST');
   await admin.locator('form').filter({has:admin.locator('#account-login')}).locator('button').click();
   assert((await created).status()===201,'UI account creation');await admin.getByRole('cell',{name:/ui-created/}).waitFor();checks.account_ui=true;
+  });
 
-  await closeContexts();await localUsers();
+  await scenario('inventory_permissions', async()=>{
+await localUsers();
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
   assert((await request(member,'/api/v1/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
@@ -106,8 +126,10 @@ try{
   assert((await request(member,publisher)).status===403,'publisher permission deny');
   assert((await request(admin,publisher)).status===404,'publisher permitted source lookup');
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;
+  });
 
-  await closeContexts();
+  await scenario('session', async()=>{
+
   member=await pageAt();await login(member,'member',input.memberPassword);
   stage='cookie_csrf';const cookie=(await member.context().cookies(origin)).find(c=>c.name==='__Host-identity-session');
   assert(cookie&&cookie.secure&&cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'&&cookie.domain===new URL(origin).hostname,'cookie attributes');
@@ -121,11 +143,13 @@ try{
   stage='refresh';const stale=await cloneSession(member);
   assert((await post(member,api+'/session/refresh')).status===200,'refresh');
   assert((await request(stale,'/api/v1/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
+  });
 
-  if(faults){await closeContexts();await localUsers();stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
-  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;}
+  if(faults) await scenario('restart',async()=>{await localUsers();stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
+  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;});
 
-  await closeContexts();
+  await scenario('isolation', async()=>{
+
   member=await pageAt();await login(member,'member',input.memberPassword);
   const isolated=await pageAt(other);
   stage='isolation';assert((await request(isolated,'/api/v1/authorization')).status===401,'host cookie isolation');
@@ -133,31 +157,44 @@ try{
   assert((await request(member,`/api/v1/identity/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
   assert((await request(member,`/api/v1/identity-host/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
   await replay.context().close();await isolated.context().close();checks.isolation=true;
+  });
 
   for(const [field,key] of [['enabled','account_disabled'],['membership','membership_removed']]){
-    await closeContexts();await localUsers();
+    await scenario(key,async()=>{
+    await localUsers();
     stage=key;const old=await cloneSession(member);
+    let restored=false;
+    try {
     assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:false})).status===200,'disable account/membership');
     assert((await request(member,inventory)).status===401,'disabled new request');
-    assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'restore account/membership');
+    assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'restore account/membership');restored=true;
     if(faults)await restart();assert((await request(old,inventory)).status===401,'revocation resurrected');
     await old.context().close();await member.context().clearCookies();await login(member,'member',input.memberPassword);checks[key]=true;
+    } finally {
+      if(!restored)assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'account cleanup failed');
+    }
+    });
   }
-  await closeContexts();
+  await scenario('logout', async()=>{
+
   member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout';const old=await cloneSession(member);await logoutUI(member);
   assert((await request(old,inventory)).status===401,'logout authority');await old.context().close();checks.logout=true;
-  await closeContexts();
+  });
+  await scenario('logout_all', async()=>{
+
   member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout_all';const second=await pageAt();await login(second,'member',input.memberPassword);
   await logoutUI(member,true);assert((await request(second,inventory)).status===401,'all sessions revoked');await second.context().close();checks.logout_all=true;
-  await closeContexts();
+  });
+  await scenario('enterprise', async()=>{
+
   admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
   const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{subject:{kind:'oidc'},profile:{extensionsClaim:null,maxAgeSeconds:14400},groups:null,departmentSnapshot:null},jit:false};
-  r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
+  let r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'provider create');const provider=r.value.id;
   assert((await post(admin,`${api}/providers/${provider}/enabled`,{expectedVersion:r.value.version,enabled:true})).status===200,'provider enable');
   await member.goto(origin+`/tenants/${input.tenant}/sessions`);
@@ -180,17 +217,20 @@ try{
   assert(r.status===201,'unapproved provider persisted without network access');
   const tested=await post(admin,`${api}/providers/${r.value.id}/test`,{expectedVersion:r.value.version});
   assert(tested.status===200&&tested.value.passed===false&&tested.value.diagnostic.reason==='egress_denied','unapproved private client connected');checks.private_binding=true;
+  });
 
-  let independent,persisted;
   if(faults){
-  await closeContexts();
+  await scenario('idp_down',async()=>{
+  let independent;
   admin=await pageAt();await login(admin,'admin',input.adminPassword);
   stage='idp_down';docker(['stop','--time','10',input.idp]);try { independent=await pageAt();await login(independent,'admin',input.adminPassword);
   assert((await request(independent,api+'/accounts')).status===200,'IdP-independent account management');
   assert((await request(independent,inventory)).status===200,'IdP-independent request');
   const createdLocal=await post(independent,api+'/accounts',{login:'while-idp-down',password:input.memberPassword});assert(createdLocal.status===201,'IdP-independent account write');checks.idp_down=true;
   } finally { docker(['start',input.idp]); }
-  await closeContexts();
+  });
+  await scenario('pg_down',async()=>{
+  let independent,persisted;
   admin=await pageAt();await login(admin,'admin',input.adminPassword);
   independent=await pageAt();await login(independent,'admin',input.adminPassword);
   await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
@@ -207,12 +247,16 @@ try{
   }finally{docker(['unpause',input.pg])}
   await restart();assert((await request(persisted,api+'/session')).status===200,'failed logout lost authoritative session');
   assert((await post(persisted,api+'/session/logout')).status===204,'recovery logout');checks.pg_down=true;
-
+  });
   }
+  await scenario('safe_logs',async()=>{
   stage='safe_logs';for(const value of [input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])assert(!consoleText.join('\n').includes(value),'console secret');
   assert(!consoleText.some(v=>/[?&]code=/.test(v)),'console callback code');
   await closeContexts();
   checks.safe_logs=true;
+  });
+  stage='scenarios';
+  assert(failures.length===0,failures.map(f=>f.scenario+':'+f.stage).join(', '));
   const result={checks,requests,browser:browser.version(),privateValues};
   await browser.close();process.stdout.write(JSON.stringify(result));
  }catch(error){
@@ -221,5 +265,10 @@ try{
   for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret]){
     if(value)reason=reason.split(value).join('[private]');
   }
-  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason}));process.exitCode=1;
+  const scenarios=failures.map(f=>{
+    let reason=f.reason.replace(/https?:\/\/\S+/g,'[url]');
+    for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])if(value)reason=reason.split(value).join('[private]');
+    return {...f,reason};
+  });
+  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason,scenarios,checks}));process.exitCode=1;
 }

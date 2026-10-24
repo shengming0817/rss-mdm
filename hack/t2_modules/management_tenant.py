@@ -252,6 +252,7 @@ def account_lifecycle(fixture):
 
 def assembly_admission(fixture):
     with management_host(fixture) as h:
+        h.host.close()
         for table in ('mdm_audit.receipts','rss_audit.records'):
             h.sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
             try: h.command('serve',h.config,accepted=False,reason='startup.identity: Audit')

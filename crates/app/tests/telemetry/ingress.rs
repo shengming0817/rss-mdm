@@ -8,6 +8,37 @@ use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+async fn fixture(base: Value) -> Result<Fixture> {
+    let config: Config = serde_json::from_value(base.clone())?;
+    let mut f = Fixture::from_config(base).await?;
+    let (resources, mut f) = Resources::build(move |resources| Box::pin(async move {
+    resources.extend(std::mem::take(&mut f.resources));
+    let tenant = f.planning.tenant;
+    let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(f.authority.pool.clone())), tenant, monotonic(), f.authority.audit.clone()).await?;
+    resources.resource(InventoryFixtureResource(inventory.clone()));
+    let telemetry = config.telemetry.as_ref().ok_or_else(|| anyhow::anyhow!("telemetry configuration missing"))?.open(f.planning.clone(), f.execution.clone()).await?;
+    resources.resource(crate::telemetry::Resource(telemetry.clone()));
+    resources.resource(crate::telemetry::fixture_task(telemetry.clone(), f.command_runtime.clone(), inventory.clone(), config.access_options()?, tenant)?);
+    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory.clone(), f.authority.audit.clone(), f.plan_runtime.clone(), tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let routes = rss_mdm_management_http::telemetry::routes(Some(telemetry.clone())).into_axum()
+        .merge(rss_mdm_management_http::planning::policies::http::previews(f.queries.clone(), Some(telemetry.clone())).into_axum())
+        .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })).into_axum());
+    let native = rss_mdm_agent_channel::router(Arc::new(crate::agent::HttpState {
+        content: f.content.clone(), enrollment: f.enrollment.clone(), audit_store: f.authority.audit.clone(),
+        access: Arc::new(rss_mdm_agent_channel::Store::from_pool(f.authority.pool.clone())), inventory, telemetry: Some(telemetry),
+    }), rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)),
+        host: "mdm.example.test:9445".into(), clock: monotonic(), audit_store: f.authority.audit.clone(), tenant: tenant.to_string(),
+    });
+    f.router = f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1", routes))?)
+        .merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
+    Ok(f)
+    })).await?;
+    f.resources = resources;
+    Ok(f)
+}
+
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let restore_seconds: i64 = if expected == "postgres" { 30 } else { 3600 };
     let expected_rows = if projection == r::TelemetryProjection::Current {
@@ -24,7 +55,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
-    let mut f = Fixture::from_config(base.clone()).await?;
+    let mut f = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     let (body,query,receipt_path,other_device,interrupted,gap_evidence)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
@@ -636,7 +667,7 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     // Ordinary installation completes its baseline before the administrator sets up signing.
     base["task_signing"] = Value::Null;
     base["agent_pki"] = json!({"mode":"disabled"});
-    let mut initial = Fixture::from_config(base.clone()).await?;
+    let mut initial = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut initial.resources);
     resources
         .finish(partial_initialization_content(&mut initial))
@@ -662,7 +693,7 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     crate::baseline::reserve_on(&mut tx, &authority).await?;
     tx.commit().await?;
     c.close().await?;
-    let mut f = Fixture::from_config(base.clone()).await?;
+    let mut f = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     let (policy,completed)=resources.finish(async {
         let phase=pg(&format!("SELECT phase||':'||coalesce(blocked,'') FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
@@ -690,7 +721,7 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         pg(&format!("UPDATE mdm_initialization.baselines SET phase='pending',completed=completed-'{key}' WHERE tenant_id='{tenant}'",key=last.key,tenant=case_tenant()))?;
         Ok((policy,completed))
     }).await?;
-    let mut restarted = Fixture::from_config(base).await?;
+    let mut restarted = fixture(base).await?;
     let resources = std::mem::take(&mut restarted.resources);
     resources.finish(async {
         ensure!(pg(&format!("SELECT phase FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?.trim()=="configured");

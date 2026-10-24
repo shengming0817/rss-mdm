@@ -3,7 +3,7 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: binding query fields, stable pagination and authorization/data fencing"]
 async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async{
  let id=enterprise::ready(&mut f).await?;
@@ -50,7 +50,7 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: native discovery has a bounded signed scan and rejects management query aliases"]
 async fn native_discovery_uses_signed_window_continuation() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async{
  let (policy,_)=setup_platform(&mut f,false,true).await?;

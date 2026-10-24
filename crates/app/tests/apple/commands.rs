@@ -5,8 +5,7 @@ use sqlx::Connection;
 #[ignore = "MODULE=apple.commands: closed device controls over real mTLS and PG"]
 async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.grant_native_actions(&["device_control", "device_wipe"])
-        .await?;
+    crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control", "device_wipe"])?).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let path = format!("/api/v1/devices/{}/operations", case_device());
     let unknown=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
@@ -16,8 +15,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     );
     // The prerequisite context is legal preparation; this case owns control admission and wire mapping.
     f.native_context().await?;
-    f.grant_native_actions(&["device_control", "device_wipe"])
-        .await?;
+    crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control", "device_wipe"])?).await?;
     let detail = f
         .browser
         .call(
@@ -161,7 +159,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     f.native_context().await?;
-    f.grant_native_actions(&["security_operate"]).await?;
+    crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["security_operate"])?).await?;
     let detail = f
         .browser
         .call(
@@ -312,7 +310,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     .await?;
     // A live verification command prevents final ciphertext deletion, but purging terminal copies
     // must still commit an audit fact and remove plaintext from both protected input stores.
-    f.grant_native_actions(&["security_operate"]).await?;
+    crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["security_operate"])?).await?;
     let pending = Uuid::new_v4();
     let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED, "profile {accepted:?}");

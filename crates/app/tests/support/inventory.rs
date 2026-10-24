@@ -142,3 +142,22 @@ pub(crate) fn definition_sql(
         "INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{tenant}','{dataset}','{version}','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING"
     ))
 }
+
+/// A projected Agent fact before an enrollment-policy action; report intake has its own owner.
+pub(crate) fn seed_unenrolled(device: &str) -> Result<()> {
+    let device = device.replace('\'', "''");
+    let coordinates: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_array(r.id,s.epoch) FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id='{}' AND r.device='{device}' AND r.channel='agent' AND r.state='active' AND s.source='agent.builtin' AND s.enabled",
+        case_tenant()
+    ))?)?;
+    let registration: Uuid = serde_json::from_value(coordinates[0].clone())?;
+    let epoch: Uuid = serde_json::from_value(coordinates[1].clone())?;
+    let field = rss_mdm_inventory::FieldKey::parse("channel.mdm.enrollment")?;
+    let definition = definition("mdm-enrollment-fixture", "agent.builtin", &[field]);
+    register_definition(&definition)?;
+    let scope = crate::device::scope_dataset(rss_request_context::TenantId::parse(case_tenant())?, registration, "agent.builtin", epoch, definition.dataset())?.encode()?.replace('\'', "''");
+    let coverage = serde_json::to_string(&definition.coverage()?)?.replace('\'', "''");
+    let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String("unenrolled".into()))?;
+    pg(&format!("SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','agent.builtin','{epoch}',0)", tenant=case_tenant()))?;
+    Ok(())
+}

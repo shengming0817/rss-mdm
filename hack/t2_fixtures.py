@@ -64,7 +64,22 @@ class RunFixtures:
         try:
             # The worktree lease makes these known projects exclusively ours.
             # Recover all registered owners, independently of this run's selected fixtures.
+            identity = self.normal.owner.identity
+            prefix = identity + '-t2-gateway'
+            projects = set()
+            for listing in (['ps', '-a'], ['network', 'ls']):
+                values = run(['docker', *listing, '--filter', 'label=rss.mdm.worktree=' + identity,
+                              '--format', '{{.Label "com.docker.compose.project"}}'], capture_output=True, timeout=30).stdout.splitlines()
+                projects.update(value for value in values if value == prefix or value.startswith(prefix + '-'))
+            base = ROOT / 'artifacts/dev-environment'
+            if base.exists():
+                projects.update(Environment(group=path.name).project for path in base.glob('t2-gateway*') if path.is_dir())
+            for project in sorted(projects):
+                group = project.removeprefix(identity + '-')
+                require(group == 't2-gateway' or group.startswith('t2-gateway-'), 'invalid gateway recovery owner')
+                self.gateway_owners[group] = Environment(group=group)
             self.cleanup_environments('prepare-recovery')
+            self.gateway_owners.clear()
         except BaseException:
             self.cert_directory.cleanup()
             self.process_ownership.__exit__(*sys.exc_info())

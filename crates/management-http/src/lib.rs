@@ -65,7 +65,7 @@ pub mod first_use;
 
 pub mod telemetry;
 
-mod device_access;
+pub mod device_access;
 pub mod user_profiles;
 
-mod enterprise_broker;
+pub mod enterprise_broker;

@@ -158,7 +158,7 @@ def tenant_binding(fixture):
         return sql(f"SELECT jsonb_build_object('epoch',(SELECT epoch FROM rss_transactional_messaging.tenant_epoch WHERE tenant_id='{a}'),'settings',(SELECT to_jsonb(s) FROM mdm_access.agent_enrollment_settings s WHERE tenant_id='{a}'))")
     before = snapshot()
     with ExitStack() as stack:
-        hosts, browsers, configurations = [], [], []
+        configurations = []
         for tenant in (a, b):
             config = json.loads(json.dumps(base))
             config['identity']['tenant_id'] = tenant
@@ -172,12 +172,12 @@ def tenant_binding(fixture):
             require(status == 200 and context['tenantId'] == tenant and context['principalId'] == actor['principal'], 'own host lost prepared tenant identity')
             status, rules = browser.call('GET', '/api/v1/authorization/rules')
             require(status == 200 and any(rule.get('value', rule).get('subject', {}).get('user', {}).get('principalId') == actor['principal'] for rule in rules['items']), 'own host cannot read prepared grants')
-            hosts.append(host); browsers.append(browser); configurations.append(config)
-        command('tenant-update', dict(**common, tenant_id=b, expected_revision=1, operation_id=str(uuid.uuid4()), name='正在使用的租户'))
-        for source, target, tenant in [(browsers[0], hosts[1], b), (browsers[1], hosts[0], a)]:
-            foreign = Browser(target, source.origin)
-            foreign.cookie, foreign.csrf = source.cookie, source.csrf
+            foreign = Browser(host, config['product_origin'])
+            foreign.cookie = '__Host-identity-session=' + (root / f'credential-{b if tenant == a else a}-admin').read_text()
             require(foreign.call('GET', f'/api/v1/identity-host/tenants/{tenant}/context')[0] == 401, 'foreign session crossed host tenant')
+            host.close()
+            configurations.append(config)
+        command('tenant-update', dict(**common, tenant_id=b, expected_revision=1, operation_id=str(uuid.uuid4()), name='正在使用的租户'))
         for config in configurations:
             invalid = json.loads(json.dumps(config)); invalid['listen'] = '127.0.0.1:0'
             invalid['identity']['tenant_id'] = str(uuid.uuid4())

@@ -104,7 +104,7 @@ pub(super) fn report(manifest: &Value, active: bool, version: &str) -> Value {
 #[ignore = "MODULE=apple.ddm: coowner publication and logical policy withdrawal"]
 async fn policy_coowners_share_native_publication_without_fabricating_removal() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let resource = Uuid::new_v4();
@@ -324,7 +324,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
 #[ignore = "MODULE=apple.ddm: managed Profile takeover and independent withdrawal proof"]
 async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();

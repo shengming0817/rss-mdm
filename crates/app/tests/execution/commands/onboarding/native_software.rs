@@ -26,7 +26,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     let mut host = crate::windows::test_support::Host::with_mdm_software().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     setup::grants(&client.browser).await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,

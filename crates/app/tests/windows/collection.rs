@@ -96,7 +96,7 @@ async fn template_flow(
     } else {
         None
     };
-    let mut f = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut f = Client::start(host.browser.clone(), &host.app).await?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[
@@ -463,7 +463,7 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
-    f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
+    f = Client::with_browser(host.browser.clone(), &host.app, browser);
     let mut end = packet.clone();
     end.header.message_id += 1;
     end.commands = vec![s::Command::Status(s::Status {

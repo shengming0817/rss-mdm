@@ -61,7 +61,7 @@ impl Fixture {
         launch.finish();
         Ok(owner)
     }
-    pub(super) async fn policy_grants(&self) -> Result<()> {
+    pub(super) fn policy_grants() -> Result<Vec<crate::authorization::Grant>> {
         let mut grants = crate::test_support::identity::device_grants(
             Some(case_device()),
             &[
@@ -91,13 +91,7 @@ impl Fixture {
             None,
             &["inventory_read", "inventory_collect", "configuration_write"],
         )?);
-        crate::test_support::identity::change_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            grants,
-        )
-        .await?;
-        Ok(())
+        Ok(grants)
     }
     pub(super) async fn configuration_policy(
         &mut self,
@@ -139,7 +133,7 @@ impl Fixture {
     pub(super) async fn native_context(&mut self) -> Result<()> {
         use crate::authorization::{OperationAuthority, Permission};
         use rss_mdm_execution_service::{authority::ExecutionAuthority, device_control::Kind};
-        self.grant_native_actions(&["device_control"]).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
         let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -264,7 +258,7 @@ impl Fixture {
         Ok(())
     }
     pub(super) async fn policy_cycle(&mut self, peer: &lifecycle::Peer) -> Result<()> {
-        self.policy_grants().await?;
+        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
@@ -392,9 +386,9 @@ impl Fixture {
         // Drain independent trust maintenance before asserting that revoked
         // business authority cannot request a wake.
         ensure!(peer.manage("Idle", None, None).await?.is_empty());
-        self.policy_grants().await?;
+        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
         let definition = self.collection_template().await?;
-        self.grant_native_actions(&["device_control"]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::native_grants(&["device_control"])?).await?;
         let op = self.create_restart().await?;
         crate::test_support::identity::change_grants(
             case_tenant(),
@@ -460,7 +454,7 @@ impl Fixture {
             });
         ensure!(audited, "collection denial lost business action audit");
         // Publish a new collection only after its own current authorization is restored.
-        self.policy_grants().await?;
+        crate::test_support::identity::change_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
         let owner = self.policy_worker().await?;
         let queued = self.pending_collections(&definition, 1, peer).await;
         crate::test_support::runtime::stop_worker(Some(owner)).await?;

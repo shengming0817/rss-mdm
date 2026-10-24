@@ -7,9 +7,9 @@ use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
 #[ignore = "MODULE=agent.reports: durable intake, projection, capacity, retention and ACK recovery"]
 async fn durable_reports_and_projection() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
+    let owned_router = crate::test_support::agent::router(&mut fixture).await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let owned_router = crate::test_support::agent::router(&fixture).await?;
     let router = &owned_router;
     let audit_store = fixture.audit.as_ref();
     let mut session = fixture.browser("other")?;
@@ -24,7 +24,6 @@ async fn durable_reports_and_projection() -> Result<()> {
     let registration = crate::test_support::agent::seed_service(&service, credential,
         crate::test_support::case::name("device-1"), json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let password = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    let config = &fixture.base;
     let (status, error) = agent_call(
         router,
         Method::GET,
@@ -222,7 +221,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         "unexpected pre-worker status: {status} {current}"
     );
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND delivery_pending", TENANT = case_tenant()))?.trim() == "1");
-    let runtime = agent_runtime(config).await?;
+    let runtime = agent_runtime(&fixture).await?;
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     wait_agent_status(router, credential, report_id, "snapshot", "applied").await?;
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id='{TENANT}' AND source='agent.builtin' AND id='{report_id}' AND NOT delivery_pending", TENANT = case_tenant()))?.trim() == "1");
@@ -298,7 +297,7 @@ async fn durable_reports_and_projection() -> Result<()> {
         registration["registrationId"].as_str().unwrap(),
         TENANT = case_tenant()
     ))?;
-    let runtime = agent_runtime(config).await?;
+    let runtime = agent_runtime(&fixture).await?;
     let owner = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     wait_agent_status(router, credential, partial_id, "snapshot", "applied").await?;
     wait_agent_status(router, credential, failed_id, "snapshot", "applied").await?;

@@ -73,7 +73,7 @@ class Module:
             result.update(('cargo', 'cargo-nextest'))
         if self.postgres or 'gateway' in self.fixtures or 'idp' in self.fixtures or 's3' in self.fixtures or 'scep' in self.fixtures or 'telemetry' in self.fixtures:
             result.add('docker')
-        if self.postgres or set(self.fixtures) & {
+        if self.postgres or self.id == 'gateway.tls' or set(self.fixtures) & {
             's3',
             'tls',
             'telemetry',

@@ -2,7 +2,7 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: explicit reinstatement fences old offboarding attempts"]
 async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let id=enterprise::ready(&mut f).await?;let person=f.author_id.clone();
@@ -43,7 +43,7 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: DA recovery requires atomic step-up and preserves its disclosure receipt"]
 async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.grants.extend(crate::test_support::identity::device_grants(None,&["credentials"])?);

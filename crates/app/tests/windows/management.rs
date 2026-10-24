@@ -479,7 +479,7 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
             == StatusCode::OK
     );
     let mut work =
-        crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
+        crate::execution::test_support::Client::start(host.browser.clone(), &host.app)
             .await?;
     work.accept_authorized().await?;
     work.publish_operation(work.operation).await?;

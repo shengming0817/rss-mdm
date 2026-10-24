@@ -3,7 +3,7 @@ use lifecycle::Peer;
 use sqlx::Connection;
 impl Fixture {
     pub(super) async fn queue_fairness(&mut self, peer: &Peer) -> Result<()> {
-        self.policy_grants().await?;
+        crate::test_support::identity::seed_grants(case_tenant(), crate::test_support::case::admin(), Fixture::policy_grants()?).await?;
         let definition = self.collection_template().await?;
         let expired = self.pending_collections(&definition, 65, peer).await?;
         let mut pg =

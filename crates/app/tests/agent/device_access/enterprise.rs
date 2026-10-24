@@ -299,6 +299,12 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["identity"]["enterprise"] = json!({"key_id":"enterprise-1","signing_key_file":signer,"clients":clients,"administrators":[{"configuration":{"provider":provider,"issuer":issuer,"clientId":"mdm-offboarding","addresses":addresses},"client_secret_file":admin_secret,"private_ca_file":ca}]});
     let mut f = Fixture::from_config(base).await?;
+    f.mount_access().await?;
+    let broker = rss_mdm_management_http::enterprise_broker::routes(Some(f.enrollment.clone()), f.execution.clone(), f.authority.identity.browser(), "mdm.example.test", Value::Null);
+    f.router = f.router.merge(rss_mdm_management_http::boundary::wrap(broker, rss_mdm_management_http::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)),
+        host: "mdm.example.test".into(), clock: monotonic(), audit_store: f.authority.audit.clone(), tenant: case_tenant().into(),
+    }).into_axum());
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         for operation in [crate::authorization::Permission::EnterpriseApplicationsWrite,crate::authorization::Permission::EnterpriseApplicationsRead]{f.grants.push(crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant});}

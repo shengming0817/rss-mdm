@@ -18,7 +18,7 @@ async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_histo
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async{
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
-        let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        let registration=crate::test_support::agent::seed_service(&fixture.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
         fixture.grants.extend(identity::device_grants(None,&["security_operate","credentials"])?);
         identity::seed_grants(case_tenant(),&fixture.author_id,fixture.grants.clone()).await?;
@@ -80,7 +80,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let router = fixture.router;
-    let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_inventory_credential(),case::name("inventory-peer"),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    let registration=crate::test_support::agent::seed_service(&fixture.enrollment,case_inventory_credential(),case::name("inventory-peer"),json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
     ensure!(registration["capabilities"] == json!(["inventory.collect.v1"]));
     let taskless = agent_call(
         &router,
@@ -94,7 +94,7 @@ async fn registration_capability_and_wire_gate() -> Result<()> {
         taskless.0 == StatusCode::FORBIDDEN,
         "inventory-only registration entered task API: {taskless:?}"
     );
-    let registration=crate::test_support::agent::seed_profile(&fixture.base,fixture.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
+    let registration=crate::test_support::agent::seed_service(&fixture.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1"],"platform":"macos","architecture":"aarch64","executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs)})).await?;
     ensure!(registration["capabilities"] == json!(["inventory.collect.v1", "task.execute.v1"]));
     // Legacy URL and major cannot enter task intake.
     let old = router
@@ -155,7 +155,6 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         )
         .await?;
     let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
-    let base = fixture.base;
     let router = fixture.router;
     let execution = fixture.execution;
     let mut author = fixture.author;
@@ -295,7 +294,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         ))? == reserved,
         "result changed collection ordering"
     );
-    let runtime = agent_runtime(&base).await?;
+    let runtime = agent_runtime(&fixture.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
@@ -582,7 +581,7 @@ async fn native_inventory_case(
     } else {
         crate::test_support::software_execution::Platform::Windows
     });
-    let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
+    let registration=crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
         .await?;
@@ -715,7 +714,7 @@ async fn native_inventory_case(
         ensure!(wrong.0 == StatusCode::BAD_REQUEST, "cross-field cursor: {wrong:?}");
     }
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-    let runtime = agent_runtime(&f.base).await?;
+    let runtime = agent_runtime(&f.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
     let policy_input = || json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
@@ -1231,7 +1230,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     );
     context["interactiveUser"] =
         json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
-    let registration = crate::test_support::agent::seed_profile(&f.base, f.execution.clone(), case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
+    let registration = crate::test_support::agent::seed_service(&f.enrollment, case_credential(), case_device_id(), json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
     let device = registration["deviceId"].as_str().unwrap().to_owned();
     f.scope(case_task_scope(), json!([{"kind":"device","id":device}]))
         .await?;
@@ -1289,7 +1288,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     )
     .await?;
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-    let runtime = agent_runtime(&f.base).await?;
+    let runtime = agent_runtime(&f.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let mut datasets = Vec::new();
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
@@ -1490,11 +1489,11 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let mut context=crate::test_support::software_execution::context(if macos {crate::test_support::software_execution::Platform::MacOs}else{crate::test_support::software_execution::Platform::Windows});
-        let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
+        let registration=crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap().to_owned();
         f.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
         let worker=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
-        let runtime=agent_runtime(&f.base).await?;
+        let runtime=agent_runtime(&f.authority).await?;
         let inventory=crate::inventory_runtime::test_support::start(runtime.clone()).await?;
         // Machine store; two users; another store; failed and empty attempts in user A's store.
         // macOS has one user login store, so its additional store is System Roots.
@@ -1717,7 +1716,7 @@ async fn recover_unknown_after_restart(
     );
     let sid = "S-1-5-21-101-202-303-500";
     let original=resources.finish(async{
-        crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write"])?);
         identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
@@ -1875,11 +1874,12 @@ async fn recover_unknown_after_restart(
 async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Result<()> {
     use rss_mdm_agent_wire::runtime as wire;
     let mut f = Fixture::new().await?;
+    f.mount_access().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
         let sid="S-1-5-21-101-202-303-1001";
-        let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
+        let registration=crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write","credentials"])?);
         identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;

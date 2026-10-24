@@ -989,12 +989,13 @@ async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let package = publish(&f, &mut user, false).await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let mut authority = authority::Authority::open().await?;
+    let agent_router = agent::router(&mut authority).await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
     let service = agent::service(&authority).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let _server = software::HttpServer::start(listener, agent::router(&authority).await?);
+    let _server = software::HttpServer::start(listener, agent_router);
     let post = |path: &str, value: Value| {
         let url = format!("{origin}{path}");
         let client = f.client.clone();

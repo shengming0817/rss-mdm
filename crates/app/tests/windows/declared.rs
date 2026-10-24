@@ -344,7 +344,7 @@ struct MiOperation {
 async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     use crate::execution::test_support::Client;
     use serde_json::json;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     use crate::execution::test_support::configuration::{change, published, resource_input};
     let mut grants = crate::test_support::identity::device_grants(
         None,
@@ -386,6 +386,7 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     let task = |operation| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
     let resource = resource_input(
         &mut client,
+        &host.app.flow.runtime,
         json!({"target":{"kind":"device"},"apply":task("replace"),"remove":task("delete")}),
     )
     .await?;
@@ -1366,7 +1367,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let parent = host.enrolled_peer().await?;
     let ca = &host.app.windows()?.channel.ca;
     let certificate = sign_certificate(ca, &parent.intent).await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let mut grants = [
         "resource_read",
         "resource_write",
@@ -1422,7 +1423,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="policy-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">first-value</Value></DSC></DeclaredConfiguration>"#
     );
     let task = |id: Uuid, document: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
-    let resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
+    let resource=resource_input(&mut client, &host.app.flow.runtime,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
     let first = Uuid::new_v4();
     let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
     change(
@@ -1472,7 +1473,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let other_document = document
         .replace(&id.to_string(), &other_id.to_string())
         .replace("first-value", "competing-value");
-    let other_resource=resource_input(&mut client,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
+    let other_resource=resource_input(&mut client, &host.app.flow.runtime,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
     let second = Uuid::new_v4();
     change(
         &mut client,
@@ -1610,7 +1611,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         replay.status() == StatusCode::OK && replay.bytes().await? == stable,
         "replay response changed"
     );
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let worker = automation(&host).await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
     // Unknown submission may leave a fenced claim until lease expiry. The existing worker
@@ -1675,7 +1676,7 @@ async fn primary_commands_are_independent_of_declared_child_readiness() -> anyho
     let mut host = Host::open().await?;
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     client.set_authorized(true).await?;
     client
         .known_windows_capability(crate::test_support::case::name("tls-device"))

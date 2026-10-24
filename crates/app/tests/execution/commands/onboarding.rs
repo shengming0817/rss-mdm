@@ -212,7 +212,7 @@ async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> 
     .await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     setup::publish(
         &mut client.browser,
         &client.router,
@@ -613,7 +613,7 @@ async fn start_fixture_format(
     .await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -1011,9 +1011,7 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         package_status(&client.router, operation).await? == StatusCode::OK,
         "package was never accessible before expiry"
     );
-    client
-        .app
-        .execution
+    client.execution
         .advance_installation_authorization_to(until)?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("expired-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(
@@ -1249,7 +1247,7 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     // A pending maintenance query preserves the previous sealed channel fact,
     // including when Group reads its historical quality at a newer watermark.
-    let mut tx = client.app.access.begin(case_tenant()).await?;
+    let mut tx = host.app.access.begin(case_tenant()).await?;
     let scope: String = sqlx::query_scalar("SELECT scope FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.windows' AND result='pending' ORDER BY sequence DESC LIMIT 1")
         .bind(case_tenant()).fetch_one(&mut *tx).await?;
     let watermark: i64 =
@@ -1476,7 +1474,7 @@ async fn historical_msix_catalog_crosses_native_read_batch_without_losing_absenc
     .await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     for patch in 0..11 {
         setup::publish_msix_release(
             &mut client.browser,

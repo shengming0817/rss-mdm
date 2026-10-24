@@ -91,13 +91,15 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
 #[ignore = "MODULE=execution.agent.task_trust: settings directory reads the actual task authority and filters inaccessible owners"]
 async fn settings_catalog_projects_authority_without_cross_session_or_secret_exposure() -> Result<()>
 {
-    let mut f = Fixture::new().await?;
-    let resources = std::mem::take(&mut f.resources);
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let (router, resources) = app(&base).await?;
+    let mut author = authority::Authority::prepared_browser("other")?;
+    let subject = crate::test_support::http::prepared_subject(&author)?;
+    identity::seed_grants(case_tenant(), &subject, vec![]).await?;
     resources
         .finish(async {
-            let (status, before) = f
-                .author
-                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+            let (status, before) = author
+                .call(&router, Method::GET, "/api/v1/settings/catalog", None)
                 .await?;
             ensure!(status == StatusCode::OK, "catalog: {status} {before}");
             ensure!(
@@ -107,19 +109,18 @@ async fn settings_catalog_projects_authority_without_cross_session_or_secret_exp
                     .iter()
                     .any(|i| i["id"] == "task-key")
             );
-            f.grants.push(crate::authorization::Grant {
+            let grants = vec![crate::authorization::Grant {
                 operation: crate::authorization::Permission::RegistrationConfigurationRead,
                 scope: crate::authorization::Scope::Tenant,
-            });
-            crate::test_support::identity::seed_grants(
+            }];
+            crate::test_support::identity::change_grants(
                 case_tenant(),
-                &f.author_id,
-                f.grants.clone(),
+                &subject,
+                grants,
             )
             .await?;
-            let (status, after) = f
-                .author
-                .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
+            let (status, after) = author
+                .call(&router, Method::GET, "/api/v1/settings/catalog", None)
                 .await?;
             ensure!(status == StatusCode::OK, "catalog: {status} {after}");
             let items = after["items"].as_array().unwrap();
@@ -137,10 +138,9 @@ async fn settings_catalog_projects_authority_without_cross_session_or_secret_exp
                     && !text.contains("password")
                     && !text.contains("active_file")
             );
-            let (status, _) = f
-                .author
+            let (status, _) = author
                 .call(
-                    &f.router,
+                    &router,
                     Method::GET,
                     "/api/v1/tenant-administration/settings/catalog",
                     None,

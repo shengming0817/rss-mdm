@@ -208,7 +208,7 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         "no work must not wake a device"
     );
     let mut command =
-        crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
+        crate::execution::test_support::Client::start(host.browser.clone(), &host.app)
             .await?;
     command.accept_authorized().await?;
     command.publish_operation(command.operation).await?;
