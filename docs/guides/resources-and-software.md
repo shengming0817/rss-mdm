@@ -47,7 +47,12 @@ RSS Bundle 的 manifest 位于 `behavior.manifest`，entries 声明普通成员�
 
 发布请求引用精确 Resource/version/resourceDigest、expectedResourceRevision 和实际 target/targetDigest；服务端校验并固定导出内容，在同一事务内创建发布记录、首个尝试、源执行意图及审计。一个合法目标即可工作，各目标独立发布。manifest/Recipe 由定义派生，没有独立编辑入口；Bundle/MSIX 或无法完整表达的行为返回 Unsupported，EXE→WinGet、DMG→Brew 仅支持受限可表达子集。
 
-`GET /software/sources` 分页发现来源修订，`GET /software/publication-targets` 返回可选实际目标及摘要；`GET /software/publications` 支持目标、资源、版本和 operationId 筛选。目录均返回 items/nextCursor，默认 20、最多 100 项；来源读取需要 SoftwareRead，目标和发布记录读取需要 ReleaseRead。目录可见不代表发布已获授权。
+`GET /software/sources` 分页发现来源修订，`GET /software/publication-targets` 返回可选实际目标及摘要；`GET /software/publications` 支持目标、资源、版本和 operationId 筛选。目录均返回 items/nextCursor，默认 20、最多 100 项；来源读取需要 SoftwareRead，目标和发布记录读取需要 ReleaseRead。目录可见不代表发布已获授权。目录统一使用 `filter/sort/fields/limit/cursor`，例如
+`/software/sources?filter=state==enabled;protocol==private&sort=id,-revision&limit=20`。
+来源每个修订独立一行，续页键为 id/revision；发布保留 outcome、withdrawn 和 withdrawal 各自含义，
+不开放对发布文档或任意 JSON 路径的查询。目标目录只接受其声明的 id/protocol 字段，拒绝无关参数。
+`GET /software/resources/{id}/versions` 从 Resource 聚合分页发现版本及 Resource 状态，默认 64、最多 1000 条；
+Resource 状态不代替软件准入/撤回判定，详情和执行仍由原 owner 验证。
 
 `POST /software/publications` 使用 operationId、expectedRevision=0 和 input.action=publish，一次提交即受理发布，返回 202 和持久记录。记录 ID 等于原创建 operationId。草稿自动启用需要 SoftwareWrite 与 ReleasePublish，已启用版本只需 ReleasePublish；已撤回版本必须显式 Enable。`GET /software/publications/{id}` 查询实际结果；同路径 POST recover/retry 使用 ReleaseRecover，withdraw 使用 ReleaseWithdraw，携带 operationId 与当前 expectedRevision。attempt、发布摘要和目标绑定由服务端读取。Unknown 核对原身份，明确 NotApplied 才允许 Retry；源发布成功不代表设备安装成功。
 

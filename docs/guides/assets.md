@@ -29,7 +29,7 @@ known/null/missing/unsupported/deleted/conflict 是明确状态。同级来源�
 | GET /device-queries/{task}/items?limit=1000&cursor=… | 固定结果分页 |
 | GET /device-queries/{task}/facets/{facet}?limit=1000&cursor=… | 全结果汇总分页 |
 | PUT /devices/{id}/manual-fields/{key} | CAS set/null/delete |
-| GET /saved-queries?after={uuid} | 本人查询，最多 100 条，含删除墓碑 |
+| GET /saved-queries?filter&sort&fields&limit&cursor | 本人查询，最多 100 条，含删除墓碑 |
 | GET /saved-queries/{id} | 本人定义与 revision |
 | PUT /saved-queries/{id} | CAS put/delete |
 | POST /saved-queries/{id}/execute | 按当前权限执行，正文为 Operation，expectedRevision 为保存查询版本，input 为 `{}` |
@@ -90,16 +90,21 @@ inventory_fields_write 管理目录并允许读取配置所需的字段定义，
 汇总 assetStates 统计字段状态，分母不是设备数；matched、unknown、total 分别统计匹配、未知和授权候选设备。没有合规评估事实时不从资产缺失推断合规。采集完整性见 [Windows 管理](windows-management.md)，升级见 [运维](../deployment/operations.md)。
 
 
+个人保存查询列表响应为 `asset.kind=saved_list`、`asset.items`、`asset.nextCursor`。
+保留本人 tenant/instance/principal 边界和删除墓碑；可用 `filter=deleted==false` 隐藏墓碑。
+目录参数、投影及续页语义见[统一目录查询](groups-scopes-policies.md)，与异步资产结果页分别拥有游标。
+
 ## 规则合规评估
 
 合规复用上述字段目录和三值 AND/OR 条件。规则条件、严重性、平台、启停和分配共用一个版本；设备执行成功不构成合规事实。不存在宽限期、字段 TTL 或时间触发：新报告、显式字段变更、注册/来源变化、规则和组资格变化才触发评估。
 
 | 方法、路径（前缀 `/api/v1`） | 内容 |
 | --- | --- |
-| GET /compliance-rules?after={uuid} | 规则分页，每页最多 50 条 |
+| GET /compliance-rules?filter&sort&fields&limit&cursor | 规则分页，每页最多 50 条 |
 | GET /compliance-rules/{id} | 当前规则及版本 |
 | GET /compliance-rules/{id}/versions/{revision} | 历史规则定义，用于解释旧评估 |
 | PUT /compliance-rules/{id} | Operation 包装的完整定义；首次 expectedRevision=0 |
+| DELETE /compliance-rules/{id} | Operation 包装删除当前规则，保留历史；释放当前依赖 |
 | POST /compliance-rules/{id}/recompute | Operation 包装，input 为 `{}`，expectedRevision 为当前版本 |
 | GET /compliance-rules/{id}/tasks/{task} | phase、processed、completed、failure 与 diagnostic |
 | GET /devices/{id}/compliance | 设备汇总、各规则 current；待评估时 previous 单独标识 |
@@ -314,3 +319,8 @@ Agent 可向 runtime 的 `POST /telemetry/gaps` 提交固定 `TelemetryGapReport
 管理端 `POST /api/v1/telemetry/gaps/query` 接收 device、receivedFrom/receivedUntil（UTC 微秒）、limit（1–256）、
 after（上一页 next 或 null），返回 reports 与 next；每页按当前 `inventory_read` 设备范围授权。
 诊断查询不暴露采样值，也不替代 `/telemetry/health` 的批次质量统计。
+
+合规规则的停用与删除分别表达。`DELETE /api/v1/compliance-rules/{id}` 接受
+`{operationId,expectedRevision,input:{}}`，退出当前评估、释放当前组/字段引用及规则配额；
+同操作重试返回原回执，在途旧任务结算为 superseded。删除后普通 Get 为 404，原 ID 不可重建；
+历史版本和设备评估仍可读取，`filter=deleted==true` 可发现规则墓碑。只支持当前 V1 全新安装，不提供旧库升级。

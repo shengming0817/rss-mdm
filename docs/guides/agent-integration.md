@@ -260,3 +260,16 @@ Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rs
 平台 verifier 的 resolve/recheck 必须在 Identity 提供的原 PG connection 上调用
 `ExecutionService::active_access_binding_on`，同时核对当前注册、绑定代际和 Policy/Scope。
 普通 Binding JSON、清单或历史状态不能作为有效会话证明；Identity 继续独占账户/成员有效性与会话签发。
+
+## 管理目录查询
+
+`GET /api/v1/agent-configurations` 返回 `items/nextCursor` 元数据页，使用
+`filter/sort/fields/limit/cursor`，默认 64、最多 1000 条。可按 state、创建/到期时间、创建者及目标平台筛选；
+平台/架构是目标集合成员条件，不用于排序。createdAt/expiresAt 使用 UTC Unix 秒。
+列表与详情共用配置身份和 available/expired/revoked 状态规则；remaining 只代表数量。
+列表不返回 secret、签名、连接配置或可转移配置文件，也不提供原地修改签名配置的入口。
+
+`GET /api/v1/agent-packages` 使用同一分页契约，管理者可查询 published/withdrawn 元数据；
+`GET /api/v1/agent-packages/{id}` 读取同一元数据对象。管理目录可见不代表当前可安装。
+`/api/v1/agent/enroll/packages` 及下载协议保持原数组/准入行为，只向公共消费者开放当前可用包。
+本批后端直接替换旧管理列表数组，前端消费者需另行同步。

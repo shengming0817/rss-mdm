@@ -2202,17 +2202,24 @@ consume(('crates/authorization-service/schema/authority.sql','crates/device-serv
 
 
 # Resource query execution and common ingress composition have distinct proof owners.
-consume(('crates/query/src/*', 'crates/resource/src/directory.rs'), 'planning.http')
+consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries compliance.http settings.user_profiles software.http software.catalog agent.configurations')
+consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
 consume(('crates/http-contract/src/*',),
         ' '.join(name for name, module in MODULES.items()
                  if module.build == APP and 'identity' in module.fixtures)
         + ' api.diagnostics host.lifecycle')
-T1_INPUTS += ('crates/query/tests/*', 'crates/http-contract/tests/*',
+T1_INPUTS += ('crates/query/tests/*', 'crates/query-postgres/tests/*', 'crates/http-contract/tests/*',
               'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs', 'crates/management-http/examples/management_capabilities.rs')
 consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.agent.history')
 
 
 
+
+
+consume(('crates/registration-service/src/agent/configurations/*.rs',), 'agent.configurations')
+consume(('crates/inventory-service/src/assets/saved_directory.rs',), 'assets.queries')
+consume(('crates/software-service/src/management/directory.rs', 'crates/software-service/src/management/publication/directory.rs'), 'software.http')
+consume(('crates/software-service/src/agent_packages/*.rs',), 'agent.configurations')
 
 if __name__ == '__main__':
     import argparse
