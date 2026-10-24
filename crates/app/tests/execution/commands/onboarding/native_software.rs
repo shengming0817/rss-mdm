@@ -72,7 +72,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
                 json!("{22345678-1234-4234-8234-123456789abc}");
         }
         let version = software_execution::seed_resource(
-            &host.app.flow.planning,
+            &host.app.flow.planning.runtime,
+            host.app.flow.planning.tenant,
             resource,
             "windows",
             "x86_64",

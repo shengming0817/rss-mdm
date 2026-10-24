@@ -8,7 +8,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let resource = fixture.resource;
@@ -121,7 +121,7 @@ async fn uninstall_content_selection() -> Result<()> {
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-            let stack = worker(&fixture.base, fixture.content.clone()).await?;
+            let stack = worker(&fixture.base, fixture.execution.clone()).await?;
             let router = fixture.router;
             let mut author = fixture.author;
             let removal = fixture.removal;

@@ -10,7 +10,7 @@ async fn successful_removal_invalidates_prior_installation_across_policies() -> 
     let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let stack = worker(&f.base, f.content.clone()).await?;
+    let stack = worker(&f.base, f.execution.clone()).await?;
     let install = Uuid::new_v4();
     let duplicate = Uuid::new_v4();
     let removal = Uuid::new_v4();
@@ -127,7 +127,7 @@ async fn unresolved_installation_blocks_removal_and_other_versions() -> Result<(
     let mut f = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let stack = worker(&f.base, f.content.clone()).await?;
+    let stack = worker(&f.base, f.execution.clone()).await?;
     let original = Uuid::new_v4();
     write(&mut f.author, &f.router, &format!("/api/v1/policies/{original}"), 0, json!({"action":"put","enabled":true,"definition":authored(f.resource,f.scope,"required_install")})).await?;
     let running = claim(&f.router).await?;
@@ -240,7 +240,7 @@ async fn known_failure_has_bounded_retries() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
 
@@ -357,7 +357,7 @@ async fn reboot_waits_for_detection() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
 
@@ -455,7 +455,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
 
@@ -575,7 +575,7 @@ async fn unknown_result_replay_and_late_detection() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone()).await?;
+    let stack = worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
 
@@ -691,7 +691,7 @@ async fn withdrawn_software_does_not_poison_claims_for_other_policies_or_outside
         json!({"action":"withdraw"}),
     )
     .await?;
-    let stack = worker(&f.base, f.content.clone()).await?;
+    let stack = worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     ensure!(
         task["payload"]["task"]["steps"].as_array().is_some_and(

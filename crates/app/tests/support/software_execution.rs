@@ -336,7 +336,8 @@ impl Fixture {
         let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let dependency_version = if prepare_dependency {
         let dependency_resource = seed_resource(
-            &planning,
+            &planning.runtime,
+            planning.tenant,
             dependency,
             platform_name,
             architecture,
@@ -382,7 +383,8 @@ impl Fixture {
         let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         if prepare_root {
         let root_resource = seed_resource(
-            &planning,
+            &planning.runtime,
+            planning.tenant,
             resource,
             platform_name,
             architecture,
@@ -462,74 +464,17 @@ pub(crate) async fn prepared_scope(
 
 pub(crate) async fn worker(
     base: &Value,
-    content: Option<Arc<rss_mdm_content_service::Store>>,
-) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
-
-    let base = base.clone();
-    let (resources, (config, worker)) = super::runtime::Resources::build(move |resources| {
-        Box::pin(async move {
-            let config: Config = serde_json::from_value(base.clone())?;
-            let mut authority = authority::Authority::from_config(base.clone()).await?;
-            resources.extend(std::mem::take(&mut authority.resources));
-            let content = match content {
-                Some(content) => Some(content),
-                None => {
-                    let content = crate::execution_assembly::open_content(
-                        &config,
-                        config.native_protector()?,
-                    )
-                    .await?;
-                    if let Some(content) = &content {
-                        resources
-                            .resource(crate::execution_assembly::ContentResource(content.clone()));
-                    }
-                    content
-                }
-            };
-            let worker = crate::execution_assembly::open(
-                &config,
-                config.native_protector()?,
-                authority.audit.clone(),
-                content,
-                std::collections::BTreeMap::new(),
-                rss_device_command_postgres::CommandClock::Postgres,
-                Arc::new(
-                    rss_mdm_authorization_service::session::SessionAuthority::new(
-                        authority.identity.authority.clone(),
-                        authority.identity.tenant,
-                    ),
-                ),
-            )
-            .await?
-            .service;
-            Ok((config, worker))
-        })
-    })
-    .await?;
-    worker_for(&config, worker, resources).await
-}
-pub(crate) async fn worker_for(
-    config: &Config,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
-    mut resources: super::runtime::Resources,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
     if !crate::test_support::case::owns_worker() {
         return Ok(None);
     }
+    let config: Config = serde_json::from_value(base.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    for resource in resources.0.drain(..) {
-        startup.stage_resource(resource);
-    }
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        rss_mdm_execution_service::Resource(worker.clone()),
-    ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_options()?,
         rss_request_context::TenantId::parse(&config.identity.tenant_id)?,
@@ -584,14 +529,14 @@ pub(crate) async fn ready_rollout(
 }
 
 pub(crate) async fn seed_resource(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    tenant: rss_request_context::TenantId,
     id: Uuid,
     platform: &str,
     architecture: &str,
     definition: Value,
 ) -> Result<rss_mdm_resource::Version> {
     use rss_mdm_resource::{Declaration, Id, Kind, Variant, Version};
-    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let version = Version::new(
         tenant,
         Id::new(id.to_string())?,
@@ -607,8 +552,7 @@ pub(crate) async fn seed_resource(
         )],
     )?;
     let stored = version.clone();
-    planning
-        .runtime
+    runtime
         .local_tx(tenant, crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 rss_mdm_resource_postgres::fixture::active_version_in(
