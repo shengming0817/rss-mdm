@@ -64,6 +64,7 @@ enum ActionInput {
         account: AccountInput,
         policy: Uuid,
     },
+    ResetFactors,
     Unbind,
 }
 #[derive(Deserialize)]
@@ -84,7 +85,7 @@ enum AccountInput {
 }
 fn view(b: access::Binding) -> Value {
     json!({"id":b.id,"device":b.device,"registration":b.registration,"registrationGeneration":b.registration_generation,
-        "instance":b.person.instance,"principal":b.person.principal,"bindingGeneration":b.generation,"revision":b.revision,
+        "instance":b.person.instance,"principal":b.person.principal,"bindingGeneration":b.generation,"factorGeneration":b.factor_generation,"revision":b.revision,
         "serverState":b.state,"account":b.account,"accountIntent":b.intent,"createdByRss":b.created_by_rss,
         "policy":b.policy,"policyVersion":b.policy_version,"desired":b.configuration,"receivedRevision":b.received_revision,
         "appliedRevision":b.applied_revision,"effect":b.effect})
@@ -110,6 +111,7 @@ async fn change(
 ) -> Result<Json<Value>, Error> {
     let input = body.map_err(Error::from)?.0;
     let action = match input.action {
+        ActionInput::ResetFactors => access::Action::ResetFactors,
         ActionInput::Unbind => access::Action::Unbind,
         ActionInput::Put {
             instance,

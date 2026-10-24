@@ -17,6 +17,7 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 }
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
+        .route("/device-access", get(access_directory))
         .route("/device-access/begin", post(access_begin))
         .route("/device-access/confirm", post(access_confirm))
         .route("/device-access/recovery-uses", post(access_recovery_use))
@@ -440,14 +441,29 @@ async fn access_confirm(
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
     input: Body<wire::AccessConfirm>,
-) -> Result<Json<Value>, crate::AgentError> {
+) -> Result<Json<wire::AccessBindingStatus>, crate::AgentError> {
     crate::bounded(async {
-        let p=authenticate_for(&app,&headers,peer.as_ref().map(|v|&v.0),&audit,false).await?;
-        let employee=employee(&app,&headers,&audit).await?.ok_or(Error::Unauthorized)?;
-        let input=body(input)?;
-        let value=app.enrollment.confirm_device_access(&p,&employee,&input,app.execution.as_ref(),&app.identity,&audit).await.map_err(Error::from)?;
-        Ok(Json(serde_json::json!({"id":value.id,"bindingGeneration":value.generation,"revision":value.revision,"state":value.state,"account":value.account,"receivedRevision":value.received_revision,"appliedRevision":value.applied_revision,"effect":value.effect})))
-    }).await
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let employee = employee(&app, &headers, &audit)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let input = body(input)?;
+        let value = app
+            .enrollment
+            .confirm_device_access(
+                &p,
+                &employee,
+                &input,
+                app.execution.as_ref(),
+                &app.identity,
+                &audit,
+            )
+            .await
+            .map_err(Error::from)?;
+        Ok(Json(value.status()))
+    })
+    .await
 }
 
 async fn access_recovery_use(
@@ -465,6 +481,46 @@ async fn access_recovery_use(
             .await
             .map_err(task_error)?;
         Ok(Json(serde_json::json!({"accepted":true})))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccessPage {
+    after: Option<Uuid>,
+}
+async fn access_directory(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    headers: HeaderMap,
+    Query(page): Query<AccessPage>,
+) -> Result<Response, crate::AgentError> {
+    crate::bounded(async {
+        use axum::response::IntoResponse;
+        let p =
+            authenticate_for(&app, &headers, peer.as_ref().map(|v| &v.0), &audit, false).await?;
+        let employee = employee(&app, &headers, &audit)
+            .await?
+            .ok_or(Error::Unauthorized)?;
+        let value = app
+            .enrollment
+            .device_access_directory(
+                &p,
+                &employee,
+                page.after,
+                app.execution.as_ref(),
+                &app.identity,
+            )
+            .await
+            .map_err(Error::from)?;
+        let mut response = Json(value).into_response();
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        Ok(response)
     })
     .await
 }

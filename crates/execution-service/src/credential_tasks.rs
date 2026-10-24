@@ -368,7 +368,7 @@ pub async fn task(
     checked_input(spec.validate())?;
     Ok(wire::TaskPayload::Credential(Box::new(spec)))
 }
-fn subject(value: &wire::CredentialSubject) -> vault::Subject {
+pub(crate) fn subject(value: &wire::CredentialSubject) -> vault::Subject {
     match value {
         wire::CredentialSubject::RssLogin {
             binding,
@@ -442,7 +442,7 @@ pub async fn escrow(
     run: &actions::storage::Run,
     attempt: Uuid,
     value: &wire::CredentialEscrow,
-) -> Result<()> {
+) -> Result<Vec<wire::CredentialReceipt>> {
     checked_input(value.validate())?;
     let actions::evidence::Material::Credential { task } =
         actions::evidence::load_in(tx, run.id, attempt).await?
@@ -465,6 +465,7 @@ pub async fn escrow(
         Box::pin(async move {
             let result = async {
                 let recipient = protection.recipient(&task.recipient.key_id)?;
+                let mut receipts = Vec::new();
                 for item in &value.materials {
                     if !allowed_subject(&task, &item.subject) {
                         return Err(vault::Error::Malformed);
@@ -553,16 +554,21 @@ pub async fn escrow(
                     };
                     materials::link_agent_in(c, task.task_id, task.attempt_id, &coordinates)
                         .await?;
+                    receipts.push(wire::CredentialReceipt {
+                        subject: item.subject.clone(),
+                        material: coordinates.material,
+                        version: coordinates.version,
+                    });
                 }
-                Ok::<_, vault::Error>(())
+                Ok::<_, vault::Error>(receipts)
             }
             .await;
             Ok(result)
         })
     })
     .await?
-    .map_err(recovery_credentials::error)?;
-    Ok(())
+    .map_err(recovery_credentials::error)
+    .map_err(Into::into)
 }
 pub async fn finish(
     service: &ExecutionService,

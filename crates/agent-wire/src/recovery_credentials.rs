@@ -518,3 +518,25 @@ pub enum CredentialFailure {
     /// A platform result could not be confirmed.
     NativeFailure,
 }
+
+/// Durable escrow coordinates returned only for the exact accepted task event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialReceipt {
+    /// Exact material subject.
+    pub subject: CredentialSubject,
+    /// Server-assigned entry identity.
+    pub material: Uuid,
+    /// Immutable material version.
+    pub version: i64,
+}
+impl CredentialReceipt {
+    /// Validate structure without granting access to the material.
+    pub fn validate(&self) -> Result<(), WireError> {
+        self.subject.validate()?;
+        if self.material.is_nil() || self.version < 1 {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}

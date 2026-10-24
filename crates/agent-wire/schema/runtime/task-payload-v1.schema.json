@@ -218,6 +218,11 @@
           "format": "int64",
           "type": "integer"
         },
+        "factorGeneration": {
+          "description": "Independent factor replacement generation. Configuration changes preserve it.",
+          "format": "int64",
+          "type": "integer"
+        },
         "generation": {
           "description": "Registration generation, not binding revision.",
           "format": "uint64",
@@ -262,6 +267,17 @@
           "format": "uuid",
           "type": "string"
         },
+        "windows": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessWindowsPlan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Windows factor provisioning; absent for macOS and unlink."
+        },
         "wireVersion": {
           "description": "Exact wire major.",
           "format": "uint8",
@@ -287,12 +303,82 @@
         "instanceId",
         "principalId",
         "bindingGeneration",
+        "factorGeneration",
         "revision",
         "definitionDigest",
         "action",
         "authorization"
       ],
       "type": "object"
+    },
+    "AccessWindowsFacts": {
+      "additionalProperties": false,
+      "description": "Installed factor identity is independent of the account association and configuration revision.",
+      "properties": {
+        "factorGeneration": {
+          "description": "Exact installed factor generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "recovery": {
+          "$ref": "#/$defs/CredentialReceipt",
+          "description": "Exact recovery material retained on this endpoint."
+        }
+      },
+      "required": [
+        "factorGeneration",
+        "recovery"
+      ],
+      "type": "object"
+    },
+    "AccessWindowsPlan": {
+      "description": "Windows initialization is part of the access task, not a second policy or scheduler.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Install a new factor generation after durable escrow acknowledgement.",
+          "properties": {
+            "expectedRevision": {
+              "description": "Exact recovery revision before this mutation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "initialize",
+              "type": "string"
+            },
+            "recipient": {
+              "$ref": "#/$defs/CredentialRecipient",
+              "description": "Public encryption recipient; never used for offline verification."
+            }
+          },
+          "required": [
+            "kind",
+            "recipient",
+            "expectedRevision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Apply configuration while preserving existing factors.",
+          "properties": {
+            "facts": {
+              "$ref": "#/$defs/AccessWindowsFacts",
+              "description": "Last applied factor facts; the endpoint must independently read them back."
+            },
+            "kind": {
+              "const": "preserve",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "facts"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "AccountSection": {
       "description": "Local account evidence families. Membership is direct, not transitive permission.",
@@ -858,6 +944,32 @@
           "type": "object"
         }
       ]
+    },
+    "CredentialReceipt": {
+      "additionalProperties": false,
+      "description": "Durable escrow coordinates returned only for the exact accepted task event.",
+      "properties": {
+        "material": {
+          "description": "Server-assigned entry identity.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "subject": {
+          "$ref": "#/$defs/CredentialSubject",
+          "description": "Exact material subject."
+        },
+        "version": {
+          "description": "Immutable material version.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject",
+        "material",
+        "version"
+      ],
+      "type": "object"
     },
     "CredentialRecipient": {
       "additionalProperties": false,

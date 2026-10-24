@@ -128,6 +128,14 @@
     {
       "type": "AccessRecoveryUse",
       "file": "access-recovery-use-v1.schema.json"
+    },
+    {
+      "type": "AccessDirectory",
+      "file": "access-directory-v1.schema.json"
+    },
+    {
+      "type": "AccessBindingStatus",
+      "file": "access-binding-status-v1.schema.json"
     }
   ],
   "apiVersion": 1

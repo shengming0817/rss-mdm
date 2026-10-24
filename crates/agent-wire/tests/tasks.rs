@@ -262,7 +262,7 @@ fn task_response_schemas_and_rust_reject_unknown_major_and_authority() {
         ),
         (
             include_str!("../schema/runtime/task-event-ack-v1.schema.json"),
-            json!({"wireVersion":1,"accepted":true,"permit":null,"cancelRequested":false}),
+            json!({"wireVersion":1,"accepted":true,"permit":null,"cancelRequested":false,"credentials":[]}),
         ),
     ];
     for (index, (schema, value)) in samples.into_iter().enumerate() {

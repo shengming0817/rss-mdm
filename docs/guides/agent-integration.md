@@ -224,7 +224,8 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 ## Device Access 账号关联与应用
 
 `device_access.v1` 是独立原生能力。首次开通使用设备认证与 `x-rss-user-session` 的真实 RSS 会话，
-依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
+先通过 `GET /api/v1/agent/runtime/device-access` 查询可开通 Policy 及本人绑定（Policy 游标为 `after`），
+再依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
 不接受 principal 或本地账号；返回 120 秒挑战及当前交互会话。Agent 必须从受保护的本机 broker
 重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认；Windows 域/Entra/MSA、RDP 不属于本期。
 普通进程上报、软件清单和最近登录记录不能替代该核验。用户名仅用于显示或新建目标，不能接管同名账号。
@@ -240,7 +241,13 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 Secure Token、volume ownership 和
 FileVault 解锁观察，未知必须保持 unknown。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
 
-Windows RSS 恢复使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
+Windows 首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
+以 `device_access_prepared` 报告真实 SID（尚非 Applied），再用既有加密 escrow 托管恢复材料。
+托管 ACK 的材料 ID/version 与签名任务的 factorGeneration 一起用于本机原子激活及读回，最终 Applied 必须回报这些精确坐标。
+中断后重放同一任务与候选，未决材料不能通过失败或取消回执丢弃。普通配置 revision 不重置因子；
+配置失败观察也不抹去最后已验证的因子事实。
+
+Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
 每账号绑定及代际独立。材料是 CSPRNG 生成的 32 字节、规范无填充 base64url 编码；
 没有到期或一次性消费语义。托管确认后才能原子替换本机 verifier，旧版保留至实际应用确认。
 `/device-access/recovery-uses` 接收无秘密的离线使用事实，operationId 去重；每个材料 entry 最多 4096 条事实，
