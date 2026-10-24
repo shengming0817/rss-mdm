@@ -13,7 +13,7 @@ mod model;
 mod runtime;
 use crate::planning::automation::{Timer, asset_target};
 pub use model::{JobInput, TaskKind};
-pub use runtime::{Automation, Resource};
+pub use runtime::{Automation, PlanningWork, Resource};
 
 use rss_mdm_audit_integration::RequestAudit;
 

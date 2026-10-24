@@ -1188,10 +1188,13 @@ async fn claim_count(pg: &mut PgConnection, policy: Uuid) -> anyhow::Result<i64>
 async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     use std::time::Duration;
     let service = crate::automation::Automation::connect(
-        host.app.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            host.app.flow.planning.clone(),
+            options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
         host.app.flow.assets.clone(),
         host.app.flow.compliance.clone(),
-        options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -1200,7 +1203,7 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(service.clone()),
+        crate::automation::Resource(service.work.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(

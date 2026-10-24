@@ -127,10 +127,13 @@ async fn template_flow(
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        host.app.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            host.app.flow.planning.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
         host.app.flow.assets.clone(),
         host.app.flow.compliance.clone(),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -139,7 +142,7 @@ async fn template_flow(
     )?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(

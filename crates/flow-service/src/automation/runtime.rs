@@ -4,17 +4,27 @@ use std::sync::Mutex;
 #[path = "completion.rs"]
 mod completion;
 
-pub struct Automation {
+/// Single-step planning execution over the real claims and protected transaction.
+/// It owns no Inventory/Compliance services and cannot register a background runner.
+pub struct PlanningWork {
     service: Arc<Planning>,
-    assets: Arc<assets::AssetService>,
-    compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
     store: rss_reconcile_postgres::PgStore,
 }
-impl Automation {
+
+pub struct Automation {
+    pub work: Arc<PlanningWork>,
+    assets: Arc<assets::AssetService>,
+    compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+}
+impl std::ops::Deref for Automation {
+    type Target = PlanningWork;
+    fn deref(&self) -> &Self::Target {
+        &self.work
+    }
+}
+impl PlanningWork {
     pub async fn connect(
         service: Arc<Planning>,
-        assets: Arc<assets::AssetService>,
-        compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
         options: sqlx::postgres::PgConnectOptions,
     ) -> std::result::Result<Arc<Self>, Error> {
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -33,19 +43,44 @@ impl Automation {
                 return Err(Error::Unavailable(Failure::AutomationAdmission));
             }
         };
-        // Startup retries retained input without discarding its failure diagnosis.
-        if rss_reconcile::DurableStore::wake(&store, &asset_target(service.tenant), &control)
-            .await
-            .is_err()
+        Ok(Arc::new(Self { service, store }))
+    }
+    pub async fn close(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        let timer = Timer::new();
+        let cancel = CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        match self.store.close(&control).await {
+            rss_reconcile_postgres::CloseOutcome::Drained => Ok(()),
+            _ => Err(rss_runtime::ShutdownError::new(std::io::Error::other(
+                "automation storage did not drain",
+            ))),
+        }
+    }
+}
+impl Automation {
+    pub async fn connect(
+        work: Arc<PlanningWork>,
+        assets: Arc<assets::AssetService>,
+        compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
+    ) -> std::result::Result<Arc<Self>, Error> {
+        let timer = Timer::new();
+        let cancel = CancellationToken::new();
+        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+        if rss_reconcile::DurableStore::wake(
+            work.as_ref(),
+            &asset_target(work.service.tenant),
+            &control,
+        )
+        .await
+        .is_err()
         {
-            let _ = store.close(&control).await;
+            let _ = work.close().await;
             return Err(Error::Unavailable(Failure::AutomationStorage));
         }
         Ok(Arc::new(Self {
-            service,
+            work,
             assets,
             compliance,
-            store,
         }))
     }
     pub fn registration(
@@ -62,7 +97,7 @@ impl Automation {
                 initial_backoff:Duration::from_secs(1),max_backoff:Duration::from_secs(30),max_attempts:1000,
             }).map_err(rss_runtime::ShutdownError::new)?;
             let scope=rss_reconcile::Scope::new(self.service.tenant,"mdm.assets").expect("constant domain");
-            let runner=async {rss_reconcile::run_with_notify(self.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
+            let runner=async {rss_reconcile::run_with_notify(self.work.as_ref(),self.as_ref(),&scope,policy,&control,signals.automation(),|event| {
                 eprintln!("{}",serde_json::json!({"event":"mdm_automation_failure","diagnostic":format!("{event:?}")}));
                 self.service.record_runner_failure(event);
             }).await.map(|_|()).map_err(rss_runtime::ShutdownError::new)};
@@ -91,7 +126,7 @@ impl Automation {
         })
     }
 }
-pub struct Resource(pub Arc<Automation>);
+pub struct Resource(pub Arc<PlanningWork>);
 impl rss_runtime::ManagedResource for Resource {
     fn name(&self) -> &str {
         "asset-automation-postgres"
@@ -100,15 +135,7 @@ impl rss_runtime::ManagedResource for Resource {
         Duration::from_secs(8)
     }
     async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        let timer = Timer::new();
-        let cancel = CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        match self.0.store.close(&control).await {
-            rss_reconcile_postgres::CloseOutcome::Drained => Ok(()),
-            _ => Err(rss_runtime::ShutdownError::new(std::io::Error::other(
-                "asset automation storage did not drain",
-            ))),
-        }
+        self.0.close().await
     }
 }
 fn reconcile_error(error: Error) -> rss_reconcile::Error {
@@ -138,9 +165,8 @@ fn fault(error: Fault, reason: &Mutex<Option<Error>>) -> PgError {
         Fault::Sql(error) => error.into(),
     }
 }
-impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
-    type State = bool;
-    fn observe<T: rss_reconcile::Timer>(
+impl PlanningWork {
+    pub fn observe<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         control: &rss_reconcile::Control<'_, T>,
@@ -156,12 +182,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                 .local_tx_with_context(
                     self.service.tenant,
                     deadline(),
-                    (
-                        &self.service,
-                        claim.target().entity(),
-                        &failure,
-                        &self.assets,
-                    ),
+                    (&self.service, claim.target().entity(), &failure),
                     |ctx, tx| {
                         Box::pin(async move {
                             let result = if ctx.1 == "changes" {
@@ -203,11 +224,23 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
             ))
         })
     }
-    fn apply<T: rss_reconcile::Timer>(
+    pub fn apply<T: rss_reconcile::Timer>(
         &self,
         claim: &rss_reconcile_postgres::PgClaim,
         _: ReconcileDiff<bool>,
         control: &rss_reconcile::Control<'_, T>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
+    {
+        self.apply_with(claim, control, None)
+    }
+    fn apply_with<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+        inventory: Option<(
+            &assets::AssetService,
+            &rss_mdm_inventory_service::compliance::Compliance,
+        )>,
     ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
     {
         Box::pin(async move {
@@ -223,13 +256,7 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     (
                         &self.service,
                         claim,
-                        (
-                            &self.service,
-                            claim.target().entity(),
-                            &failure,
-                            &self.assets,
-                            &self.compliance,
-                        ),
+                        (&self.service, claim.target().entity(), &failure, inventory),
                     ),
                     |(service, claim, context), tx| {
                         Box::pin(async move {
@@ -290,7 +317,16 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                     Box::pin(async move {
                                         let result: Result<()> = async {
                                             if ctx.1 == "changes" {
-                                                ctx.0.dispatch_assets_in(tx, ctx.4).await?;
+                                                ctx.0
+                                                    .dispatch_assets_in(
+                                                        tx,
+                                                        ctx.3
+                                                            .ok_or(Error::Unavailable(
+                                                                Failure::AutomationAdmission,
+                                                            ))?
+                                                            .1,
+                                                    )
+                                                    .await?;
                                                 return ctx.0.clear_ingress_failure_in(tx).await;
                                             }
                                             let (id, job, done, cursor, assignment) =
@@ -300,12 +336,20 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                                             }
                                             match job {
                                                 JobInput::Compliance { ref input } => ctx
-                                                    .4
+                                                    .3
+                                                    .ok_or(Error::Unavailable(
+                                                        Failure::AutomationAdmission,
+                                                    ))?
+                                                    .1
                                                     .advance(tx, id, input, cursor)
                                                     .await
                                                     .map_err(Into::into),
                                                 JobInput::AssetQuery { .. } => ctx
                                                     .3
+                                                    .ok_or(Error::Unavailable(
+                                                        Failure::AutomationAdmission,
+                                                    ))?
+                                                    .0
                                                     .advance_asset_query_in(
                                                         tx,
                                                         id,
@@ -474,5 +518,28 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
                     |error| Err(storage_error(error)),
                 )
         })
+    }
+}
+
+impl Reconciler<rss_reconcile_postgres::PgClaim> for Automation {
+    type State = bool;
+    fn observe<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<ReconcileDiff<bool>, rss_reconcile::Error>,
+    > + Send {
+        self.work.observe(claim, control)
+    }
+    fn apply<T: rss_reconcile::Timer>(
+        &self,
+        claim: &rss_reconcile_postgres::PgClaim,
+        _: ReconcileDiff<bool>,
+        control: &rss_reconcile::Control<'_, T>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), rss_reconcile::Error>> + Send
+    {
+        self.work
+            .apply_with(claim, control, Some((&self.assets, &self.compliance)))
     }
 }

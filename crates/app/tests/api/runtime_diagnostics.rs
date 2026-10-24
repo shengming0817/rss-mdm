@@ -332,17 +332,20 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
     ))?;
     let automation = crate::automation::Automation::connect(
-        fixture.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            fixture.flow.planning.clone(),
+            config
+                .flow
+                .storage
+                .database
+                .options()?
+                .username(&role)
+                .password("diagnostic-fixture")
+                .application_name(&role),
+        )
+        .await?,
         fixture.flow.assets.clone(),
         fixture.flow.compliance.clone(),
-        config
-            .flow
-            .storage
-            .database
-            .options()?
-            .username(&role)
-            .password("diagnostic-fixture")
-            .application_name(&role),
     )
     .await?;
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
@@ -440,7 +443,9 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;
     pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
     let clean = stack.shutdown().join().await?.is_clean();
-    crate::automation::Resource(automation).shutdown().await?;
+    crate::automation::Resource(automation.work.clone())
+        .shutdown()
+        .await?;
     pg(&format!("DROP ROLE {role}"))?;
     fixture.close().await?;
     result?;
@@ -630,10 +635,13 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     )
     .await?;
     let automation = crate::automation::Automation::connect(
-        fixture.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            fixture.flow.planning.clone(),
+            config.flow.storage.database.options()?,
+        )
+        .await?,
         fixture.flow.assets.clone(),
         fixture.flow.compliance.clone(),
-        config.flow.storage.database.options()?,
     )
     .await?;
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
@@ -748,7 +756,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     }
     .await;
     ensure!(!stack.shutdown().join().await?.is_clean());
-    crate::automation::Resource(automation).shutdown().await?;
+    crate::automation::Resource(automation.work.clone())
+        .shutdown()
+        .await?;
     ensure!(component(&fixture.query().await?, "inventory")["task"] == "failed");
     fixture.close().await?;
     result

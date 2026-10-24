@@ -106,7 +106,6 @@ pub(crate) async fn planning(t: TenantId) -> Planning {
             .unwrap(),
     );
     let clock = Arc::new(crate::clock::SystemClock);
-    crate::flow::admit_storage(&runtime, t).await.unwrap();
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, t)
         .await
         .unwrap();
@@ -397,7 +396,7 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
 }
 
 pub(crate) async fn claim_job(
-    worker: &crate::automation::Automation,
+    worker: &crate::automation::PlanningWork,
     task: Uuid,
     lease: Duration,
 ) -> rss_reconcile_postgres::PgClaim {
@@ -469,6 +468,8 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
 pub(crate) struct RunningAutomation {
     stack: rss_runtime::ShutdownStack,
     automation: Arc<crate::automation::Automation>,
+    pub(crate) assets: Arc<assets::AssetService>,
+    inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
 }
 impl RunningAutomation {
     pub(crate) async fn start(service: Arc<Planning>) -> Self {
@@ -481,11 +482,25 @@ impl RunningAutomation {
             .password("runtime-fixture")
             .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
             .ssl_root_cert(config["ca"].as_str().unwrap());
+        let inventory = inventory_runtime(service.tenant).await;
+        let key = rss_mdm_flow_service::storage::cursor_key(&service.runtime, service.tenant)
+            .await
+            .unwrap();
+        let assets = Arc::new(assets::AssetService::new(
+            inventory.clone(),
+            service.audit_store.clone(),
+            service.runtime.clone(),
+            service.tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        ));
         let automation = crate::automation::Automation::connect(
-            service.clone(),
-            assets(&service).await,
+            crate::automation::PlanningWork::connect(service.clone(), options)
+                .await
+                .unwrap(),
+            assets.clone(),
             compliance(&service).await,
-            options,
         )
         .await
         .unwrap();
@@ -509,13 +524,21 @@ impl RunningAutomation {
             automation.clone().registration(signals.flow()).critical(),
         );
         launch.finish();
-        Self { stack, automation }
+        Self {
+            stack,
+            automation,
+            assets,
+            inventory,
+        }
     }
     pub(crate) async fn stop(self) {
         assert!(self.stack.shutdown().join().await.unwrap().is_clean());
-        rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(self.automation))
-            .await
-            .unwrap();
+        self.inventory.close_fixture().await.unwrap();
+        rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(
+            self.automation.work.clone(),
+        ))
+        .await
+        .unwrap();
     }
 }
 

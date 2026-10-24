@@ -288,6 +288,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         )
         .await?;
     ensure!(status == StatusCode::FORBIDDEN);
+    crate::audit_test_support::projection::drain(TenantId::parse(case_tenant())?, rss_audit_postgres::Integrity::Plain).await?;
     let stored = audit_records().await?;
     let page = f.get(&format!("/api/v1/devices/{device}/timeline")).await?;
     let items = page["items"].as_array().unwrap();
@@ -348,7 +349,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     for _ in 0..6 {
         f.get("/api/v1/audit-events").await?;
     }
-    audit_records().await?;
+    crate::audit_test_support::projection::drain(TenantId::parse(case_tenant())?, rss_audit_postgres::Integrity::Plain).await?;
     let first = f.get("/api/v1/audit-events?limit=2").await?;
     let through = first["coverage"]["indexedThrough"].as_u64().unwrap();
     let all = f.get("/api/v1/audit-events?limit=200").await?;
@@ -362,7 +363,7 @@ async fn fixed_watermark_pagination_survives_new_events_and_rebuild_rejects_old_
     let mut items = first["items"].as_array().unwrap().clone();
     let mut cursor = first["nextCursor"].as_str().map(str::to_owned);
     f.get("/api/v1/audit-events").await?;
-    audit_records().await?;
+    crate::audit_test_support::projection::drain(TenantId::parse(case_tenant())?, rss_audit_postgres::Integrity::Plain).await?;
     let stale = cursor.clone().unwrap();
     for _ in 0..50 {
         let Some(token) = cursor.take() else { break };

@@ -627,15 +627,18 @@ async fn start_fixture_format(
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::automation::Automation::connect(
-        host.app.flow.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            host.app.flow.planning.clone(),
+            crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
+        )
+        .await?,
         host.app.flow.assets.clone(),
         host.app.flow.compliance.clone(),
-        crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
     )
     .await?;
     let mut startup = owner.startup()?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(

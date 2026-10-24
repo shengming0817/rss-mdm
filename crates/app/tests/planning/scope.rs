@@ -349,14 +349,9 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     .await
     .unwrap();
     let task = Uuid::parse_str(saved["task"].as_str().unwrap()).unwrap();
-    let worker = crate::automation::Automation::connect(
-        first.clone(),
-        assets(&first).await,
-        compliance(&first).await,
-        options(),
-    )
-    .await
-    .unwrap();
+    let worker = crate::automation::PlanningWork::connect(first.clone(), options())
+        .await
+        .unwrap();
     crate::automation::jobs::forward_jobs(&first.runtime, first.tenant, &first.audit_store)
         .await
         .unwrap();
@@ -391,14 +386,9 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         .unwrap();
 
     let second = Arc::new(planning(tenant()).await);
-    let worker = crate::automation::Automation::connect(
-        second.clone(),
-        assets(&second).await,
-        compliance(&second).await,
-        options(),
-    )
-    .await
-    .unwrap();
+    let worker = crate::automation::PlanningWork::connect(second.clone(), options())
+        .await
+        .unwrap();
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
     for _ in 0..16 {
         let diff = worker.observe(&claim, &control).await.unwrap();

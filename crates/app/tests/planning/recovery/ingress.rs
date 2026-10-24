@@ -89,7 +89,7 @@ async fn release(worker: &Worker, claim: &PgClaim) {
 }
 
 async fn close(worker: Arc<Worker>, service: &Planning) {
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;

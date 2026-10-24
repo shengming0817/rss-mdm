@@ -181,6 +181,7 @@ def execute_case(job, builds, fixtures, case_dir, output, rendezvous=None):
                     builds.execute(job.case, fixture.env, case_dir)
                 else:
                     builds.execute_python(job.module, fixture, case_dir)
+                builds.processes.check()
                 common['executionEndedMonotonic'] = time.monotonic()
                 phase = 'cleanup'
         result = stage_result('passed', begin, **common)

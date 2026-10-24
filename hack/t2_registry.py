@@ -14,7 +14,7 @@ APP = Build('rss-mdm-app', features=('integration',))
 
 
 # One fixture-owned preparation target. Names are discovered, not copied here.
-PREPARATION = Module('preparation', APP, ('test_support::prepare',), expected_cases=1)
+PREPARATION = Module('preparation', APP, ('test_support::preparation::prepare',), expected_cases=1)
 
 MODULES: dict[str, Module] = {}
 
@@ -660,7 +660,7 @@ MODULES['apple.fairness'] = replace(MODULES['apple.fairness'], db_mode='reuse', 
 MODULES['apple.host'] = replace(MODULES['apple.host'], db_mode='fresh', scope='objects')
 
 # These cases need the production consumers; precise stop/restart tests own theirs.
-for name in ('assets.queries', 'assets.sources', 'assets.group_input', 'planning.http',
+for name in ('planning.http',
              'planning.policy', 'planning.agent_policy', 'planning.frequency', 'planning.software', 'planning.onboarding', 'compliance.evaluation', 'compliance.recovery',
              'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history',
              'execution.agent.poll', 'execution.agent.recovery', 'execution.software.offer',
@@ -1431,6 +1431,7 @@ CONTROL_INPUTS = {
 # helper inputs even when historical descriptions listed them as shared support.
 TOOL_ONLY_INPUTS = (
     'crates/app/tests/support/mod.rs',
+    'crates/app/tests/support/preparation.rs',
     'crates/app/tests/support/pki.rs',
     'hack/t2_model.py',
     'hack/t2_registry.py',
@@ -1453,6 +1454,7 @@ TOOL_ONLY_INPUTS = (
 # covered by tool tests; none of these declarations adds a business matrix.
 PG_REPRESENTATIVES = ('api.identity_context', 'group.persistence', 'policy.persistence')
 REPRESENTATIVE_INPUTS = {
+    'crates/app/tests/support/preparation.rs': ('api.identity_context', 'agent.registration'),
     'crates/app/tests/support/pki.rs': ('agent.registration',),
     'hack/t2_execution.py': ('policy.persistence',),
     'hack/t2_python.py': ('host.lifecycle', 'gateway.admission'),
@@ -2028,6 +2030,7 @@ consume(('crates/agent-wire/src/telemetry.rs','crates/agent-wire/src/telemetry_g
 
 # The shared entry point contains declarations only; Rust checks its composition.
 TOOL_INPUTS['crates/app/tests/support/mod.rs'] = ('test_t2_modules',)
+TOOL_INPUTS['crates/app/tests/support/preparation.rs'] = ('test_t2_fixtures',)
 TOOL_INPUTS['crates/app/tests/support/pki.rs'] = ('test_t2_modules',)
 consume(('crates/agent-wire/src/native_collection.rs','crates/agent-wire/src/native_collection/*.rs'),
         'telemetry.ingress.postgres')

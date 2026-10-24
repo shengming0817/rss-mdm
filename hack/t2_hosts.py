@@ -114,8 +114,10 @@ class Host:
             code = self.child.poll()
             if code is not None and not self.stopping.is_set():
                 self.record_failure(code)
-            require(not self.failed.is_set() and code is None,
-                    f'public T2 host died; this environment cannot be reused; see {self.log_path}')
+            if self.failed.is_set() or code is not None:
+                error = RuntimeError(f'public T2 host died; this environment cannot be reused; see {self.log_path}')
+                error.root_cause = str(self.log_path.with_name('failure.json'))
+                raise error
 
     def close(self):
         with self.state_lock:

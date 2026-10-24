@@ -227,7 +227,7 @@ class RunFixtures:
                 # The caller owns a credential snapshot; a later refresh cannot overwrite it.
                 return root, state['management'], (root / 'source-session').read_text()
             except BaseException as error:
-                error.root_cause = str(output / 'environment' / 'test.log')
+                error.root_cause = str(output.parent / 'fixture.log')
                 self.identities[key] = error
                 raise
 
@@ -293,7 +293,9 @@ class RunFixtures:
                             secret=(root / f"credential-{actor['tenant']}-{actor['role']}").read_text(),
                             until=json.loads((root / f"credential-meta-{actor['tenant']}-{actor['role']}").read_text()))
             except BaseException as error:
+                error.root_cause = str(output.parent / 'fixture.log')
                 with self.lock:
+                    state['origin'] = job.key
                     state['error'] = error
                     batch += state['pending']
                     state['pending'] = []
@@ -305,7 +307,9 @@ class RunFixtures:
                     for member in batch:
                         member['done'].set()
         if item['error'] is not None:
-            raise RuntimeError('actor batch preparation failed') from item['error']
+            if state['origin'] == job.key:
+                raise item['error']
+            raise DependencyBlocked('actor batch preparation failed', item['error']) from item['error']
 
     def prepare_materials(self, kind, root, materials=()):
         inputs = {name: (root / name).read_bytes() for name in ('ca.crt', 'server.crt', 'server.key')}
@@ -405,7 +409,6 @@ class RunFixtures:
             try:
                 with self.builds.processes.depending_on(host.check):
                     yield host
-                    host.check()
             except BaseException as error:
                 if host.failed.is_set():
                     error.root_cause = str(host.log_path.with_name('failure.json'))
@@ -600,11 +603,12 @@ class RunFixtures:
                                   migration_config=migration_config, owner=owner,
                                   binary=self.builds.executables.get('rss-mdm'), context=self)
         finally:
+            original = sys.exc_info()
             receipt['cleanupStarted'] = time.monotonic()
             try:
                 with diagnostic_phase('cleanup'), self.builds.processes.cleanup():
                     try:
-                        stack.close()
+                        stack.__exit__(*original)
                     finally:
                         if module.python == 'gateway' and self.gateway_owner.root.exists():
                             self.gateway_owner.reset()

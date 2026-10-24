@@ -103,14 +103,17 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
         )
         .await?;
     let automation = crate::automation::Automation::connect(
-        service.planning.clone(),
+        crate::automation::PlanningWork::connect(
+            service.planning.clone(),
+            config.flow.storage.database.options()?,
+        )
+        .await?,
         service.assets.clone(),
         service.compliance.clone(),
-        config.flow.storage.database.options()?,
     )
     .await?;
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        crate::automation::Resource(automation.clone()),
+        crate::automation::Resource(automation.work.clone()),
     ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_options()?,

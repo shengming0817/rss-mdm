@@ -406,10 +406,11 @@ async fn live_checkpoint_restart_fences_old_worker() {
     use rss_reconcile::{ActualState, DesiredState, DurableStore, ReconcileDiff, Reconciler};
     let first = Arc::new(planning(tenant()).await);
     let old = crate::automation::Automation::connect(
-        first.clone(),
+        crate::automation::PlanningWork::connect(first.clone(), options())
+            .await
+            .unwrap(),
         assets(&first).await,
         compliance(&first).await,
-        options(),
     )
     .await
     .unwrap();
@@ -424,16 +425,17 @@ async fn live_checkpoint_restart_fences_old_worker() {
     old.apply(&stale, diff(), &control).await.unwrap();
     let checkpoint = snapshot(task);
     assert_eq!(serde_json::from_str::<Value>(&checkpoint).unwrap()[3], 128);
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(old.clone()))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(old.work.clone()))
         .await
         .unwrap();
 
     let second = Arc::new(planning(tenant()).await);
     let resumed = crate::automation::Automation::connect(
-        second.clone(),
+        crate::automation::PlanningWork::connect(second.clone(), options())
+            .await
+            .unwrap(),
         assets(&second).await,
         compliance(&second).await,
-        options(),
     )
     .await
     .unwrap();
@@ -501,7 +503,7 @@ async fn live_checkpoint_restart_fences_old_worker() {
         .finish(&current, rss_reconcile::Completion::Converged, &control)
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed.work.clone()))
         .await
         .unwrap();
     first.runtime.close().await;
@@ -514,10 +516,11 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     use rss_reconcile::DurableStore;
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -559,7 +562,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     .unwrap();
     let scope = rss_reconcile::Scope::new(tenant(), "mdm.assets").unwrap();
     let runner = rss_reconcile::run(
-        worker.as_ref(),
+        worker.work.as_ref(),
         worker.as_ref(),
         &scope,
         policy,
@@ -605,7 +608,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
             .count(),
         1
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;
@@ -617,19 +620,21 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     use rss_reconcile::{DurableStore, Reconciler};
     let service = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options(),
     )
     .await
     .unwrap();
     let peer_service = Arc::new(planning(tenant()).await);
     let peer = crate::automation::Automation::connect(
-        peer_service.clone(),
+        crate::automation::PlanningWork::connect(peer_service.clone(), options())
+            .await
+            .unwrap(),
         assets(&peer_service).await,
         compliance(&peer_service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -704,10 +709,11 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
     // Even an instance started after the failure must retain the diagnosis.
     let late_service = Arc::new(planning(tenant()).await);
     let late = crate::automation::Automation::connect(
-        late_service.clone(),
+        crate::automation::PlanningWork::connect(late_service.clone(), options())
+            .await
+            .unwrap(),
         assets(&late_service).await,
         compliance(&late_service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -722,20 +728,21 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended,
         "startup cleared failure before successful recovery"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(late))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(late.work.clone()))
         .await
         .unwrap();
     late_service.runtime.close().await;
     service.runtime.close().await;
     let restarted = Arc::new(planning(tenant()).await);
     let worker = crate::automation::Automation::connect(
-        restarted.clone(),
+        crate::automation::PlanningWork::connect(restarted.clone(), options())
+            .await
+            .unwrap(),
         assets(&restarted).await,
         compliance(&restarted).await,
-        options(),
     )
     .await
     .unwrap();
@@ -768,7 +775,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
         )),
         "t"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     assert!(
@@ -792,7 +799,7 @@ async fn suspended_ingress_fails_readiness_and_restart_recovers_forwarded_input(
             .suspended,
         "recovered checkpoint not visible to peer"
     );
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(peer))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(peer.work.clone()))
         .await
         .unwrap();
     peer_service.runtime.close().await;
@@ -809,10 +816,11 @@ async fn corrupt_background_query_is_not_client_input() {
         "SELECT input FROM mdm_automation.automation_jobs WHERE id='{task}'"
     ));
     let worker = crate::automation::Automation::connect(
-        service.clone(),
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
         assets(&service).await,
         compliance(&service).await,
-        options(),
     )
     .await
     .unwrap();
@@ -869,7 +877,7 @@ async fn corrupt_background_query_is_not_client_input() {
     let completed: Value = serde_json::from_str(&snapshot(task)).unwrap();
     assert_eq!(completed[1], true);
     assert_eq!(completed[4], 1);
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker))
+    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
         .await
         .unwrap();
     service.runtime.close().await;
