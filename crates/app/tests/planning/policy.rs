@@ -106,6 +106,8 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
         let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let mut hold = observer.begin().await?;
         crate::Database::configure_transaction(&mut hold, case_tenant()).await?;
+        // The observer may wait for a live worker before starting the tested request.
+        sqlx::query("SELECT set_config('statement_timeout','5000',true),set_config('lock_timeout','5000',true)").execute(&mut *hold).await?;
         rss_mdm_inventory_postgres::lock_watermark_in(&mut hold, rss_request_context::TenantId::parse(case_tenant())?).await?;
         let release = async {
             let observed = tokio::time::timeout(Duration::from_secs(3), async {

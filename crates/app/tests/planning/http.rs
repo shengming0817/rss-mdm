@@ -367,19 +367,15 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(
-        &subject,
-        json!([
-            "group_read",
-            "group_write",
-            "scope_read",
-            "scope_write",
-            "resource_read",
-            "resource_write",
-            "policy_read", "policy_write"
-        ]),
-    )
-    .await?;
+    let mut grants = identity::device_grants(None, &["inventory_read", "account_write"])?;
+    for operation in ["group_read", "group_write", "scope_read", "scope_write",
+        "resource_read", "resource_write", "policy_read", "policy_write"] {
+        grants.push(crate::authorization::Grant {
+            operation: serde_json::from_value(json!(operation))?,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    identity::set_grants(case_tenant(), &subject, grants).await?;
     let mut groups = [Uuid::new_v4(), Uuid::new_v4()];
     groups.sort();
     for (i, id) in groups.iter().enumerate() {

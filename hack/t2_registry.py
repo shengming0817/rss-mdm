@@ -2223,6 +2223,32 @@ consume(('crates/inventory-service/src/compliance/directory.rs',), 'compliance.h
 consume(('crates/software-service/src/management/directory.rs', 'crates/software-service/src/management/publication/directory.rs'), 'software.http')
 consume(('crates/software-service/src/agent_packages/*.rs',), 'agent.configurations')
 
+# These cases upload artifacts or assemble publication; declare their real storage dependency.
+for name, selector in (
+    ('authorization.programmatic', 'authorization::t2::programmatic::streamed_content_rejects_rotated_key_before_binding'),
+    ('authorization.rules', 'authorization::t2::rules::route_permissions::each_route_requires_its_exact_capability'),
+    ('execution.commands.configuration', 'execution::t2::commands::configuration::associated_agent_health_executes_only_original_mdm_and_missing_channel_has_no_effects'),
+    ('execution.commands.configuration', 'execution::t2::commands::configuration::native_object_sets_share_a_device_and_withdraw_only_their_own_objects'),
+    ('windows.declared', 'windows::t2::declared::declared_policy_delete_claims_recover_from_unknown_commit'),
+    ('windows.declared', 'windows::t2::declared::signed_parent_enrollment_independent_tls_and_retirement'),
+    ('apple.collection', 'apple::tests::collection::disabled_template_policy_rejects_first_report'),
+    ('apple.collection', 'apple::tests::collection::published_native_template_uses_policy_and_direct_collection_progress'),
+    ('apple.collection', 'apple::tests::collection::template_access_rights_change_rejects_first_report'),
+    ('apple.collection', 'apple::tests::collection::template_revocation_prevents_dispatch'),
+    ('apple.collection', 'apple::tests::collection::template_revocation_rejects_first_report'),
+    ('apple.collection', 'apple::tests::collection::user_collection_cannot_cross_device_or_other_user_namespace'),
+    ('apple.identity', 'apple::tests::identity::token_is_required_before_management'),
+    ('apple.identity', 'apple::tests::identity::replacement_token_fencing_and_retirement'),
+    ('apple.fairness', 'apple::tests::fairness::expired_queue_does_not_starve_current_collection'),
+    ('apple.account_enrollment', 'apple::tests::account_enrollment::account_enrollment_and_reauthentication_keep_one_registration'),
+):
+    module = MODULES[name]
+    previous = next((p for p in module.policies if p.selector == selector),
+                    CasePolicy(selector, module.db_mode, module.scope))
+    fixtures = previous.fixtures if previous.fixtures is not None else module.fixtures
+    policy = replace(previous, fixtures=tuple(dict.fromkeys((*fixtures, 'content'))))
+    MODULES[name] = replace(module, policies=(*[p for p in module.policies if p.selector != selector], policy))
+
 if __name__ == '__main__':
     import argparse
     import json

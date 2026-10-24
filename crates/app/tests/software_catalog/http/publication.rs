@@ -259,7 +259,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .call(
             &f.router,
             Method::GET,
-            &format!("{collection}?operationId={operation}"),
+            &format!("{collection}?filter=operationId=={operation}"),
             None,
         )
         .await?;
@@ -386,7 +386,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             &f.router,
             Method::GET,
             &format!(
-                "{collection}?operationId={}",
+                "{collection}?filter=operationId=={}",
                 recovery["operationId"].as_str().unwrap()
             ),
             None,
