@@ -33,8 +33,8 @@ class RunFixtures:
         self.builds = builds
         self.output = output
         self.costs = Costs()
-        self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1))
-        self.fault = DatabasePool(builds, 't2-fault', self.costs, 128)
+        self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1), output / 'resources')
+        self.fault = DatabasePool(builds, 't2-fault', self.costs, 128, output / 'resources')
         self.gateway_owner = Environment(group='t2-gateway')
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
         self.root = Path(self.cert_directory.name)
@@ -327,7 +327,7 @@ class RunFixtures:
             self.builds.processes.check()
             source = self.materials.get(digest)
             if isinstance(source, BaseException):
-                raise RuntimeError('cryptographic material preparation previously failed') from source
+                raise DependencyBlocked('cryptographic material preparation previously failed', source) from source
             if source is None:
                 source = self.root / ('materials-' + digest)
                 try:
@@ -351,6 +351,10 @@ class RunFixtures:
                     self.materials[digest] = source
                     self.costs.increment('cryptographicMaterialSets', 1)
                 except BaseException as error:
+                    error.root_cause = str(self.output / 'materials' / f'{digest}-failure.json')
+                    from verification_result import publish
+                    publish(Path(error.root_cause), dict(status='failed', phase='cryptographic-materials',
+                            kind=kind, materials=list(materials), errorClass=type(error).__name__))
                     self.materials[digest] = error
                     raise
         def relocate(value):

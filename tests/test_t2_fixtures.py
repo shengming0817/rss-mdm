@@ -17,11 +17,58 @@ from t2_registry import MODULES
 
 class PoolTests(unittest.TestCase):
     def pool(self):
-        pool = DatabasePool(Mock(), 't2', Costs(), 384)
+        pool = DatabasePool(Mock(), 't2', Costs(), 384, Path(tempfile.gettempdir()) / 't2-fixture-unit')
         pool.postgres = Mock()
-        pool.owner = Mock()
+        pool.owner = Mock(project='pg-test')
         pool.clone = Mock(side_effect=lambda profile, prefix: prefix + profile)
         return pool
+
+    def test_first_postgres_failure_is_recorded_and_later_consumers_are_blocked(self):
+        from verification_result import DependencyBlocked
+        with tempfile.TemporaryDirectory() as temporary:
+            pool = DatabasePool(Mock(), 't2', Costs(), 384, Path(temporary))
+            pool.owner = Mock(project='pg-test')
+            failure = RuntimeError('startup rejected')
+            pool.owner.up.side_effect = failure
+            with self.assertRaises(RuntimeError) as first:
+                pool.postgres()
+            self.assertIs(first.exception, failure)
+            self.assertEqual(json.loads(Path(failure.root_cause).read_text())['phase'], 'postgres-start')
+            with self.assertRaises(DependencyBlocked) as later:
+                pool.postgres()
+            self.assertEqual(later.exception.root_cause, failure.root_cause)
+            pool.owner.up.assert_called_once()
+
+    def test_profile_failure_blocks_only_that_profile(self):
+        from verification_result import DependencyBlocked
+        with tempfile.TemporaryDirectory() as temporary:
+            pool = DatabasePool(Mock(), 't2', Costs(), 384, Path(temporary))
+            pool.owner = Mock(project='pg-test')
+            pool.ready = True
+            failure = RuntimeError('baseline rejected')
+            pool.owner.sql.side_effect = failure
+            with self.assertRaises(RuntimeError) as first:
+                pool.template('product')
+            self.assertIs(first.exception, failure)
+            with self.assertRaises(DependencyBlocked) as later:
+                pool.template('product')
+            self.assertEqual(later.exception.root_cause, failure.root_cause)
+            independent = ('backend-template', {}, 'coordinates')
+            pool.templates['backend'] = independent
+            self.assertEqual(pool.template('backend'), independent)
+            pool.owner.sql.assert_called_once()
+
+    def test_cleanup_failure_preserves_case_failure_and_quarantines_owner(self):
+        pool = self.pool()
+        pool.sample_connections = Mock()
+        pool.owner.sql.side_effect = RuntimeError('drop failed')
+        failure = RuntimeError('business failed')
+        with self.assertRaises(RuntimeError) as original:
+            with pool.disposable('product'):
+                raise failure
+        self.assertIs(original.exception, failure)
+        self.assertIsNotNone(pool.cleanup_error)
+        self.assertTrue(any('drop failed' in note for note in failure.__notes__))
 
     def test_compatible_cases_share_database_without_cloning_per_worker(self):
         pool = self.pool()
@@ -63,7 +110,7 @@ class PoolTests(unittest.TestCase):
             pool.owner.reset.assert_not_called()
 
     def test_quarantined_fault_is_replaced_for_next_case_only(self):
-        pool = DatabasePool(Mock(), 't2-fault', Costs(), 128)
+        pool = DatabasePool(Mock(), 't2-fault', Costs(), 128, Path(tempfile.gettempdir()) / 't2-fixture-unit')
         pool.owner = Mock()
         pool.owner.sql.return_value = '128'
         pool.dirty = True
@@ -304,6 +351,26 @@ class PreparationTests(unittest.TestCase):
             (roots[0] / 'device.key').write_text('corrupted')
             self.assertEqual((roots[1] / 'device.key').read_text(), 'original')
             self.assertEqual(json.loads((roots[1] / 'windows.json').read_text())['path'], str(roots[1] / 'device.key'))
+
+    def test_failed_materials_reference_the_original_failure(self):
+        from verification_result import DependencyBlocked
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = self.fixture(Path(tmp))
+            self.addCleanup(fixture.cert_directory.cleanup)
+            root = Path(tmp) / 'input'
+            root.mkdir()
+            for name in ('ca.crt', 'server.crt', 'server.key'):
+                (root / name).write_text(name)
+            failure = RuntimeError('material generation failed')
+            with patch('windows_fixtures.generate', side_effect=failure) as generate:
+                with self.assertRaises(RuntimeError) as first:
+                    fixture.prepare_materials('windows', root)
+                self.assertIs(first.exception, failure)
+                self.assertTrue(Path(failure.root_cause).is_file())
+                with self.assertRaises(DependencyBlocked) as later:
+                    fixture.prepare_materials('windows', root)
+                self.assertEqual(later.exception.root_cause, failure.root_cause)
+                generate.assert_called_once()
 
     def test_failed_identity_environment_is_not_retried_by_later_cases(self):
         with tempfile.TemporaryDirectory() as tmp:
