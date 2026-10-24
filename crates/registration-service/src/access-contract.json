@@ -315,7 +315,8 @@
     "mdm_access.directory_users",
     "mdm_access.directory_metadata",
     "mdm_access.directory_channels",
-    "mdm_access.directory_enrollments"
+    "mdm_access.directory_enrollments",
+    "mdm_access.directory_inputs"
   ],
   "verified_schemas": []
 }

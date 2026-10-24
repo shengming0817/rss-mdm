@@ -143,18 +143,17 @@ pub async fn details_in(
                 && fact.field == field
                 && fact.fact.evidence.source.as_str() == source.as_str()
                 && fact.fact.evidence.snapshot_id == id.to_string()
-        }) {
-            if let State::Known(Scalar::String(value)) = &fact.fact.state {
-                result.insert(
-                    (registration, generation, source.as_str().to_owned()),
-                    Current {
-                        state: value.clone(),
-                        snapshot: id,
-                        received_at,
-                        evidence,
-                    },
-                );
-            }
+        }) && let State::Known(Scalar::String(value)) = &fact.fact.state
+        {
+            result.insert(
+                (registration, generation, source.as_str().to_owned()),
+                Current {
+                    state: value.clone(),
+                    snapshot: id,
+                    received_at,
+                    evidence,
+                },
+            );
         }
     }
     Ok(result)

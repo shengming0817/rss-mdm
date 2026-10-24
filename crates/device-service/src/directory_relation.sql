@@ -1,5 +1,14 @@
-candidate_input AS MATERIALIZED (
- SELECT tenant_id,id,status FROM mdm_access.directory_metadata WHERE tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2)) LIMIT ($9::bigint+1)
+source_input AS MATERIALIZED (
+ SELECT tenant_id FROM (
+  SELECT tenant_id FROM mdm_access.directory_inputs
+  UNION ALL SELECT tenant_id FROM mdm_assets.directory_inputs
+  UNION ALL SELECT tenant_id FROM mdm_devices.members WHERE tenant_id=$1::uuid
+  UNION ALL SELECT tenant_id FROM mdm_devices.associations WHERE tenant_id=$1::uuid
+ ) raw WHERE tenant_id=$1::uuid LIMIT ($9::bigint*256+1)
+), source_budget AS MATERIALIZED (
+ SELECT count(*) AS rows,count(*)<=$9*256 AS ok FROM source_input
+), candidate_input AS MATERIALIZED (
+ SELECT tenant_id,id,status FROM mdm_access.directory_metadata WHERE (SELECT ok FROM source_budget) AND tenant_id=$1::uuid AND ($2::text[] IS NULL OR id=ANY($2)) LIMIT ($9::bigint+1)
 ), candidate_budget AS MATERIALIZED (
  SELECT count(*) AS rows,coalesce(sum(octet_length(id)+octet_length(status)+16),0)::bigint AS bytes,
  count(*)<=$9 AND coalesce(sum(octet_length(id)+octet_length(status)+16),0)<=$9*512 AS ok FROM candidate_input

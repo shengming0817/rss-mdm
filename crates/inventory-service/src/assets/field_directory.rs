@@ -71,10 +71,6 @@ impl AssetService {
                     if !editor {
                         current.inventory_devices(p)?;
                     }
-                    let sensitive = editor
-                        || current
-                            .require(p, Permission::InventorySensitiveRead, None)
-                            .is_ok();
                     let watermark = s.list_watermark(tx).await?;
                     let catalog = catalog_in(tx, s.tenant, watermark).await?;
                     let codec = CursorCodec::from_key(s.asset_cursor_key.clone());
@@ -88,11 +84,7 @@ impl AssetService {
                         ))
                         .map_err(crate::query_error)?;
                     let after = q.after(&codec, &binding).map_err(crate::query_error)?;
-                    let entries = catalog
-                        .fields()
-                        .filter(|f| fields::visible(f, sensitive))
-                        .map(entry)
-                        .collect::<Result<Vec<_>>>()?;
+                    let entries = catalog.fields().map(entry).collect::<Result<Vec<_>>>()?;
                     let mut sql =
                         sqlx::QueryBuilder::new("SELECT document FROM jsonb_array_elements(");
                     sql.push_bind(serde_json::json!(entries))
@@ -143,15 +135,8 @@ impl AssetService {
                     }
                     let catalog = catalog_in(tx, s.tenant, i64::MAX).await?;
                     let field = catalog.definition(key).map_err(|_| Error::NotFound)?;
-                    if !fields::visible(
-                        field,
-                        editor
-                            || current
-                                .require(p, Permission::InventorySensitiveRead, None)
-                                .is_ok(),
-                    ) {
-                        return Err(Error::NotFound.into());
-                    }
+                    // Catalog descriptors are discoverable metadata. Sensitive conditions
+                    // and values remain checked by their existing read/compile owners.
                     let value = entry(field)?;
                     p.check_live()?;
                     audit.require_request_settlement();

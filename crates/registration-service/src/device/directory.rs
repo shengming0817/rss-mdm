@@ -75,6 +75,29 @@ async fn revision(c: &mut PgConnection, tenant: &str) -> Result<(i64, i64), Erro
 async fn validity(c: &mut PgConnection, tenant: &str) -> Result<(i64, Option<i64>), Error> {
     sqlx::query_as("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint,(SELECT floor(extract(epoch FROM min(expires_at)))::bigint FROM mdm_access.requests WHERE tenant_id=$1::uuid AND state='pending' AND expires_at>statement_timestamp())").bind(tenant).fetch_one(c).await.map_err(db)
 }
+const PAGE_SOURCES: i64 = 1_048_576;
+const STATISTICS_SOURCES: i64 = 4_194_304;
+fn source_budget(tenant: &str, limit: i64, explain: bool) -> sqlx::QueryBuilder<sqlx::Postgres> {
+    let mut sql = sqlx::QueryBuilder::new(if explain {
+        "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) "
+    } else {
+        ""
+    });
+    sql.push("WITH source_budget AS MATERIALIZED (SELECT count(*) AS rows FROM (SELECT tenant_id FROM mdm_access.directory_inputs WHERE tenant_id=").push_bind(tenant.to_owned()).push("::uuid LIMIT ").push_bind(limit+1).push(") probe) ");
+    sql
+}
+fn check_sources(rows: i64, limit: i64, stage: &'static str) -> Result<(), Error> {
+    if !rss_mdm_query_postgres::within_budget(
+        stage,
+        rows as u64,
+        rows as u64 * 16,
+        limit as u64,
+        limit as u64 * 16,
+    ) {
+        return Err(Error::Capacity);
+    }
+    Ok(())
+}
 fn selection(
     tenant: &str,
     allowed: Option<std::collections::BTreeSet<String>>,
@@ -82,18 +105,20 @@ fn selection(
     after: Option<&rss_mdm_query::directory::Position>,
     explain: bool,
 ) -> Result<sqlx::QueryBuilder<sqlx::Postgres>, Error> {
-    let mut sql = sqlx::QueryBuilder::new(if explain {
-        "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT d.id FROM mdm_access.directory_metadata d WHERE d.tenant_id="
-    } else {
-        "SELECT d.id FROM mdm_access.directory_metadata d WHERE d.tenant_id="
-    });
-    sql.push_bind(tenant.to_owned()).push("::uuid");
+    let mut sql = source_budget(tenant, PAGE_SOURCES, explain);
+    sql.push(", selected AS (SELECT d.id,d.status FROM mdm_access.directory_metadata d WHERE (SELECT rows FROM source_budget)<=").push_bind(PAGE_SOURCES).push(" AND d.tenant_id=$1::uuid");
     if let Some(allowed) = allowed {
         sql.push(" AND d.id=ANY(")
             .push_bind(allowed.into_iter().collect::<Vec<_>>())
             .push(")");
     }
     rss_mdm_query_postgres::append(&mut sql, q, after, column).map_err(error)?;
+    sql.push(") SELECT s.id,b.rows FROM source_budget b LEFT JOIN selected s ON true");
+    rss_mdm_query_postgres::order(&mut sql, q, |field| match field {
+        "id" => "s.id COLLATE \"C\"",
+        "status" => "s.status COLLATE \"C\"",
+        _ => unreachable!("checked identity ordering"),
+    });
     Ok(sql)
 }
 /// Not serializable: HTTP must finish the read after page-only product enrichment.
@@ -133,11 +158,11 @@ impl DeviceService {
             .map_err(error)?;
         let after = q.after(codec, &binding).map_err(error)?;
         let mut sql = selection(&self.tenant, allowed, q, after.as_ref(), false)?;
-        let mut ids: Vec<String> = sql
-            .build_query_scalar()
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(db)?;
+        let candidates: Vec<(Option<String>, i64)> =
+            sql.build_query_as().fetch_all(&mut *tx).await.map_err(db)?;
+        let source_rows = candidates.first().ok_or(Error::Corrupt)?.1;
+        check_sources(source_rows, PAGE_SOURCES, "devices.sources")?;
+        let mut ids: Vec<String> = candidates.into_iter().filter_map(|(id, _)| id).collect();
         let more = ids.len() > q.limit();
         ids.truncate(q.limit());
         let raw = page_on(&mut tx, &self.tenant, &ids).await?;
@@ -254,10 +279,8 @@ impl DeviceService {
         let current = authority(&mut tx, p).await?;
         let grant = current.query_binding(p)?;
         let generation = revision(&mut tx, &self.tenant).await?;
-        let mut sql = sqlx::QueryBuilder::new(
-            "SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'pending',count(*) FILTER(WHERE d.status='pending'),'active',count(*) FILTER(WHERE d.status='active'),'revoked',count(*) FILTER(WHERE d.status='revoked')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM mdm_access.directory_metadata d WHERE d.tenant_id=",
-        );
-        sql.push_bind(self.tenant.clone()).push("::uuid");
+        let mut sql = source_budget(&self.tenant, STATISTICS_SOURCES, false);
+        sql.push("SELECT b.rows,CASE WHEN b.rows<=").push_bind(STATISTICS_SOURCES).push(" THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'pending',count(*) FILTER(WHERE d.status='pending'),'active',count(*) FILTER(WHERE d.status='active'),'revoked',count(*) FILTER(WHERE d.status='revoked')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM mdm_access.directory_metadata d WHERE d.tenant_id=$1::uuid");
         if let Some(allowed) = current
             .inventory_devices(p)
             .map_err(rss_mdm_authorization_service::Error::from)?
@@ -267,11 +290,15 @@ impl DeviceService {
                 .push(")");
         }
         rss_mdm_query_postgres::filter(&mut sql, q, column).map_err(error)?;
-        let value = sql
-            .build_query_scalar()
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(db)?;
+        sql.push(") END FROM source_budget b");
+        let (source_rows, value): (i64, Option<Value>) =
+            sql.build_query_as().fetch_one(&mut *tx).await.map_err(db)?;
+        check_sources(
+            source_rows,
+            STATISTICS_SOURCES,
+            "devices.statistics.sources",
+        )?;
+        let value = value.ok_or(Error::Corrupt)?;
         if grant != authority(&mut tx, p).await?.query_binding(p)?
             || generation != revision(&mut tx, &self.tenant).await?
         {

@@ -66,12 +66,6 @@ pub struct ExecutionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<ExecutionEvidence>,
 }
-#[derive(Deserialize)]
-pub(crate) struct DirectoryItem {
-    #[serde(flatten)]
-    pub metadata: ExecutionMetadata,
-    pub evidence: Value,
-}
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum ExecutionEvidence {

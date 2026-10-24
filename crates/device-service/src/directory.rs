@@ -197,6 +197,20 @@ impl Associations {
             .await?;
         let value: Value = rows.first().ok_or(Error::Storage)?.try_get("value")?;
         let measured = &value["budget"];
+        let input_rows = measured["inputRows"].as_u64().ok_or(Error::Storage)?;
+        if !rss_mdm_query_postgres::within_budget(
+            if statistics {
+                "device.statistics.sources"
+            } else {
+                "device.views.sources"
+            },
+            input_rows,
+            input_rows * 16,
+            candidate_limit as u64 * 256,
+            candidate_limit as u64 * 4096,
+        ) {
+            return Err(Error::Capacity);
+        }
         if !rss_mdm_query_postgres::within_budget(
             if statistics {
                 "device.statistics.candidates"

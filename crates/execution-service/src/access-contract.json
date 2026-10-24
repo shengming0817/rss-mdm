@@ -38,14 +38,6 @@
       "read_write": true,
       "updates": [],
       "delete_policy": null
-    },
-    {
-      "schema": "mdm_commands",
-      "table": "query_revisions",
-      "read_write": false,
-      "read_only": true,
-      "updates": [],
-      "delete_policy": null
     }
   ],
   "functions": [
@@ -78,6 +70,8 @@
       "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_commands.query_revisions"
+  ],
   "verified_schemas": []
 }

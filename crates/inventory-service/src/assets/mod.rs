@@ -372,10 +372,10 @@ impl AssetService {
                         return Err(Error::Forbidden.into());
                     }
                 }
-                Command::FieldReferences { query, .. } => {
-                    if query.authority != current.query_binding(p)? {
-                        return Err(Error::Forbidden.into());
-                    }
+                Command::FieldReferences { query, .. }
+                    if query.authority != current.query_binding(p)? =>
+                {
+                    return Err(Error::Forbidden.into());
                 }
                 _ => {}
             }

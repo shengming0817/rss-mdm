@@ -148,7 +148,7 @@ impl AssetService {
         Ok(Response::Field {
             field,
             version: expected + 1,
-            definition: next,
+            definition: next.map(Box::new),
         })
     }
 }

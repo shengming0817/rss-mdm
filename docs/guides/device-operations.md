@@ -66,7 +66,7 @@ Policy 引用精确资源版本/variant；它消费完整操作权限和多对�
 
 ## 跨通道设备视图
 
-`GET /api/v1/device-views` 在服务端按当前可见关联归并，使用统一 `filter/sort/fields/limit/cursor`。`filter` 可组合 search/platform/status/channel/source/assetState，例如 `filter=search=icontains=mac;platform==macos`；完整条件须由同一成员满足，筛选和完整关联在截页前完成。列表返回 `items/nextCursor`；`GET /api/v1/device-views/statistics` 仅接受同一 `filter`，独立返回 endpointCount、deviceViewCount 和观察时刻 asOf。候选预算为目录 4096 个可见端点、统计 16384 个，超限明确失败，不返回截断结果。详情使用 `/api/v1/device-views/endpoint/{device}` 或 `/api/v1/device-views/association/{id}`；原 `/devices` 继续表达注册端点。主通道的 children 展示当前父注册下各 purpose 的最新子注册，保留父子注册、代次、生命周期和 ready；撤销子注册不替换或撤销主通道。Windows Full 的 userContext 保留原生用户上下文及其父注册状态，不表示用户在线或动作可执行。仅看见一个成员时返回普通端点，不披露关联、另一成员或其数量。
+`GET /api/v1/device-views` 在服务端按当前可见关联归并，使用统一 `filter/sort/fields/limit/cursor`。`filter` 可组合 search/platform/status/channel/source/assetState，例如 `filter=search=icontains=mac;platform==macos`；完整条件须由同一成员满足，筛选和完整关联在截页前完成。列表返回 `items/nextCursor`；`GET /api/v1/device-views/statistics` 仅接受同一 `filter`，独立返回 endpointCount、deviceViewCount 和观察时刻 asOf。候选预算为目录 4096 个可见端点、统计 16384 个，原始来源预算分别为 1,048,576 / 4,194,304 行，在历史请求去重和字段值解码前检查；超限明确失败，不返回截断结果。详情使用 `/api/v1/device-views/endpoint/{device}` 或 `/api/v1/device-views/association/{id}`；原 `/devices` 继续表达注册端点。主通道的 children 展示当前父注册下各 purpose 的最新子注册，保留父子注册、代次、生命周期和 ready；撤销子注册不替换或撤销主通道。Windows Full 的 userContext 保留原生用户上下文及其父注册状态，不表示用户在线或动作可执行。仅看见一个成员时返回普通端点，不披露关联、另一成员或其数量。
 
 后台按当前已认证采集来源的序列号或硬件 UUID 自动关联同租户的 MDM、Agent 主注册。值须有效、匹配、无其他有效字段矛盾且在当前实例中唯一；大小写与外围空白归一，序列号前导零和标点保留。占位值、主机名、MAC、登录用户和 Manual 赋值不参与自动确认。已关联的两个端点算一个实例。新注册代际有相同证据时自动延续；暂未上报时保留成员和历史，后续上报重新判断。重复、冲突或失效的注册显示 needs_verification。
 

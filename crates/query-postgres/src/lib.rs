@@ -157,6 +157,12 @@ pub fn page(
         }
         sql.push(")");
     }
+    order(sql, q, columns);
+    sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
+    Ok(())
+}
+/// Preserve the same ordering outside a bounded candidate subquery.
+pub fn order(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) {
     sql.push(" ORDER BY ");
     for (i, sort) in q.sort().iter().enumerate() {
         if i > 0 {
@@ -168,8 +174,6 @@ pub fn page(
             " ASC NULLS LAST"
         });
     }
-    sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
-    Ok(())
 }
 pub fn append(
     sql: &mut QueryBuilder<Postgres>,

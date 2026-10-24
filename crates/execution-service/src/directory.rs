@@ -45,28 +45,70 @@ fn column(name: &str) -> &'static str {
         _ => unreachable!("checked execution field"),
     }
 }
+const PAGE_SOURCES: i64 = 1_048_576;
+const STATISTICS_SOURCES: i64 = 4_194_304;
+fn check_sources(rows: i64, limit: i64, stage: &'static str) -> crate::transaction::Result<()> {
+    if !rss_mdm_query_postgres::within_budget(
+        stage,
+        rows as u64,
+        rows as u64 * 16,
+        limit as u64,
+        limit as u64 * 16,
+    ) {
+        return Err(Error::Unavailable(Failure::Capacity).into());
+    }
+    Ok(())
+}
 fn relation(
     tenant: String,
     allowed: Option<Vec<String>>,
-    evidence: bool,
+    source_limit: i64,
 ) -> sqlx::QueryBuilder<sqlx::Postgres> {
     let mut sql = sqlx::QueryBuilder::new(
-        "WITH executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status,NULL::jsonb AS evidence FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=",
+        "WITH source_budget AS MATERIALIZED (SELECT count(*) AS rows FROM (SELECT tenant_id FROM mdm_commands.operations WHERE tenant_id=",
     );
-    sql.push_bind(tenant).push("::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown'),");
-    if evidence {
-        sql.push("jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',").push(actions::history::RESULT_SUMMARY_SQL).push(")");
-    } else {
-        sql.push("NULL::jsonb");
-    }
-    sql.push(" FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE ");
+    sql.push_bind(tenant).push("::uuid UNION ALL SELECT tenant_id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid LIMIT ").push_bind(source_limit+1).push(") probe), executions AS (SELECT o.id,o.device,'command'::text AS kind,o.registration,o.registration_generation AS generation,o.source_kind,o.policy_version,v.policy,(o.input_context->>'deadline')::bigint AS deadline,coalesce(d.status,'unknown') AS status FROM mdm_commands.operations o LEFT JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text) LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) WHERE o.tenant_id=$1::uuid UNION ALL SELECT r.id,r.device,'action_run',r.registration,r.generation,r.source_kind,r.policy_version,v.policy,r.deadline,coalesce(r.state->>'execution','unknown') FROM mdm_commands.action_runs r LEFT JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid), visible AS (SELECT * FROM executions WHERE (SELECT rows FROM source_budget)<=").push_bind(source_limit);
     if let Some(ids) = allowed {
-        sql.push("device=ANY(").push_bind(ids).push(")");
-    } else {
-        sql.push("true");
+        sql.push(" AND device=ANY(").push_bind(ids).push(")");
     }
     sql.push(") ");
     sql
+}
+async fn run_summaries(
+    tx: &mut PgTransaction<'_>,
+    ids: Vec<Uuid>,
+) -> crate::transaction::Result<std::collections::BTreeMap<Uuid, Value>> {
+    use sqlx::Row;
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    if ids.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
+    let count = ids.len();
+    let tenant = tx.tenant_id().to_string();
+    let rows=tx.with_connection(move|c|Box::pin(async move{
+  let mut sql=sqlx::QueryBuilder::new("WITH selected AS MATERIALIZED (SELECT r.id,jsonb_build_object('state',r.state,'effect',coalesce(r.result->>'effect','unverified'),'result',");
+  sql.push(actions::history::RESULT_SUMMARY_SQL).push(") AS document FROM mdm_commands.action_runs r WHERE r.tenant_id=").push_bind(tenant).push("::uuid AND r.id=ANY(").push_bind(ids).push(")),budget AS(SELECT coalesce(sum(octet_length(document::text)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216");
+  sql.build().fetch_all(c).await
+ })).await?;
+    rss_mdm_query_postgres::observe_rows("execution.runs", &rows)?;
+    let bytes: i64 = rows.first().ok_or(Error::Conflict)?.try_get("bytes")?;
+    if !rss_mdm_query_postgres::within_budget(
+        "execution.runs",
+        count as u64,
+        bytes as u64,
+        1000,
+        16 * 1024 * 1024,
+    ) {
+        return Err(Error::Unavailable(Failure::Capacity).into());
+    }
+    if rows.len() != count {
+        return Err(Error::Conflict.into());
+    }
+    rows.into_iter()
+        .map(|r| Ok((r.try_get("id")?, r.try_get("document")?)))
+        .collect()
 }
 impl crate::queries::Queries {
     pub async fn directory(
@@ -89,12 +131,20 @@ impl crate::queries::Queries {
    let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),&grant,generation)).map_err(query_error)?;
    let after=q.after(codec,&binding).map_err(query_error)?;
    let allowed=current.devices_for(p,Permission::OperationRead)?.map(|v|v.into_iter().collect());
-   let mut sql=relation(p.tenant_id().to_owned(),allowed,q.selects("evidence"));
-   sql.push("SELECT jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status,'evidence',evidence) FROM visible WHERE true");
+   let mut sql=relation(p.tenant_id().to_owned(),allowed,PAGE_SOURCES);
+   sql.push(",selected AS (SELECT * FROM visible WHERE true");
    rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(query_error)?;
-   let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+   sql.push(") SELECT b.rows AS source_rows,CASE WHEN s.id IS NOT NULL THEN jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status) END AS document FROM source_budget b LEFT JOIN selected s ON true");
+   rss_mdm_query_postgres::order(&mut sql,q,column);
+   let rows=tx.with_connection(move|c|Box::pin(async move{sql.build().fetch_all(c).await})).await?;
+   use sqlx::Row;
+   rss_mdm_query_postgres::observe_rows("operations.metadata",&rows)?;
+   check_sources(rows.first().ok_or(Error::Conflict)?.try_get("source_rows")?,PAGE_SOURCES,"operations.sources")?;
+   let rows=rows.iter().map(|r|r.try_get::<Option<Value>,_>("document")).collect::<std::result::Result<Vec<_>,_>>()?.into_iter().flatten().collect();
    let page=q.unprojected_page(rows,codec,&binding).map_err(query_error)?;
-   use crate::queries::records::{self,DirectoryItem,ExecutionEvidence,ExecutionSummary};
+   let run_ids=if q.selects("evidence"){page.items.iter().filter(|v|v["kind"]=="action_run").map(|v|v["id"].as_str().ok_or(Error::Malformed).and_then(|id|Uuid::parse_str(id).map_err(|_|Error::Malformed))).collect::<std::result::Result<Vec<_>,_>>()?}else{Vec::new()};
+   let mut runs=run_summaries(tx,run_ids).await?;
+   use crate::queries::records::{self,ExecutionEvidence,ExecutionSummary};
    let command_ids=if q.selects("evidence"){page.items.iter().filter(|v|v["kind"]=="command").map(|v|v["id"].as_str().ok_or(Error::Malformed).and_then(|id|Uuid::parse_str(id).map_err(|_|Error::Malformed))).collect::<std::result::Result<Vec<_>,_>>()?}else{Vec::new()};
    let mut commands=storage::load_many(tx,&s.protection,command_ids).await?;
    let windows=page.items.iter().filter_map(|v|{
@@ -116,19 +166,19 @@ impl crate::queries::Queries {
    let mut installations=super::native_installation::installation_observations(tx,s.apple_results.clone(),s.agent_store.clone(),&install_ops).await?;
    let mut items=Vec::new();
    for value in page.items {
-    let item:DirectoryItem=records::decode(value)?;
-    let evidence=if !q.selects("evidence"){None}else{Some(match item.metadata.kind{
+    let metadata:records::ExecutionMetadata=records::decode(value)?;
+    let evidence=if !q.selects("evidence"){None}else{Some(match metadata.kind{
      records::ExecutionKind::Command=>{
-      let op=commands.remove(&item.metadata.id).ok_or(Error::Conflict)?;
-      let command=stored(dc::Status::restore(&item.metadata.status))?;
+      let op=commands.remove(&metadata.id).ok_or(Error::Conflict)?;
+      let command=stored(dc::Status::restore(&metadata.status))?;
       let mut observation=if matches!(op.request.task,Task::Windows{..}){windows.remove(&op.id).ok_or(Error::Conflict)?}else{apples.remove(&op.id).ok_or(Error::Conflict)?};
       observation.redact_values();
       let agent_installation=if op.authority.agent_package().is_some(){Some(records::decode(installations.remove(&op.id).ok_or(Error::Conflict)?)?)}else{None};
       ExecutionEvidence::Command(Box::new(records::CommandEvidence{command_status:crate::service::status(command).into(),observation,dispatch_failure:op.dispatch_failure,agent_installation}))
      },
-     records::ExecutionKind::ActionRun=>ExecutionEvidence::Run(records::decode(item.evidence)?),
+     records::ExecutionKind::ActionRun=>ExecutionEvidence::Run(records::decode(runs.remove(&metadata.id).ok_or(Error::Conflict)?)?),
     })};
-    items.push(ExecutionSummary{metadata:item.metadata,evidence});
+    items.push(ExecutionSummary{metadata,evidence});
    }
    if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
    p.check_live()?;audit.require_request_settlement();Ok(records::Page{items,next_cursor:page.next_cursor})
@@ -145,10 +195,13 @@ impl crate::queries::Queries {
    let(_,p,q,audit)=*ctx;let current=crate::action_admission::current(tx,p).await?;
    let grant=current.query_binding(p)?;let generation=crate::query_generation::read(tx).await?;
    let allowed=current.devices_for(p,Permission::OperationRead)?.map(|v|v.into_iter().collect());
-   let mut sql=relation(p.tenant_id().to_owned(),allowed,false);
-   sql.push("SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM visible WHERE true");
+   let mut sql=relation(p.tenant_id().to_owned(),allowed,STATISTICS_SOURCES);
+   sql.push("SELECT b.rows,CASE WHEN b.rows<=4194304 THEN (SELECT jsonb_build_object('statistics',jsonb_build_object('total',count(*),'commands',count(*) FILTER(WHERE kind='command'),'actionRuns',count(*) FILTER(WHERE kind='action_run'),'unknown',count(*) FILTER(WHERE status='unknown')),'asOf',floor(extract(epoch FROM statement_timestamp()))::bigint) FROM visible WHERE true");
    rss_mdm_query_postgres::filter(&mut sql,q,column).map_err(query_error)?;
-   let value=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_one(c).await})).await?;
+   sql.push(") END FROM source_budget b");
+   let (source_rows,value):(i64,Option<Value>)=tx.with_connection(move|c|Box::pin(async move{sql.build_query_as().fetch_one(c).await})).await?;
+   check_sources(source_rows,STATISTICS_SOURCES,"operations.statistics.sources")?;
+   let value=value.ok_or(Error::Conflict)?;
    if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
    p.check_live()?;audit.require_request_settlement();Ok(value)
   })).await.map_err(Into::into)

@@ -146,8 +146,14 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     crate::test_support::process::pg(&format!(
         "UPDATE mdm_commands.operations SET request=convert_to(repeat('x',20000000),'UTF8') WHERE id='{large}'"
     ))?;
+    crate::test_support::process::pg(&format!(
+        "UPDATE mdm_commands.action_runs SET result=jsonb_set(result,'{{output}}',jsonb_build_object('canary',repeat('off-page-',100000))) WHERE id='{id}'"
+    ))?;
+    let unselected_runs = QueryReadCounts::new("execution.runs");
     let measured = QueryReadCounts::new("execution.");
-    let observer = tracing_subscriber::registry().with(measured.clone());
+    let observer = tracing_subscriber::registry()
+        .with(measured.clone())
+        .with(unselected_runs.clone());
     let selected = format!("/api/v1/operations?limit=1&filter=id=={id}&sort=-id,-kind");
     let response = fixture
         .author
@@ -159,6 +165,10 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         "bounded selected evidence: {response:?}"
     );
     ensure!(measured.calls.load(Relaxed) <= 5 && measured.rows.load(Relaxed) <= 16);
+    ensure!(
+        unselected_runs.calls.load(Relaxed) == 0,
+        "off-page action run evidence reached hydration"
+    );
     ensure!(
         measured.bytes.load(Relaxed) > 0 && measured.bytes.load(Relaxed) < 65536,
         "off-page protected input was read"

@@ -256,7 +256,7 @@ pub enum Response {
     Field {
         field: FieldKey,
         version: u64,
-        definition: Option<rss_mdm_inventory::FieldDefinition>,
+        definition: Option<Box<rss_mdm_inventory::FieldDefinition>>,
     },
     FieldReferences {
         field: FieldKey,
