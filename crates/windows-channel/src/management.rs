@@ -416,24 +416,6 @@ fn management_response(
             }));
         }
     }
-    for result in message
-        .commands
-        .iter()
-        .filter(|c| matches!(c, Command::Results(_)))
-    {
-        execution.push(Command::Status(Status {
-            id: execution.len() as u32 + 1,
-            message_ref: message.header.message_id,
-            command_ref: result.id(),
-            command: CommandName::Results,
-            target_refs: vec![],
-            source_refs: vec![],
-            code: 200,
-            items: vec![],
-            challenge: None,
-            credential: None,
-        }));
-    }
     let response = syncml::Message {
         header: syncml::Header {
             session_id: message.header.session_id,
@@ -452,7 +434,11 @@ fn management_response(
                     nonce,
                 )),
             }),
-            meta: None,
+            meta: Some(Meta {
+                max_message_size: Some(CodecLimits::default().syncml_bytes as u32),
+                max_object_size: Some(CodecLimits::default().object_bytes as u32),
+                ..Meta::default()
+            }),
         },
         commands: execution,
         final_message: true,

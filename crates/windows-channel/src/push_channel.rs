@@ -77,7 +77,7 @@ pub(crate) async fn send(
     };
     let mut complete = response.clone();
     complete.commands.push(command.clone());
-    if s::encode(&complete, limits).is_err() {
+    if s::encode_outbound(&complete, limits).is_err() {
         return Ok(true);
     }
     let mut request = response.clone();

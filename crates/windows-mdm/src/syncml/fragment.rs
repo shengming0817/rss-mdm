@@ -31,7 +31,7 @@ pub fn fragment(
         _ => None,
     };
     if offset == 0 {
-        match encode(&full, &wire_limits) {
+        match encode_outbound(&full, &wire_limits) {
             Ok(_) => {
                 return Ok(Fragment {
                     message: full,
@@ -69,7 +69,7 @@ pub fn fragment(
     };
     // The final marker changes the envelope, so try the entire remainder separately.
     let final_message = build(data.len())?;
-    match encode(&final_message, &wire_limits) {
+    match encode_outbound(&final_message, &wire_limits) {
         Ok(_) => {
             return Ok(Fragment {
                 message: final_message,
@@ -93,7 +93,7 @@ pub fn fragment(
             continue;
         }
         let message = build(end)?;
-        match encode(&message, &wire_limits) {
+        match encode_outbound(&message, &wire_limits) {
             Ok(_) => {
                 best = Some(Fragment { message, end });
                 low = midpoint + 1;

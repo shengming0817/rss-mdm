@@ -10,7 +10,7 @@ mod correlation;
 mod fragment;
 pub use correlation::{
     Correlated, CorrelatedItem, CorrelatedStatus, Expected, Reference, SentMessage, correlate,
-    encode_request,
+    encode_outbound, encode_request,
 };
 pub use fragment::{Fragment, fragment};
 /// Exact namespace URI for the supported SyncML 1.2 XML profile.

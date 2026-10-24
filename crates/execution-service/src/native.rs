@@ -478,7 +478,7 @@ fn admit_response(
     let mut candidate = response.clone();
     candidate.commands.extend_from_slice(commands);
     candidate.final_message = true;
-    if let Ok(bytes) = s::encode(&candidate, &CodecLimits::default()) {
+    if let Ok(bytes) = s::encode_outbound(&candidate, &CodecLimits::default()) {
         return Ok(Some(bytes));
     }
     let mut minimum = response.clone();
@@ -487,7 +487,7 @@ fn admit_response(
         .retain(|c| matches!(c, Command::Status(status) if status.command_ref == 0));
     minimum.commands.extend_from_slice(commands);
     minimum.final_message = true;
-    if s::encode(&minimum, &CodecLimits::default()).is_ok() {
+    if s::encode_outbound(&minimum, &CodecLimits::default()).is_ok() {
         Ok(None)
     } else {
         Err("native_response_budget_exceeded")

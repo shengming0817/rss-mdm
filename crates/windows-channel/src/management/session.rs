@@ -501,7 +501,7 @@ async fn save(
     let sid = session.raw.header.session_id.to_string();
     let mid = i64::from(session.raw.header.message_id);
     let binding = (p.registration(), p.generation(), p.credential(), &sid, mid);
-    let bytes = syncml::encode(&response, &CodecLimits::default())
+    let bytes = syncml::encode_outbound(&response, &CodecLimits::default())
         .map_err(|_| Error::Unavailable(Failure::Protocol))?;
     let seal = |bytes: &[u8], part: &str| -> Result<Vec<u8>, Error> {
         key.seal_bytes(
