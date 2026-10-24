@@ -714,3 +714,7 @@ mod tests {
         assert_eq!(failure(outage).kind(), rss_reconcile::ErrorKind::Transient);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/recovery_unit.rs"]
+mod recovery_unit;

@@ -254,13 +254,15 @@ fn request_binding_rejects_another_generated_identity() {
         Err(Error::Malformed)
     ));
     apns.algorithm = Algorithm::Rsa2048;
-    assert!(
-        generation::generate(&apns, None, 1_790_000_000)
-            .unwrap()
-            .1
-            .iter()
-            .all(|f| f.certificates.is_empty())
-    );
+    let (bundle, facts) = generation::generate(&apns, None, 1_790_000_000).unwrap();
+    assert!(!facts.is_empty());
+    assert!(facts.iter().all(|f| f.certificates.is_empty()));
+    assert!(facts.iter().any(|f| f.format == Format::Csr));
+    assert!(facts.iter().any(|f| f.format == Format::PrivateKey && f.contains_private_key));
+    let request = bundle.files.iter().find(|f| f.name == "request.csr").unwrap();
+    let csr = openssl::x509::X509Req::from_pem(&STANDARD.decode(request.data.as_str()).unwrap()).unwrap();
+    assert!(csr.verify(&csr.public_key().unwrap()).unwrap());
+
 }
 
 #[test]

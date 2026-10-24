@@ -144,8 +144,9 @@ fn rotation_reads_old_data_and_resumes_rewrap_without_changing_identity() {
 fn ring_rejects_duplicates_unknown_keys_and_unbounded_history() {
     assert!(Protector::with_history(&[1; 32], &[&[1; 32]]).is_err());
     assert!(Protector::with_history(&[1; 32], &[&[2; 32], &[2; 32]]).is_err());
-    let keys = [[2_u8; 32]; 16];
+    let keys = (2..18).map(|value| [value; 32]).collect::<Vec<_>>();
     let refs = keys.iter().map(|key| key.as_slice()).collect::<Vec<_>>();
+    assert!(Protector::with_history(&[1; 32], &refs[..15]).is_ok());
     assert!(Protector::with_history(&[1; 32], &refs).is_err());
     let ring = Protector::with_history(&[1; 32], &[&[2; 32]]).unwrap();
     let aad = context(TENANT, "operation:1", "input");

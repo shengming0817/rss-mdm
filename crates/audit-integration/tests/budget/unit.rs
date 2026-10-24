@@ -15,14 +15,25 @@ async fn retirement_reserves_settlement_without_renewing_either_cutoff() {
     assert!(shorter.control().total_remaining().is_zero());
     assert!(shorter.control().operation_remaining().is_zero());
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn reborrowing_never_renews_budget_and_keeps_host_cancellation() {
     let cancel = CancellationToken::new();
     let budget = AuditBudget::with_cancellation(Duration::from_millis(20), cancel.clone());
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    assert!(budget.control().total_remaining().is_zero());
+    let first = budget.control();
+    let source = budget.source_control();
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert_eq!(first.total_remaining(), Duration::from_millis(10));
+    assert_eq!(budget.control().total_remaining(), first.total_remaining());
+    assert_eq!(budget.source_control().operation.instant(), source.operation.instant());
     cancel.cancel();
-    assert!(budget.cancel.is_cancelled());
+    let result = budget.source_control().run(async {
+        panic!("cancelled source work ran");
+        #[allow(unreachable_code)]
+        Ok::<(), crate::Error>(())
+    }).await;
+    assert!(matches!(result, Err(crate::Error::Audit(rss_audit_postgres::Error::Cancelled(_)))));
+    tokio::time::advance(Duration::from_millis(10)).await;
+    assert!(budget.control().total_remaining().is_zero());
 }
 
 #[tokio::test(start_paused = true)]
