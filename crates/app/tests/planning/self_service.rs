@@ -182,7 +182,7 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 .await?
                 .0 == StatusCode::CONFLICT
             );
-            let stack = worker(&f.base).await?;
+            let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
             let task = claim(&f.router).await?;
             ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
             ensure!(
@@ -306,7 +306,7 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
             .0
             == StatusCode::ACCEPTED
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
     let capabilities = pg(&format!("SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
@@ -361,7 +361,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
             .0
             == StatusCode::ACCEPTED
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     let revoked = f
@@ -573,7 +573,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         accepted.0 == StatusCode::ACCEPTED,
         "Device access must not require an enterprise session: {accepted:?}"
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let mut changed = local.clone();
     changed["revision"] = json!(5);
     changed["interactiveUser"]["identity"] = json!("502");
@@ -696,7 +696,7 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
             value["action"]["schedule"]["trigger"] =
                 json!({"kind":"check_in","minimumSeconds":3600});
             let (id, policy) = publish_definition(&mut f, value).await?;
-            let stack = worker(&f.base).await?;
+            let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
             let automatic = claim(&f.router).await?;
             ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
             complete(&f.router, &automatic).await?;
@@ -820,7 +820,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             .0
             == StatusCode::ACCEPTED
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     task_event(&f.router, &task, json!({"kind":"start"})).await?;
@@ -976,7 +976,7 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     );
     post(&mut f.author,&f.router,&format!("/api/v1/policies/{available}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":available_policy["revision"],"input":{"action":"disable"}})).await?;
     // Pending on the first Policy becomes a genuine Unknown through the existing reducer.
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     task_event(&f.router, &task, json!({"kind":"start"})).await?;
@@ -1110,7 +1110,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             && human_directory.1["items"] == employee_directory.1["items"],
         "caller origin must not change qualified subjects: {human_directory:?}"
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let (device, policy) = &published[0];
     let device_input = request(*device, policy, json!({}));
     let accepted = call(
@@ -1532,7 +1532,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         (b, two)
     };
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version IN ('{}','{}') AND software_effect IS NOT NULL",case_tenant(),policies[0].1["versionId"].as_str().unwrap(),policies[1].1["versionId"].as_str().unwrap()))?.trim() == "1", "competing new requests must commit one exact effect and one Run");
-    let stack = software::worker(&f.base, f.content.clone()).await?;
+    let stack = software::worker(&f.base, f.execution.clone()).await?;
     let employee = &f.author;
     ensure!(
         software_self_service_call(
@@ -1742,7 +1742,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     )
     .await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
-    let stack = software::worker(&f.base, f.content.clone()).await?;
+    let stack = software::worker(&f.base, f.execution.clone()).await?;
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let response = poll(local.clone()).await?;

@@ -20,7 +20,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let execution = fixture.execution;
     let mut author = fixture.author;

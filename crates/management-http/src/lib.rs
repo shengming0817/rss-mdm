@@ -44,7 +44,7 @@ pub fn authentication_routes(
 
 pub mod certificate_archive;
 pub mod device_views;
-mod timeline;
+pub mod timeline;
 
 pub mod software_native;
 

@@ -356,9 +356,6 @@ pub(crate) async fn publish(author: &mut Browser, router: &Router, resource: Uui
     post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_task_scope())}})).await?;
     Ok(id)
 }
-pub(crate) async fn worker(base: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
-    super::software_execution::worker(base, None).await
-}
 
 pub(crate) async fn complete(router: &Router, task: &Value) -> Result<()> {
     task_event(router, task, json!({"kind":"received"})).await?;

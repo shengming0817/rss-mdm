@@ -154,7 +154,7 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let base = fixture.base;
     let router = fixture.router;
     let execution = fixture.execution;
@@ -349,7 +349,7 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let policy = publish(&mut fixture.author, &fixture.router, resource).await?;
     let task = claim(&fixture.router).await?;
     task_event(&fixture.router, &task, json!({"kind":"received"})).await?;
@@ -421,7 +421,7 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     for mode in ["direct", "chunked", "truncated", "partial"] {
         let (resource, _, _) = fixture.resource_with_output_limit(524288).await?;
         publish(&mut fixture.author, &fixture.router, resource).await?;
@@ -714,7 +714,7 @@ async fn native_inventory_case(
         let wrong = f.author.call(&f.router, Method::GET, &format!("/api/v1/asset-fields/custom.ship_network/references?limit=1&cursor={cursor}"), None).await?;
         ensure!(wrong.0 == StatusCode::BAD_REQUEST, "cross-field cursor: {wrong:?}");
     }
-    let worker = worker(&f.base).await?;
+    let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let runtime = agent_runtime(&f.base).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
@@ -1288,7 +1288,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
         json!({"action":"activate","version":"v1"}),
     )
     .await?;
-    let worker = worker(&f.base).await?;
+    let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let runtime = agent_runtime(&f.base).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let mut datasets = Vec::new();
@@ -1493,7 +1493,7 @@ async fn certificate_scope_case(macos: bool) -> Result<()> {
         let registration=crate::test_support::agent::seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":platform,"architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap().to_owned();
         f.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
-        let worker=worker(&f.base).await?;
+        let worker=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         let runtime=agent_runtime(&f.base).await?;
         let inventory=crate::inventory_runtime::test_support::start(runtime.clone()).await?;
         // Machine store; two users; another store; failed and empty attempts in user A's store.

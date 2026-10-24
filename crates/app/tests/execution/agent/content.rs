@@ -16,7 +16,7 @@ async fn task_content_range_and_attempt_authorization() -> Result<()> {
                     json!([{"kind":"device","id":case_device_id()}]),
                 )
                 .await?;
-            let stack = worker(&fixture.base).await?;
+            let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
             let router = fixture.router;
             let mut author = fixture.author;
             let _policy = publish(&mut author, &router, id).await?;

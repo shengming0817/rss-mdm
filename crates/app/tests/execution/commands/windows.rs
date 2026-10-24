@@ -37,7 +37,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             json!([{"kind":"device","id":agent::case_device_id()}]),
         )
         .await?;
-    let worker = agent::worker(&fixture.base).await?;
+    let worker = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     agent::publish(&mut fixture.author, &fixture.router, resource).await?;
     let task = agent::claim(&fixture.router).await?;
     agent::complete(&fixture.router, &task).await?;

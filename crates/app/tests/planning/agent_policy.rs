@@ -190,7 +190,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
@@ -258,7 +258,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
         )
         .await?;
     fixture.scope(case_empty_scope(), json!([])).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let before = pg(&format!(
@@ -581,7 +581,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     let (resource, _, _) = f.resource().await?;
     let definition = policy_definition(resource, case_task_scope());
     let policy = publish(&mut f.author, &f.router, resource).await?;
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     for (platform, architecture, profiles, state) in [
         ("macos", "aarch64", None, "channel_unknown"),
         (

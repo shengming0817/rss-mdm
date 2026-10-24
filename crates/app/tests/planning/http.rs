@@ -5,7 +5,7 @@
 use crate::test_support::planning_http::*;
 use crate::test_support::{
     http::Browser, http::await_task, http::browser_subject, http::set_device_grants,
-    http::change_management_grants,
+    http::change_management_grants, http::seed_management_grants,
 };
 use crate::test_support::{process::*, runtime::*, *};
 #[tokio::test]

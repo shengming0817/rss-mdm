@@ -24,7 +24,7 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         &["operation_read"],
     )?);
     crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let plan = publish(author, router, resource).await?;
@@ -234,7 +234,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         json!([{"kind":"device","id":case_device_id()}]),
     )
     .await?;
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     {
         let policy = publish(&mut f.author, &f.router, id).await?;
         let task = claim(&f.router).await?;

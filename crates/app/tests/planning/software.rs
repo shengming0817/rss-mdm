@@ -22,7 +22,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
     let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
     let root_scope = prepared_scope(&fixture.planning, &[first_device, crate::test_support::software_execution::case_device()]).await?;
-    let content = fixture.content.clone();
+    let execution = fixture.execution.clone();
     let base = fixture.base;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -103,7 +103,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             == "0",
         "online read computed statistics"
     );
-    let stack = worker(&base, content).await?;
+    let stack = worker(&base, execution).await?;
     let waiting = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",

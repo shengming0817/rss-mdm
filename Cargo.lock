@@ -4429,6 +4429,7 @@ dependencies = [
  "rss-mdm-resource-postgres",
  "rss-mdm-software-release",
  "rss-mdm-software-release-postgres",
+ "rss-mdm-software-service",
  "rss-mdm-winget-source",
  "rss-request-context",
  "rss-runtime",

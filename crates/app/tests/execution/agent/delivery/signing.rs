@@ -48,7 +48,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                 let queued=unsigned.service.claim_action(&principal,&input,&audit).await?;
                 ensure!(queued["task"].is_null());
                 ensure!(run_count(policy)?.trim()=="1","matching collection was not admitted");
-                let stack=worker(&f.base).await?;
+                let stack=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
                 let result=async {
                     tokio::time::timeout(Duration::from_secs(30),async {
                         loop {

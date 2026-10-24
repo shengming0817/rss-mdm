@@ -70,7 +70,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     let id = publish(&mut f).await?;
     let overlapping = publish(&mut f).await?;
     let automation = start_automation(&f.base).await?;
-    let workers = worker(&f.base).await?;
+    let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     report(&f, 0, "unknown").await?;
     let response = claim_request(&f.router, Uuid::new_v4()).await?;
     ensure!(response.0 == StatusCode::OK && response.1["task"].is_null(), "{response:?}");
@@ -161,7 +161,7 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
         .finish(async {
             publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
-            let workers = worker(&f.base).await?;
+            let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
             report(&f, 0, "unenrolled").await?;
             let task = claim(&f.router).await?;
             let grants = f
@@ -198,7 +198,7 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
         .finish(async {
             let id = publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
-            let workers = worker(&f.base).await?;
+            let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
             report(&f, 0, "unenrolled").await?;
             let task = claim(&f.router).await?;
             task_event(&f.router, &task, json!({"kind":"received"})).await?;
@@ -274,7 +274,7 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         report(&f, 0, "unenrolled").await?;
         let directory = "/api/v1/agent/runtime/self-service?source=human";
         let invoke = "/api/v1/agent/runtime/self-service/invocations";
@@ -388,7 +388,7 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         let management = f.grants.iter().filter(|g| g.operation != Permission::InventoryRead).cloned().collect();
         identity::independent_source_read(case_tenant(), &f.author_id, management).await?;
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         report(&f, 0, "unenrolled").await?;
         let id = Uuid::new_v4();
         let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
@@ -454,7 +454,7 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         post(&mut f.author,&f.router,&path,input).await?;
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         let empty = claim_request(&f.router,Uuid::new_v4()).await?;
         ensure!(empty.0==StatusCode::OK && empty.1["task"].is_null(),"manual policy ran automatically: {empty:?}");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="0");
@@ -545,7 +545,7 @@ async fn retirement_delivery_deadline(started: bool) -> Result<()> {
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
         let automation=start_automation(&f.base).await?;
-        let workers=worker(&f.base).await?;
+        let workers=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}})).await?;
         let task=claim(&f.router).await?;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
@@ -590,7 +590,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
             post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":action}}})).await?;
         }
         let automation=start_automation(&f.base).await?;
-        let workers=worker(&f.base).await?;
+        let workers=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         // First drain publication jobs without any trigger. The following persisted
         // trigger has no accompanying job, as after an early delayed reconciliation.
         tokio::time::timeout(Duration::from_secs(30),async {
