@@ -61,6 +61,7 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
         certificate_thumbprint: "2222222222222222222222222222222222222222",
         certificate_subject: "CN=device,O=RSS",
         management_url: "https://mdm.example.test/ManagementServer/MDM.svc",
+        renewal_discovery_url: "https://mdm.example.test/EnrollmentServer/Discovery.svc",
         provider_id: "RSS-MDM",
         username: "protocol-account",
         client_password: Secret("device-secret"),
@@ -73,6 +74,41 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
     assert!(full.contains("name=\"ROLE\" value=\"32\""));
     assert!(full.contains("name=\"EntDMID\" value=\"enterprise-device-id\""));
     assert!(full.contains("type=\"My\"><characteristic type=\"User\""));
+    // Parse the actual hierarchy: WSTEP is beside User/System, not beneath it.
+    let mut reader = quick_xml::Reader::from_str(&full);
+    let mut path = Vec::new();
+    let mut found = false;
+    loop {
+        match reader.read_event().unwrap() {
+            quick_xml::events::Event::Start(node) => {
+                let attributes: std::collections::BTreeMap<_, _> = node
+                    .attributes()
+                    .map(|value| {
+                        let value = value.unwrap();
+                        (
+                            value.key.as_ref().to_vec(),
+                            value.unescape_value().unwrap().into_owned(),
+                        )
+                    })
+                    .collect();
+                if node.name().as_ref() == b"characteristic" {
+                    path.push(attributes[b"type".as_slice()].clone());
+                } else if attributes.get(b"name".as_slice()).map(String::as_str)
+                    == Some("ServerURL")
+                {
+                    assert_eq!(path, ["CertificateStore", "My", "WSTEP", "Renew"]);
+                    assert_eq!(attributes[b"value".as_slice()], p.renewal_discovery_url);
+                    found = true;
+                }
+            }
+            quick_xml::events::Event::End(node) if node.name().as_ref() == b"characteristic" => {
+                path.pop();
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+    assert!(found);
     p.enrollment_type = EnrollmentType::Device;
     let device =
         String::from_utf8(provisioning::encode(&p, &CodecLimits::default()).unwrap()).unwrap();

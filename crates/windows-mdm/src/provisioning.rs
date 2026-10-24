@@ -61,6 +61,8 @@ pub struct Provisioning<'a> {
     pub certificate_subject: &'a str,
     /// Nonblank management address; encoder does not enforce URL scheme or authorize it.
     pub management_url: &'a str,
+    /// Certificate-authenticated Discovery endpoint used for WSTEP renewal.
+    pub renewal_discovery_url: &'a str,
     /// Nonblank DMClient provider identity and server authentication name.
     pub provider_id: &'a str,
     /// Nonblank client authentication name.
@@ -106,6 +108,7 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
         p.username,
         p.certificate_subject,
         p.management_url,
+        p.renewal_discovery_url,
         p.client_password.0,
         p.server_password.0,
     ] {
@@ -161,6 +164,14 @@ pub fn encode(p: &Provisioning<'_>, l: &CodecLimits) -> Result<Vec<u8>> {
             end(&mut w)?;
         }
         end(&mut w)?;
+        if store == "My" {
+            // WSTEP is a sibling of User/System, per CertificateStore CSP.
+            characteristic(&mut w, "WSTEP")?;
+            characteristic(&mut w, "Renew")?;
+            parm(&mut w, "ServerURL", p.renewal_discovery_url)?;
+            end(&mut w)?;
+            end(&mut w)?;
+        }
         end(&mut w)?;
     }
     end(&mut w)?;

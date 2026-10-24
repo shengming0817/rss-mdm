@@ -7,7 +7,7 @@ import tempfile
 
 
 def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8081', targets=None,
-           public_port=8443, certificates='/certs', web=True, plain=False):
+           public_port=8443, certificates='/certs', web=True, plain=False, bootstrap_origins=()):
     source = Path(directory) / 'render_gateway.py'
     spec = importlib.util.spec_from_file_location('rss_gateway_renderer', source)
     renderer = importlib.util.module_from_spec(spec)
@@ -21,7 +21,7 @@ def render(directory, *, origin='https://mdm.example.test', backend='127.0.0.1:8
         host = root / host_id
         host.mkdir()
         (host / 'deployment.json').write_text(json.dumps(dict(hostId=host_id,
-            backend='127.0.0.1:8081', consoleOrigin=origin, origins=origins, scep=[],
+            backend='127.0.0.1:8081', consoleOrigin=origin, origins=[dict(origin=value,clientCertificate=value not in bootstrap_origins) for value in origins], scep=[],
             certificate=f'/run/gateway/{host_id}/tls.crt', privateKey=f'/run/gateway/{host_id}/tls.key')))
         renderer.render(root)
         config = (root / 'nginx.conf').read_text()

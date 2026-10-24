@@ -1,6 +1,7 @@
 //! Native transports share ingress limits and TLS ownership, never protocol state.
 pub(crate) mod admission;
 pub(crate) mod gateway;
+pub(crate) mod origins;
 use axum::Router;
 use serde::Deserialize;
 use std::sync::Arc;

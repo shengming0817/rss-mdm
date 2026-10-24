@@ -735,6 +735,11 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     ensure!(ca.renewal(&bad, &certificate, now()).is_err());
     let mut request = peer.issue.clone();
     request.header.security = None;
+    let renewal_path = format!(
+        "{}/EnrollmentServer/Enrollment.svc",
+        host.app.windows()?.channel.management_origin
+    );
+    request.header.to = Some(renewal_path.clone());
     request.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let Body::Issue(input) = &mut request.body else {
         unreachable!()
@@ -744,7 +749,7 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     let wire = soap::encode(&request, &CodecLimits::default())?;
     ensure!(
         host.client
-            .post(&peer.path)
+            .post(&renewal_path)
             .header("content-type", "application/soap+xml")
             .body(wire.clone())
             .send()
@@ -753,9 +758,22 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
             != axum::http::StatusCode::OK,
         "renewal without TLS identity"
     );
-    let send = || {
+    let mut bootstrap_renewal = request.clone();
+    bootstrap_renewal.header.to = Some(peer.path.clone());
+    ensure!(
         peer.mutual
             .post(&peer.path)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&bootstrap_renewal, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            != axum::http::StatusCode::OK,
+        "bootstrap admitted certificate renewal"
+    );
+    let send = || {
+        peer.mutual
+            .post(&renewal_path)
             .header("content-type", "application/soap+xml")
             .body(wire.clone())
             .send()

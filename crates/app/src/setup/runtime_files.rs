@@ -345,7 +345,10 @@ pub async fn apply(directory: &Path, config: &Config, runtime: &Value) -> Result
     let root =
         crate::config::read(&effective.trust_file, 128 * 1024, false).map_err(|_| Error::Input)?;
     let mut observed = None;
-    for public_origin in public_routes(&decoded)? {
+    for public_origin in public_routes(&decoded)?
+        .into_iter()
+        .map(|endpoint| endpoint.origin)
+    {
         let mut client = reqwest::Client::builder()
             .no_proxy()
             .https_only(true)
@@ -484,27 +487,6 @@ pub(super) async fn record_observation(
 #[path = "../../tests/setup/runtime_files.rs"]
 mod tests;
 
-fn public_routes(config: &crate::config::Config) -> Result<Vec<String>> {
-    let mut origins = std::collections::BTreeSet::from([config.product_origin.clone()]);
-    if let Some(w) = &config.native_protocols.windows {
-        origins.insert(w.enrollment.origin.clone());
-        origins.insert(w.management.origin.clone());
-        origins.extend(w.additional_management.iter().map(|e| e.origin.clone()));
-    }
-    if let Some(a) = &config.native_protocols.apple {
-        origins.insert(a.management.origin.clone());
-    }
-    if let crate::agent_pki::Config::StepCa {
-        endpoint,
-        additional_origins,
-        ..
-    } = &config.agent_pki
-    {
-        origins.insert(endpoint.origin.clone());
-        origins.extend(additional_origins.iter().cloned());
-    }
-    for origin in &origins {
-        rss_mdm_agent_wire::connections::validate_origin(origin).map_err(|_| Error::Input)?;
-    }
-    Ok(origins.into_iter().collect())
+fn public_routes(config: &crate::config::Config) -> Result<Vec<crate::native::origins::Origin>> {
+    crate::native::origins::public(config)
 }

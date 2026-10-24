@@ -77,7 +77,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let w = &host.app.windows()?.channel;
     let discovery = format!(
         "{}/EnrollmentConfiguration?api-version=1.0",
-        w.enrollment_origin
+        w.management_origin
     );
     let value = host
         .client
@@ -754,7 +754,7 @@ async fn linked_peer(
     let mut issue = parent.issue.clone();
     issue.header.to = Some(format!(
         "{}/EnrollmentServer/LinkedEnrollment.svc",
-        w.enrollment_origin
+        w.management_origin
     ));
     issue.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let format_time = |at| {
@@ -974,6 +974,20 @@ async fn renew(
     .await?;
     let mut request = issue.clone();
     request.header.security = None;
+    request.header.to = Some(format!(
+        "{}/EnrollmentServer/{}Enrollment.svc",
+        host.app.windows()?.channel.management_origin,
+        if issue
+            .header
+            .to
+            .as_deref()
+            .is_some_and(|v| v.ends_with("/LinkedEnrollment.svc"))
+        {
+            "Linked"
+        } else {
+            ""
+        }
+    ));
     request.header.message_id = Some(format!("urn:uuid:{}", Uuid::new_v4()));
     let Body::Issue(body) = &mut request.body else {
         unreachable!()

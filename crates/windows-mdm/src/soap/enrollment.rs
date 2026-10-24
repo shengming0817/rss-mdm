@@ -309,9 +309,6 @@ pub(super) fn read_discover_response(p: &mut Input<'_>) -> Result<DiscoverRespon
     p.end(ENROLL, "DiscoverResult")?;
     p.end(ENROLL, "DiscoverResponse")?;
     let auth_policy = AuthPolicy::parse(auth.as_deref().ok_or(E::Structure)?)?;
-    if auth_policy == AuthPolicy::Certificate {
-        return Err(E::Unsupported);
-    }
     Ok(DiscoverResponse {
         auth_policy,
         enrollment_version: version.ok_or(E::Structure)?,
@@ -320,9 +317,6 @@ pub(super) fn read_discover_response(p: &mut Input<'_>) -> Result<DiscoverRespon
     })
 }
 pub(super) fn validate_discover_response(d: &DiscoverResponse, l: &CodecLimits) -> Result<()> {
-    if d.auth_policy == AuthPolicy::Certificate {
-        return Err(E::Unsupported);
-    }
     text(&d.enrollment_version, l.identifier_bytes, false)?;
     if d.enrollment_version != "4.0" {
         return Err(E::Unsupported);

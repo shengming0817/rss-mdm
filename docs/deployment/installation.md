@@ -124,8 +124,8 @@ docker compose --env-file /absolute/sit/compose.env up -d step-ca rustfs
 1. **基础初始化**：沿上节启动一次性 `init` 和管理服务，取得原安装回执及首租户身份，使用真实业务管理员登录。后续维护从原 `installation-input.json` 派生独立输入，不修改首次安装输入。
 2. **内容存储**：确认实际桶存在并开启版本控制，在维护输入的 `storage_profiles` 登记真实 endpoint、region、bucket、namespace、CA 和部署管理员文件引用。业务管理员向 `POST /api/v1/storage/connections` 提交 `{"expectedRevision":0,"profile":"sit-rustfs","source":{"kind":"generate"}}` 及稳定 `Idempotency-Key`。初始 revision 仅适用于未创建连接的租户；已有连接先读目录。执行原 `prepare-hosts`，完成受限工作负载身份、真实版本化读写/删除及跨租户前缀拒绝检查，回执须为 `qualified` 且被选中。运行端只取得加密持久化的工作负载版本，不使用管理员身份。
 3. **任务签名**：通过 `POST /api/v1/task-signing/trust` 提交 `{"action":"prepare","expectedRevision":0}` 及稳定 `Idempotency-Key`。无已注册 Agent 的首把密钥由原 owner 生成并加密保存为 active；重放原操作，不再生成另一把钥。已有权威遵循原轮换流程。执行 `prepare-hosts` 导出期望版本，按下方命令重建服务并复验。
-4. **设备 CA**：只准备下方的一份 `step-ca.json`。先通过 channels 保存需要启用的通道及最终 443 origin（缺材料可为空）；随后 SIT 的独立 `ca-init` 调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
-5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Agent、Windows 注册、Windows 管理和 Apple 默认共享 HTTPS 域名及端口，也可分别配置；网关服务器证书覆盖全部公开名称。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。Rust 仅使用隔离网络内的单个 HTTP 地址，Nginx 终止 TLS/mTLS、分流协议路径并覆盖证书证据；内部端口不公开。
+4. **设备 CA**：只准备下方的一份 `step-ca.json`。先通过 channels 保存需要启用的通道及最终公开 origin（缺材料可为空）；随后 SIT 的独立 `ca-init` 调用统一初始化，发现真实签发者、准备所有用途、安装固定模板及回调、生成或复用凭据并导出网关。无需填写 purpose、provisioner、kid、模板、回调或每用途操作 ID。已有管理员、租户、设备、历史信任和签发材料保留。
+5. **通道**：使用原 `configure-host` 的 `channels` 变更，CA 信任和回调从统一初始化结果自动接入，不再手填 trust/provider；Agent 标准证书期限为 `{"mode":"standard"}`，Windows 为 `{"mode":"production"}`。Windows 首注 origin 必须独立于需要设备证书的入口；例如注册使用 `https://enroll.example.test`，Agent、Windows 管理和 Apple 共用 `https://mdm.example.test`。也可使用同域名不同端口；网关服务器证书覆盖全部公开名称。Windows 配置显式轮询计划，可在无 WNS 时使用轮询。Rust 仅使用隔离网络内的单个 HTTP 地址，Nginx 终止 TLS/mTLS、分流协议路径并覆盖证书证据；内部端口不公开。
 6. **恢复材料与注册**：需要凭据托管的 SIT 使用原 `configure-host` 的 `recovery` / `recipient.kind=generate`，幂等保存独立加密保护材料及接收证书。核对 `/api/v1/agent-enrollment-settings` 启用 Windows/macOS，并核对 `/api/v1/registration-channels` 的已选通道准入；已有租户规则保留，修改须使用当前 revision。Group/Scope/Policy 等测试业务对象由测试场景创建，不预置假设备或完成记录。
 
 配置导出后，运维重建服务，再复验原操作：
@@ -144,7 +144,7 @@ docker compose --env-file /absolute/sit/compose.env run --rm --no-deps --user 10
 服务端 SIT 部署检查必须覆盖：
 
 - PostgreSQL、CA、RustFS 健康；`/readyz` 中当前进程观察与期望 revision、材料摘要、原租户/实例匹配。
-- 原平台/业务管理员均能登录并取得各自授权；匿名管理请求被拒绝，设备保护接口要求真实客户端证书。Agent 公开 trust 可经真实域名 HTTPS 读取，Windows 管理入口无客户端证书时 TLS 拒绝。
+- 原平台/业务管理员均能登录并取得各自授权；匿名管理请求被拒绝，设备保护接口要求真实客户端证书。Agent 公开 trust 可经真实域名 HTTPS 读取，Windows 管理入口无客户端证书时业务拒绝；首注 TLS 握手不得发出客户端证书请求。
 - Agent 与 Windows 通道分别返回 `availability=ready`，准入符合租户设置；内容连接为 `qualified` 且实际运行加载对应 revision，任务签名存在 active key，所选恢复材料已加载；正式 `/api/v1/audit-events` 可查询。
 - 用相同输入至少重放一次 `init`，租户、管理员、instance、operation、密码与保护材料不变；重放 CA 准备保持原 issuer/kid；重启依赖并按上述顺序重建 server/gateway 后再次通过运行观察。
 - 保存 Compose 环境、固定镜像、维护操作回执和一致数据库/材料备份；不把运行中的卷简单打包作为一致备份。备份和恢复边界见[运维指南](operations.md#当前安装联合冷备)。
@@ -179,7 +179,8 @@ Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及�
 |---|---|
 | `mdm.example.test/` | Nginx → web:8080 静态页面 |
 | `mdm.example.test/api/` | Nginx → 唯一内部 HTTP 入口；管理会话、CSRF 与权限由后端验证 |
-| `mdm.example.test/EnrollmentServer/...` | 同一入口的 Windows 注册路由；后端验证原生凭据 |
+| `enroll.example.test/EnrollmentServer/...` | 无客户端证书请求的 Windows 首注路由；后端验证原生凭据 |
+| `mdm.example.test/EnrollmentServer/...` | 证书认证的 Windows 续期及 WinDC 路由 |
 | `mdm.example.test/ManagementServer/...` | 同一入口的 Windows 管理路由；后端验证设备证书 |
 | `mdm.example.test/checkin`、`/mdm`、`/native/apple/ddm/...` | 同一入口的 Apple 路由；材料未就绪时拒绝业务请求 |
 | `mdm.example.test/api/v1/agent/...` | 同一入口的 Agent 路由；注册与已注册设备操作保留各自准入要求 |
@@ -348,7 +349,7 @@ MDM 投影使用 `audit_projection.database` 的独立 `mdm_audit_worker` 登录
 
 只支持 Nginx 公网网关。gateway 与各租户 server 使用受控主机上的隔离网络；Rust 只保留一个不公开的内部 HTTP 入口。Nginx 终止 TLS/mTLS，覆盖公开 origin、TLS 客户端叶证书和真实来源地址；Rust 先核验实际 TCP peer 等于 `trusted_gateway`，再按通道验证证书用途、撤销、租户和注册。设备路由清除管理会话 Cookie；Windows 原生 Entra 凭据由原生通道验证。
 
-运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。四类能力可共享域名和端口，也可分开。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。内部端口固定为 443 与 8443 互换、其它端口同号，不随宿主或入口集合排序改变；维护 `probe_addresses` 使用生成的目标端口。标准初始化从同一映射生成控制台 probe 地址。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
+运行配置中的 Windows enrollment/management、Apple management 与 Agent endpoint 只保存公开 `origin`；不再接受设备 listener、TLS 私钥或 PROXY 配置。Windows 首注 origin 禁止与 Windows 管理、Apple 管理或 Agent 证书入口重叠；其余证书入口可共享域名和端口。仅控制台可与任一类入口共享，TLS 策略由该 origin 的通道决定。首注使用 `ssl_verify_client off`，证书入口使用 `optional_no_ca`，由后端验证链、用途与当前凭据。TLS 策略在 HTTP 路由选择之前生效，不能按 location 区分。部署层 `deployment/render_gateway.py` 消费安装工具导出的 `deployment.json`，生成 Nginx HTTPS 路由及 `gateway-ports.compose.yaml`。业务 API 不执行渲染、shell 或容器操作。新增域名必须已包含在网关证书中；新增端口须在部署环境应用生成的 Compose ports override。内部端口固定为 443 与 8443 互换、其它端口同号，不随宿主或入口集合排序改变；维护 `probe_addresses` 使用生成的目标端口。标准初始化从同一映射生成控制台 probe 地址。网关容器的独立网络命名空间设置 `net.ipv4.ip_unprivileged_port_start=0`，允许非 root Nginx 绑定这些端口，不改变宿主设置。
 
 新格式安装后的连接更新使用稳定安装 `instance_id` 与 tenant。先在现有部署设置保存 Agent 首选和候选 HTTPS origins，再由运维修改宿主输入、准备运行文件、运行部署 renderer、应用 Compose 与 Nginx 配置。部署层可用以下命令刷新网关（对应宿主准备必须先完成）：
 

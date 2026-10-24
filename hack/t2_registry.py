@@ -2256,3 +2256,6 @@ if __name__ == '__main__':
     parser.add_argument('--module-ids', action='store_true', required=True)
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
+
+# Certificate-based enrollment is carried by management TLS, separately from bootstrap.
+consume(('crates/windows-channel/src/certificate_enrollment.rs',), 'windows.enrollment windows.issuance windows.declared')

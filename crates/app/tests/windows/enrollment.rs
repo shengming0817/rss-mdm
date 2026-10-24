@@ -90,6 +90,78 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
                 && v["action"] == "enrollment_issue"
                 && !v["registrationId"].is_null())
     );
+    // Certificate renewal discovery/XCEP have a distinct origin and require possession.
+    let renewal = app
+        .windows()?
+        .channel
+        .renewal_discovery_url(rss_mdm_registration_service::Purpose::Primary);
+    for (fixture, operation, path) in [
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
+            Operation::Discover,
+            renewal,
+        ),
+        (
+            include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml").as_slice(),
+            Operation::GetPolicies,
+            format!(
+                "{}/EnrollmentServer/Policy.svc",
+                app.windows()?.channel.management_origin
+            ),
+        ),
+    ] {
+        let mut request = soap::decode(fixture, operation, &CodecLimits::default())?;
+        request.header.to = Some(path.clone());
+        request.header.security = None;
+        let wire = soap::encode(&request, &CodecLimits::default())?;
+        let response = peer
+            .mutual
+            .post(&path)
+            .header("content-type", "application/soap+xml")
+            .body(wire.clone())
+            .send()
+            .await?;
+        ensure!(response.status() == StatusCode::OK);
+        let response =
+            soap::decode_response(&request, &response.bytes().await?, &CodecLimits::default())?;
+        if let Body::DiscoverResponse(discovery) = response.body {
+            ensure!(discovery.auth_policy == soap::AuthPolicy::Certificate);
+            ensure!(
+                discovery.enrollment_url
+                    == format!(
+                        "{}/EnrollmentServer/Enrollment.svc",
+                        app.windows()?.channel.management_origin
+                    )
+            );
+        }
+        ensure!(
+            client
+                .post(path)
+                .header("content-type", "application/soap+xml")
+                .body(wire)
+                .send()
+                .await?
+                .status()
+                != StatusCode::OK
+        );
+    }
+    let mut wrong_origin = peer.issue.clone();
+    let management_issue = format!(
+        "{}/EnrollmentServer/Enrollment.svc",
+        app.windows()?.channel.management_origin
+    );
+    wrong_origin.header.to = Some(management_issue.clone());
+    ensure!(
+        peer.mutual
+            .post(management_issue)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&wrong_origin, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            != StatusCode::OK,
+        "bootstrap PKCS10 was accepted on certificate enrollment"
+    );
     let root = &host.root;
     let root_cert = &host.root_cert;
     let url = &peer.url;

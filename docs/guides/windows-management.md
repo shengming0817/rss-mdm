@@ -4,7 +4,7 @@
 积压期间保留进行中的策略扫描，并合并为一个最新待处理签入，不补跑全部历史签入。
 重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册世代。
 
-产品直接终止注册 HTTPS 与管理 mTLS，不接受转发头作为设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。
+部署网关终止注册 HTTPS 与管理 mTLS，后端只接受受信网关覆盖的 TLS 证据并独立验证设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。首注 enrollment origin 不请求客户端证书；management、Agent 和 Apple 的证书入口必须使用其它 origin，可共用主机名并分离端口。配置拒绝这两类入口重叠。
 
 ## 证书与会话
 
@@ -40,13 +40,13 @@ WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_s
 
 ## 续期与原生注销
 
-续期在 Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
+首次 provisioning 的 CertificateStore/My/WSTEP/Renew/ServerURL 指向 management origin 的 Discovery.svc；它要求当前证书并返回 Certificate 策略。续期在该 origin 的 Policy.svc / Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
 
 原生 `com.microsoft:mdm.unenrollment.userrequest` 在原事务内退休注册、凭据、执行参与方、采集、push 与活动会话，并保存独立加密回执。并发或丢失响应重试得到相同字节；回执不依赖临时会话保留。退休证书只能恢复这份精确历史请求的回执，不能构造 active principal 或继续接收新工作。服务器退休不能证明终端已清理管理账户，审计中的设备清理状态保持 unverified。
 
-普通 Full 用户注册不依赖组织联合身份。WinDC 子登记走证书式协议：`/EnrollmentConfiguration?api-version=1.0` 只接受 `enrollmentType="User"`，返回 Certificate 策略与独立 LinkedPolicy.svc / LinkedEnrollment.svc。发现字段不建立组织身份；未支持的 Federated/Entra JWT 流程拒绝。
+普通 Full 用户注册不依赖组织联合身份。WinDC 子登记走证书式协议：management origin 的 `/EnrollmentConfiguration?api-version=1.0` 只接受 `enrollmentType="User"`，返回 Certificate 策略与独立 LinkedPolicy.svc / LinkedEnrollment.svc。发现字段不建立组织身份；未支持的 Federated/Entra JWT 流程拒绝。
 
-XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书在自己的登记入口续期，父子证书不能跨管理入口使用。
+XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书通过 management origin 的 LinkedDiscovery.svc 发现自己的登记入口续期，父子证书不能跨管理入口使用。
 
 WinDC 子登记缺失或尚未首次认证时，Declared 配置策略保留等待状态和既有资源占用，并返回 `windows_declared_enrollment_not_ready` 诊断。先完成子登记及 Declared 首次认证签入；首次认证会唤醒等待配置。普通主登记和 ConfigRefresh 独立可用。
 
