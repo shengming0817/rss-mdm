@@ -229,47 +229,7 @@ pub fn routers(
                 &[RouteOperation::Action],
             ),
         );
-    let management = Router::new()
-        .route(
-            "/EnrollmentServer/Discovery.svc",
-            rss_mdm_http_contract::routing::get(discovery_probe)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .post(certificate_enrollment::discover)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-        )
-        .route(
-            "/EnrollmentServer/Policy.svc",
-            post(certificate_enrollment::policy).owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/EnrollmentServer/Enrollment.svc",
-            post(certificate_enrollment::issue).owned(
-                &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                &[RouteOperation::Action],
-            ),
-        )
-        .route(
-            "/EnrollmentServer/LinkedDiscovery.svc",
-            rss_mdm_http_contract::routing::get(discovery_probe)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                )
-                .post(certificate_enrollment::linked_discover)
-                .owned(
-                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
-                    &[RouteOperation::Action],
-                ),
-        )
+    let management = certificate_enrollment::router()
         .route(
             "/EnrollmentConfiguration",
             post(linked::discover).owned(

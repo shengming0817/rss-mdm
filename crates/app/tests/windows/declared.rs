@@ -914,19 +914,7 @@ struct Renewed {
     certificate: Vec<u8>,
     mutual: reqwest::Client,
 }
-async fn renew(
-    host: &Host,
-    issue: &soap::Message,
-    client: &reqwest::Client,
-    certificate: &[u8],
-    key: &std::path::Path,
-) -> anyhow::Result<Renewed> {
-    let linked = issue
-        .header
-        .to
-        .as_deref()
-        .is_some_and(|value| value.ends_with("/LinkedEnrollment.svc"));
-    let prefix = if linked { "Linked" } else { "" };
+async fn renewal_policy(host: &Host, client: &reqwest::Client, prefix: &str) -> anyhow::Result<()> {
     for (fixture, operation, service) in [
         (
             include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml").as_slice(),
@@ -969,6 +957,22 @@ async fn renew(
             );
         }
     }
+    Ok(())
+}
+async fn renew(
+    host: &Host,
+    issue: &soap::Message,
+    client: &reqwest::Client,
+    certificate: &[u8],
+    key: &std::path::Path,
+) -> anyhow::Result<Renewed> {
+    let linked = issue
+        .header
+        .to
+        .as_deref()
+        .is_some_and(|value| value.ends_with("/LinkedEnrollment.svc"));
+    let prefix = if linked { "Linked" } else { "" };
+    renewal_policy(host, client, prefix).await?;
     let temporary = tempfile::tempdir()?;
     let new_key = temporary.path().join("new.key");
     let csr = temporary.path().join("new.csr");

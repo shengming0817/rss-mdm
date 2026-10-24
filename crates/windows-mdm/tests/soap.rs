@@ -457,6 +457,23 @@ fn xcep_sha256_triple_does_not_inherit_historical_sha1() {
 }
 
 #[test]
+fn certificate_policy_can_use_transport_identity_without_a_soap_token() {
+    let limits = CodecLimits::default();
+    let mut message = soap::decode(
+        include_bytes!("fixtures/policy-request.xml"),
+        Operation::GetPolicies,
+        &limits,
+    )
+    .unwrap();
+    message.header.security = None;
+    let wire = soap::encode(&message, &limits).unwrap();
+    assert_eq!(
+        soap::decode(&wire, Operation::GetPolicies, &limits).unwrap(),
+        message
+    );
+}
+
+#[test]
 fn initial_issue_requires_username_but_cms_renewal_uses_transport_identity() {
     let limits = CodecLimits::default();
     let mut message = soap::decode(

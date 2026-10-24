@@ -145,6 +145,28 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
                 != StatusCode::OK
         );
     }
+    let mut anonymous_policy = soap::decode(
+        include_bytes!("../../../windows-mdm/tests/fixtures/policy-request.xml"),
+        Operation::GetPolicies,
+        &CodecLimits::default(),
+    )?;
+    let bootstrap_policy = format!(
+        "{}/EnrollmentServer/Policy.svc",
+        app.windows()?.channel.enrollment_origin
+    );
+    anonymous_policy.header.to = Some(bootstrap_policy.clone());
+    anonymous_policy.header.security = None;
+    ensure!(
+        client
+            .post(bootstrap_policy)
+            .header("content-type", "application/soap+xml")
+            .body(soap::encode(&anonymous_policy, &CodecLimits::default())?)
+            .send()
+            .await?
+            .status()
+            != StatusCode::OK,
+        "bootstrap Policy admitted a request without credentials"
+    );
     let mut wrong_origin = peer.issue.clone();
     let management_issue = format!(
         "{}/EnrollmentServer/Enrollment.svc",

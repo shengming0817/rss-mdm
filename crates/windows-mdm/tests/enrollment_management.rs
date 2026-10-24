@@ -86,22 +86,23 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
                     .map(|value| {
                         let value = value.unwrap();
                         (
-                            value.key.as_ref().to_vec(),
-                            value.unescape_value().unwrap().into_owned(),
+                            value.key.as_ref().to_owned(),
+                            value
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .unwrap()
+                                .into_owned(),
                         )
                     })
                     .collect();
-                if node.name().as_ref() == b"characteristic" {
-                    path.push(attributes[b"type".as_slice()].clone());
-                } else if attributes.get(b"name".as_slice()).map(String::as_str)
-                    == Some("ServerURL")
-                {
+                if node.name().as_ref() == "characteristic" {
+                    path.push(attributes["type"].clone());
+                } else if attributes.get("name").map(String::as_str) == Some("ServerURL") {
                     assert_eq!(path, ["CertificateStore", "My", "WSTEP", "Renew"]);
-                    assert_eq!(attributes[b"value".as_slice()], p.renewal_discovery_url);
+                    assert_eq!(attributes["value"], p.renewal_discovery_url);
                     found = true;
                 }
             }
-            quick_xml::events::Event::End(node) if node.name().as_ref() == b"characteristic" => {
+            quick_xml::events::Event::End(node) if node.name().as_ref() == "characteristic" => {
                 path.pop();
             }
             quick_xml::events::Event::Eof => break,

@@ -3,6 +3,51 @@
 use super::*;
 use rss_mdm_registration_service::{DevicePrincipal, Purpose};
 
+// Same standard service paths as bootstrap, mounted under a different TLS origin.
+pub(super) fn router() -> Router<Arc<HttpState>> {
+    Router::new()
+        .route(
+            "/EnrollmentServer/Discovery.svc",
+            rss_mdm_http_contract::routing::get(discovery_probe)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .post(discover)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+        )
+        .route(
+            "/EnrollmentServer/Policy.svc",
+            post(policy).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/EnrollmentServer/Enrollment.svc",
+            post(issue).owned(
+                &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/EnrollmentServer/LinkedDiscovery.svc",
+            rss_mdm_http_contract::routing::get(discovery_probe)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .post(linked_discover)
+                .owned(
+                    &contracts::PROTOCOL_WINDOWS_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+        )
+}
+
 async fn principal(
     app: &HttpState,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,

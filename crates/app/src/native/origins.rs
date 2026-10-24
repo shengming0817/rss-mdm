@@ -12,7 +12,8 @@ pub(crate) struct Origin {
 pub(crate) fn public(config: &Config) -> Result<Vec<Origin>, Error> {
     let mut origins = BTreeMap::from([(config.product_origin.clone(), None)]);
     let mut add = |origin: &str, certificate: bool| -> Result<(), Error> {
-        rss_mdm_agent_wire::connections::validate_origin(origin).map_err(|_| Error::Input)?;
+        rss_mdm_agent_wire::connections::validate_origin(origin)
+            .map_err(|_| Error::Configuration(ConfigIssue::WindowsListeners))?;
         let mode = origins.entry(origin.to_owned()).or_default();
         if mode.is_some_and(|previous| previous != certificate) {
             return Err(Error::Configuration(ConfigIssue::WindowsListeners));
@@ -44,7 +45,8 @@ pub(crate) fn public(config: &Config) -> Result<Vec<Origin>, Error> {
     origins
         .into_iter()
         .map(|(origin, mode)| {
-            rss_mdm_agent_wire::connections::validate_origin(&origin).map_err(|_| Error::Input)?;
+            rss_mdm_agent_wire::connections::validate_origin(&origin)
+                .map_err(|_| Error::Configuration(ConfigIssue::WindowsListeners))?;
             Ok(Origin {
                 origin,
                 client_certificate: mode.unwrap_or(false),

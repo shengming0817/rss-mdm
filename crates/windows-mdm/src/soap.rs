@@ -266,13 +266,8 @@ fn validate_header(h: &Header, op: Operation, l: &CodecLimits) -> Result<()> {
     } else if h.message_id.is_none() || h.to.is_none() || h.relates_to.is_some() {
         return Err(E::Structure);
     }
-    if op == Operation::GetPolicies
-        && h.security
-            .as_ref()
-            .is_none_or(|s| s.username.is_none() && s.binary_token.is_none())
-    {
-        return Err(E::Structure);
-    }
+    // Certificate-based XCEP authenticates the completed TLS transport. A SOAP
+    // token is optional on the wire; each channel must still authorize the request.
     if op == Operation::IssueResponse
         && h.security
             .as_ref()

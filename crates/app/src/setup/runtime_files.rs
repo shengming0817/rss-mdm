@@ -488,5 +488,5 @@ pub(super) async fn record_observation(
 mod tests;
 
 fn public_routes(config: &crate::config::Config) -> Result<Vec<crate::native::origins::Origin>> {
-    crate::native::origins::public(config)
+    crate::native::origins::public(config).map_err(|_| Error::Input)
 }

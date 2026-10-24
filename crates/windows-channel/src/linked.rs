@@ -22,7 +22,6 @@ fn now(app: &HttpState) -> Result<i64, Error> {
         .ok_or(Error::Unavailable(Failure::Clock))
 }
 pub(crate) async fn discover(
-    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(endpoint): Extension<ManagementEndpoint>,
     uri: axum::http::Uri,
