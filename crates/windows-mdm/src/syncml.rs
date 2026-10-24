@@ -1071,7 +1071,7 @@ pub(crate) fn validate_body(
                     Command::DevInfo { .. }
                 ]
             ))
-            || !final_message
+            || (unenrolling && !final_message)
         {
             return Err(E::Structure);
         }

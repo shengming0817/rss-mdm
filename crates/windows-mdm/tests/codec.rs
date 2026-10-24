@@ -183,7 +183,6 @@ fn initialization_cannot_become_a_general_replace_command() {
         xml.replace("./DevInfo/Man", "./DevInfo/DevId"),
         xml.replace("./DevInfo/Man", "./Vendor/MSFT/Policy"),
         xml.replace("<CmdID>3</CmdID>", "<CmdID>2</CmdID>"),
-        xml.replace("<Final/>", ""),
         xml.replace("<CmdID>2</CmdID>", "<CmdID>4294967296</CmdID>"),
     ] {
         assert!(syncml::decode(bad.as_bytes(), &l).is_err());

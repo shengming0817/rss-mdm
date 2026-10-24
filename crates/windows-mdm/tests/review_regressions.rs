@@ -39,7 +39,8 @@ fn client_session_and_login_alerts_can_share_initial_package() {
         assert_eq!(syncml::encode(&duplicate, &limits), Err(E::Structure));
         let mut partial = message.clone();
         partial.final_message = false;
-        assert_eq!(syncml::encode(&partial, &limits), Err(E::Structure));
+        let wire = syncml::encode(&partial, &limits).unwrap();
+        assert_eq!(syncml::decode(&wire, &limits).unwrap(), partial);
     }
 }
 #[test]
