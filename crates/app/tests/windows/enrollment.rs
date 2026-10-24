@@ -297,10 +297,12 @@ async fn discover_and_policy(
         .unwrap();
     token.username = Secret(app.windows()?.channel.enrollment_username(enrollment)?);
     token.password = Secret(password.to_owned());
+    let policy_wire = String::from_utf8(soap::encode(&policy, &CodecLimits::default())?)?
+        .replace("<o:Password Type=", "<o:Password o:Type=");
     let response = client
         .post(&found.policy_url)
         .header("content-type", "application/soap+xml")
-        .body(soap::encode(&policy, &CodecLimits::default())?)
+        .body(policy_wire)
         .send()
         .await?;
     ensure!(response.status() == StatusCode::OK);
