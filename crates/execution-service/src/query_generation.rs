@@ -1,4 +1,10 @@
 //! Product query invalidation participates in the existing command transaction.
+//!
+//! Keep mutable RSS Store calls behind this private adapter: version witnesses
+//! advance only for changed command facts, so no-op recovery preserves cursors.
+//! Witnesses and the query revision commit or roll back with the original write.
+//! Product-owned evidence uses its own capture triggers; RSS tables stay owned
+//! by RSS. Registration retirement enters through the existing narrow SQL seam.
 use rss_device_command as dc;
 use rss_transactional_messaging::outbox::PendingMessage;
 use rss_transactional_messaging_postgres::{PgError, PgTransaction};

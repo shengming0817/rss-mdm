@@ -31,7 +31,7 @@ queued 是持久受理，published 是 Outbox 网关接纳，received 是关联�
 
 Remote 与旧通用直接命令无部署升级义务，已完整退出。当前安装 schema 不接受旧安装账本；不提供历史执行导入或兼容查询。
 
-`GET /api/v1/operations` 保留设备、Policy、状态筛选和 kind/id 复合游标。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
+`GET /api/v1/operations` 使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；设备、Policy、状态条件写入 filter，排序以 `(id,kind)` 保证复合身份唯一，cursor 为签名的不透明值。精确统计单独请求 `/api/v1/operations/statistics`，使用相同 filter 并返回观察时刻。摘要移除原始输出与诊断流，完整证据沿 detailUrl 检查当前设备范围权限。仅选择 id/kind 等元数据时不读取大型执行证据；证据按选中页批量补齐。执行事实及证据变化使目录游标失效，无变化的恢复不推进世代，事务回滚不留下已提交世代。脚本、原生采集、配置和软件继续走各自 Policy owner，见[企业任务](enterprise-tasks.md)。
 
 命令连接 execution.database 使用 mdm_command_runtime。完整运行配置见 fixtures/mdm-config.example.json；恢复和安装要求见[运维](../deployment/operations.md)。
 
