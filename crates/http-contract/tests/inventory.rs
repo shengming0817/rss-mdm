@@ -205,6 +205,16 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
     let modules: std::collections::BTreeSet<String> =
         serde_json::from_slice(&output.stdout).unwrap();
     for resource in catalog::ALL {
+        if let Some(rss_mdm_http_contract::collections::Description::Current(current)) =
+            resource.collection
+        {
+            assert!(
+                root().join(current.source).is_file(),
+                "{} has no source owner {}",
+                resource.id,
+                current.source
+            );
+        }
         assert!(
             modules.contains(resource.proof),
             "{} has no existing T2 owner {}",
