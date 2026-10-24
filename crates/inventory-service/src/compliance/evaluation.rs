@@ -136,7 +136,16 @@ impl Compliance {
         cursor: Option<String>,
     ) -> Result<()> {
         crate::transaction::lock(tx).await?;
-        let r = self.rule(tx, input.rule).await?;
+        let tenant = self.tenant();
+        let id = input.rule;
+        let r = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    pg::retained_rule::<crate::assets::InventoryCondition>(c, tenant, id).await
+                })
+            })
+            .await?
+            .ok_or(Error::NotFound)?;
         if r.desired != Some(task) || !self.fresh(tx, &r, input).await? {
             return self.supersede(tx, task, &r).await;
         }

@@ -276,7 +276,7 @@ fn transaction(e: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
         rss_mdm_audit_integration::TransactionError::Rollback { .. } => Error::RollbackFailed,
     }
 }
-fn settle<T>(
+pub(super) fn settle<T>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
         T,
         rss_mdm_audit_integration::TransactionError<Error>,

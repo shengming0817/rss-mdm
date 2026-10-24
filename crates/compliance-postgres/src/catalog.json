@@ -208,6 +208,15 @@
       ""
     ],
     [
+      "rules",
+      "deleted",
+      "boolean",
+      true,
+      "false",
+      "",
+      ""
+    ],
+    [
       "versions",
       "tenant_id",
       "uuid",

@@ -31,9 +31,6 @@ pub(super) fn validate_definition(
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
-    List {
-        after: Option<Uuid>,
-    },
     Read {
         id: Uuid,
     },
@@ -45,6 +42,10 @@ pub enum Command {
         sensitive: bool,
         id: Uuid,
         request: Box<crate::operation::Operation<Definition>>,
+    },
+    Delete {
+        id: Uuid,
+        request: crate::operation::Operation<Empty>,
     },
     Recompute {
         id: Uuid,
@@ -78,7 +79,9 @@ impl Command {
     pub fn operation(&self) -> Option<Uuid> {
         match self {
             Self::Put { request, .. } => Some(request.operation_id),
-            Self::Recompute { request, .. } => Some(request.operation_id),
+            Self::Delete { request, .. } | Self::Recompute { request, .. } => {
+                Some(request.operation_id)
+            }
             _ => None,
         }
     }

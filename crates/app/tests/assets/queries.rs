@@ -92,10 +92,43 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         .await?["asset"]["summary"]["matched"]
             == 1
     );
+
+    let second_saved = Uuid::new_v4();
+    ok(&mut browser,router,Method::PUT,&format!("/api/v1/saved-queries/{second_saved}"),Some(request(0,json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}})))).await?;
+    let mut ids = [saved, second_saved];
+    ids.sort();
+    let base = "/api/v1/saved-queries?filter=name==%22Floor%203%22&sort=name&fields=id&limit=1";
+    let page = ok(&mut browser, router, Method::GET, base, None).await?;
+    ensure!(page["asset"]["items"] == json!([{"id":ids[0]}]));
+    let cursor = page["asset"]["nextCursor"].as_str().unwrap();
+    let last = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{base}&cursor={cursor}"),
+        None,
+    )
+    .await?;
+    ensure!(
+        last["asset"]["items"] == json!([{"id":ids[1]}]) && last["asset"]["nextCursor"].is_null()
+    );
     let mut other = Browser::default();
     ensure!(other.login(router, "other").await? == StatusCode::OK);
     let other_subject = browser_subject(&other, router).await?;
     permissions(&other_subject, None, true).await?;
+    ensure!(
+        other
+            .call(
+                router,
+                Method::GET,
+                &format!("{base}&cursor={cursor}"),
+                None
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+
     ensure!(other.call(router, Method::GET, &saved_path, None).await?.0 == StatusCode::NOT_FOUND);
     ensure!(
         other

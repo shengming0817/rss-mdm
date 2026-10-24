@@ -90,37 +90,6 @@ impl AssetService {
                 .transpose()?,
         })
     }
-    pub(super) async fn saved_list(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        owner: &Owner,
-        after: Option<Uuid>,
-    ) -> Result<Response> {
-        let tenant = self.tenant.to_string();
-        let owner = owner.clone();
-        let rows=tx.with_connection(move |c|Box::pin(async move {sqlx::query("SELECT id::text,revision,document::text FROM mdm_assets.saved_queries WHERE tenant_id=$1::uuid AND instance=$2::uuid AND owner=$3::uuid AND ($4::uuid IS NULL OR id>$4::uuid) ORDER BY id LIMIT 101").bind(tenant).bind(owner.instance).bind(owner.principal).bind(after.map(|i|i.to_string())).fetch_all(c).await})).await?;
-        let more = rows.len() > 100;
-        let items = rows
-            .into_iter()
-            .take(100)
-            .map(|r| {
-                Ok(SavedView {
-                    id: checked_input(Uuid::parse_str(r.try_get("id")?))?,
-                    revision: r.try_get("revision")?,
-                    definition: r
-                        .try_get::<Option<String>, _>("document")?
-                        .map(|s| stored(serde_json::from_str(&s)))
-                        .transpose()?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let next = if more {
-            items.last().map(|v| v.id)
-        } else {
-            None
-        };
-        Ok(Response::SavedList { items, next })
-    }
     pub(super) async fn saved_write(
         &self,
         tx: &mut PgTransaction<'_>,

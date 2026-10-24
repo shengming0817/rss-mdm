@@ -31,6 +31,7 @@ mod quality;
 mod query;
 mod query_read;
 mod query_sort;
+pub mod saved_directory;
 mod store;
 pub use filter::{criteria_view, rule};
 
@@ -198,7 +199,6 @@ impl AssetService {
                 self.assign_asset(tx, device, *field, change, owner, at)
                     .await?
             }
-            Command::SavedList { owner, after } => self.saved_list(tx, owner, *after).await?,
             Command::SavedRead { owner, id } => Response::Saved {
                 query: self.saved_read(tx, owner, *id).await?,
             },

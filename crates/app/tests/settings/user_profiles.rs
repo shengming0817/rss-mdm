@@ -27,6 +27,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
     resources
         .finish(async {
             let backend = Arc::new(Backend {
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&[29;32]).unwrap(),
                 identity: f.identity.authority.clone(),
                 tenant: f.identity.tenant,
                 instance: f.identity.instance,
@@ -217,6 +218,17 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":null})),
             )
             .await?;
+
+            let mut value=definition();value["key"]=json!("secondNumber");value["displayName"]=json!("Employee number");
+            let second_id=Uuid::new_v4();
+            ok(&mut admin,&router,Method::PUT,&format!("{DEFINITIONS}/{second_id}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":value}))).await?;
+            let query=format!("{DEFINITIONS}?sort=displayName&fields=fieldId&limit=1");
+            let first=ok(&mut admin,&router,Method::GET,&query,None).await?;
+            ensure!(first["sources"].is_array()&&first["items"].as_array().unwrap().len()==1);
+            let cursor=first["nextCursor"].as_str().unwrap();
+            let last=ok(&mut admin,&router,Method::GET,&format!("{query}&cursor={cursor}"),None).await?;
+            ensure!(last["items"].as_array().unwrap().len()==1&&last["nextCursor"].is_null()&&first["items"][0]!=last["items"][0]);
+            ok(&mut admin,&router,Method::PUT,&format!("{DEFINITIONS}/{second_id}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"value":null}))).await?;
             let mut other = f.browser("other")?;
             let principal = f
                 .identity
@@ -247,7 +259,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
             )
             .await?;
             ensure!(
-                ok(&mut other, &router, Method::GET, DEFINITIONS, None).await?["definitions"]
+                ok(&mut other, &router, Method::GET, DEFINITIONS, None).await?["items"]
                     .as_array()
                     .unwrap()
                     .len()
@@ -356,7 +368,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
             )
             .await?;
             ensure!(
-                ok(&mut admin, &router, Method::GET, DEFINITIONS, None).await?["definitions"]
+                ok(&mut admin, &router, Method::GET, DEFINITIONS, None).await?["items"]
                     .as_array()
                     .unwrap()
                     .is_empty()

@@ -323,6 +323,89 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .iter()
             .all(|v| tasks.contains(v["task"].as_str().unwrap()))
     );
+
+    let another = Uuid::new_v4();
+    let another_path = format!("/api/v1/compliance-rules/{another}");
+    let mut disabled = definition(json!({"kind":"all"}));
+    disabled["enabled"] = json!(false);
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &another_path,
+        Some(request(0, disabled)),
+    )
+    .await?;
+    let base = "/api/v1/compliance-rules?filter=enabled==false;severity==high&sort=revision&fields=id,revision&limit=1";
+    let page = ok(&mut browser, router, Method::GET, base, None).await?;
+    ensure!(page["items"] == json!([{"id":another,"revision":1}]));
+    let cursor = page["nextCursor"].as_str().unwrap();
+    let last = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        &format!("{base}&cursor={cursor}"),
+        None,
+    )
+    .await?;
+    ensure!(last["items"][0]["revision"] == 2 && last["nextCursor"].is_null());
+    let deletion = request(2, json!({}));
+    let receipt = ok(
+        &mut browser,
+        router,
+        Method::DELETE,
+        &path,
+        Some(deletion.clone()),
+    )
+    .await?;
+    ensure!(receipt["deleted"] == true && receipt["revision"] == 3);
+    ensure!(ok(&mut browser, router, Method::DELETE, &path, Some(deletion)).await? == receipt);
+    ensure!(browser.call(router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
+    ensure!(
+        browser
+            .call(
+                router,
+                Method::PUT,
+                &path,
+                Some(request(3, definition(json!({"kind":"all"}))))
+            )
+            .await?
+            .0
+            == StatusCode::CONFLICT
+    );
+    ensure!(
+        ok(
+            &mut browser,
+            router,
+            Method::GET,
+            &format!("{path}/versions/1"),
+            None
+        )
+        .await?["definition"]["enabled"]
+            == true
+    );
+    let removed = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        "/api/v1/compliance-rules?filter=deleted==true",
+        None,
+    )
+    .await?;
+    ensure!(
+        removed["items"].as_array().unwrap().len() == 1 && removed["items"][0]["enabled"] == false
+    );
+    ensure!(
+        ok(
+            &mut browser,
+            router,
+            Method::GET,
+            "/api/v1/devices/compliance-a/compliance/history",
+            None
+        )
+        .await?["items"]
+            == retained["items"]
+    );
     ensure!(audit_count(|r| r.action() == "compliance_read").await? > 0);
     crate::test_support::runtime::stop_worker(automation).await?;
     fixture.close().await;
