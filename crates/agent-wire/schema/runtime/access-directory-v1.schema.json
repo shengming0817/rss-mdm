@@ -755,20 +755,19 @@
   "additionalProperties": false,
   "description": "Bounded employee discovery; cursors advance scanned rows, including ineligible policies.",
   "properties": {
-    "after": {
-      "description": "Cursor for the next policy scan.",
-      "format": "uuid",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "bindings": {
       "description": "This authenticated person's bindings in the current device registration.",
       "items": {
         "$ref": "#/$defs/AccessBindingStatus"
       },
       "type": "array"
+    },
+    "nextCursor": {
+      "description": "Cursor for the next policy scan.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "policies": {
       "description": "Eligible policies in this scan page.",

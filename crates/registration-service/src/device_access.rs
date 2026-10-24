@@ -1,5 +1,6 @@
 //! Device Access association authority. Registration and local-account generations are distinct.
 //! ref: kanidm server/lib/src/idm/credupdatesession.rs (explicit credential ceremony state).
+pub mod directory;
 pub mod lifecycle;
 mod service;
 pub mod storage;
@@ -240,6 +241,7 @@ pub trait Admission: Send + Sync {
         tenant: Uuid,
         device: &'a str,
         after: Option<Uuid>,
+        limit: u16,
     ) -> crate::agent::Pending<
         'a,
         (
@@ -347,3 +349,12 @@ impl Change {
             .map_err(|_| Error::Malformed)
     }
 }
+
+/// Native discovery scans policy identities, including excluded candidates; it is not a management list.
+pub static DISCOVERY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "protocol_agent_channel",
+    default_limit: 64,
+    max_limit: 100,
+    order: "policy UUID ascending (bounded live eligibility scan)",
+    context: &[],
+};

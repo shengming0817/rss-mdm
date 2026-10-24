@@ -254,7 +254,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{}/device-access",execution::case_device_id());
         let received=f.author.call(&f.router,Method::GET,&list,None).await?;
-        ensure!(received.0==StatusCode::OK && received.1[0]["receivedRevision"]==1 && received.1[0]["appliedRevision"].is_null(),"received {received:?}");
+        ensure!(received.0==StatusCode::OK && received.1["items"][0]["receivedRevision"]==1 && received.1["items"][0]["appliedRevision"].is_null(),"received {received:?}");
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];
         let mut result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
@@ -262,8 +262,8 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         ensure!(event(&f,&task,&c,&registration,wrong).await?.0==StatusCode::CONFLICT);
         let applied=event(&f,&task,&c,&registration,result.take()).await?;ensure!(applied.0==StatusCode::OK,"applied {applied:?}");
         let ready=f.author.call(&f.router,Method::GET,&list,None).await?;
-        ensure!(ready.1[0]["serverState"]=="active" && ready.1[0]["appliedRevision"]==1);
-        let id=ready.1[0]["id"].as_str().context("binding")?;
+        ensure!(ready.1["items"][0]["serverState"]=="active" && ready.1["items"][0]["appliedRevision"]==1);
+        let id=ready.1["items"][0]["id"].as_str().context("binding")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let grants=crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["inventory_read"])?;
         crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
@@ -301,13 +301,13 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         let mut result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"needs_administrator","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         let pending=event(&f,&task,&c,&registration,result.clone()).await?;ensure!(pending.0==StatusCode::OK,"pending token {pending:?}");
         let observed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/device-access"),None).await?;
-        ensure!(observed.1[0]["serverState"]=="pending" && observed.1[0]["appliedRevision"].is_null());
+        ensure!(observed.1["items"][0]["serverState"]=="pending" && observed.1["items"][0]["appliedRevision"].is_null());
         let unbound=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(unbound.0==StatusCode::OK && unbound.1["serverState"]=="revoked");
         result["effect"]["mac"]["secureToken"]=json!("present");
         let late=event(&f,&task,&c,&registration,result).await?;ensure!(late.0==StatusCode::OK,"late receipt {late:?}");
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/device-access"),None).await?;
-        ensure!(listed.1[0]["serverState"]=="revoked" && listed.1[0]["appliedRevision"].is_null());
+        ensure!(listed.1["items"][0]["serverState"]=="revoked" && listed.1["items"][0]["appliedRevision"].is_null());
         let cleanup=offer(&f,&c,&registration).await?;ensure!(cleanup.0==StatusCode::OK,"cleanup {cleanup:?}");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["account"]["generatedUid"]==account.to_string());
@@ -347,7 +347,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{device}/device-access");
         let pending=f.author.call(&f.router,Method::GET,&list,None).await?;
-        ensure!(pending.1[0]["account"]["generatedUid"]==account.to_string() && pending.1[0]["appliedRevision"].is_null());
+        ensure!(pending.1["items"][0]["account"]["generatedUid"]==account.to_string() && pending.1["items"][0]["appliedRevision"].is_null());
         let apply=offer(&f,&c,&registration).await?;let task=apply.1["task"].clone();
         ensure!(task["payload"]["task"]["action"]["kind"]=="apply","apply existing account {apply:?}");
         for kind in ["received","start"] {ensure!(event(&f,&task,&c,&registration,json!({"kind":kind})).await?.0==StatusCode::OK);}
@@ -361,7 +361,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let late=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"administrator","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,late).await?.0==StatusCode::OK);
         let revoked=f.author.call(&f.router,Method::GET,&list,None).await?;
-        ensure!(revoked.1[0]["serverState"]=="revoked" && revoked.1[0]["appliedRevision"].is_null());
+        ensure!(revoked.1["items"][0]["serverState"]=="revoked" && revoked.1["items"][0]["appliedRevision"].is_null());
         let cleanup=offer(&f,&c,&registration).await?;
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind","scope-exit cleanup {cleanup:?}");
         Ok(())
@@ -391,7 +391,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::FORBIDDEN);
         let next=claim(&f,&c).await?;ensure!(next.0==StatusCode::OK && next.1["task"].is_null());
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
-        ensure!(listed.0==StatusCode::OK && listed.1[0]["appliedRevision"].is_null(),"publisher remains authorized {listed:?}");
+        ensure!(listed.0==StatusCode::OK && listed.1["items"][0]["appliedRevision"].is_null(),"publisher remains authorized {listed:?}");
         Ok(())
     }).await
 }
@@ -440,10 +440,10 @@ fn windows_context() -> Value {
     c["interactiveUser"] = json!({"windowsAuthority":{"kind":"local"},"identity":"S-1-5-21-100-200-300-1001","generatedUid":null,"sessionId":Uuid::from_u128(100),"administrator":false});
     c
 }
-async fn directory(f: &Fixture, user: bool) -> Result<(StatusCode, Value)> {
+async fn directory(f: &Fixture, user: bool, query: &str) -> Result<(StatusCode, Value)> {
     let mut r = Request::builder()
         .method(Method::GET)
-        .uri("/api/v1/agent/runtime/device-access")
+        .uri(format!("/api/v1/agent/runtime/device-access{query}"))
         .header("host", "mdm.example.test:9445")
         .extension(evidence(execution::case_credential()).unwrap());
     if user {
@@ -553,8 +553,8 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let (policy,registration) = setup_platform(&mut f,false,true).await?;
         let c = windows_context();
         ensure!(claim(&f,&c).await?.0 == StatusCode::OK);
-        ensure!(directory(&f,false).await?.0 == StatusCode::UNAUTHORIZED);
-        let options = directory(&f,true).await?;
+        ensure!(directory(&f,false, "").await?.0 == StatusCode::UNAUTHORIZED);
+        let options = directory(&f,true, "").await?;
         ensure!(options.0 == StatusCode::OK && options.1["policies"].as_array().context("policies")?.iter().any(|p| p["policy"] == policy.to_string()),"directory {options:?}");
         let id = if create {
             let id = Uuid::new_v4();
@@ -584,7 +584,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let prepared = wire::TaskEvent::DeviceAccessPrepared(wire::AccessPrepared { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,account:account.clone() });
         let p = event(&f,&offered,&c,&registration,serde_json::to_value(&prepared)?).await?;
         ensure!(p.0 == StatusCode::OK,"prepared {p:?}");
-        let pending = directory(&f,true).await?;
+        let pending = directory(&f,true, "").await?;
         pending_binding(&pending,id,&account)?;
         ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[]})),id,&account).is_err());
         ensure!(pending_binding(&(StatusCode::OK,json!({"bindings":[{"id":id,"account":account}]})),id,&account).is_err());
@@ -596,7 +596,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let ack: wire::TaskEventAck = serde_json::from_value(ack.1)?;
         ensure!(ack.credentials().len() == 1);
         let receipt = ack.credentials()[0].clone();
-        pending_binding(&directory(&f,true).await?,id,&account)?;
+        pending_binding(&directory(&f,true, "").await?,id,&account)?;
         let result = wire::AccessResult { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,
             effect:wire::AccessEffect::Applied { account:account.clone(),role:wire::AccessRole::Standard,mac:None,
                 windows:Some(wire::AccessWindowsFacts { factor_generation:task.factor_generation,recovery:receipt.clone() }) } };
@@ -611,7 +611,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         let done = event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(result))?).await?;
         ensure!(done.0 == StatusCode::OK,"applied {done:?}");
         if withdraw {
-            let state = directory(&f,true).await?;
+            let state = directory(&f,true, "").await?;
             ensure!(state.1["bindings"][0]["revoked"] == true && state.1["bindings"][0]["appliedRevision"].is_null());
             let pending = pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}' AND pending",case_tenant(),task.task_id))?;
             ensure!(pending.trim() == "0","withdrawn task left pending materials: {pending}");
@@ -627,7 +627,7 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
             verify_unbound_retention(&f.base,&receipt).await?;
             return Ok(());
         }
-        let ready = directory(&f,true).await?;
+        let ready = directory(&f,true, "").await?;
         ensure!(ready.1["bindings"][0]["appliedRevision"] == 1 && ready.1["policies"] == json!([]));
         // An ordinary configuration update preserves both identity and factors.
         let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
@@ -905,6 +905,7 @@ mod enterprise;
 
 #[path = "device_access/lifecycle.rs"]
 mod lifecycle;
+mod queries;
 
 /// Observe both requests competing before releasing the actual product publication fence.
 async fn concurrent_access_calls(

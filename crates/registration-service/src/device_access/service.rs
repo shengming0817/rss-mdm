@@ -59,12 +59,15 @@ impl Service {
         &self,
         device: &crate::DevicePrincipal,
         employee: &AuthorizedPrincipal,
-        after: Option<Uuid>,
+        query: &rss_mdm_query::window::Query,
         admission: &dyn Admission,
         sessions: &SessionAuthority,
     ) -> Result<rss_mdm_agent_wire::runtime::AccessDirectory, Error> {
         if device.tenant() != self.tenant || employee.tenant_id() != self.tenant.to_string() {
             return Err(Error::Forbidden);
+        }
+        if !(1..=100).contains(&query.limit) {
+            return Err(Error::Malformed);
         }
         let who = person(employee)?;
         let reference = employee
@@ -75,6 +78,27 @@ impl Service {
         let mut tx = self.store.begin(employee.tenant_id()).await?;
         crate::device::store::revalidate_management(&mut tx, device).await?;
         crate::lifecycle::require_work_in(&mut tx, employee.tenant_id(), device.device()).await?;
+        let before = super::directory::context(&mut tx, employee).await?;
+        let binding = rss_mdm_query::cursor::fingerprint(&(
+            "device_access.discovery",
+            &who,
+            &reference,
+            device.device(),
+            device.registration(),
+            device.generation(),
+            &before,
+        ))
+        .map_err(|_| Error::Malformed)?;
+        let after = query
+            .cursor
+            .as_ref()
+            .map(|v| {
+                let token = rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?;
+                self.cursor
+                    .decode::<Uuid>(&token, &binding)
+                    .map_err(|_| Error::Conflict)
+            })
+            .transpose()?;
         let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND instance=$4 AND principal=$5 ORDER BY id LIMIT 129")
             .bind(tenant_uuid(device.tenant())?).bind(device.device()).bind(device.registration()).bind(who.instance).bind(who.principal)
             .fetch_all(&mut *tx).await.map_err(db)?;
@@ -104,15 +128,28 @@ impl Service {
                     tenant_uuid(device.tenant())?,
                     device.device(),
                     after,
+                    u16::try_from(query.limit).map_err(|_| Error::Malformed)?,
                 )
                 .await?
         } else {
             (Vec::new(), None)
         };
+        if before != super::directory::context(&mut tx, employee).await? {
+            return Err(Error::Conflict);
+        }
+        sessions.recheck(&reference).await?;
+        let next_cursor = after
+            .map(|id| {
+                self.cursor
+                    .encode(&binding, &id)
+                    .map(|v| v.as_str().to_owned())
+            })
+            .transpose()
+            .map_err(|_| Error::Malformed)?;
         tx.rollback().await.map_err(db)?;
         Ok(rss_mdm_agent_wire::runtime::AccessDirectory {
             policies,
-            after,
+            next_cursor,
             bindings,
         })
     }
@@ -250,22 +287,6 @@ impl Service {
             crate::operations::save(c,&op,&serde_json::to_string(&binding).map_err(|_|Error::Corrupt)?,audit).await?;
             Ok(AuditedChange{value:binding,digest:hash,replay:false})
         })).await
-    }
-
-    pub async fn device_access_bindings(
-        &self,
-        actor: &AuthorizedPrincipal,
-        device: &str,
-        after: Option<Uuid>,
-    ) -> Result<Vec<Binding>, Error> {
-        if actor.tenant_id() != self.tenant.to_string() {
-            return Err(Error::Forbidden);
-        }
-        let mut tx = self.store.begin(actor.tenant_id()).await?;
-        authorize(&mut tx, actor, device, Permission::AccountWrite).await?;
-        let out = storage::page_in(&mut tx, tenant_uuid(self.tenant)?, device, after).await?;
-        tx.rollback().await.map_err(db)?;
-        Ok(out)
     }
 
     #[allow(

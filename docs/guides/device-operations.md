@@ -131,7 +131,7 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 
 ## Device Access 管理
 
-`GET /api/v1/devices/{device}/device-access` 分页列出绑定（`after` 为上页最后 ID）。
+`GET /api/v1/devices/{device}/device-access` 使用统一 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；`GET /devices/{device}/device-access/bindings/{id}` 读取单条绑定。企业配置目录 `/device-access/enterprise/configuration` 使用同一查询语法，但独立字段目录为 `id/kind/value`，详情为 `/configuration/{id}`。恢复凭据 `/devices/{device}/recovery-credentials` 同样返回元数据分页，秘密仍只通过专用授权披露操作取得。三类游标签名绑定资源、租户、主体、权限、设备（设备级资源）和数据版本；查询、权限或源数据变化后重新开始，不接受旧 `after/afterId/afterVersion` 参数。
 `PUT /api/v1/devices/{device}/device-access/bindings/{id}` 使用 operationId、expectedRevision 和
 `put`/`unbind`/`reset_factors` 动作；新绑定 revision 为 0。Put 指定同一 Identity 实例的 principal、已分配 policy，
 以及 existing 稳定账号或 create 平台/账号名。已有绑定换本地目标须新增绑定，不根据名称接管。
@@ -158,7 +158,7 @@ RSS 登录恢复密钥沿用本页的恢复凭据列表/查阅入口及 Credenti
 随后在 `/devices/{device}/device-access/operations/{operationId}/offboarding` 查询分项进度。
 POST 子路径 `/identity` 的 `{kind:"execute"}` 使用当前管理员会话停用目标成员并撤销其会话；
 需要重新认证时保留 requires_authentication，不保存管理员 session secret。
-未知结果使用 `{kind:"reconcile",after:null}` 查询，分页游标继续传 after。
+未知结果使用 `{kind:"reconcile"}` 查询，URL 的 `limit/cursor` 控制按 Identity principal 顺序的有界实时观察；不支持筛选、重排序或字段投影。响应 `nextCursor` 是绑定操作者权限、设备和离职操作的签名游标，继续通过 `cursor` 传回。它不承诺 Identity 账号快照，也不以未找到账号证明撤销成功。
 
 POST 子路径 `/idp` 使用 `{kind:"execute",target,action:"disable_account"|"revoke_sessions"}`，
 target 来自被冻结的分项 ID；先确认账号停用，再撤销会话。使用 `{kind:"reconcile",target}`

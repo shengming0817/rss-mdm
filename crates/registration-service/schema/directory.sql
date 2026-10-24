@@ -113,4 +113,10 @@ CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON m
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.requests FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.agent_grants FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.device_access_bindings FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.relying_parties FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.subjects FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_enterprise.windows_sources FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.entries FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
+CREATE TRIGGER identity_directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_recovery.versions FOR EACH ROW EXECUTE FUNCTION mdm_access.advance_directory_revision();
 COMMIT;

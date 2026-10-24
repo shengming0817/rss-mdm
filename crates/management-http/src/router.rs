@@ -154,12 +154,13 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
         .merge(crate::recovery_credentials::routes(
             state.recovery_credentials.clone(),
+            state.query_cursor.clone(),
         ))
         .merge(
             crate::software_publication::http::routes().with_state(Arc::new(
                 crate::software_publication::http::HttpState {
                     publications: state.publications,
-                    access: state.authorization,
+                    access: state.authorization.clone(),
                 },
             )),
         )
@@ -184,6 +185,8 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         crate::software_catalog::agent_packages_public(state.software_catalog.clone());
     let operations = Router::new()
         .merge(crate::device_access::routes(
+            state.query_cursor.clone(),
+            state.authorization.clone(),
             state.recovery_credentials,
             state.agent_enrollment.clone(),
             state.execution.clone(),

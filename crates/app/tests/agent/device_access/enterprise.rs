@@ -319,6 +319,17 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         configure(&mut f,json!({"operationId":operation,"expectedRevision":0,"configuration":{"kind":"windows_key","registration":registration}})).await?;
         let configurations=f.author.call(&f.router,Method::GET,CONFIG,None).await?;
         ensure!(configurations.0==StatusCode::OK&&configurations.1["items"].as_array().is_some_and(|items|items.len()==4&&items.iter().any(|v|v["kind"]=="subject")&&items.iter().any(|v|v["kind"]=="windows_key")),"configuration directory {configurations:?}");
+        let first=f.author.call(&f.router,Method::GET,&format!("{CONFIG}?filter=kind==relying_party&sort=-id&fields=id,kind&limit=1"),None).await?;
+        ensure!(first.0==StatusCode::OK&&first.1["items"]==json!([{"id":"rp:rp-b","kind":"relying_party"}]),"directory {first:?}");
+        let cursor=first.1["nextCursor"].as_str().context("enterprise continuation")?;
+        let second=f.author.call(&f.router,Method::GET,&format!("{CONFIG}?filter=kind==relying_party&sort=-id&fields=id,kind&limit=1&cursor={cursor}"),None).await?;
+        ensure!(second.0==StatusCode::OK&&second.1["items"]==json!([{"id":"rp:rp-a","kind":"relying_party"}])&&second.1["nextCursor"].is_null(),"enterprise second {second:?}");
+        let detail=f.author.call(&f.router,Method::GET,&format!("{CONFIG}/rp:rp-a"),None).await?;
+        ensure!(detail.0==StatusCode::OK&&detail.1["value"]["revision"]==1);
+        for bad in ["after=rp:rp-a","fields=secret","filter=missing==x","limit=101","sort=value"]{ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?{bad}"),None).await?.0==StatusCode::BAD_REQUEST);}
+        ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
+        configure(&mut f,json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"configuration":{"kind":"relying_party","id":"rp-a","enabled":true,"callback":"https://rp-a.example.test/callback","capabilities":["native_key"]}})).await?;
+        ensure!(f.author.call(&f.router,Method::GET,&format!("{CONFIG}?filter=kind==relying_party&sort=-id&fields=id,kind&limit=1&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
         let mut browser=Browser::default();ensure!(browser.call(&f.router,Method::POST,&format!("{ROOT}/browser"),None).await?.0==StatusCode::OK);
         let mut sessions=vec![];
         for (index,rp) in ["rp-a","rp-b"].iter().enumerate(){
@@ -352,6 +363,12 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         let denied=f.access_call(Method::PUT,&path,Some(json!({"operationId":offboarding,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::OK,"offboard {denied:?}");
         let operation_path=format!("/api/v1/devices/{}/device-access/operations/{offboarding}/offboarding",execution::case_device_id());
+        let scan=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?limit=1"),Some(json!({"kind":"reconcile"}))).await?;
+        ensure!(scan.0==StatusCode::OK,"identity scan {scan:?}");
+        let scan_cursor=scan.1["nextCursor"].as_str().context("identity continuation")?;
+        ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?limit=1&cursor={scan_cursor}"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::OK);
+        ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity?filter=id==x"),Some(json!({"kind":"reconcile"}))).await?.0==StatusCode::BAD_REQUEST);
+        ensure!(f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"reconcile","after":null}))).await?.0==StatusCode::BAD_REQUEST);
         let identity=f.author.call(&f.router,Method::POST,&format!("{operation_path}/identity"),Some(json!({"kind":"execute"}))).await?;ensure!(identity.0==StatusCode::OK,"Identity disposition {identity:?}");
         let progress=f.author.call(&f.router,Method::GET,&operation_path,None).await?;ensure!(progress.0==StatusCode::OK,"progress {progress:?}");
         let target=progress.1["operation"]["idp"][0]["id"].clone();ensure!(target.is_string(),"frozen IdP target {progress:?}");

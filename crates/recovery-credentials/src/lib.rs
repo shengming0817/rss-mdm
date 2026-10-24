@@ -1,5 +1,6 @@
 //! Product recovery material ownership; execution and platform channels retain their lifecycles.
 //! ref: rust-openssl openssl-v0.10.81 openssl/src/cms.rs.
+pub mod directory;
 mod model;
 mod protection;
 mod service;

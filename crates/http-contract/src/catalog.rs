@@ -685,6 +685,7 @@ pub static ALL: &[&Resource] = &[
     &USER_GROUP_MEMBERS,
     &ASSET_RESULTS,
     &DEVICE_ACCESS,
+    &ENTERPRISE_CONFIGURATION,
     &RECOVERY_CREDENTIALS,
     &DEVICE_TIMELINE,
     &PLATFORM_SSO_CONFIGURATION,
@@ -780,12 +781,6 @@ pub static ALL: &[&Resource] = &[
 /// A satisfied entry is an error: migration never retains a stale exemption.
 pub static GAPS: &[crate::Gap] = &[
     crate::Gap {
-        resource: "device_access",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "binding read currently exists only in device collection",
-    },
-    crate::Gap {
         resource: "apple_account_bindings",
         operation: crate::Operation::Get,
         issue: 2906,
@@ -823,7 +818,7 @@ pub fn browser(installation: bool, agent: bool, recovery: bool) -> Vec<&'static 
         .copied()
         .filter(|r| {
             !matches!(r.id, "protocol_agent_channel" | "download_agent_channel")
-                && (agent || r.id != "device_access")
+                && (agent || !matches!(r.id, "device_access" | "enterprise_configuration"))
                 && (recovery || r.id != "recovery_credentials")
                 && (installation || !matches!(r.id, "tenants" | "provisionings"))
         })
@@ -835,7 +830,7 @@ pub static DEVICE_ACCESS: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "device-access.http",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::DEVICE_ACCESS),
 };
 
@@ -844,7 +839,7 @@ pub static RECOVERY_CREDENTIALS: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "recovery-credentials.http",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::RECOVERY_CREDENTIALS),
 };
 
@@ -911,4 +906,13 @@ pub static ASSET_RESULTS: Resource = Resource {
     proof: "assets.queries",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::ASSET_RESULTS),
+};
+
+pub static ENTERPRISE_CONFIGURATION: Resource = Resource {
+    id: "enterprise_configuration",
+    category: Category::Versioned,
+    owner: "management-http",
+    proof: "device-access.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::ENTERPRISE_CONFIGURATION),
 };

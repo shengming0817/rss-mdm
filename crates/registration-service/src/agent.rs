@@ -99,7 +99,7 @@ pub trait NativeAdmission: Send + Sync {
     ) -> Pending<'a, ()>;
 }
 pub struct Service {
-    cursor: rss_mdm_query::cursor::CursorCodec,
+    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) tenant: rss_request_context::TenantId,
     pub(crate) store: Arc<Store>,
     audit: Arc<AuditStore>,

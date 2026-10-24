@@ -87,26 +87,6 @@ pub async fn locked_observation_in(
     get_in(c, tenant, id).await
 }
 
-pub async fn page_in(
-    c: &mut PgConnection,
-    tenant: Uuid,
-    device: &str,
-    after: Option<Uuid>,
-) -> Result<Vec<Binding>, Error> {
-    let rows: Vec<serde_json::Value> = sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND ($3::uuid IS NULL OR id>$3) ORDER BY id LIMIT 100")
-        .bind(tenant).bind(device).bind(after).fetch_all(c).await.map_err(db)?;
-    rows.into_iter()
-        .map(|v| {
-            let b: Binding = serde_json::from_value(v).map_err(|_| Error::Corrupt)?;
-            b.validate().map_err(|_| Error::Corrupt)?;
-            if b.tenant != tenant || b.device != device {
-                return Err(Error::Corrupt);
-            }
-            Ok(b)
-        })
-        .collect()
-}
-
 /// Historical bindings deliberately participate: an unlink never resets self-enrollment.
 pub async fn first_in(
     c: &mut PgConnection,

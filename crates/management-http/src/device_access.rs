@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
 use rss_mdm_agent_wire::runtime::{AccessAccount, TaskPlatform};
 use rss_mdm_audit_integration::RequestAudit;
@@ -14,12 +14,16 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 struct Services {
+    cursor: rss_mdm_query::cursor::CursorCodec,
+    authorization: Arc<rss_mdm_authorization_service::Store>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     registration: Arc<Service>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
     identity: Arc<crate::identity::Identity>,
 }
 pub fn routes(
+    cursor: rss_mdm_query::cursor::CursorCodec,
+    authorization: Arc<rss_mdm_authorization_service::Store>,
     recovery: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     registration: Option<Arc<Service>>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
@@ -41,18 +45,23 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/device-access",
-            get(list).owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List])
+                .queried(&access::directory::SCHEMA),
         )
         .route(
             "/devices/{device}/device-access/bindings/{id}",
-            rss_mdm_http_contract::routing::put(change).owned(
-                &contracts::DEVICE_ACCESS,
-                &[
-                    RouteOperation::Create,
-                    RouteOperation::Update,
-                    RouteOperation::Lifecycle,
-                ],
-            ),
+            get(binding)
+                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Get])
+                .put(change)
+                .owned(
+                    &contracts::DEVICE_ACCESS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Lifecycle,
+                    ],
+                ),
         )
         .route(
             "/devices/{device}/device-access/bindings/{id}/step-up",
@@ -70,19 +79,38 @@ pub fn routes(
         .route(
             "/devices/{device}/device-access/operations/{id}/offboarding/identity",
             rss_mdm_http_contract::routing::post(offboarding_identity)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
+                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action])
+                .windowed(&access::lifecycle::IDENTITY_RECONCILIATION),
         )
         .route(
             "/device-access/enterprise/configuration",
             get(enterprise_list)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::List])
+                .owned(
+                    &contracts::ENTERPRISE_CONFIGURATION,
+                    &[RouteOperation::List],
+                )
+                .queried(&rss_mdm_registration_service::enterprise::directory::SCHEMA)
                 .post(enterprise_change)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
+                .owned(
+                    &contracts::ENTERPRISE_CONFIGURATION,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Lifecycle,
+                    ],
+                ),
+        )
+        .route(
+            "/device-access/enterprise/configuration/{id}",
+            get(enterprise_detail)
+                .owned(&contracts::ENTERPRISE_CONFIGURATION, &[RouteOperation::Get]),
         )
         .route(
             "/device-access/enterprise/configuration/step-up",
-            rss_mdm_http_contract::routing::post(enterprise_step_up)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
+            rss_mdm_http_contract::routing::post(enterprise_step_up).owned(
+                &contracts::ENTERPRISE_CONFIGURATION,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/devices/{device}/device-access/operations/{id}/offboarding/idp",
@@ -90,16 +118,13 @@ pub fn routes(
                 .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
         )
         .with_state(Arc::new(Services {
+            cursor,
+            authorization,
             recovery,
             registration,
             execution,
             identity,
         }))
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -152,24 +177,43 @@ enum AccountInput {
         name: String,
     },
 }
-fn view(b: access::Binding) -> Value {
-    json!({"id":b.id,"operationId":b.operation_id,"device":b.device,"registration":b.registration,"registrationGeneration":b.registration_generation,
-        "instance":b.person.instance,"principal":b.person.principal,"bindingGeneration":b.generation,"factorGeneration":b.factor_generation,"revision":b.revision,
-        "serverState":b.state,"accountDisposition":b.account_disposition,"account":b.account,"accountIntent":b.intent,"createdByRss":b.created_by_rss,
-        "policy":b.policy,"policyVersion":b.policy_version,"desired":b.configuration,"receivedRevision":b.received_revision,
-        "appliedRevision":b.applied_revision,"effect":b.effect})
-}
+use access::directory::view;
 async fn list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     Path(device): Path<String>,
-    Query(q): Query<Page>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<Value>>, Error> {
+    let q = access::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    s.registration
+        .device_access_bindings(&auth.proof, &device, &q, &s.cursor)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn binding(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path((device, id)): Path<(String, Uuid)>,
 ) -> Result<Json<Value>, Error> {
-    let values = s
-        .registration
-        .device_access_bindings(&auth.proof, &device, q.after)
-        .await?;
-    Ok(Json(Value::Array(values.into_iter().map(view).collect())))
+    s.registration
+        .device_access_binding(&auth.proof, &device, id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+async fn enterprise_detail(
+    State(s): State<Arc<Services>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Error> {
+    s.registration
+        .enterprise_configuration_record(&auth.proof, &id)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
 async fn change(
     State(s): State<Arc<Services>>,
@@ -325,7 +369,7 @@ async fn offboarding(
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum IdentityDisposition {
     Execute,
-    Reconcile { after: Option<Uuid> },
+    Reconcile,
 }
 async fn offboarding_identity(
     State(s): State<Arc<Services>>,
@@ -333,10 +377,43 @@ async fn offboarding_identity(
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
     headers: axum::http::HeaderMap,
+    RawQuery(raw): RawQuery,
     body: Result<Json<IdentityDisposition>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P};
     let input = body.map_err(Error::from)?.0;
+    let (page_query, _) = access::lifecycle::IDENTITY_RECONCILIATION
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    if matches!(input, IdentityDisposition::Execute)
+        && raw.as_deref().is_some_and(|v| !v.is_empty())
+    {
+        return Err(Error::Malformed);
+    }
+    let authority =
+        rss_mdm_authorization_service::store::authorization_snapshot(&s.authorization, &auth.proof)
+            .await?;
+    let grant = authority.query_binding(&auth.proof)?;
+    let binding = rss_mdm_query::cursor::fingerprint(&(
+        "device_access.identity_reconcile",
+        auth.proof.tenant_id(),
+        auth.proof.instance_id(),
+        auth.proof.principal_id(),
+        &device,
+        id,
+        &grant,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    let after: Option<Uuid> = page_query
+        .cursor
+        .as_ref()
+        .map(|value| {
+            let token = rss_contract::PageCursor::parse(value).map_err(|_| Error::Malformed)?;
+            s.cursor
+                .decode(&token, &binding)
+                .map_err(|_| Error::Conflict)
+        })
+        .transpose()?;
     let original = s.registration.offboarding(&auth.proof, &device, id).await?;
     if original.identity == P::Confirmed {
         return Ok(Json(json!({"operation":original,"nextCursor":null})));
@@ -349,7 +426,7 @@ async fn offboarding_identity(
         )
     };
     match input {
-        IdentityDisposition::Reconcile { after } => {
+        IdentityDisposition::Reconcile => {
             let actor = s.identity.ceremony_actor(&headers).await?;
             let cursor = after
                 .map(|id| rss_identity_core::PrincipalId::parse(&id.to_string()))
@@ -358,7 +435,12 @@ async fn offboarding_identity(
             let page = s
                 .identity
                 .authority
-                .list_accounts(actor, cursor, 100, deadline())
+                .list_accounts(
+                    actor,
+                    cursor,
+                    u16::try_from(page_query.limit).map_err(|_| Error::Malformed)?,
+                    deadline(),
+                )
                 .await
                 .map_err(crate::identity::failure)?;
             let observed = page
@@ -386,9 +468,24 @@ async fn offboarding_identity(
             } else {
                 original
             };
-            Ok(Json(
-                json!({"operation":value,"nextCursor":page.next_cursor.map(|id|id.as_uuid().to_string())}),
-            ))
+            let current = rss_mdm_authorization_service::store::authorization_snapshot(
+                &s.authorization,
+                &auth.proof,
+            )
+            .await?;
+            if current.query_binding(&auth.proof)? != grant {
+                return Err(Error::Conflict);
+            }
+            let next = page
+                .next_cursor
+                .map(|id| {
+                    s.cursor
+                        .encode(&binding, &id.as_uuid())
+                        .map(|v| v.as_str().to_owned())
+                })
+                .transpose()
+                .map_err(|_| Error::Malformed)?;
+            Ok(Json(json!({"operation":value,"nextCursor":next})))
         }
         IdentityDisposition::Execute => {
             if matches!(original.identity, P::Executing | P::Unknown) {
@@ -442,24 +539,19 @@ async fn offboarding_identity(
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EnterprisePage {
-    after: Option<String>,
-}
 async fn enterprise_list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
-    Query(page): Query<EnterprisePage>,
-) -> Result<Json<Value>, Error> {
-    Ok(Json(
-        serde_json::to_value(
-            s.registration
-                .enterprise_configuration(&auth.proof, page.after.as_deref())
-                .await?,
-        )
-        .map_err(|_| Error::Malformed)?,
-    ))
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<Value>>, Error> {
+    let q = rss_mdm_registration_service::enterprise::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    s.registration
+        .enterprise_configuration(&auth.proof, &q, &s.cursor)
+        .await
+        .map(Json)
+        .map_err(Into::into)
 }
 fn enterprise_target(
     s: &Services,

@@ -51,7 +51,7 @@ async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -
         let device=execution::case_device_id();
         let list=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/recovery-credentials"),None).await?;
         ensure!(list.0==StatusCode::OK,"materials {list:?}");
-        let material=list.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login").context("DA material")?;
+        let material=list.1["items"].as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login").context("DA material")?;
         let id=material["id"].as_str().context("material id")?;let version=material["version"].as_i64().context("version")?;
         let ordinary=format!("/api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret");
         ensure!(!f.author.call(&f.router,Method::GET,&ordinary,None).await?.0.is_success());

@@ -699,7 +699,7 @@ pub struct AccessDirectory {
     /// Eligible policies in this scan page.
     pub policies: Vec<AccessPolicyOption>,
     /// Cursor for the next policy scan.
-    pub after: Option<Uuid>,
+    pub next_cursor: Option<String>,
     /// This authenticated person's bindings in the current device registration.
     pub bindings: Vec<AccessBindingStatus>,
 }

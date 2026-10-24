@@ -226,7 +226,7 @@ PUT 显式登录或切换当前用户，并在同一事务中填充仍为空的�
 ## Device Access 账号关联与应用
 
 `device_access.v1` 是独立原生能力。首次开通使用设备认证与 `x-rss-user-session` 的真实 RSS 会话，
-先通过 `GET /api/v1/agent/runtime/device-access` 查询可开通 Policy 及本人绑定（Policy 游标为 `after`），
+先通过 `GET /api/v1/agent/runtime/device-access` 查询可开通 Policy 及本人绑定（使用 `limit/cursor`，响应 `nextCursor` 为绑定设备注册、本人会话与权限的签名游标；按 Policy ID 实时扫描资格，空候选页也按 nextCursor 继续，不支持 filter/sort/fields），
 再依次调用 `/api/v1/agent/runtime/device-access/begin` 和 `/confirm`。Begin 只选择已分配的 Policy，
 不接受 principal 或本地账号；返回 120 秒挑战及当前交互会话。Agent 必须从受保护的本机 broker
 重新核验本地账号、SID/GeneratedUID、会话及本地账号来源，再确认。Windows account 必须携带 authority：local、active_directory（domainSid）或 entra（tenantId/objectId），交互上下文 windowsAuthority 与账号来源一致；Mac 上该字段为 null。来源必须由原生安全上下文建立，不能根据用户名、UPN 或 SID 外形猜测。MSA 与 RDP 不在当前范围。

@@ -18,6 +18,7 @@ impl Admission for ExecutionService {
         tenant: Uuid,
         device: &'a str,
         after: Option<Uuid>,
+        limit: u16,
     ) -> rss_mdm_registration_service::agent::Pending<
         'a,
         (Vec<wire::AccessPolicyOption>, Option<Uuid>),
@@ -26,13 +27,11 @@ impl Admission for ExecutionService {
             if tenant.to_string() != self.tenant.to_string() {
                 return Err(AccessError::Forbidden);
             }
-            let ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT 64")
-                .bind(tenant).bind(after).fetch_all(&mut *c).await.map_err(|_| AccessError::Storage)?;
-            let after = if ids.len() == 64 {
-                ids.last().copied()
-            } else {
-                None
-            };
+            let mut ids: Vec<Uuid> = sqlx::query_scalar("SELECT p.id FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1 AND p.state='enabled' AND v.action_kind='device_access' AND ($2::uuid IS NULL OR p.id>$2) ORDER BY p.id LIMIT $3")
+                .bind(tenant).bind(after).bind(i64::from(limit)+1).fetch_all(&mut *c).await.map_err(|_| AccessError::Storage)?;
+            let more = ids.len() > usize::from(limit);
+            ids.truncate(usize::from(limit));
+            let after = if more { ids.last().copied() } else { None };
             let mut values = Vec::new();
             for id in ids {
                 match self.policy(c, tenant, device, id).await {

@@ -37,22 +37,17 @@ impl Credentials {
         &self,
         principal: &AuthorizedPrincipal,
         device: &str,
-        after: Option<(Uuid, i64)>,
-    ) -> Result<Vec<Material>, Error> {
+        query: &rss_mdm_query::directory::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<serde_json::Value>, Error> {
         principal.require(Permission::InventoryRead, Some(device))?;
         let mut tx = self.pool.begin().await?;
         configure(&mut tx, principal.tenant_id()).await?;
         authorize(&mut tx, principal, device, Permission::InventoryRead).await?;
-        let (id, version) = after.unwrap_or((Uuid::nil(), 0));
-        let rows=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.device=$2 AND (e.id,v.version)>($3,$4) ORDER BY e.id,v.version LIMIT 100"))
-            .bind(principal.tenant_id()).bind(device).bind(id).bind(version).fetch_all(&mut *tx).await?;
-        let values = rows
-            .iter()
-            .map(storage::decode)
-            .collect::<Result<Vec<_>, _>>()?;
+        let page = crate::directory::read(&mut tx, principal, device, query, codec).await?;
         tx.rollback().await?;
         principal.check_live()?;
-        Ok(values)
+        Ok(page)
     }
 
     /// Ordinary platform recovery disclosure. DA factor materials require the dedicated step-up path.

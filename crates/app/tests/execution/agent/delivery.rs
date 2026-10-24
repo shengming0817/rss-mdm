@@ -1954,7 +1954,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let list=format!("/api/v1/devices/{}/recovery-credentials",case_device_id());
         let materials=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(materials.0==StatusCode::OK,"materials {materials:?}");
-        let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
+        let material=materials.1["items"].as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
         let access_path=format!("/api/v1/devices/{}/device-access/materials/{}/versions/{}",case_device_id(),material["id"].as_str().context("material id")?,material["version"]);
         let disclosure=json!({"operationId":Uuid::new_v4()});
         ensure!(f.access_authorize(&access_path,Some(disclosure.clone())).await?.is_none());
