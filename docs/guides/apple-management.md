@@ -198,6 +198,8 @@ publication 或 synchronized 不证明设置生效、合规或卸载。未注册
 
 管理员读取 `GET /api/v1/apple/platform-sso/configuration`（`registration_configuration_read`）取得当前 profile 和端点。先通过既有软件发布部署签名应用，再通过既有配置策略部署返回的 ExtensibleSSO profile。服务端要求当前 MDM 来源最近 24 小时内观察到精确应用 ID/版本且不处于安装中，才发出该 profile；要求 ProfileList 的匹配证据才开放注册。命令 Acknowledged、应用存在与扩展实际加载是不同事实。配置策略由原有调度器恢复，无独立 PSSO 调度器。
 
+PSSO 跨进程 DTO 和证明输入由 `rss-mdm-agent-wire::platform_sso` 单一持有，Agent 固定完整 Git revision 消费；服务端不保留旧类型导出。返回的 profile 同时包含 Associated Domains，将 `authsrv:<配置 origin 的域名>?mode=managed` 关联至精确 `TeamID.ApplicationID`。容器须声明 associated-domains 及 MDM-managed entitlement；部署域名必须提供系统信任的 HTTPS，`/.well-known/apple-app-site-association` 返回配置的唯一 authsrv 应用，不按请求参数扩展。此接口与 profile 均不证明设备已加载扩展。
+
 Agent mTLS 入口 `/api/v1/agent/runtime/platform-sso` 提供 `POST /bootstrap`、`POST /register`、`POST /sources/{id}/revoke` 和 `GET /status?bindingId=<UUID>`。设备与 Agent 必须属于当前已验证的关联；用户注册还要求 P1 当前人员绑定、策略和本地账户会话。注册准入允许尚未 Applied 的集成状态，登录准入要求 Applied，避免注册与集成互相等待。
 
 bootstrap 请求为 `{operationId,kind:"device"|"user",bindingId?,bindingGeneration?}`。响应给出一次性 120 秒 challenge（`id`、`nonce`）、`sourceId`、`sourceVersion`、`loginUserName` 和端点。register 请求为 `{operationId,challengeId,signingKey,encryptionKey,proof}`；两把公钥使用 P-256 JWK 的 `kty/crv/x/y`。proof 为新 signing key 签署的 ES256 JWT，typ 为 `rss-mdm-platform-sso-registration+jwt`，kid 为 X9.63 公钥 SHA-256 的标准 Base64；claims 绑定 `iss`（Agent registration UUID）、`aud`（返回 base + `/register`）、`challengeId/sourceId/sourceVersion/nonce/encryptionKeyId`、整数 `iat/exp`（最长 300 秒）。bootstrap 仅通过受认证 Agent 与扩展的本地 IPC 交付，profile 不嵌入可跨设备重放的 bootstrap secret。

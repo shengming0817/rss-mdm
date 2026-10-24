@@ -2,10 +2,7 @@
 //! ref: rust-openssl openssl/src/derive.rs@openssl-v0.10.81
 //! ref: Apple AuthenticationServices/creating-a-json-web-encryption-jwe-login-response
 use crate::Error;
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD as URL},
-};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as URL};
 use openssl::{
     bn::{BigNum, BigNumContext},
     ec::{EcGroup, EcKey, EcPoint, PointConversionForm},
@@ -13,7 +10,9 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private, Public},
 };
-use rss_mdm_apple_mdm::platform_sso::PublicKey;
+use rss_mdm_agent_wire::platform_sso::{
+    BRIDGE_TYPE, BrowserClaims, PublicKey, REGISTRATION_TYPE, RegistrationClaims,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -89,7 +88,8 @@ fn point(key: &PublicKey) -> Result<Vec<u8>, Error> {
     Ok(b)
 }
 pub fn kid(key: &PublicKey) -> Result<String, Error> {
-    Ok(STANDARD.encode(Sha256::digest(point(key)?)))
+    public(key)?;
+    key.key_id().map_err(invalid)
 }
 
 pub struct Signer {
@@ -119,14 +119,24 @@ impl Signer {
         &self.id
     }
     pub fn sign(&self, typ: &str, claims: &Value) -> Result<String, Error> {
-        let input = format!(
-            "{}.{}",
-            encode(
-                &serde_json::to_vec(&json!({"alg":"ES256","typ":typ,"kid":self.id}))
-                    .map_err(invalid)?
+        let input = match typ {
+            REGISTRATION_TYPE => serde_json::from_value::<RegistrationClaims>(claims.clone())
+                .map_err(invalid)?
+                .signing_input(&self.public)
+                .map_err(invalid)?,
+            BRIDGE_TYPE => serde_json::from_value::<BrowserClaims>(claims.clone())
+                .map_err(invalid)?
+                .signing_input(&self.public)
+                .map_err(invalid)?,
+            _ => format!(
+                "{}.{}",
+                encode(
+                    &serde_json::to_vec(&json!({"alg":"ES256","typ":typ,"kid":self.id}))
+                        .map_err(invalid)?
+                ),
+                encode(&serde_json::to_vec(claims).map_err(invalid)?)
             ),
-            encode(&serde_json::to_vec(claims).map_err(invalid)?)
-        );
+        };
         let signature = EcdsaSig::sign(
             &Sha256::digest(input.as_bytes()),
             self.key.ec_key().map_err(invalid)?.as_ref(),

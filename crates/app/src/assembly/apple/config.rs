@@ -63,7 +63,7 @@ fn unconfigured_seed() -> rss_mdm_apple_channel::IdentitySeed {
 #[derive(serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformSso {
-    pub configuration: rss_mdm_apple_mdm::platform_sso::Configuration,
+    pub configuration: rss_mdm_agent_wire::platform_sso::Configuration,
     pub active_key: String,
     pub signing_keys: std::collections::BTreeMap<String, PathBuf>,
 }

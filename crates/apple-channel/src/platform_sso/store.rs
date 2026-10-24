@@ -1,7 +1,7 @@
 //! Borrowed, tenant-fenced transactions. Audit owns all mutation settlement.
 use super::*;
 use crate::database::db;
-use rss_mdm_apple_mdm::platform_sso::PublicKey;
+use rss_mdm_agent_wire::platform_sso::PublicKey;
 use rss_mdm_inventory_service::objects::{DeviceObject, ObjectReader};
 use rss_mdm_registration_service::device_access::Binding;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Source {
     pub id: Uuid,
-    pub kind: service::Kind,
+    pub kind: rss_mdm_agent_wire::platform_sso::Kind,
     pub registration: Uuid,
     pub object: DeviceObject,
     pub binding: Option<Uuid>,
@@ -90,7 +90,7 @@ pub(super) async fn current_user(
     fence(c, &tenant).await?;
     // Watermark serializes relation and device lifecycle changes before source/parent locks.
     let user = source(c, &tenant, id).await?;
-    if user.kind != service::Kind::User
+    if user.kind != rss_mdm_agent_wire::platform_sso::Kind::User
         || user.revoked
         || user.configuration != app.runtime()?.fingerprint()?
     {
@@ -102,7 +102,7 @@ pub(super) async fn current_user(
         super::deployment::ready(app, c, &user.object, now).await?;
     }
     let device = source(c, &tenant, user.parent.ok_or(Error::Unauthorized)?).await?;
-    if device.kind != service::Kind::Device
+    if device.kind != rss_mdm_agent_wire::platform_sso::Kind::Device
         || device.revoked
         || device.version != user.parent_version
         || device.registration != user.registration

@@ -11,7 +11,7 @@ mod native;
 mod service;
 use crate::{Error, HttpState};
 pub use http::{agent_routes, browser_routes, management_routes};
-use rss_mdm_apple_mdm::platform_sso::{Configuration, Endpoints};
+use rss_mdm_agent_wire::platform_sso::{Configuration, Endpoints};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub(super) fn browser_audience(origin: &str) -> String {
@@ -73,6 +73,10 @@ impl Runtime {
             profile_uuid: profile.uuid,
         })
     }
+    /// Public Redirect-extension association, derived only from deployment configuration.
+    pub fn association(&self) -> serde_json::Value {
+        serde_json::json!({"authsrv":{"apps":[format!("{}.{}", self.configuration.team_id, self.configuration.application_id)]}})
+    }
     pub fn jwks(&self) -> serde_json::Value {
         serde_json::json!({"keys":self.keys.values().map(|k|k.jwk()).collect::<Vec<_>>()})
     }
@@ -94,7 +98,13 @@ impl Runtime {
             .split("/api/")
             .next()
             .ok_or(Error::Malformed)?;
-        let mut profile = self.configuration.profile(origin, tenant, id, payload)?;
+        let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
+            &self.configuration,
+            origin,
+            tenant,
+            id,
+            payload,
+        )?;
         profile.identifier = format!("rss.platform-sso.{}", self.configuration.client_id);
         Ok(profile)
     }

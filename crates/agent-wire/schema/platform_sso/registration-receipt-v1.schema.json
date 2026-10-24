@@ -1,0 +1,71 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "Which system-owned keys are being registered.",
+      "oneOf": [
+        {
+          "const": "device",
+          "description": "Shared device keys; no user binding.",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "description": "Secure Enclave signing key and user encryption key.",
+          "type": "string"
+        }
+      ]
+    },
+    "RegistrationTrust": {
+      "description": "Server proof class; registration alone does not attest hardware or MFA.",
+      "oneOf": [
+        {
+          "const": "mdm_bootstrap_pop",
+          "description": "Device-authenticated bootstrap and key possession.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Successful registration receipt, not native system registration evidence.",
+  "properties": {
+    "hardwareAttested": {
+      "description": "Independent hardware attestation fact.",
+      "type": "boolean"
+    },
+    "kind": {
+      "$ref": "#/$defs/Kind",
+      "description": "Device or user registration."
+    },
+    "registered": {
+      "description": "Registration was durably accepted.",
+      "type": "boolean"
+    },
+    "registrationTrust": {
+      "$ref": "#/$defs/RegistrationTrust",
+      "description": "Actual registration proof class."
+    },
+    "sourceId": {
+      "description": "Source registered by this operation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "sourceVersion": {
+      "description": "Accepted source version.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "sourceId",
+    "sourceVersion",
+    "kind",
+    "registered",
+    "hardwareAttested",
+    "registrationTrust"
+  ],
+  "title": "RegistrationReceipt",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/RegistrationReceipt"
+}

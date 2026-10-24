@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Native proof for the one supported RSS browser-session bridge.",
+  "properties": {
+    "accessToken": {
+      "description": "Unexpired native access token; never persisted by the browser.",
+      "type": "string"
+    },
+    "aud": {
+      "description": "Identity challenge audience.",
+      "type": "string"
+    },
+    "exp": {
+      "description": "Expiry UTC seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "iat": {
+      "description": "Issued UTC seconds.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "iss": {
+      "description": "Current user source UUID.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "nonce": {
+      "description": "Identity challenge nonce.",
+      "type": "string"
+    },
+    "sourceVersion": {
+      "description": "Current source version.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "iss",
+    "aud",
+    "nonce",
+    "sourceVersion",
+    "accessToken",
+    "iat",
+    "exp"
+  ],
+  "title": "BrowserClaims",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/BrowserClaims"
+}

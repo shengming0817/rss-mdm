@@ -1,9 +1,8 @@
 //! Apple's two signatures bind a server nonce, subject and encrypted response parameters.
 use super::{Runtime, crypto, store::Source};
 use crate::Error;
-use rss_mdm_apple_mdm::platform_sso::*;
+use rss_mdm_agent_wire::platform_sso::*;
 use serde_json::{Value, json};
-pub(super) const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 pub(super) fn verify(
     runtime: &Runtime,
     device: &PublicKey,

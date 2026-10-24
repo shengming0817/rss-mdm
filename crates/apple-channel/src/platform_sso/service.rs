@@ -4,7 +4,7 @@ use crate::database::db;
 use rss_identity_postgres::platform::{
     PlatformBinding, PlatformSubjectVersion, admit_platform_subject_on,
 };
-use rss_mdm_apple_mdm::platform_sso::*;
+use rss_mdm_agent_wire::platform_sso::*;
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_registration_service::{
     DevicePrincipal,
@@ -14,28 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgConnection, Row};
 use uuid::Uuid;
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum Kind {
-    Device,
-    User,
-}
-impl Kind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Device => "device",
-            Self::User => "user",
-        }
-    }
-}
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct Bootstrap {
-    pub operation_id: Uuid,
-    pub kind: Kind,
-    pub binding_id: Option<Uuid>,
-    pub binding_generation: Option<i64>,
-}
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Ceremony {
@@ -343,13 +321,18 @@ async fn bootstrap(
         previous_version: old,
     })
     .map_err(|_| Error::Malformed)?;
-    let mut value = challenge(app, c, input.kind.as_str(), &context, now).await?;
-    value["sourceId"] = json!(id);
-    value["sourceVersion"] = json!(version);
-    value["endpoints"] = serde_json::to_value(&rt.endpoints).map_err(|_| Error::Malformed)?;
-    value["clientId"] = json!(rt.configuration.client_id);
-    value["loginUserName"] = json!(id);
-    Ok(value)
+    let challenge = challenge(app, c, input.kind.as_str(), &context, now).await?;
+    serde_json::to_value(BootstrapResponse {
+        id: serde_json::from_value(challenge["id"].clone()).map_err(|_| Error::Malformed)?,
+        nonce: crypto::text(&challenge, "nonce")?.into(),
+        expires_at: challenge["expiresAt"].as_i64().ok_or(Error::Malformed)?,
+        source_id: id,
+        source_version: version,
+        endpoints: rt.endpoints.clone(),
+        client_id: rt.configuration.client_id,
+        login_user_name: id.to_string(),
+    })
+    .map_err(|_| Error::Malformed)
 }
 
 async fn register(
@@ -412,20 +395,17 @@ async fn register(
     if current.unwrap_or(0) != ceremony.previous_version {
         return Err(Error::Conflict);
     }
-    let proof = crypto::verify(
-        &input.proof,
-        &input.signing_key,
-        "rss-mdm-platform-sso-registration+jwt",
-    )?;
+    let proof = crypto::verify(&input.proof, &input.signing_key, REGISTRATION_TYPE)?;
     crypto::times(&proof, now)?;
-    if crypto::text(&proof, "aud")? != format!("{}/register", app.runtime()?.endpoints.base)
-        || crypto::text(&proof, "iss")? != p.registration().to_string()
-        || crypto::text(&proof, "challengeId")? != input.challenge_id.to_string()
-        || crypto::text(&proof, "sourceId")? != s.id.to_string()
-        || proof.get("sourceVersion").and_then(Value::as_i64) != Some(s.version)
-        || crypto::text(&proof, "encryptionKeyId")? != crypto::kid(&input.encryption_key)?
-        || crypto::digest(crypto::text(&proof, "nonce")?)
-            != row.try_get::<Vec<u8>, _>("nonce_digest").map_err(db)?
+    let proof: RegistrationClaims =
+        serde_json::from_value(proof).map_err(|_| Error::Unauthorized)?;
+    if proof.aud != format!("{}/register", app.runtime()?.endpoints.base)
+        || proof.iss != p.registration()
+        || proof.challenge_id != input.challenge_id
+        || proof.source_id != s.id
+        || proof.source_version != s.version
+        || proof.encryption_key_id != crypto::kid(&input.encryption_key)?
+        || crypto::digest(&proof.nonce) != row.try_get::<Vec<u8>, _>("nonce_digest").map_err(db)?
     {
         return Err(Error::Unauthorized);
     }
@@ -442,9 +422,15 @@ async fn register(
         .execute(c)
         .await
         .map_err(db)?;
-    Ok(
-        json!({"sourceId":s.id,"sourceVersion":s.version,"kind":s.kind,"registered":true,"hardwareAttested":false,"registrationTrust":"mdm_bootstrap_pop"}),
-    )
+    serde_json::to_value(RegistrationReceipt {
+        source_id: s.id,
+        source_version: s.version,
+        kind: s.kind,
+        registered: true,
+        hardware_attested: false,
+        registration_trust: RegistrationTrust::MdmBootstrapPop,
+    })
+    .map_err(|_| Error::Malformed)
 }
 async fn login(app: &Context, c: &mut PgConnection, token: &str, now: i64) -> Result<Value, Error> {
     let (_, untrusted) = crypto::unverified(token)?;
@@ -527,5 +513,10 @@ async fn revoke(
     }
     sqlx::query("DELETE FROM mdm_apple.psso_tokens WHERE tenant_id=$1::uuid AND (source=$2 OR source IN(SELECT id FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND parent=$2))")
         .bind(&tenant).bind(id).execute(c).await.map_err(db)?;
-    Ok(json!({"sourceId":id,"sourceVersion":source.version,"revoked":true}))
+    serde_json::to_value(RevocationReceipt {
+        source_id: id,
+        source_version: source.version,
+        revoked: true,
+    })
+    .map_err(|_| Error::Malformed)
 }

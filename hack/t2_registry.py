@@ -460,7 +460,7 @@ add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
 MODULES['apple.ade'] = replace(MODULES['apple.ade'], scope='tenant')
 add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='product',
     fixtures=('apple','identity','oracle','scep','agent_pki'),
-    sources=('crates/apple-channel/src/platform_sso/*','crates/apple-channel/schema/platform-sso.sql','crates/apple-mdm/src/platform_sso.rs',
+    sources=('crates/agent-wire/src/platform_sso.rs','crates/apple-channel/src/platform_sso/*','crates/apple-channel/schema/platform-sso.sql','crates/apple-mdm/src/platform_sso.rs',
              'crates/apple-channel/src/flow_store.rs','crates/apple-channel/src/lib.rs','crates/apple-channel/src/access-admission.sql',
              'crates/app/src/assembly/apple/*','crates/app/src/api.rs','crates/app/src/identity.rs','crates/app/schema/platform-sso-identity.sql',
              'crates/device-service/src/planning.rs','crates/device-service/src/planning/*','crates/inventory-postgres/src/reader.rs',

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Browser completion. The browser-bound cookie is transported separately.",
+  "properties": {
+    "challengeId": {
+      "description": "Identity challenge ID.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "nonce": {
+      "description": "One-use nonce.",
+      "type": "string"
+    },
+    "proof": {
+      "description": "Native key proof, never an arbitrary identity token.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "challengeId",
+    "nonce",
+    "proof"
+  ],
+  "title": "BrowserComplete",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/BrowserComplete"
+}

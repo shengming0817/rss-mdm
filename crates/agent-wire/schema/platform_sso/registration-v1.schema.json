@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "PublicKey": {
+      "additionalProperties": false,
+      "description": "Public key only. The verifier validates the curve, point and Apple's derived key id.",
+      "properties": {
+        "crv": {
+          "description": "JWK curve, P-256.",
+          "type": "string"
+        },
+        "kty": {
+          "description": "JWK key type, EC.",
+          "type": "string"
+        },
+        "x": {
+          "description": "Canonical unpadded Base64URL x coordinate.",
+          "type": "string"
+        },
+        "y": {
+          "description": "Canonical unpadded Base64URL y coordinate.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kty",
+        "crv",
+        "x",
+        "y"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "No caller-controlled principal/assurance: the binding is always resolved by its owner.",
+  "properties": {
+    "challengeId": {
+      "description": "One-use bootstrap challenge.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "encryptionKey": {
+      "$ref": "#/$defs/PublicKey",
+      "description": "Encryption public key bound into the proof."
+    },
+    "operationId": {
+      "description": "Audit/idempotency operation.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "proof": {
+      "description": "Signed registration JWT; never log.",
+      "type": "string"
+    },
+    "signingKey": {
+      "$ref": "#/$defs/PublicKey",
+      "description": "Public key whose possession is proved."
+    }
+  },
+  "required": [
+    "operationId",
+    "challengeId",
+    "signingKey",
+    "encryptionKey",
+    "proof"
+  ],
+  "title": "Registration",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/Registration"
+}

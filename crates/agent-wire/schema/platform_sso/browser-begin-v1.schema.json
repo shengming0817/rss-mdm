@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Browser login initiation; Identity remains the session owner.",
+  "properties": {
+    "bindingId": {
+      "description": "User-selected business binding; the server reauthorizes it.",
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bindingId"
+  ],
+  "title": "BrowserBegin",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/BrowserBegin"
+}

@@ -117,22 +117,21 @@ impl PlatformVerifier for Verifier {
             let claims = crypto::verify(
                 token,
                 &user.signing,
-                rss_mdm_apple_mdm::platform_sso::BRIDGE_TYPE,
+                rss_mdm_agent_wire::platform_sso::BRIDGE_TYPE,
             )
             .map_err(failure)?;
             let now = store::now(&mut tx).await.map_err(failure)?;
             crypto::times(&claims, now).map_err(failure)?;
-            if crypto::text(&claims, "iss").map_err(failure)? != user.id.to_string()
-                || crypto::text(&claims, "aud").map_err(failure)? != challenge.audience
-                || crypto::text(&claims, "nonce").map_err(failure)? != challenge.nonce
-                || claims
-                    .get("sourceVersion")
-                    .and_then(serde_json::Value::as_i64)
-                    != Some(user.version)
+            let claims: rss_mdm_agent_wire::platform_sso::BrowserClaims =
+                serde_json::from_value(claims).map_err(|_| PlatformError::Rejected)?;
+            if claims.iss != user.id
+                || claims.aud != challenge.audience
+                || claims.nonce != challenge.nonce
+                || claims.source_version != user.version
             {
                 return Err(PlatformError::Rejected);
             }
-            let access = crypto::text(&claims, "accessToken").map_err(failure)?;
+            let access = claims.access_token.as_str();
             if access.len() != 43 {
                 return Err(PlatformError::Rejected);
             }

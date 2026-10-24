@@ -7,8 +7,8 @@ use openssl::{
     nid::Nid,
     pkey::{PKey, Private},
 };
+use rss_mdm_agent_wire::platform_sso::{Configuration, PublicKey};
 use rss_mdm_apple_channel::platform_sso::crypto;
-use rss_mdm_apple_mdm::platform_sso::{Configuration, PublicKey};
 use serde_json::Value;
 use sqlx::Connection;
 
@@ -65,6 +65,11 @@ async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value
 async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
     let f = Fixture::with_options(None, None, false, None, false, true).await?;
     let result=async {
+        let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
+        let response = f.router.clone().oneshot(association).await?;
+        ensure!(response.status()==StatusCode::OK);
+        let association: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+        ensure!(association == json!({"authsrv":{"apps":["ABCDEFGHIJ.com.rss.psso"]}}));
         let base=format!("/api/v1/apple/platform-sso/{}",case_tenant());
         let (status,value)=call(&f,&format!("{base}/nonce"),json!({})).await?;
         ensure!(status==StatusCode::OK,"nonce {status}: {value}");
@@ -272,6 +277,8 @@ async fn register_key(
         status == StatusCode::OK,
         "bootstrap {kind}: {status} {challenge}"
     );
+    let _: rss_mdm_agent_wire::platform_sso::BootstrapResponse =
+        serde_json::from_value(challenge.clone())?;
     let now = f.app.clock.unix_seconds()?;
     let proof=signing.signer.sign("rss-mdm-platform-sso-registration+jwt",&json!({"iss":registration,"aud":format!("{}/register",challenge["endpoints"]["base"].as_str().unwrap()),"challengeId":challenge["id"],"sourceId":challenge["sourceId"],"sourceVersion":challenge["sourceVersion"],"nonce":challenge["nonce"],"encryptionKeyId":crypto::kid(&encryption.public)?,"iat":now,"exp":now+120}))?;
     let input = json!({"operationId":Uuid::new_v4(),"challengeId":challenge["id"],"signingKey":signing.public,"encryptionKey":encryption.public,"proof":proof});
@@ -280,6 +287,9 @@ async fn register_key(
         status == StatusCode::OK,
         "register {kind}: {status} {receipt}"
     );
+    let accepted: rss_mdm_agent_wire::platform_sso::RegistrationReceipt =
+        serde_json::from_value(receipt.clone())?;
+    ensure!(accepted.registered && !accepted.hardware_attested);
     ensure!(
         agent(f, "register", input).await?.0 == StatusCode::UNAUTHORIZED,
         "one-use registration proof"
@@ -335,7 +345,7 @@ async fn login_request(
     encryption: &Key,
     id: &Value,
 ) -> Result<String> {
-    use rss_mdm_apple_mdm::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
+    use rss_mdm_agent_wire::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
     let rt = f.ade.platform_sso.as_ref().context("PSSO")?;
     let (status, nonce) = call(
         f,
@@ -478,7 +488,7 @@ async fn browser_exchange(
     registered: &Value,
     access: &str,
 ) -> Result<(StatusCode, axum::http::HeaderMap, Value)> {
-    use rss_mdm_apple_mdm::platform_sso::BRIDGE_TYPE;
+    use rss_mdm_agent_wire::platform_sso::BRIDGE_TYPE;
     let base = format!("/api/v1/apple/platform-sso/{}", case_tenant());
     let request = Request::builder()
         .method(Method::POST)
@@ -678,7 +688,8 @@ async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
             application_version: "1.0".into(),
             client_id: Uuid::new_v4(),
         };
-        let mut profile = configuration.profile(
+        let mut profile = rss_mdm_apple_mdm::platform_sso::profile(
+            &configuration,
             "https://vendor.example",
             Uuid::parse_str(case_tenant())?,
             Uuid::new_v4(),

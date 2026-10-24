@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Identity challenge exposed to the native extension by the configured browser flow.",
+  "properties": {
+    "audience": {
+      "description": "Exact proof audience.",
+      "type": "string"
+    },
+    "expiresAt": {
+      "description": "UTC expiry.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "id": {
+      "description": "Identity challenge ID.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "nonce": {
+      "description": "One-use nonce.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "nonce",
+    "expiresAt",
+    "audience"
+  ],
+  "title": "BrowserChallenge",
+  "type": "object",
+  "$id": "https://rss.example/agent/platform-sso/v1/BrowserChallenge"
+}
