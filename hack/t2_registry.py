@@ -728,7 +728,7 @@ for name in ('agent.reports', 'inventory.runtime', 'planning.assets', 'planning.
         MODULES[name] = replace(value, fixtures=(*value.fixtures, 'local_worker'))
 
 
-case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', ('identity',))
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', None)
 
 def consume(inputs, names):
     """The named modules test a real production path through these inputs."""
