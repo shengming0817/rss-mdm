@@ -1,5 +1,6 @@
 //! Reusable administrator authority; grants and durable issuance facts own its allocations.
 //! ref: ring src/ec/curve25519/ed25519/signing.rs; sqlx-core/src/transaction.rs.
+pub mod directory;
 use super::*;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};

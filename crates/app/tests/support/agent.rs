@@ -82,6 +82,7 @@ pub(crate) async fn service(fixture: &authority::Authority) -> Result<Arc<Servic
     );
     super::pki::seed_trust(&fixture.pool.clone(), registry.bindings()).await?;
     Ok(Arc::new(Service::new(Assembly {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32]).unwrap(),
         tenant: fixture.identity.tenant,
         store: fixture.registration.clone(),
         audit: fixture.audit.clone(),
@@ -145,6 +146,7 @@ pub(crate) fn application_service(
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Result<Arc<Service>> {
     Ok(Arc::new(Service::new(Assembly {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32]).unwrap(),
         tenant: rss_request_context::TenantId::parse(case_tenant())?,
         store: access.registration(),
         audit,

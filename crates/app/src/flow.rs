@@ -156,7 +156,7 @@ impl Config {
                 ));
                 let mut service = Flow { groups, compliance,
                     audit_store: audit_store.clone(),
-                    cursor_key: key,
+                    cursor_key: key.clone(),
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
                     catalog,
@@ -164,6 +164,7 @@ impl Config {
                     assets,
                     publications: Arc::new(
                         rss_mdm_software_service::management::publication::service::PublicationDirectory {
+                            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
                             services: Default::default(),
                             tenant,
                             runtime: runtime.clone(),

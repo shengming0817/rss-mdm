@@ -72,7 +72,10 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
         .route(
             "/agent-configurations",
             post(create_configuration)
-                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Create]),
+                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Create])
+                .get(list_configurations)
+                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::List])
+                .queried(&rss_mdm_registration_service::agent::configurations::directory::SCHEMA),
         )
         .route(
             "/agent-configurations/{id}",
@@ -424,6 +427,22 @@ async fn unconfirmed_devices(
     Ok(Json(
         service(&app)?
             .unconfirmed_connection_devices(&auth.proof, &input)
+            .await?,
+    ))
+}
+
+async fn list_configurations(
+    State(app): State<App>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Result<Json<rss_mdm_query::Page<serde_json::Value>>, HttpFailure> {
+    let q = rss_mdm_registration_service::agent::configurations::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or_default())
+        .map_err(|_| HttpFailure::Request(Error::Malformed))?;
+    Ok(Json(
+        service(&app)?
+            .configuration_directory(&auth.proof, &q, &audit)
             .await?,
     ))
 }

@@ -512,6 +512,10 @@ pub(crate) async fn from_compiled(
         .map(|pki| {
             rss_mdm_registration_service::agent::Service::new(
                 rss_mdm_registration_service::agent::Assembly {
+                    cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                        ring::hmac::HMAC_SHA256,
+                        &planning.cursor_key,
+                    )),
                     tenant: identity.tenant,
                     store: access.registration(),
                     audit: audit_store.clone(),
@@ -817,6 +821,10 @@ pub(crate) fn from_state(
         rss_mdm_management_http::Services {
             first_use,
             user_profiles: Arc::new(crate::user_profiles::Backend {
+                cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                    ring::hmac::HMAC_SHA256,
+                    &state.flow.cursor_key,
+                )),
                 identity: state.identity.authority.clone(),
                 tenant: state.identity.tenant,
                 instance: state.identity.instance,
@@ -1110,6 +1118,10 @@ pub(crate) fn software_access(
     >,
 > {
     Arc::new(rss_mdm_software_service::management::catalog::Access {
+        cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+            ring::hmac::HMAC_SHA256,
+            &state.flow.cursor_key,
+        )),
         resources: state.flow.software_resources.clone(),
         clock: Arc::new(crate::clock::ContentClock(state.clock.clone())),
         runtime: state.flow.runtime.clone(),
