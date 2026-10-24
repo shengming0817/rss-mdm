@@ -384,10 +384,11 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
             request: rss_mdm_inventory_service::operation::Operation {
                 operation_id: task,
                 expected_revision: 0,
-                input: assets::Query::default(),
+                input: assets::rsql::QueryInput::default(),
             }
             .into(),
             scope: assets::ReadScope {
+                authority: "internal".into(),
                 collection_scope: rss_mdm_inventory::CollectionScope::Device,
                 sensitive: true,
                 subject: prefix.to_string(),
@@ -456,6 +457,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                         None,
                         1,
                         &assets::ReadScope {
+                            authority: "internal".into(),
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             sensitive: true,
                             subject: "history-evidence".into(),

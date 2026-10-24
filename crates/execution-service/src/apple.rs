@@ -100,44 +100,59 @@ pub async fn observation(
     status: dc::Status,
     native_values: bool,
 ) -> Result<crate::queries::records::NativeObservation> {
+    observations(tx, apple_results, &[(op, status)], native_values)
+        .await?
+        .remove(&op.id)
+        .ok_or(Error::Conflict.into())
+}
+pub(crate) async fn observations(
+    tx: &mut PgTransaction<'_>,
+    apple_results: Arc<dyn super::channels::AppleResults>,
+    ops: &[(&storage::Operation, dc::Status)],
+    native_values: bool,
+) -> Result<std::collections::BTreeMap<Uuid, crate::queries::records::NativeObservation>> {
     use crate::queries::records::NativeObservation;
-    use rss_mdm_apple_mdm::native::{evidence, request::Request};
-    let tenant = tx.tenant_id().to_string();
-    let operation = op.id;
-    let Task::Macos { request } = &op.request.task else {
-        return Err(Error::Malformed.into());
-    };
-    let progress = super::service::status(status).to_owned();
-    if matches!(request, Request::Declarations { .. }) {
-        let facts = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(apple_results
-                        .declarations(c, tenant, operation, native_values)
-                        .await)
-                })
-            })
-            .await?
-            .map_err(Error::from)?;
-        return Ok(NativeObservation::Declarations { facts, progress });
+    if ops.is_empty() {
+        return Ok(Default::default());
     }
-    let profile = op.request.profile_target().is_some();
-    let request = request.clone();
-    let rows = tx
+    let tenant = tx.tenant_id().to_string();
+    let requests = ops
+        .iter()
+        .map(|(op, _)| match &op.request.task {
+            Task::Macos { request } => Ok((op.id, request.clone())),
+            _ => Err(Error::Malformed),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut page = tx
         .with_connection(move |c| {
             Box::pin(async move {
                 Ok(apple_results
-                    .observations(c, tenant, operation, request, native_values)
+                    .evidence_page(c, tenant, requests, native_values)
                     .await)
             })
         })
         .await?
         .map_err(Error::from)?;
-    Ok(NativeObservation::Apple {
-        facts: evidence::summarize(rows, profile),
-        progress,
-        effect_confirmed: status == dc::Status::Applied,
-    })
+    ops.iter()
+        .map(|(op, status)| {
+            let progress = super::service::status(*status).to_owned();
+            let value = match page.remove(&op.id).ok_or(Error::Conflict)? {
+                channels::AppleEvidence::Declarations(facts) => NativeObservation::Declarations {
+                    facts: facts.map(|v| *v),
+                    progress,
+                },
+                channels::AppleEvidence::Observations(rows) => NativeObservation::Apple {
+                    facts: rss_mdm_apple_mdm::native::evidence::summarize(
+                        rows,
+                        op.request.profile_target().is_some(),
+                    ),
+                    progress,
+                    effect_confirmed: *status == dc::Status::Applied,
+                },
+            };
+            Ok((op.id, value))
+        })
+        .collect()
 }
 
 impl ExecutionService {

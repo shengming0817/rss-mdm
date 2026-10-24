@@ -146,6 +146,10 @@ impl Client {
                 && dispatch["operationId"] == self.operation.to_string(),
             "Outbox retained native input"
         );
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+            .bind(case_tenant())
+            .execute(&mut persisted)
+            .await?;
         let mut changed_context = context.clone();
         changed_context["deadline"] = json!(context["deadline"].as_i64().unwrap() + 1);
         sqlx::query("UPDATE mdm_commands.operations SET input_context=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(self.operation).bind(changed_context).execute(&mut persisted).await?;

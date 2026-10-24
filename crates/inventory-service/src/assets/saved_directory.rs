@@ -45,8 +45,8 @@ impl AssetService {
    let mut sql=sqlx::QueryBuilder::new("SELECT jsonb_build_object('id',id,'revision',revision,'definition',document,'name',document->>'name','deleted',document IS NULL) FROM mdm_assets.saved_queries WHERE tenant_id=");
    sql.push_bind(tx.tenant_id().to_string()).push("::uuid AND instance=").push_bind(p.instance_id().to_owned()).push("::uuid AND owner=").push_bind(p.principal_id().to_owned()).push("::uuid");
    rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
-   let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
-   for row in &rows{if !row["definition"].is_null(){let _:SavedDefinition=stored(serde_json::from_value(row["definition"].clone()))?;}}
+   let mut rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
+   for row in &mut rows{if !row["definition"].is_null(){let definition:rsql::StoredDefinition=stored(serde_json::from_value(row["definition"].take()))?;row["definition"]=stored(serde_json::to_value(definition.into_view()?))?;}}
    let page=q.page(rows,&codec,&binding).map_err(crate::query_error)?;
    p.check_live()?;audit.require_request_settlement();json(&AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
   }),crate::transaction::TransactionOwner::Assets).await

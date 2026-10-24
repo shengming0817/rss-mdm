@@ -1258,7 +1258,9 @@ T1_INPUTS = (
     'compliance', 'agent-wire', 'windows-mdm', 'apple-mdm', 'content-service', 'device-trust')) + (
     'crates/app/tests/agent/unit.rs',
     'crates/app/tests/apple/webhook_unit.rs',
-    'crates/app/tests/assets/query_sort_unit.rs',
+    'crates/inventory-service/tests/assets/query_sort_unit.rs',
+    'crates/inventory-service/tests/assets/query_read_unit.rs',
+    'crates/inventory-service/tests/assets/rsql_unit.rs',
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
     'crates/audit-integration/tests/budget/unit.rs',
@@ -2207,7 +2209,7 @@ consume(('crates/authorization-service/schema/authority.sql','crates/device-serv
 
 
 # Resource query execution and common ingress composition have distinct proof owners.
-consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries compliance.http settings.user_profiles software.http software.catalog agent.configurations')
+consume(('crates/query/src/*', 'crates/query-postgres/src/*'), 'planning.http assets.queries assets.http assets.sources device.views device.associations device.binding execution.agent.history execution.commands.windows apple.ddm compliance.http settings.user_profiles software.http software.catalog agent.configurations')
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
 consume(('crates/flow-service/src/action_admission.rs',), 'planning.http planning.policy')
 consume(('crates/http-contract/src/*',),
@@ -2271,3 +2273,10 @@ if __name__ == '__main__':
     print(json.dumps(sorted(MODULES)))
 
 consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/schema/enterprise.sql','crates/registration-service/src/enterprise/platform.rs'),'apple.platform_sso')
+# QUERY-05: page bounds, source evidence batching and continuation owners.
+consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')
+consume(('crates/execution-service/src/query_generation.rs',), 'execution.commands.windows execution.commands.recovery device.revocation apple.ddm')
+consume(('crates/inventory-service/src/assets/rsql.rs','crates/inventory-service/src/assets/field_directory.rs','crates/inventory-service/src/assets/windows.rs'), 'assets.http assets.queries assets.sources')
+
+for name in ('device.views', 'execution.commands.windows'):
+    MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/support/query_reads.rs',))

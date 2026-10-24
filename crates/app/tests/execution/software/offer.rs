@@ -94,6 +94,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     let mut owner =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)").bind(case_tenant()).execute(&mut owner).await?;
     sqlx::query("UPDATE mdm_commands.action_runs SET created_at=created_at-120 WHERE id=$1::uuid")
         .bind(task["payload"]["task"]["taskId"].as_str().unwrap())
         .execute(&mut owner)

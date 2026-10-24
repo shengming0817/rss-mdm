@@ -14,6 +14,7 @@ use rss_mdm_http_contract::{
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
+    pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub user_profiles: Arc<dyn crate::user_profiles::Source>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub first_use: Arc<dyn crate::first_use::Source>,
@@ -86,6 +87,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         )
         .with_state(state.execution.clone());
     let directory = Arc::new(crate::enrollment::directory::HttpState {
+        cursor: state.query_cursor.clone(),
         devices: state.devices.clone(),
         assets: state.assets.clone(),
         queries: state.queries.clone(),
@@ -189,7 +191,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         ))
         .merge(crate::agent_enrollment::routes(state.agent_enrollment))
         .merge(crate::windows_entra::routes(state.windows_entra))
-        .merge(crate::execution::routes(state.queries.clone()).with_state(execution))
+        .merge(
+            crate::execution::routes(state.queries.clone(), state.query_cursor.clone())
+                .with_state(execution),
+        )
         .merge(
             crate::planning::policies::http::routes(state.queries.clone(), state.telemetry.clone())
                 .with_state(policies.clone()),

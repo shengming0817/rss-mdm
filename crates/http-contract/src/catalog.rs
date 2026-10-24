@@ -149,7 +149,7 @@ pub static ASSET_FIELDS: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "assets.http",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::ASSET_FIELDS),
 };
 pub static ASSET_LAYOUT: Resource = Resource {
@@ -165,7 +165,7 @@ pub static ASSET_QUERIES: Resource = Resource {
     category: Category::ReadModel,
     owner: "management-http",
     proof: "assets.queries",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: None,
 };
 pub static ASSET_RETENTION: Resource = Resource {
@@ -261,7 +261,7 @@ pub static DEVICES: Resource = Resource {
     category: Category::Projection,
     owner: "management-http",
     proof: "enrollment.http",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::DEVICES),
 };
 pub static DEVICE_ASSOCIATIONS: Resource = Resource {
@@ -269,7 +269,7 @@ pub static DEVICE_ASSOCIATIONS: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "device.views",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::DEVICE_ASSOCIATIONS),
 };
 pub static DEVICE_RETIREMENTS: Resource = Resource {
@@ -285,7 +285,7 @@ pub static DEVICE_VIEWS: Resource = Resource {
     category: Category::Projection,
     owner: "management-http",
     proof: "device.views",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::DEVICE_VIEWS),
 };
 pub static DIAGNOSTICS: Resource = Resource {
@@ -349,7 +349,7 @@ pub static EXECUTIONS: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "execution.agent.history",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::EXECUTIONS),
 };
 pub static FIRST_USE: Resource = Resource {
@@ -780,12 +780,6 @@ pub static ALL: &[&Resource] = &[
 /// A satisfied entry is an error: migration never retains a stale exemption.
 pub static GAPS: &[crate::Gap] = &[
     crate::Gap {
-        resource: "device_associations",
-        operation: crate::Operation::List,
-        issue: 2904,
-        reason: "changes is an audit feed, not the current association directory",
-    },
-    crate::Gap {
         resource: "device_access",
         operation: crate::Operation::Get,
         issue: 2906,
@@ -802,12 +796,6 @@ pub static GAPS: &[crate::Gap] = &[
         operation: crate::Operation::Get,
         issue: 2906,
         reason: "configuration is embedded in the organization directory",
-    },
-    crate::Gap {
-        resource: "asset_fields",
-        operation: crate::Operation::Get,
-        issue: 2904,
-        reason: "field descriptors are currently read through the catalog",
     },
     crate::Gap {
         resource: "authorization_rules",
@@ -903,7 +891,7 @@ pub static ASSOCIATION_CHANGES: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "device.associations",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::ASSOCIATION_CHANGES),
 };
 
@@ -921,6 +909,6 @@ pub static ASSET_RESULTS: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "assets.queries",
-    query: QueryPolicy::Pending(2904),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::ASSET_RESULTS),
 };

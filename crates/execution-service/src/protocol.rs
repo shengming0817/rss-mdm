@@ -405,9 +405,60 @@ pub async fn observation(
         return super::apple::observation(tx, apple_results, op, command_status, native_values)
             .await;
     }
+    windows_observations(tx, protection, &[(op, command_status)], native_values)
+        .await?
+        .remove(&op.id)
+        .ok_or(Error::Conflict.into())
+}
+pub(crate) async fn windows_observations(
+    tx: &mut PgTransaction<'_>,
+    protection: &rss_mdm_native_protection::Protector,
+    ops: &[(&storage::Operation, dc::Status)],
+    native_values: bool,
+) -> Result<std::collections::BTreeMap<Uuid, crate::queries::records::NativeObservation>> {
+    if ops.is_empty() {
+        return Ok(Default::default());
+    }
+    let ids = ops.iter().map(|(op, _)| op.id).collect::<Vec<_>>();
+    let receipts = read_evidence_rows(tx, WINDOWS_RECEIPTS, ids.clone()).await?;
+    let platforms = read_evidence_rows(tx, WINDOWS_PLATFORMS, ids.clone()).await?;
+    let endpoints = read_evidence_rows(tx, WINDOWS_ENDPOINTS, ids).await?;
     let tenant = tx.tenant_id();
-    let id = op.id;
-    let rows=tx.with_connection(move|c|Box::pin(async move {sqlx::query("SELECT a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 ORDER BY a.ordinal,i.command,i.item_ordinal").bind(tenant.to_string()).bind(id).fetch_all(c).await})).await?;
+    let mut result = std::collections::BTreeMap::new();
+    for (op, status) in ops {
+        let rows = receipts.get(&op.id).map(Vec::as_slice).unwrap_or(&[]);
+        let state = platforms
+            .get(&op.id)
+            .and_then(|rows| rows.first())
+            .map(|r| r.try_get::<Option<Value>, _>("platform"))
+            .transpose()?
+            .flatten();
+        let endpoint = endpoints.get(&op.id).and_then(|rows| rows.first());
+        let assessment = effect_from_rows(protection, tenant, op, rows, state, endpoint)?;
+        result.insert(
+            op.id,
+            windows_from_rows(
+                protection,
+                tenant,
+                op,
+                *status,
+                rows,
+                assessment,
+                native_values,
+            )?,
+        );
+    }
+    Ok(result)
+}
+fn windows_from_rows(
+    protection: &rss_mdm_native_protection::Protector,
+    tenant: TenantId,
+    op: &storage::Operation,
+    command_status: dc::Status,
+    rows: &[sqlx::postgres::PgRow],
+    assessment: rss_mdm_windows_mdm::native::verification::EffectAssessment,
+    native_values: bool,
+) -> Result<crate::queries::records::NativeObservation> {
     let sensitive = op.request.task.permissions()?.iter().any(|p| {
         matches!(
             p,
@@ -419,10 +470,10 @@ pub async fn observation(
     });
     let mut receipts = Vec::with_capacity(rows.len());
     for row in rows {
-        let value = if sensitive {
+        let value = if sensitive || !native_values {
             None
         } else {
-            result_value(protection, tenant, op, &row)?
+            result_value(protection, tenant, op, row)?
         };
         use crate::queries::records::WindowsReceipt;
         let receipt = WindowsReceipt {
@@ -442,11 +493,10 @@ pub async fn observation(
             result_accepted: row.try_get("result_accepted")?,
             result_received_at: row.try_get("result_received_at")?,
             frames: stored(serde_json::from_value(row.try_get::<Value, _>("frames")?))?,
-            redacted: sensitive,
+            redacted: sensitive || !native_values,
         };
         receipts.push(receipt);
     }
-    let assessment = effect_assessment(protection, tx, op).await?;
     Ok(crate::queries::records::NativeObservation::Windows {
         receipts,
         progress: super::service::status(command_status).into(),
@@ -484,6 +534,33 @@ async fn effect_assessment(
     tx: &mut PgTransaction<'_>,
     op: &storage::Operation,
 ) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
+    let ids = vec![op.id];
+    let receipts = read_evidence_rows(tx, WINDOWS_RECEIPTS, ids.clone()).await?;
+    let platforms = read_evidence_rows(tx, WINDOWS_PLATFORMS, ids.clone()).await?;
+    let endpoints = read_evidence_rows(tx, WINDOWS_ENDPOINTS, ids).await?;
+    let state = platforms
+        .get(&op.id)
+        .and_then(|v| v.first())
+        .map(|r| r.try_get::<Option<Value>, _>("platform"))
+        .transpose()?
+        .flatten();
+    effect_from_rows(
+        protection,
+        tx.tenant_id(),
+        op,
+        receipts.get(&op.id).map(Vec::as_slice).unwrap_or(&[]),
+        state,
+        endpoints.get(&op.id).and_then(|v| v.first()),
+    )
+}
+fn effect_from_rows(
+    protection: &rss_mdm_native_protection::Protector,
+    tenant: TenantId,
+    op: &storage::Operation,
+    receipts: &[sqlx::postgres::PgRow],
+    state: Option<Value>,
+    endpoint: Option<&sqlx::postgres::PgRow>,
+) -> Result<rss_mdm_windows_mdm::native::verification::EffectAssessment> {
     use rss_mdm_windows_mdm::native::{
         Context, Execution,
         verification::{EffectAssessment, EffectFact, EffectState},
@@ -497,9 +574,6 @@ async fn effect_assessment(
             reason: Some("software_requires_installation_evidence"),
         });
     };
-    let tenant = tx.tenant_id().to_string();
-    let id = op.id;
-    let state=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,Option<Value>>("SELECT platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1").bind(tenant).bind(id).fetch_optional(c).await})).await?.flatten();
     let Some(state) = state else {
         return Ok(EffectAssessment::waiting("missing_target_evidence"));
     };
@@ -510,18 +584,13 @@ async fn effect_assessment(
     if plan.readback().is_none() {
         return Ok(plan.assess(&[]));
     }
-    let rows = completed_observation(tx, id).await?;
+    let rows = completed_rows(receipts)?;
     let addresses = request
         .management_addresses()
         .map_err(|_| Error::Malformed)?;
     if !addresses.is_empty() {
-        let tenant = tx.tenant_id().to_string();
         let registration = op.registration;
         let generation = op.registration_generation;
-        let endpoint = tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query("SELECT m.response,a.credential,a.session,a.message FROM mdm_commands.attempts a JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,$3,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND a.phase='observe' AND s.generation=$4 AND a.session<>(SELECT session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.ordinal DESC LIMIT 1")
-                .bind(tenant).bind(id).bind(registration).bind(generation).fetch_optional(c).await
-        })).await?;
         let Some(endpoint) = endpoint else {
             return Ok(EffectAssessment::waiting(
                 "management_address_reconnect_required",
@@ -534,7 +603,7 @@ async fn effect_assessment(
             .open_bytes(
                 &endpoint.try_get::<Vec<u8>, _>("response")?,
                 &crate::protection::aad(
-                    tx.tenant_id(),
+                    tenant,
                     "windows.management.response",
                     &(registration, generation, credential, &session, message),
                 )?,
@@ -556,7 +625,7 @@ async fn effect_assessment(
         facts.push(EffectFact {
             uri: row.try_get::<Option<String>, _>("uri")?.unwrap_or_default(),
             status: row.try_get("status")?,
-            value: result_value(protection, tx.tenant_id(), op, &row)?,
+            value: result_value(protection, tenant, op, row)?,
             receipt_accepted: row.try_get::<Option<bool>, _>("receipt_accepted")? == Some(true),
             result_accepted: row.try_get::<Option<bool>, _>("result_accepted")? == Some(true),
         });
@@ -604,37 +673,64 @@ pub(super) async fn settle_dispatch_failures(
     Ok(())
 }
 
-/// Storage selects identity/order; the Windows owner decides native completeness.
-async fn completed_observation(
-    tx: &mut PgTransaction<'_>,
-    id: Uuid,
-) -> Result<Vec<sqlx::postgres::PgRow>> {
+/// The Windows owner, not SQL, decides which complete observation is authoritative.
+fn completed_rows(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<&sqlx::postgres::PgRow>> {
     use rss_mdm_windows_mdm::native::receipt::{ItemEvidence, ReceiptRole};
-    let mut before = i64::MAX;
-    loop {
-        let tenant = tx.tenant_id().to_string();
-        let candidates = tx.with_connection(move |c|Box::pin(async move {
-            sqlx::query("SELECT id,ordinal FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=$2 AND phase='observe' AND ordinal<$3 ORDER BY ordinal DESC LIMIT 64")
-                .bind(tenant).bind(id).bind(before).fetch_all(c).await
-        })).await?;
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-        for candidate in candidates {
-            before = candidate.try_get("ordinal")?;
-            let attempt: Uuid = candidate.try_get("id")?;
-            let tenant = tx.tenant_id().to_string();
-            let rows = tx.with_connection(move |c|Box::pin(async move {
-                sqlx::query("SELECT a.id AS attempt,i.command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.result_accepted FROM mdm_commands.attempt_items i JOIN mdm_commands.attempts a ON(a.tenant_id,a.id)=(i.tenant_id,i.attempt) WHERE a.tenant_id=$1::uuid AND a.id=$2 ORDER BY i.command,i.item_ordinal")
-                    .bind(tenant).bind(attempt).fetch_all(c).await
-            })).await?;
-            let evidence = rows
-                .iter()
-                .map(|r| native::item_evidence(r, ReceiptRole::Observe))
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) {
-                return Ok(rows);
-            }
+    let mut attempts = std::collections::BTreeMap::<i64, Vec<_>>::new();
+    for row in rows {
+        if row.try_get::<String, _>("phase")? == "observe" {
+            attempts
+                .entry(row.try_get("ordinal")?)
+                .or_default()
+                .push(row);
         }
     }
+    for rows in attempts.into_values().rev() {
+        let evidence = rows
+            .iter()
+            .map(|r| native::item_evidence(r, ReceiptRole::Observe))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if !evidence.is_empty() && evidence.iter().all(ItemEvidence::complete) {
+            return Ok(rows);
+        }
+    }
+    Ok(Vec::new())
 }
+async fn read_evidence_rows(
+    tx: &mut PgTransaction<'_>,
+    select: &'static str,
+    ids: Vec<Uuid>,
+) -> Result<std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>> {
+    if ids.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
+    let tenant = tx.tenant_id().to_string();
+    let sql = format!(
+        "WITH selected AS MATERIALIZED ({select}), budget AS (SELECT count(*)<=8192 AND coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok"
+    );
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .bind(tenant)
+                    .bind(ids)
+                    .fetch_all(c)
+                    .await
+            })
+        })
+        .await?;
+    rss_mdm_query_postgres::observe_rows("execution.windows", &rows)?;
+    let mut result = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for row in rows {
+        if !row.try_get::<bool, _>("within_budget")? {
+            return Err(Error::Conflict.into());
+        }
+        if let Some(id) = row.try_get::<Option<Uuid>, _>("operation")? {
+            result.entry(id).or_default().push(row);
+        }
+    }
+    Ok(result)
+}
+const WINDOWS_RECEIPTS: &str = "SELECT a.operation,a.id AS attempt,a.phase,a.ordinal,a.session,a.message,i.command,i.parent_command,i.item_ordinal,i.kind,i.uri,i.status,i.value,i.value IS NOT NULL AS has_value,i.receipt_accepted,i.received_at,i.result_accepted,i.result_received_at,coalesce((SELECT jsonb_agg(jsonb_build_object('message',f.message,'command',f.command,'startByte',f.start_byte,'endByte',f.end_byte,'totalBytes',f.total_bytes,'status',f.status,'accepted',f.accepted,'receivedAt',f.received_at) ORDER BY f.message,f.command) FROM mdm_commands.attempt_frames f WHERE f.tenant_id=a.tenant_id AND f.attempt=a.id AND f.command=i.command),'[]'::jsonb) AS frames FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) ORDER BY a.operation,a.ordinal,i.command,i.item_ordinal";
+const WINDOWS_PLATFORMS: &str = "SELECT DISTINCT ON(operation) operation,platform FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2) AND phase='execute' ORDER BY operation,ordinal DESC";
+const WINDOWS_ENDPOINTS: &str = "SELECT DISTINCT ON(a.operation) a.operation,m.response,a.credential,a.session,a.message FROM mdm_commands.attempts a JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(a.tenant_id,a.operation) JOIN mdm_access.management_messages m ON(m.tenant_id,m.registration,m.session_id,m.message_id)=(a.tenant_id,o.registration,a.session::text,a.message) JOIN mdm_access.management_sessions s ON(s.tenant_id,s.registration,s.session_id)=(m.tenant_id,m.registration,m.session_id) WHERE a.tenant_id=$1::uuid AND a.operation=ANY($2) AND a.phase='observe' AND s.generation=o.registration_generation AND a.session<>(SELECT session FROM mdm_commands.attempts WHERE tenant_id=$1::uuid AND operation=a.operation AND phase='execute' ORDER BY ordinal DESC LIMIT 1) ORDER BY a.operation,a.ordinal DESC";

@@ -3,6 +3,32 @@ BEGIN;
 SET LOCAL check_function_bodies = false;
 
 CREATE SCHEMA mdm_commands;
+CREATE TABLE mdm_commands.query_revisions(tenant_id uuid PRIMARY KEY,revision bigint NOT NULL CHECK(revision>=0));
+ALTER TABLE mdm_commands.query_revisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.query_revisions FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.query_revisions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_commands.query_revisions FROM PUBLIC;
+CREATE FUNCTION mdm_commands.lock_query_revision(tenant uuid) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN RAISE EXCEPTION 'tenant context mismatch'; END IF;
+ INSERT INTO mdm_commands.query_revisions VALUES(tenant,0) ON CONFLICT(tenant_id) DO NOTHING;
+ PERFORM 1 FROM mdm_commands.query_revisions WHERE tenant_id=tenant FOR UPDATE;
+END $$;
+REVOKE ALL ON FUNCTION mdm_commands.lock_query_revision(uuid) FROM PUBLIC;
+CREATE FUNCTION mdm_commands.advance_query_revision(tenant uuid) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN RAISE EXCEPTION 'tenant context mismatch'; END IF;
+ INSERT INTO mdm_commands.query_revisions VALUES(tenant,1) ON CONFLICT(tenant_id) DO UPDATE SET revision=mdm_commands.query_revisions.revision+1;
+END $$;
+REVOKE ALL ON FUNCTION mdm_commands.advance_query_revision(uuid) FROM PUBLIC;
+CREATE FUNCTION mdm_commands.capture_query_revision() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF TG_OP='UPDATE' AND NEW IS NOT DISTINCT FROM OLD THEN RETURN NEW; END IF;
+ PERFORM mdm_commands.advance_query_revision(CASE WHEN TG_OP='DELETE' THEN OLD.tenant_id ELSE NEW.tenant_id END);
+ RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
+END $$;
+REVOKE ALL ON FUNCTION mdm_commands.capture_query_revision() FROM PUBLIC;
+
 
 CREATE FUNCTION mdm_commands.installation_status(p_operation uuid) RETURNS text
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
@@ -40,6 +66,7 @@ REVOKE ALL ON FUNCTION mdm_commands.retirement_commands(uuid,text) FROM PUBLIC;
 CREATE FUNCTION mdm_commands.save_retired_command(p_registration uuid, p_run uuid, p_previous bigint, p_terminal bigint) RETURNS boolean
  LANGUAGE sql SECURITY DEFINER SET search_path TO 'pg_catalog'
  AS $$
+ SELECT mdm_commands.advance_query_revision(nullif(current_setting('rss.tenant_id',true),'')::uuid);
  SELECT a.device_id FROM mdm_commands.operations o
  JOIN rss_device_command.commands d ON(d.tenant_id,d.command_id)=(o.tenant_id,o.id::text)
  JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(o.tenant_id,o.registration)
@@ -578,3 +605,27 @@ REVOKE ALL ON FUNCTION mdm_commands.advance_software_results(),mdm_commands.adva
 CREATE TRIGGER software_results AFTER INSERT OR UPDATE OF state,result ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.advance_software_results();
 
 GRANT UPDATE(request) ON mdm_commands.operations TO mdm_command_runtime;
+
+-- Version witnesses suppress invalidation on duplicate reports and no-op recovery.
+-- They never determine command state; that remains owned by the RSS store.
+CREATE TABLE mdm_commands.query_command_versions(
+ tenant_id uuid NOT NULL,command_id uuid NOT NULL,version bigint NOT NULL CHECK(version>0),
+ PRIMARY KEY(tenant_id,command_id),FOREIGN KEY(tenant_id,command_id) REFERENCES mdm_commands.operations(tenant_id,id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+);
+ALTER TABLE mdm_commands.query_command_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_commands.query_command_versions FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_commands.query_command_versions USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
+REVOKE ALL ON mdm_commands.query_command_versions FROM PUBLIC;
+CREATE FUNCTION mdm_commands.observe_query_commands(tenant uuid,ids text[],versions bigint[]) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE changed boolean;
+BEGIN
+ PERFORM mdm_commands.lock_query_revision(tenant);
+ IF cardinality(ids)>1000 OR cardinality(ids)<>cardinality(versions) THEN RAISE EXCEPTION 'query witness budget'; END IF;
+ WITH updated AS (
+  INSERT INTO mdm_commands.query_command_versions SELECT tenant,id::uuid,version FROM unnest(ids,versions) q(id,version)
+  ON CONFLICT(tenant_id,command_id) DO UPDATE SET version=excluded.version
+  WHERE mdm_commands.query_command_versions.version<>excluded.version RETURNING 1
+ ) SELECT EXISTS(SELECT FROM updated) INTO changed;
+ IF changed THEN PERFORM mdm_commands.advance_query_revision(tenant); END IF;
+END $$;
+REVOKE ALL ON FUNCTION mdm_commands.observe_query_commands(uuid,text[],bigint[]) FROM PUBLIC;

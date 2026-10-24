@@ -98,7 +98,7 @@ fn expression(
                 Operator::Ge => " >= ",
                 Operator::In => " IN ",
                 Operator::Out => " NOT IN ",
-                Operator::Icontains => unreachable!(),
+                _ => return Err(Error::Invalid),
             });
             if operator.set() {
                 sql.push("(");
@@ -157,6 +157,12 @@ pub fn page(
         }
         sql.push(")");
     }
+    order(sql, q, columns);
+    sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
+    Ok(())
+}
+/// Preserve the same ordering outside a bounded candidate subquery.
+pub fn order(sql: &mut QueryBuilder<Postgres>, q: &Query, columns: Columns) {
     sql.push(" ORDER BY ");
     for (i, sort) in q.sort().iter().enumerate() {
         if i > 0 {
@@ -168,8 +174,6 @@ pub fn page(
             " ASC NULLS LAST"
         });
     }
-    sql.push(" LIMIT ").push_bind((q.limit() + 1) as i64);
-    Ok(())
 }
 pub fn append(
     sql: &mut QueryBuilder<Postgres>,
@@ -179,4 +183,43 @@ pub fn append(
 ) -> Result<()> {
     filter(sql, q, columns)?;
     page(sql, q, after, columns)
+}
+
+/// Observe actual PostgreSQL cell payloads before business JSON/decryption. No values are logged.
+/// This excludes wire framing; SQLx independently reports the executed statement and elapsed time.
+pub fn observe_rows(
+    stage: &'static str,
+    rows: &[sqlx::postgres::PgRow],
+) -> std::result::Result<usize, sqlx::Error> {
+    use sqlx::{Row, ValueRef};
+    let mut bytes = 0usize;
+    for row in rows {
+        for column in 0..row.len() {
+            let value = row.try_get_raw(column)?;
+            if !value.is_null() {
+                bytes = bytes
+                    .checked_add(value.as_bytes().map_err(sqlx::Error::Decode)?.len())
+                    .ok_or_else(|| sqlx::Error::Protocol("query byte counter overflow".into()))?;
+            }
+        }
+    }
+    tracing::debug!(target:"rss_mdm.query_read",stage,rows=rows.len(),payload_bytes=bytes,"bounded query payload");
+    Ok(bytes)
+}
+
+/// Record a provider's narrow work/input measurement, without values or identities.
+/// Owners choose independent limits and translate rejection to their capacity error.
+pub fn within_budget(
+    stage: &'static str,
+    rows: u64,
+    bytes: u64,
+    max_rows: u64,
+    max_bytes: u64,
+) -> bool {
+    let accepted = rows <= max_rows && bytes <= max_bytes;
+    tracing::debug!(target: "rss_mdm.query_budget", stage, rows, payload_bytes=bytes, max_rows, max_bytes, accepted);
+    if !accepted {
+        tracing::warn!(target: "rss_mdm.query_budget", stage, rows, payload_bytes=bytes, max_rows, max_bytes, "query budget exceeded");
+    }
+    accepted
 }

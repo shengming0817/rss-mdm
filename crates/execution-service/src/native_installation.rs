@@ -414,45 +414,170 @@ pub async fn installation_observation(
     agent: Arc<dyn channels::Agent>,
     op: &storage::Operation,
 ) -> Result<serde_json::Value> {
+    installation_observations(tx, apple, agent, &[op])
+        .await?
+        .remove(&op.id)
+        .ok_or(Error::Conflict.into())
+}
+pub(crate) async fn installation_observations(
+    tx: &mut PgTransaction<'_>,
+    apple: Arc<dyn channels::AppleResults>,
+    agent: Arc<dyn channels::Agent>,
+    ops: &[&storage::Operation],
+) -> Result<std::collections::BTreeMap<Uuid, serde_json::Value>> {
+    use sqlx::Row;
+    if ops.is_empty() {
+        return Ok(Default::default());
+    }
+    if ops.len() > 1000 {
+        return Err(Error::Malformed.into());
+    }
+    let tenant = tx.tenant_id();
+    let targets = ops
+        .iter()
+        .map(|op| {
+            (
+                op.registration,
+                op.registration_generation,
+                op.request.task.source(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let current = tx
+        .with_connection(move |c| {
+            Box::pin(
+                async move { Ok(crate::assets::channel::details_in(c, tenant, &targets).await) },
+            )
+        })
+        .await??;
+    let inputs=ops.iter().map(|op|serde_json::json!({"operation":op.id,"snapshot":current.get(&(op.registration,op.registration_generation,op.request.task.source().as_str().to_owned())).map(|f|f.snapshot)})).collect::<Vec<_>>();
+    let rows = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query(INSTALLATION_PAGE)
+                    .bind(tenant.to_string())
+                    .bind(serde_json::json!(inputs))
+                    .fetch_all(c)
+                    .await
+            })
+        })
+        .await?;
+    rss_mdm_query_postgres::observe_rows("execution.installation", &rows)?;
+    let mut metadata = std::collections::BTreeMap::new();
+    let mut registrations = Vec::new();
+    for row in rows {
+        if !row.try_get::<bool, _>("within_budget")? {
+            return Err(Error::Conflict.into());
+        }
+        if let Some(operation) = row.try_get::<Option<Uuid>, _>("operation")? {
+            if let Some(id) = row.try_get::<Option<Uuid>, _>("agent_registration")? {
+                registrations.push(id);
+            }
+            metadata.insert(operation, row);
+        }
+    }
+    let profiles = tx
+        .with_connection(move |c| {
+            Box::pin(async move { Ok(agent.bindings(c, tenant.to_string(), registrations).await) })
+        })
+        .await?
+        .map_err(Error::from)?;
+    let requests = ops
+        .iter()
+        .filter_map(|op| match &op.request.task {
+            Task::Macos { request } => Some((op.id, request.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut apple = if requests.is_empty() {
+        Default::default()
+    } else {
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(apple
+                    .evidence_page(c, tenant.to_string(), requests, false)
+                    .await)
+            })
+        })
+        .await?
+        .map_err(Error::from)?
+    };
+    let mut output = std::collections::BTreeMap::new();
+    for op in ops {
+        let row = metadata.remove(&op.id).ok_or(Error::Conflict)?;
+        let agent_id: Option<Uuid> = row.try_get("agent_registration")?;
+        let bound = agent_id
+            .map(|id| {
+                Ok::<_, sqlx::Error>((
+                    id,
+                    row.try_get::<String, _>("agent_device")?,
+                    row.try_get::<String, _>("agent_state")?,
+                ))
+            })
+            .transpose()?;
+        let profile = agent_id.and_then(|id| profiles.get(&id).map(|p| p.capabilities.clone()));
+        let rows = match apple.remove(&op.id) {
+            Some(channels::AppleEvidence::Observations(rows)) => rows,
+            None => Vec::new(),
+            _ => return Err(Error::Malformed.into()),
+        };
+        let facts = InstallationFacts {
+            current: current
+                .get(&(
+                    op.registration,
+                    op.registration_generation,
+                    op.request.task.source().as_str().to_owned(),
+                ))
+                .cloned(),
+            sent: row.try_get("sent")?,
+            query: row.try_get("channel_state")?,
+            status: row.try_get("delivery_status")?,
+            bound,
+            bootstrap: row.try_get("bootstrap")?,
+            profile,
+            rows,
+        };
+        output.insert(op.id, installation_from_facts(op, facts)?);
+    }
+    Ok(output)
+}
+struct InstallationFacts {
+    current: Option<crate::assets::channel::Current>,
+    sent: bool,
+    query: Option<serde_json::Value>,
+    status: Option<i32>,
+    bound: Option<(Uuid, String, String)>,
+    bootstrap: Option<serde_json::Value>,
+    profile: Option<Vec<rss_mdm_agent_wire::runtime::Capability>>,
+    rows: Vec<rss_mdm_apple_mdm::native::evidence::Observation>,
+}
+fn installation_from_facts(
+    op: &storage::Operation,
+    facts: InstallationFacts,
+) -> Result<serde_json::Value> {
+    let InstallationFacts {
+        current,
+        sent,
+        query,
+        status,
+        bound,
+        bootstrap,
+        profile,
+        rows,
+    } = facts;
     let Some(package) = op.authority.agent_package() else {
         return Err(Error::Malformed.into());
     };
-    let tenant = tx.tenant_id();
-    let registration = op.registration;
-    let generation = op.registration_generation;
     let source = op.request.task.source();
-    let operation = op.id;
-    let current = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(
-                    crate::assets::channel::detail_in(c, tenant, registration, generation, source)
-                        .await,
-                )
-            })
-        })
-        .await??;
     let mut installation = "unknown";
     let mut delivery = "unknown";
     let mut observed_at = None;
-    let sent = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(crate::agent_install::dispatched_on(c, &tenant.to_string(), operation).await)
-            })
-        })
-        .await??;
     if let Some(fact) = &current
         && matches!(
             package.identity,
             Identity::WindowsMsi { .. } | Identity::WindowsMsix { .. }
         )
     {
-        let snapshot = fact.snapshot;
-        let query=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_scalar::<_,serde_json::Value>("SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=$2 AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=$1::uuid AND q.id=$3 AND q.registration=$4 AND q.first_command>i.command LIMIT 1")
-                .bind(tenant.to_string()).bind(operation).bind(snapshot).bind(registration).fetch_optional(c).await
-        })).await?;
         let after_dispatch = sent && query.is_some();
         if after_dispatch {
             observed_at = Some(fact.received_at);
@@ -531,20 +656,6 @@ pub async fn installation_observation(
     }
     if matches!(package.identity, Identity::Macos { .. }) {
         use rss_mdm_apple_mdm::native::evidence::{Phase, ReceiptState};
-        let Task::Macos { request } = &op.request.task else {
-            return Err(Error::Malformed.into());
-        };
-        let request = request.clone();
-        let rows = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(apple
-                        .observations(c, tenant.to_string(), operation, request, false)
-                        .await)
-                })
-            })
-            .await?
-            .map_err(Error::from)?;
         for row in rows {
             if row.phase == Phase::Execute {
                 delivery = match row.state {
@@ -563,18 +674,14 @@ pub async fn installation_observation(
             }
         }
     } else {
-        let status=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Option<i32>>("SELECT i.status FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=$1::uuid AND a.operation=$2 AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?.flatten();
         delivery = match status {
             Some(200 | 202) => "acknowledged",
             Some(n) if n >= 400 => "rejected",
             _ => "unknown",
         };
     }
-    let bound=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(Uuid,String,String)>("SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=$1::uuid AND e.source='native' AND e.native_authority->>'installation'=$2::uuid::text").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
-    let bootstrap=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,serde_json::Value>("SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=$1::uuid AND installation=$2 AND active").bind(tenant.to_string()).bind(operation).fetch_optional(c).await})).await?;
     let registered = if let Some((id, device, state)) = bound {
-        let profile = channels::agent_binding_in(tx, agent, id).await?;
-        serde_json::json!({"deviceId":device,"registrationId":id,"state":state,"capabilities":profile.map(|p|p.capabilities)})
+        serde_json::json!({"deviceId":device,"registrationId":id,"state":state,"capabilities":profile})
     } else {
         serde_json::Value::Null
     };
@@ -582,3 +689,17 @@ pub async fn installation_observation(
         serde_json::json!({"protocol":source.as_str(),"delivery":delivery,"installation":installation,"agentRegistration":registered,"bootstrap":bootstrap,"observedAt":observed_at}),
     )
 }
+
+const INSTALLATION_PAGE: &str = r#"
+WITH selected AS MATERIALIZED (
+ SELECT o.id AS operation,
+ EXISTS(SELECT FROM mdm_commands.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute') OR EXISTS(SELECT FROM mdm_apple.attempts a WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND a.phase='execute' AND a.state<>'pending') AS sent,
+ (SELECT q.channel_state FROM mdm_windows.collections q JOIN mdm_commands.attempts a ON a.tenant_id=q.tenant_id AND a.operation=o.id AND a.phase='execute' JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE q.tenant_id=o.tenant_id AND q.id=x.snapshot AND q.registration=o.registration AND q.first_command>i.command LIMIT 1) AS channel_state,
+ (SELECT i.status FROM mdm_commands.attempts a JOIN mdm_commands.attempt_items i ON(i.tenant_id,i.attempt)=(a.tenant_id,a.id) WHERE a.tenant_id=o.tenant_id AND a.operation=o.id AND (a.phase='execute' OR(a.phase='prepare' AND i.status>=400)) AND i.receipt_accepted ORDER BY a.ordinal DESC,i.command DESC LIMIT 1) AS delivery_status,
+ r.id AS agent_registration,r.device AS agent_device,r.state AS agent_state,
+ (SELECT jsonb_build_object('state',state,'delivery',delivery,'cleanup',cleanup,'cleanupComplete',cleanup_complete,'cleanupRetryAt',cleanup_retry_at,'deadline',deadline) FROM mdm_access.agent_bootstraps WHERE tenant_id=o.tenant_id AND installation=o.id AND active) AS bootstrap
+ FROM jsonb_to_recordset($2::jsonb) x(operation uuid,snapshot uuid) JOIN mdm_commands.operations o ON o.tenant_id=$1::uuid AND o.id=x.operation
+ LEFT JOIN LATERAL(SELECT r.id,r.device,r.state FROM mdm_access.agent_grants e JOIN mdm_access.registrations r ON(r.tenant_id,r.agent_grant_id)=(e.tenant_id,e.id) WHERE e.tenant_id=o.tenant_id AND e.source='native' AND e.native_authority->>'installation'=o.id::text ORDER BY r.id LIMIT 1) r ON true
+), budget AS (SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected)
+SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok
+"#;

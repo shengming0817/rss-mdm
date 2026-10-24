@@ -65,13 +65,38 @@ pub enum QueryPolicy {
     Protocol,
     NotCollection,
 }
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(tag = "kind", content = "schema", rename_all = "snake_case")]
+pub enum QueryDeclaration {
+    Directory(&'static rss_mdm_query::directory::Schema),
+    Window(&'static rss_mdm_query::window::Schema),
+    Catalog(&'static rss_mdm_query::CatalogQuery),
+}
+impl QueryDeclaration {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Directory(s) => s.id,
+            Self::Window(s) => s.id,
+            Self::Catalog(s) => s.id,
+        }
+    }
+    fn valid(self) -> bool {
+        match self {
+            Self::Directory(s) => s.parse("").is_ok(),
+            Self::Window(s) => s.parse("").is_ok(),
+            Self::Catalog(s) => {
+                !s.catalog_resource.is_empty() && s.max_fields > 0 && s.max_sort > 0
+            }
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize)]
 pub struct Endpoint {
     pub path: String,
     pub method: &'static str,
     pub resource: &'static Resource,
     pub operations: &'static [Operation],
-    pub query: Option<&'static rss_mdm_query::directory::Schema>,
+    pub query: Option<QueryDeclaration>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Violation {
@@ -97,10 +122,12 @@ pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) ->
     let mut violations = validate_ownership(endpoints, expected, gaps);
     for endpoint in endpoints {
         if endpoint.resource.query == QueryPolicy::Unified
-            && endpoint.operations.contains(&Operation::List)
+            && (endpoint.operations.contains(&Operation::List)
+                || (endpoint.resource.collection.is_none()
+                    && endpoint.operations.contains(&Operation::Create)))
             && !endpoint
                 .query
-                .is_some_and(|s| s.id == endpoint.resource.id && s.parse("").is_ok())
+                .is_some_and(|s| s.id() == endpoint.resource.id && s.valid())
         {
             violations.push(Violation::MissingQuery(endpoint.resource.id.into()));
         }

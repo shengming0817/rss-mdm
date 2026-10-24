@@ -84,7 +84,7 @@ impl Parser<'_> {
             .rest()
             .as_bytes()
             .first()
-            .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            .is_some_and(|b| b.is_ascii_alphanumeric() || matches!(*b, b'_' | b'.'))
         {
             self.offset += 1;
         }
@@ -102,6 +102,12 @@ impl Parser<'_> {
             ("=in=", Operator::In),
             ("=out=", Operator::Out),
             ("=icontains=", Operator::Icontains),
+            ("=contains=", Operator::Contains),
+            ("=notcontains=", Operator::NotContains),
+            ("=containsany=", Operator::ContainsAny),
+            ("=containsall=", Operator::ContainsAll),
+            ("=isnull=", Operator::IsNull),
+            ("=isnotnull=", Operator::IsNotNull),
         ]
         .into_iter()
         .find(|(s, _)| self.rest().starts_with(s))
@@ -170,7 +176,7 @@ impl Parser<'_> {
                 }
                 c
             };
-            if c.is_control() || c == '*' {
+            if c.is_control() || (quote.is_none() && c == '*') {
                 return Err(Error::Invalid);
             }
             if result.len() + c.len_utf8() > 1024 {
@@ -178,7 +184,7 @@ impl Parser<'_> {
             }
             result.push(c);
         }
-        if !closed || result.is_empty() {
+        if !closed || (quote.is_none() && result.is_empty()) {
             return Err(Error::Invalid);
         }
         Ok(result)

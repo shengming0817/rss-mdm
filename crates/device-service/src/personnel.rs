@@ -231,5 +231,7 @@ async fn query_rows(
     max_rows: usize,
 ) -> std::result::Result<(PersonnelRevision, Vec<PgRow>), AuthorityError> {
     let rows = context.query(select, arguments, max_rows).await?;
+    rss_mdm_query_postgres::observe_rows("device.personnel", &rows)
+        .map_err(|_| AuthorityError::Unavailable)?;
     Ok((context.revision()?, rows))
 }

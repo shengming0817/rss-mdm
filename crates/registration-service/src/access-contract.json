@@ -362,6 +362,14 @@
         "phase"
       ],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_access",
+      "table": "directory_revisions",
+      "read_write": false,
+      "read_only": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
   "functions": [
@@ -372,7 +380,11 @@
   ],
   "external_relations": [
     "mdm_access.directory_endpoints",
-    "mdm_access.directory_users"
+    "mdm_access.directory_users",
+    "mdm_access.directory_metadata",
+    "mdm_access.directory_channels",
+    "mdm_access.directory_enrollments",
+    "mdm_access.directory_inputs"
   ],
   "verified_schemas": []
 }

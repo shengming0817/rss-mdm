@@ -3,7 +3,7 @@ type Ownership = (&'static Resource, &'static [Operation]);
 type MethodBinding = (
     &'static str,
     Option<Ownership>,
-    Option<&'static rss_mdm_query::directory::Schema>,
+    Option<crate::QueryDeclaration>,
 );
 #[derive(Clone)]
 pub struct MethodRouter<S = ()> {
@@ -29,7 +29,48 @@ impl<S: Clone + Send + Sync + 'static> MethodRouter<S> {
             operations.contains(&Operation::List) && resource.id == schema.id,
             "query owner mismatch"
         );
-        assert!(last.2.replace(schema).is_none(), "duplicate query owner");
+        assert!(
+            last.2
+                .replace(crate::QueryDeclaration::Directory(schema))
+                .is_none(),
+            "duplicate query owner"
+        );
+        self
+    }
+    pub fn windowed(mut self, schema: &'static rss_mdm_query::window::Schema) -> Self {
+        let last = self.bindings.last_mut().expect("method exists");
+        let (resource, operations) = last.1.expect("query follows ownership");
+        assert!(
+            resource.id == schema.id
+                && operations
+                    .iter()
+                    .any(|o| matches!(o, Operation::List | Operation::Action | Operation::Query)),
+            "window owner mismatch"
+        );
+        assert!(
+            last.2
+                .replace(crate::QueryDeclaration::Window(schema))
+                .is_none(),
+            "duplicate query owner"
+        );
+        self
+    }
+    pub fn catalog_queried(mut self, schema: &'static rss_mdm_query::CatalogQuery) -> Self {
+        let last = self.bindings.last_mut().expect("method exists");
+        let (resource, operations) = last.1.expect("query follows ownership");
+        assert!(
+            resource.id == schema.id
+                && operations
+                    .iter()
+                    .any(|o| matches!(o, Operation::Create | Operation::Query)),
+            "catalog query owner mismatch"
+        );
+        assert!(
+            last.2
+                .replace(crate::QueryDeclaration::Catalog(schema))
+                .is_none(),
+            "duplicate query owner"
+        );
         self
     }
     pub fn patch<H, T>(mut self, handler: H) -> Self

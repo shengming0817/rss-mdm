@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.queries: real Router and persisted assets"]
 async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
@@ -18,7 +19,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         )),
     )
     .await?;
-    let query = json!({"sort":{"field":"custom.office_floor"},"select":["custom.office_floor"]});
+    let query = json!({"sort":[{"field":"custom.office_floor"}],"fields":["custom.office_floor"]});
     let result = ok(
         &mut browser,
         router,
@@ -60,7 +61,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     let saved_path = format!("/api/v1/saved-queries/{saved}");
     let put = request(
         0,
-        json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}}),
+        json!({"action":"put","definition":{"name":"Floor 3","query":{"filter":"custom.office_floor==3"}}}),
     );
     let receipt = ok(
         &mut browser,
@@ -94,7 +95,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     );
 
     let second_saved = Uuid::new_v4();
-    ok(&mut browser,router,Method::PUT,&format!("/api/v1/saved-queries/{second_saved}"),Some(request(0,json!({"action":"put","definition":{"name":"Floor 3","query":{"criteria":predicate("custom.office_floor","integer",json!(3))}}})))).await?;
+    ok(&mut browser,router,Method::PUT,&format!("/api/v1/saved-queries/{second_saved}"),Some(request(0,json!({"action":"put","definition":{"name":"Floor 3","query":{"filter":"custom.office_floor==3"}}})))).await?;
     let mut ids = [saved, second_saved];
     ids.sort();
     let base = "/api/v1/saved-queries?filter=name==%22Floor%203%22&sort=name&fields=id&limit=1";
@@ -226,8 +227,14 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     )
     .await?;
     ensure!(old["asset"]["items"] == frozen);
-    let fresh = ok(&mut browser, router, Method::POST, "/api/v1/device-queries",
-        Some(json!({"criteria":predicate("custom.office_floor","integer",json!(4)),"select":["custom.office_floor"]}))).await?;
+    let fresh = ok(
+        &mut browser,
+        router,
+        Method::POST,
+        "/api/v1/device-queries",
+        Some(json!({"filter":"custom.office_floor==4","fields":["custom.office_floor"]})),
+    )
+    .await?;
     ensure!(fresh["asset"]["items"].as_array().unwrap().len() == 1);
     ensure!(fresh["asset"]["items"][0]["device"] == "asset-a");
     ensure!(
@@ -276,7 +283,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         .await?;
     }
     for descending in [false, true] {
-        let query = json!({"criteria":predicate("custom.office_floor","integer",json!(99)),"sort":{"field":"custom.office_floor","descending":descending}});
+        let query = json!({"filter":"custom.office_floor==99","sort":[{"field":"custom.office_floor","descending":descending}]});
         let result = ok(
             &mut browser,
             router,
@@ -304,5 +311,193 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         }
         ensure!(seen == ["tie-a", "tie-b", "tie-c"]);
     }
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.queries: maximum stored sort keys remain pageable"]
+async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    let fixture = Fixture::open().await?;
+    let router = &fixture.router;
+    let mut browser = fixture.browser.clone();
+    let mut grants = crate::test_support::identity::device_grants(
+        None,
+        &["inventory_read", "inventory_assign"],
+    )?;
+    grants.push(Grant {
+        operation: Permission::InventoryFieldsWrite,
+        scope: Scope::Tenant,
+    });
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+    let field = "custom.cursor_sort";
+    let definition = json!({"key":field,"version":1,"valueType":{"kind":"string","maxLength":1024,"allowEmpty":false},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
+    ok(
+        &mut browser,
+        router,
+        Method::PUT,
+        &format!("/api/v1/asset-fields/{field}"),
+        Some(request(0, json!({"action":"put","definition":definition}))),
+    )
+    .await?;
+    let mut devices = [Uuid::new_v4().to_string(), Uuid::new_v4().to_string()];
+    devices.sort();
+    for device in &devices {
+        pg(&format!(
+            "INSERT INTO mdm_access.devices VALUES('{}','{device}')",
+            case_tenant()
+        ))?;
+        ok(
+            &mut browser,
+            router,
+            Method::PUT,
+            &format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),
+            Some(request(
+                0,
+                json!({"action":"set","value":{"kind":"integer","value":1}}),
+            )),
+        )
+        .await?;
+    }
+    // The old JSON byte array exceeds PageCursor already at 1000 bytes. Also
+    // exercise the exact 1024-byte storage limit for single and composite sorts.
+    for (revision, (length, composite)) in [(497, false), (509, false), (500, true)]
+        .into_iter()
+        .enumerate()
+    {
+        for (device, letter) in devices.iter().zip(["y", "z"]) {
+            ok(
+                &mut browser,
+                router,
+                Method::PUT,
+                &format!("/api/v1/devices/{device}/manual-fields/{field}"),
+                Some(request(
+                    revision as u64,
+                    json!({"action":"set","value":{"kind":"string","value":letter.repeat(length)}}),
+                )),
+            )
+            .await?;
+        }
+        for descending in [false, true] {
+            let mut sort = vec![json!({"field":field,"descending":descending})];
+            if composite {
+                sort.push(json!({"field":"custom.office_floor"}));
+            }
+            let created = ok(&mut browser, router, Method::POST, "/api/v1/device-queries", Some(json!({"filter":format!("{field}=isnotnull=true"),"sort":sort,"fields":[field]}))).await?;
+            let task = created["asset"]["snapshot"]
+                .as_str()
+                .context("query task")?;
+            let bytes = pg(&format!(
+                "SELECT max(octet_length(sort_key)) FROM mdm_assets.asset_query_results WHERE tenant_id='{}' AND run='{task}'",
+                case_tenant()
+            ))?;
+            ensure!(
+                bytes.trim() == if length == 497 { "1000" } else { "1024" },
+                "stored key bytes: {bytes}"
+            );
+            let base = format!("/api/v1/device-queries/{task}/items?limit=1");
+            let first = ok(&mut browser, router, Method::GET, &base, None).await?;
+            let cursor = first["asset"]["nextCursor"]
+                .as_str()
+                .context("bounded continuation")?;
+            ensure!(cursor.len() <= 4096);
+            let last = ok(
+                &mut browser,
+                router,
+                Method::GET,
+                &format!("{base}&cursor={cursor}"),
+                None,
+            )
+            .await?;
+            let index = usize::from(descending);
+            ensure!(first["asset"]["items"][0]["device"] == devices[index]);
+            ensure!(
+                last["asset"]["items"][0]["device"] == devices[1 - index]
+                    && last["asset"]["nextCursor"].is_null()
+            );
+            println!(
+                "QUERY-05 stored_sort_bytes={} cursor_bytes={} composite={composite} descending={descending}",
+                bytes.trim(),
+                cursor.len()
+            );
+        }
+    }
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MODULE=assets.queries: saved definitions roundtrip at the parser boundary"]
+async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
+    let fixture = Fixture::open().await?;
+    let router = &fixture.router;
+    let mut browser = fixture.browser.clone();
+    let text = vec![format!("device.name=={}", "z".repeat(1010)); 8].join(";");
+    ensure!(text.len() == 8191);
+    for suffix in ["", "z"] {
+        let filter = format!("{text}{suffix}");
+        let path = format!("/api/v1/saved-queries/{}", Uuid::new_v4());
+        let written = ok(
+            &mut browser,
+            router,
+            Method::PUT,
+            &path,
+            Some(request(
+                0,
+                json!({"action":"put","definition":{"name":"boundary","query":{"filter":filter}}}),
+            )),
+        )
+        .await?;
+        let read = ok(&mut browser, router, Method::GET, &path, None).await?;
+        ensure!(written["asset"]["query"] == read["asset"]["query"]);
+        let definition = read["asset"]["query"]["definition"].clone();
+        ensure!(definition["query"]["filter"] == filter);
+        let direct = ok(
+            &mut browser,
+            router,
+            Method::POST,
+            "/api/v1/device-queries",
+            Some(definition["query"].clone()),
+        )
+        .await?;
+        let saved = ok(
+            &mut browser,
+            router,
+            Method::POST,
+            &format!("{path}/execute"),
+            Some(json!({})),
+        )
+        .await?;
+        ensure!(direct["asset"]["summary"] == saved["asset"]["summary"]);
+        let again = ok(
+            &mut browser,
+            router,
+            Method::PUT,
+            &path,
+            Some(request(1, json!({"action":"put","definition":definition}))),
+        )
+        .await?;
+        ensure!(
+            again["asset"]["query"]["definition"] == definition
+                && again["asset"]["query"]["revision"] == 2
+        );
+    }
+    let path = format!("/api/v1/saved-queries/{}", Uuid::new_v4());
+    let filter = format!("{text}zz");
+    let denied = browser
+        .call(
+            router,
+            Method::PUT,
+            &path,
+            Some(request(
+                0,
+                json!({"action":"put","definition":{"name":"expansion","query":{"filter":filter}}}),
+            )),
+        )
+        .await?;
+    ensure!(
+        denied.0 == StatusCode::BAD_REQUEST,
+        "unreplayable saved definition: {denied:?}"
+    );
+    ensure!(browser.call(router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
     fixture.close().await
 }
