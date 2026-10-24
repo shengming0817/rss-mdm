@@ -144,6 +144,7 @@ fn expression(sql: &mut QueryBuilder<Postgres>, expr: &Expression<Field, Scalar>
                 Operator::Ge => " >= ",
                 Operator::In => " IN ",
                 Operator::Out => " NOT IN ",
+                Operator::Icontains => unreachable!("Resource rejects substring predicates"),
             });
             if operator.set() {
                 sql.push("(");
@@ -160,4 +161,56 @@ fn expression(sql: &mut QueryBuilder<Postgres>, expr: &Expression<Field, Scalar>
         }
     }
     sql.push(")");
+}
+
+impl ResourceStore {
+    /// Bounded version discovery from the canonical checked Resource header.
+    pub async fn version_directory_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: &str,
+        q: &rss_mdm_query::directory::Query,
+        after: Option<&rss_mdm_query::directory::Position>,
+    ) -> InTransaction<Vec<serde_json::Value>> {
+        input!(self.check(tx)?);
+        if q.require_schema(&rss_mdm_resource::directory::VERSION_SCHEMA)
+            .is_err()
+        {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let tenant = tx.tenant_id();
+        let id = id.to_owned();
+        let key = id.clone();
+        let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT id,revision,document,digest FROM mdm_resource.aggregates WHERE tenant_id=$1::uuid AND id=$2 FOR SHARE").bind(tenant.to_string()).bind(key).fetch_optional(c).await})).await?;
+        let Some(row) = row else {
+            return Ok(Err(Rejection::NotFound));
+        };
+        let bytes = STORAGE.checked(row.try_get("document")?, row.try_get("digest")?)?;
+        let record = crate::codec::directory_header(&bytes, tenant, &id, row.try_get("revision")?)?;
+        if record.kind != rss_mdm_resource::Kind::Software {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let document: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| STORAGE.fault("version directory"))?;
+        let mut sql = QueryBuilder::new("SELECT jsonb_build_object('resource',");
+        sql.push_bind(id).push(",'version',v->>0,'state',CASE v->>1 WHEN '0' THEN 'frozen' WHEN '1' THEN 'active' WHEN '2' THEN 'deprecated' WHEN '3' THEN 'archived' END) FROM jsonb_array_elements(").push_bind(document).push("->5) v WHERE TRUE");
+        fn column(name: &str) -> &'static str {
+            match name {
+                "version" => "(v->>0) COLLATE \"C\"",
+                "state" => {
+                    "(CASE v->>1 WHEN '0' THEN 'frozen' WHEN '1' THEN 'active' WHEN '2' THEN 'deprecated' WHEN '3' THEN 'archived' END) COLLATE \"C\""
+                }
+                _ => unreachable!("checked version field"),
+            }
+        }
+        if rss_mdm_query_postgres::append(&mut sql, q, after, column).is_err() {
+            return Ok(Err(Rejection::InvalidInput));
+        }
+        let rows = tx
+            .with_connection(move |c| {
+                Box::pin(async move { sql.build_query_scalar().fetch_all(c).await })
+            })
+            .await?;
+        Ok(Ok(rows))
+    }
 }

@@ -1,7 +1,4 @@
-use super::{
-    model::{Change, Query},
-    wire,
-};
+use super::{model::Change, wire};
 use crate::{
     catalog::Operation,
     management::{Error, Failure, transaction::checked_input},
@@ -15,7 +12,7 @@ use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging_postgres::PgRuntime;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
-fn failure(e: service::Error) -> Error {
+pub(super) fn failure(e: service::Error) -> Error {
     match e {
         service::Error::Diagnostic { category, .. } => failure(*category),
         service::Error::Unsupported => Error::Unsupported,
@@ -97,7 +94,7 @@ async fn read_view(
         document,
     )
 }
-fn view(
+pub(super) fn view(
     id: String,
     (target, resource, version): (String, String, String),
     record: &rel::Publication,
@@ -361,6 +358,7 @@ pub async fn write(
     read_view(directory, id).await
 }
 pub struct PublicationDirectory {
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub services: std::collections::BTreeMap<String, Arc<service::PublicationService>>,
     pub tenant: TenantId,
     pub runtime: Arc<PgRuntime>,
@@ -431,82 +429,4 @@ impl PublicationDirectory {
         }),crate::management::transaction::TransactionOwner::Publication).await
     }
 }
-pub async fn list(
-    directory: &PublicationDirectory,
-    authorization: &rss_mdm_authorization_service::Store,
-    proof: &AuthorizedPrincipal,
-    audit: &RequestAudit,
-    q: Query,
-) -> Result<Value, Error> {
-    if !q.validate() {
-        return Err(Error::Malformed);
-    }
-    authorize(authorization, proof, Permission::ReleaseRead).await?;
-    audit.set_action("management_read");
-    let (items, next) = crate::management::transaction::inspect(
-        &directory.runtime, directory.tenant, (directory, q), |(directory, q), tx| Box::pin(async move {
-            directory.audit_store.bind_in(tx).await.map_err(Error::from)?;
-            crate::catalog::storage::lock(tx).await.map_err(|_| Error::Conflict)?;
-            let tenant = tx.tenant_id().to_string();
-            let after = q.after.clone();
-            let target = q.target.clone();
-            let resource = q.resource.clone();
-            let version = q.version.clone();
-            let operation = q.operation_id.map(|id| id.to_string());
-            let limit = q.limit;
-            let mut rows = tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query_as::<_, (String, String, String, String)>(
-                    r#"SELECT record, convert_from(document,'UTF8')::jsonb->>'target', resource, version
-                       FROM mdm_software_composition.subjects s
-                       WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR record COLLATE "C">$2)
-                         AND ($3::text IS NULL OR convert_from(document,'UTF8')::jsonb->>'target'=$3)
-                         AND ($4::text IS NULL OR resource=$4) AND ($5::text IS NULL OR version=$5)
-                         AND ($6::text IS NULL OR EXISTS(
-                             SELECT 1 FROM mdm_publication.operations o WHERE o.tenant_id=s.tenant_id
-                             AND o.id::text=$6 AND o.response->>'record'=s.record))
-                       ORDER BY record COLLATE "C" LIMIT $7"#)
-                    .bind(tenant).bind(after).bind(target).bind(resource).bind(version)
-                    .bind(operation).bind((limit+1) as i64).fetch_all(c).await
-            })).await?;
-            let next = if rows.len() > limit { rows.get(limit-1).map(|row| row.0.clone()) } else { None };
-            rows.truncate(limit);
-            let mut items = Vec::with_capacity(rows.len());
-            for (id, target, resource, version) in rows {
-                let service = directory.services.get(&target).ok_or(Error::Publication(
-                    super::error::PublicationError::MissingSource))?;
-                let key = rel::PublicationKey::new(directory.tenant, &id).map_err(|_| Error::Malformed)?;
-                let (record, withdrawal) = service.record_status_in(tx, &key).await?.map_err(failure)?;
-                items.push(view(id, (target, resource, version), &record, withdrawal, None)?);
-            }
-            Ok((items, next))
-        }), crate::management::transaction::TransactionOwner::Publication,
-    ).await?;
-    authorize(authorization, proof, Permission::ReleaseRead).await?;
-    Ok(json!({"items":items,"nextCursor":next}))
-}
-
-pub async fn targets(
-    directory: &PublicationDirectory,
-    authorization: &rss_mdm_authorization_service::Store,
-    proof: &AuthorizedPrincipal,
-    q: Query,
-) -> Result<Value, Error> {
-    if !q.validate() {
-        return Err(Error::Malformed);
-    }
-    authorize(authorization, proof, Permission::ReleaseRead).await?;
-    let mut values = directory
-        .services
-        .iter()
-        .filter(|(id, _)| q.after.as_ref().is_none_or(|a| *id > a))
-        .take(q.limit + 1)
-        .map(|(id, s)| (id.clone(), s.target()))
-        .collect::<Vec<_>>();
-    let next = if values.len() > q.limit {
-        values.truncate(q.limit);
-        values.last().map(|(id, _)| id.clone())
-    } else {
-        None
-    };
-    Ok(json!({"items":values.into_iter().map(|(_,v)|v).collect::<Vec<_>>(),"nextCursor":next}))
-}
+pub use super::directory::{list, targets};

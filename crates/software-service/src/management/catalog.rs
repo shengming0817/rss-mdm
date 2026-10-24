@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::sync::Arc;
 pub struct Access<C: ManagementContentPort> {
     pub runtime: Arc<PgRuntime>,
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pub tenant: TenantId,
     pub catalog: Catalog,
@@ -470,72 +471,4 @@ fn import_failure(error: crate::catalog::Error) -> Error {
 pub struct ImportConfig {
     pub sources: std::collections::BTreeMap<String, Vec<crate::publication::ArtifactOrigin>>,
     pub transfer_seconds: u64,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SourceQuery {
-    pub after: Option<String>,
-    #[serde(default = "directory_limit")]
-    pub limit: usize,
-    pub source: Option<String>,
-    pub protocol: Option<String>,
-    pub state: Option<String>,
-}
-fn directory_limit() -> usize {
-    20
-}
-pub async fn sources<C: ManagementContentPort>(
-    app: &Access<C>,
-    auth: &AuthorizedPrincipal,
-    audit: &RequestAudit,
-    q: SourceQuery,
-) -> Result<Value, Error> {
-    if !(1..=100).contains(&q.limit)
-        || q.protocol.as_ref().is_some_and(|v| {
-            !["private", "winget_rest", "winget_community", "brew_tap"].contains(&v.as_str())
-        })
-        || q.state
-            .as_ref()
-            .is_some_and(|v| !["enabled", "disabled"].contains(&v.as_str()))
-    {
-        return Err(Error::Malformed);
-    }
-    let after: Option<(String, String)> = q
-        .after
-        .as_ref()
-        .map(|v| {
-            if v.len() > 512 {
-                return Err(Error::Malformed);
-            }
-            serde_json::from_str(v).map_err(|_| Error::Malformed)
-        })
-        .transpose()?;
-    if q.source
-        .as_ref()
-        .is_some_and(|v| rss_mdm_resource::Id::new(v).is_err())
-        || after.as_ref().is_some_and(|(a, b)| {
-            rss_mdm_resource::Id::new(a).is_err() || rss_mdm_resource::Id::new(b).is_err()
-        })
-    {
-        return Err(Error::Malformed);
-    }
-    auth.require(Permission::SoftwareRead, None)?;
-    audit.set_action("management_read");
-    audit.require_request_settlement();
-    transaction::inspect(&app.runtime, app.tenant,(app,auth,&q,after),|ctx,tx|Box::pin(async move {
-        let (app,proof,q,after)=ctx;
-        authorize(tx,proof,Permission::SoftwareRead).await?;
-        let tenant=tx.tenant_id().to_string();let after=after.clone();let source=q.source.clone();let protocol=q.protocol.clone();let state=q.state.clone();let limit=q.limit;
-        let mut keys=tx.with_connection(move|c|Box::pin(async move {
-            sqlx::query_as::<_,(String,String)>("SELECT id,revision FROM mdm_software.sources WHERE tenant_id=$1::uuid AND ($2::text IS NULL OR (id COLLATE \"C\",revision COLLATE \"C\")>($2,$3)) AND ($4::text IS NULL OR id=$4) AND ($5::text IS NULL OR definition->'protocol'->>'kind'=$5) AND ($6::text IS NULL OR lifecycle->>'state'=$6) ORDER BY id COLLATE \"C\",revision COLLATE \"C\" LIMIT $7")
-                .bind(tenant).bind(after.as_ref().map(|v|v.0.clone())).bind(after.as_ref().map(|v|v.1.clone())).bind(source).bind(protocol).bind(state).bind((limit+1)as i64).fetch_all(c).await
-        })).await?;
-        let more=keys.len()>limit;keys.truncate(limit);
-        let next=if more{keys.last().map(serde_json::to_string).transpose().map_err(|_|Error::Malformed)?}else{None};
-        let mut items=Vec::new();for (id,revision) in keys {items.push(app.catalog.reader().source_read_in(tx,&id,&revision).await?);}
-        authorize(tx,proof,Permission::SoftwareRead).await?;
-
-        Ok(serde_json::json!({"items":items,"nextCursor":next}))
-    }),TransactionOwner::SoftwareCatalog).await
 }
