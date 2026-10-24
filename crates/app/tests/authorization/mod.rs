@@ -48,11 +48,9 @@ async fn fixture() -> Result<Fixture> {
             let (router, audit_store, application_resources) =
                 app_with_access(&base, store.clone()).await?;
             resources.extend(application_resources);
-            let mut admin = Browser::default();
-            ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
-            let mut member = Browser::default();
-            ensure!(member.login(&router, "other").await? == StatusCode::OK);
-            let subject = browser_subject(&member, &router).await?;
+            let admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
+            let member = crate::test_support::authority::Authority::prepared_browser("other")?;
+            let subject = prepared_subject(&member)?;
             Ok(Fixture {
                 resources: Default::default(),
                 base,

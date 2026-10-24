@@ -152,7 +152,3 @@ workspace = true
 [[bin]]
 name = "rss-mdm"
 path = "src/main.rs"
-
-[[test]]
-name = "publication"
-path = "tests/publication.rs"

@@ -55,20 +55,20 @@ struct Fixture {
 }
 impl Fixture {
     async fn start() -> Result<Self> {
-        Self::with_agent(None).await
+        Self::with_endpoint(false, None, false).await
     }
-    async fn with_agent(agent: Option<serde_json::Value>) -> Result<Self> {
-        Self::with_endpoint(agent, None, false).await
+    async fn with_agent() -> Result<Self> {
+        Self::with_endpoint(true, None, false).await
     }
     async fn with_endpoint(
-        agent: Option<serde_json::Value>,
+        agent: bool,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
     ) -> Result<Self> {
         Self::with_ade_endpoint(agent, address, preserve_authorization, None).await
     }
     async fn with_ade_endpoint(
-        agent: Option<serde_json::Value>,
+        agent: bool,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
@@ -76,10 +76,10 @@ impl Fixture {
         Self::with_options(agent, address, preserve_authorization, ade, false, false).await
     }
     async fn with_mdm_software() -> Result<Self> {
-        Self::with_options(None, None, false, None, true, false).await
+        Self::with_options(false, None, false, None, true, false).await
     }
     async fn with_options(
-        agent: Option<serde_json::Value>,
+        agent: bool,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
@@ -98,7 +98,7 @@ impl Fixture {
         .await
     }
     async fn with_platform_configuration(
-        agent: Option<serde_json::Value>,
+        agent: bool,
         address: Option<std::net::SocketAddr>,
         preserve_authorization: bool,
         ade: Option<rss_mdm_apple_channel::ade::Fixture>,
@@ -106,7 +106,6 @@ impl Fixture {
         platform_sso: bool,
         platform_configuration: Option<config::PlatformSso>,
     ) -> Result<Self> {
-        let _ = agent;
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let root = PathBuf::from(std::env::var("MDM_APPLE_FIXTURES")?);
         let manage =
@@ -221,20 +220,21 @@ impl Fixture {
         let agent_audit = access
             .audit_store_fixture(&crate::config::AuditConfig::Plain)
             .await?;
-        let agent_pki = config.agent_pki.load(
+        let agent_pki = if agent { config.agent_pki.load(
             &config.identity.instance_id,
             agent_audit.clone(),
             clock.clone(),
             crate::device_pki::providers(&config.device_pki)?,
             config.agent_pki.bootstrap_materials(&config.identity.instance_id,crate::device_pki::providers(&config.device_pki)?.as_ref(), clock.unix_seconds()?)?,
-        )?;
+        )? } else { None };
         let access_audit=Arc::new(agent_audit.on_runtime(identity.runtime.clone(),identity.tenant,&rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5)).control()).await?);
         let agent_enrollment = agent_pki
             .as_ref()
             .map(|pki| {
                 crate::test_support::agent::application_service(
-                    access_audit.clone(),                    pki,
-                    &access,
+                    access_audit.clone(),
+                    pki,
+                    access.registration(),
                     agent_audit.clone(),
                     execution.service.clone(),
                 )

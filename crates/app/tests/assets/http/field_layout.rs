@@ -1,29 +1,17 @@
 //! Real HTTP/PG proofs for tenant-shared display metadata, not device membership.
 use super::*;
 use crate::authorization::{Grant, Permission, Scope};
-use crate::test_support::http::browser_subject;
+use crate::test_support::http::prepared_subject;
 const PATH: &str = "/api/v1/asset-field-layout";
 
 fn operation(revision: u64, groups: Value) -> Value {
     json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":{"groups":groups}})
 }
-async fn grants(subject: &str, operations: &[Permission]) -> Result<()> {
-    crate::test_support::identity::change_grants(
-        case_tenant(),
-        subject,
-        operations
-            .iter()
-            .map(|operation| Grant {
-                operation: *operation,
-                scope: if operation.device() {
-                    Scope::AllDevices
-                } else {
-                    Scope::Tenant
-                },
-            })
-            .collect(),
-    )
-    .await
+fn grants(operations: &[Permission]) -> Vec<Grant> {
+    operations.iter().map(|operation| Grant {
+        operation: *operation,
+        scope: if operation.device() { Scope::AllDevices } else { Scope::Tenant },
+    }).collect()
 }
 async fn publish(fixture: &mut AssetHttp, key: &str, sensitivity: &str) -> Result<()> {
     let change = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{
@@ -49,7 +37,7 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
     let mut fixture = AssetHttp::open().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-        grants(&fixture.author_id, &[Permission::InventoryFieldsWrite]).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryFieldsWrite])).await?;
         let initial = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(initial.0 == StatusCode::OK && initial.1["asset"]["editable"] == true && initial.1["asset"]["groups"] == json!([]));
         let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
@@ -65,12 +53,12 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         crate::test_support::inventory::seed_source(device, "mdm", "mdm.windows", "metadata-is-not-values")?;
         let detail = format!("/api/v1/devices/{device}/inventory");
         ensure!(fixture.author.call(&fixture.router, Method::GET, &detail, None).await?.0 == StatusCode::FORBIDDEN);
-        grants(&fixture.author_id, &[Permission::InventoryRead]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryRead])).await?;
         let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
         ensure!(reader_catalog.0 == StatusCode::OK);
         let value = fixture.author.call(&fixture.router, Method::GET, &detail, None).await?;
         ensure!(value.0 == StatusCode::OK && value.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "metadata-is-not-values");
-        grants(&fixture.author_id, &[]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[])).await?;
         ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
     }).await
@@ -95,7 +83,7 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
         ensure!(fixture.author.call(&fixture.router, Method::PUT, PATH, Some(huge)).await?.0 == StatusCode::PAYLOAD_TOO_LARGE);
 
         ensure!(fixture.author.call(&fixture.router, Method::PUT, PATH, Some(write.clone())).await?.0 == StatusCode::FORBIDDEN);
-        grants(&fixture.author_id, &[Permission::InventoryFieldsWrite]).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryFieldsWrite])).await?;
         publish(&mut fixture, "custom.layout_public", "standard").await?;
         publish(&mut fixture, "custom.layout_secret", "sensitive").await?;
         let saved = fixture.author.call(&fixture.router, Method::PUT, PATH, Some(write.clone())).await?;
@@ -107,20 +95,20 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
         ensure!(managed.0 == StatusCode::OK && managed.1["asset"]["editable"] == true);
         ensure!(managed.1["asset"]["groups"][0]["fields"] == groups[0]["fields"] && managed.1["asset"]["groups"][0]["name"] == "采购");
         let mut reader = authority::Authority::prepared_browser("admin")?;
-        let reader_id = browser_subject(&reader, &fixture.router).await?;
-        grants(&reader_id, &[Permission::InventoryRead]).await?;
+        let reader_id = prepared_subject(&reader)?;
+        crate::test_support::identity::seed_grants(case_tenant(), &reader_id, grants(&[Permission::InventoryRead])).await?;
         let projected = reader.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(projected.0 == StatusCode::OK && projected.1["asset"]["groups"] == json!([{ "id":first,"name":"采购","fields":["custom.layout_public"] }]));
         ensure!(projected.1["asset"]["editable"] == false && !projected.1.to_string().contains("custom.layout_secret"));
         ensure!(reader.call(&fixture.router, Method::PUT, PATH, Some(operation(1, json!([])))).await?.0 == StatusCode::FORBIDDEN);
-        grants(&reader_id, &[Permission::InventoryRead, Permission::InventorySensitiveRead]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &reader_id, grants(&[Permission::InventoryRead, Permission::InventorySensitiveRead])).await?;
         let shared = reader.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(shared.1["asset"]["groups"] == managed.1["asset"]["groups"] && shared.1["asset"]["revision"] == 1);
         // Another service composition uses persisted state rather than an in-memory copy.
         let mut restarted = AssetHttp::open().await?;
         let restarted_resources = std::mem::take(&mut restarted.resources);
         restarted_resources.finish(async {
-            grants(&restarted.author_id, &[Permission::InventoryFieldsWrite]).await?;
+            crate::test_support::identity::change_grants(case_tenant(), &restarted.author_id, grants(&[Permission::InventoryFieldsWrite])).await?;
             ensure!(restarted.author.call(&restarted.router, Method::GET, PATH, None).await? == managed);
             Ok(())
         }).await?;
@@ -148,9 +136,9 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
         ensure!(fixture.author.call(&fixture.router, Method::PUT, PATH, Some(operation(2, valid))).await?.0 == StatusCode::OK);
         ensure!(!pg(&format!("SELECT document::text FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))?.contains("custom.layout_secret"));
         // Revocation prevents replay of a previously accepted operation too.
-        grants(&fixture.author_id, &[Permission::InventoryRead]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[Permission::InventoryRead])).await?;
         ensure!(fixture.author.call(&fixture.router, Method::PUT, PATH, Some(write)).await?.0 == StatusCode::FORBIDDEN);
-        grants(&fixture.author_id, &[]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, grants(&[])).await?;
         ensure!(fixture.author.call(&fixture.router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
     }).await

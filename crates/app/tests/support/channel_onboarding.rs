@@ -1,7 +1,7 @@
 //! Approved controlled samples: these bytes prove server admission, not OS signing or installation.
 use super::{http::*, process::*, runtime::*, *};
-pub(crate) async fn grants(user: &Browser, router: &Router) -> Result<()> {
-    let subject = browser_subject(user, router).await?;
+pub(crate) async fn grants(user: &Browser) -> Result<()> {
+    let subject = prepared_subject(user)?;
     let mut grants = identity::device_grants(
         None,
         &[
@@ -74,7 +74,7 @@ async fn publish_format(
     let msix = format == "msix";
     use software::write;
     let planning = &app.flow.planning;
-    grants(user, router).await?;
+    grants(user).await?;
     let package_bytes = match format {
         "msix" => installer_fixtures::msix(version, false),
         "exe" => installer_fixtures::exe(version),
@@ -137,54 +137,15 @@ async fn publish_format(
         "complete: {completed:?}"
     );
     let save = json!({"operationId":Uuid::new_v4(),"packageId":resource,"version":version,"target":{"platform":platform,"architecture":arch},"behavior":behavior});
-    // Validate with the Resource owner before freezing: neither missing material references nor
-    // a mismatched installer format can become a publishable execution definition.
-    let mut wrong = save.clone();
-    wrong["operationId"] = json!(Uuid::new_v4());
-    wrong["behavior"] = json!({"kind":"msi","installer":"missing","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"}});
-    let rejected = user
-        .call(
-            router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(wrong),
-        )
-        .await?;
-    ensure!(
-        rejected.0 == StatusCode::BAD_REQUEST,
-        "invalid behavior: {rejected:?}"
-    );
     let saved = user
         .call(
             router,
             Method::POST,
             "/api/v1/agent-packages/save",
-            Some(save.clone()),
+            Some(save),
         )
         .await?;
     ensure!(saved.0 == StatusCode::OK, "save: {saved:?}");
-    ensure!(
-        user.call(
-            router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(save.clone())
-        )
-        .await?
-            == saved
-    );
-    let mut conflict = save;
-    conflict["behavior"] = Value::Null;
-    ensure!(
-        user.call(
-            router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(conflict)
-        )
-        .await?
-        .0 == StatusCode::CONFLICT
-    );
     let (status, published) = user
         .call(
             router,

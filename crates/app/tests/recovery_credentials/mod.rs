@@ -283,7 +283,7 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
             ));
             let mut admin = authority.browser("admin")?;
             admin.network = network.clone();
-            let actor = browser_subject(&admin, &router).await?;
+            let actor = prepared_subject(&admin)?;
             identity::seed_grants(
                 case_tenant(),
                 &actor,
@@ -503,7 +503,7 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
         let secret = "recovery-lock-order-canary";
         let coordinates = seed(&authority, &ring, device, secret).await?;
         let mut browser = authority.browser("admin")?;
-        let actor = browser_subject(&browser, &router).await?;
+        let actor = prepared_subject(&browser)?;
         identity::seed_grants(case_tenant(), &actor, identity::device_grants(Some(device), &["credentials", "account_write"])?).await?;
         let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         for (method, path) in [(Method::GET, secret_url(device, &coordinates)), (Method::POST, secret_url(device, &coordinates).replace("/secret", "/revoke"))] {
@@ -561,7 +561,7 @@ async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> 
  storage::verify_in(&mut tx,&second,operation).await?;
  tx.commit().await?;
  let mut admin=authority.browser("admin")?;
- let principal=browser_subject(&admin,&router).await?;
+ let principal=prepared_subject(&admin)?;
  identity::seed_grants(case_tenant(),&principal,identity::device_grants(None,&["inventory_read","credentials","account_write"])?).await?;
  let path=format!("/api/v1/devices/{device}/recovery-credentials");
  let query="sort=-version&fields=id,version&limit=1";

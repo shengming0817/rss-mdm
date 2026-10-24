@@ -10,12 +10,12 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         ensure!(list.0==StatusCode::OK,"bindings {list:?}");
         let policy=pg(&format!("SELECT document->>'policy' FROM mdm_access.device_access_bindings WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim().to_owned();
         // A distinct current administrator performs offboarding; self-offboarding is rejected.
-        ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);f.access_authenticator=None;
-        let operator=browser_subject(&f.author,&f.router).await?;
+        f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;f.access_authenticator=None;
+        let operator=prepared_subject(&f.author)?;
         let mut grants=f.grants.clone();
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
         crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;
-        ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
+        f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let successor_login=format!("successor-{}",Uuid::new_v4());
         let successor=f.author.call(&f.router,Method::POST,&format!("/api/v1/identity/tenants/{}/accounts",case_tenant()),Some(json!({"login":successor_login,"password":crate::test_support::identity::PASSWORD}))).await?;

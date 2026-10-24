@@ -203,36 +203,33 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         hex(&config.flow.storage.lineage),
         config.flow.storage.epoch
     );
-    let access = database(&base).await?;
-    let audit = access.audit_store_fixture(&config.audit).await?;
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let tenant_id = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime_role(tenant_id, "mdm_command_runtime").await;
+    resources.resource(SourceResource(runtime.clone()));
     let material_configuration = config.webhooks.material_configuration()?;
-    let (router, execution, _, _, resources) = crate::api::application_fixture(
-        config,
-        Arc::new(crate::clock::SystemClock),
-        monotonic(),
-        access,
-        None,
-        audit,
-    )
-    .await?;
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
-    let backend = execution
-        .webhooks
-        .get()
-        .ok_or_else(|| anyhow::anyhow!("missing product webhook assembly"))?
-        .clone();
+    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+        rss_transactional_messaging::fence::StorageIdentity::new(config.flow.storage.target, config.flow.storage.lineage)?,
+        vec![(tenant_id, rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?)],
+    )?;
+    let protection = config.native_protector()?;
+    let backend = crate::webhooks::Backend::open(config.webhooks, runtime.clone(), tenant_id,
+        authority.audit.clone(), Arc::new(crate::clock::SystemClock), protection, binding).await?;
+    resources.resource(crate::webhooks::Resource(backend.clone()));
+    let router = authority.router(Router::new().nest("/api/v1",
+        rss_mdm_management_http::webhooks::routes(backend.clone()).into_axum(),
+    ).merge(authority.authorization()))?;
     let stop = tokio_util::sync::CancellationToken::new();
     let mut worker = None;
     let result=async {
         use crate::authorization::{Grant, Permission, Scope};
         let grants = vec![Grant {operation:Permission::WebhookWrite,scope:Scope::Tenant}, Grant {operation:Permission::WebhookRead,scope:Scope::Tenant}, Grant {operation:Permission::WebhookReplay,scope:Scope::Tenant}, Grant {operation:Permission::InventoryRead,scope:Scope::AllDevices}];
         identity::seed_grants(case_tenant(),case::admin(),grants.clone()).await?;
-        let mut browser=Browser::default();ensure!(browser.login(&router,"admin").await?==StatusCode::OK);
+        let mut browser = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let partition = rss_mdm_audit_integration::source_partition(rss_request_context::TenantId::parse(case_tenant())?, "mdm", "request")?;
         let declared = partition.clone();
-        execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?, crate::webhooks::deadline(), move |tx| Box::pin(async move { tx.prepare_outbox_partitions(&[declared]).await })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+        runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?, crate::webhooks::deadline(), move |tx| Box::pin(async move { tx.prepare_outbox_partitions(&[declared]).await })).await.fold(Ok, Err, Err, Err, Err, Err)?;
         let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let material = json!({"reference":"lock-order", "expectedRevision":0, "configurationSha256":material_configuration, "endpoint":format!("https://source.invalid:{port}/"), "networkReference":"receiver", "source":{"kind":"generate"}});
         browser.operation = Some(Uuid::new_v4());
@@ -249,6 +246,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let tenant=Uuid::parse_str(case_tenant())?;
         let event=Event{event_id:Uuid::new_v4(),event_type:EventType::Registered,version:1,occurred_at:crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,tenant_id:tenant,device_id:device.to_owned(),data:EventData::Registration {registration_id:Uuid::new_v4(),generation:1,channel:"agent".into(),state:"active".into()}};
         let mut subscriptions=Vec::new();
+        let mut seeded=Vec::new();
         for index in 0..rss_mdm_webhook_service::PAGE + 1 {
             let name = match index { 0 => "first".to_owned(), 1 => "second".to_owned(), _ => format!("receiver-{index}") };
             let id=Uuid::new_v4();let path=format!("/api/v1/webhooks/subscriptions/{id}");
@@ -262,17 +260,37 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
                 ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{id}'"))?.trim()=="0","denied create left a subscription");
                 identity::change_grants(case_tenant(),case::admin(),grants.clone()).await?;
             }
+            let renamed = if index == 0 {
             let created=call(&mut browser,&router,&path,0,json!({"kind":"put","value":settings})).await?;ensure!(created["enabled"]==false);
             let enabled=call(&mut browser,&router,&path,1,json!({"kind":"enabled","value":true})).await?;
             let mut rename=settings;rename["presentation"]["name"]=json!(format!("renamed-{name}"));
             let renamed=call(&mut browser,&router,&path,2,json!({"kind":"put","value":rename})).await?;ensure!(renamed["targetVersion"]==enabled["targetVersion"]);
+                renamed
+            } else {
+                let mut value: Settings = serde_json::from_value(settings)?;
+                value.presentation.insert("name".into(), json!(format!("renamed-{name}")));
+                value.validate()?;
+                let subscription = Subscription { id, revision: 3, target_version: 2, enabled: true, deleted: false, settings: value };
+                let value = serde_json::to_value(subscription)?;
+                seeded.push(value.clone());
+                value
+            };
             subscriptions.push((path,renamed));
         }
+        let mut owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_owner")?).await?;
+        let mut tx = owner.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+        sqlx::query(r#"INSERT INTO mdm_webhook.subscriptions(tenant_id,id,revision,target_version,enabled,deleted,settings) SELECT $1,id,revision,"targetVersion",enabled,deleted,settings FROM jsonb_to_recordset($2) AS v(id uuid,revision bigint,"targetVersion" bigint,enabled boolean,deleted boolean,settings jsonb)"#)
+            .bind(tenant).bind(json!(seeded)).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_webhook.versions(tenant_id,subscription,version,settings,activated_at) SELECT tenant_id,id,target_version,settings,clock_timestamp() FROM mdm_webhook.subscriptions WHERE tenant_id=$1 AND id=ANY($2)")
+            .bind(tenant).bind(seeded.iter().map(|v| serde_json::from_value::<Uuid>(v["id"].clone())).collect::<Result<Vec<_>,_>>()?).execute(&mut *tx).await?;
+        tx.commit().await?;
+        owner.close().await?;
         let rollback_event=Event{event_id:Uuid::new_v4(),..event.clone()};let copied=rollback_event.clone();
-        let rolled=execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
+        let rolled=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)?;Err::<(),_>(sqlx::Error::Protocol("deliberate business rollback".into()).into())})).await;
         ensure!(rolled.fold(|_|false,|_|false,|_|true,|_|false,|_|false,|_|false));
         ensure!(pg(&format!("SELECT count(*) FROM mdm_webhook.events WHERE id='{}'",rollback_event.event_id))?.trim()=="0");
-        let copied=event.clone();execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        let copied=event.clone();runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {events::emit_in(tx,copied).await.map_err(rss_transactional_messaging_postgres::PgError::from)})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         // The integration belongs to the tenant even after its creator loses all business grants.
         identity::change_grants(case_tenant(),case::admin(),vec![]).await?;
         worker=Some(tokio::spawn(backend.clone().work(stop.clone())));
@@ -307,7 +325,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         let retried=browser.call(&router,Method::POST,&test_path,Some(test_request)).await?;
         ensure!(retried.0==StatusCode::OK && retried.1==test_receipt, "committed test receipt must survive disable");
         let stale_id:Uuid=serde_json::from_value(test_receipt["id"].clone())?;
-        let denied=execution.runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {tx.with_connection(move|c|Box::pin(async move {Ok(matches!(rss_mdm_webhook_service::storage::binding(c,tenant,stale_id).await,Err(rss_mdm_webhook_service::Error::Denied)))})).await})).await.fold(Ok,Err,Err,Err,Err,Err)?;
+        let denied=runtime.local_tx(rss_request_context::TenantId::parse(case_tenant())?,crate::webhooks::deadline(),move|tx|Box::pin(async move {tx.with_connection(move|c|Box::pin(async move {Ok(matches!(rss_mdm_webhook_service::storage::binding(c,tenant,stale_id).await,Err(rss_mdm_webhook_service::Error::Denied)))})).await})).await.fold(Ok,Err,Err,Err,Err,Err)?;
         ensure!(denied,"disabled target remained eligible for sending");
         // Exercise the real RSS recovery role and request audit after its separate intent transaction.
         let source=events::identity(event.event_id,&format!("{}:{}:automatic",subscriptions[1].0.rsplit('/').next().unwrap(),subscriptions[1].1["targetVersion"].as_i64().unwrap()));

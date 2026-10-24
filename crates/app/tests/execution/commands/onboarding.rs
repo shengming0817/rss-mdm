@@ -2,7 +2,7 @@
 mod native_software;
 use crate::execution::test_support::{Client, case_device, case_tenant, native};
 use crate::test_support::{
-    agent::agent_call, http::await_task, http::browser_subject, process::pg, runtime::credential,
+    agent::agent_call, http::await_task, http::prepared_subject, process::pg, runtime::credential,
 };
 use crate::test_support::{channel_onboarding as setup, *};
 use anyhow::Context;
@@ -493,7 +493,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         "cleanup retry preserves original command history"
     );
     ensure!(commands.shutdown().join().await?.is_clean());
-    let subject = browser_subject(&client.browser, &client.router).await?;
+    let subject = prepared_subject(&client.browser)?;
     identity::change_grants(case_tenant(), &subject, vec![]).await?;
     ensure!(package_status(&client.router, operation).await? == StatusCode::FORBIDDEN);
     ensure!(
@@ -508,7 +508,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
             .status()
             == StatusCode::FORBIDDEN
     );
-    setup::grants(&client.browser, &client.router).await?;
+    setup::grants(&client.browser).await?;
     begin(&peer, 945).await?;
     let incomplete = pg(&format!(
         "SELECT r.id FROM mdm_access.collection_runs r JOIN mdm_windows.collections w USING(tenant_id,id) WHERE r.tenant_id='{}' AND w.session_id='945' AND w.channel_state IS NOT NULL AND r.sealed_at IS NULL",
@@ -1921,7 +1921,7 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
         json!([{"kind":"device","id":case_device()}]),
     )
     .await?;
-    let subject = browser_subject(&client.browser, &client.router).await?;
+    let subject = prepared_subject(&client.browser)?;
     let mut grants = identity::device_grants(
         None,
         &[
@@ -2072,7 +2072,7 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
 }
 
 async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
-    let subject = browser_subject(&client.browser, &client.router).await?;
+    let subject = prepared_subject(&client.browser)?;
     identity::seed_grants(
         case_tenant(),
         &subject,
@@ -2137,7 +2137,7 @@ async fn rotate_loaded_signing_authority(client: &mut Client) -> Result<()> {
         "activate signing: {status} {activated}"
     );
     client.browser.operation = None;
-    setup::grants(&client.browser, &client.router).await?;
+    setup::grants(&client.browser).await?;
     Ok(())
 }
 

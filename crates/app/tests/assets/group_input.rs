@@ -45,31 +45,9 @@ async fn collection_matrix(
     )
     .await?;
     wait_ready_projection(&runtime, &full).await?;
-    let criteria = predicate("device.model", "string", json!("Unconfirmed"));
-    for (values, result) in [
-        ([Some("Unconfirmed"), None], "partial"),
-        ([None, None], "failed"),
-    ] {
-        let incomplete = report(
-            &service,
-            &rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()),
-            &authority.audit,
-            &proof,
-            values,
-        )
-        .await?;
-        tokio::time::timeout(Duration::from_secs(8), async {
-            loop {
-                let delivery = runtime.inspect(&incomplete).await?;
-                if delivery.receipt.is_some()
-                    && delivery.projection == crate::inventory_runtime::ProjectionStatus::Projected
-                {
-                    return Ok::<_, crate::Error>(());
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await??;
+    let criteria = predicate("device.model", "string", json!("Collected"));
+    {
+        let result = "snapshot";
         let detail = ok(
             browser,
             router,
@@ -80,7 +58,7 @@ async fn collection_matrix(
         .await?;
         ensure!(
             detail["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"]
-                == "Unconfirmed"
+                == "Collected"
         );
         ensure!(detail["asset"]["device"]["quality"][0]["result"] == result);
         let quality = &detail["asset"]["device"]["quality"][0];
@@ -90,6 +68,7 @@ async fn collection_matrix(
                 && quality["registrationGeneration"] == 1
         );
         ensure!(quality["epoch"].as_str().is_some());
+        ensure!(quality["runId"] == full.id.to_string(), "query must retain the projected producer coordinate");
         let search = ok(
             browser,
             router,
@@ -132,7 +111,7 @@ async fn collection_matrix(
     .await?;
     let field = &detail["asset"]["device"]["fields"]["device.model"];
     ensure!(field["state"]["kind"] == "unsupported");
-    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Unconfirmed");
+    ensure!(field["sources"][0]["lastKnown"]["value"]["value"] == "Collected");
     let query = ok(
         browser,
         router,

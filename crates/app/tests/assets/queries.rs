@@ -3,10 +3,11 @@ use anyhow::Context;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.queries: real Router and persisted assets"]
 async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let fixture = AssetHttp::open().await?;
+    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
     let router = &fixture.router;
-    let subject = &fixture.subject;
-    let mut browser = fixture.browser.clone();
+    let subject = &fixture.author_id;
+    let mut browser = fixture.author.clone();
     let floor = "/api/v1/devices/asset-a/manual-fields/custom.office_floor";
     ok(
         &mut browser,
@@ -113,10 +114,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     ensure!(
         last["asset"]["items"] == json!([{"id":ids[1]}]) && last["asset"]["nextCursor"].is_null()
     );
-    let mut other = Browser::default();
-    ensure!(other.login(router, "other").await? == StatusCode::OK);
-    let other_subject = browser_subject(&other, router).await?;
-    permissions(&other_subject, None, true).await?;
+    let mut other = crate::test_support::authority::Authority::prepared_browser("other")?;
+    let other_subject = prepared_subject(&other)?;
+    identity::seed_grants(case_tenant(), &other_subject, permissions(None, true)?).await?;
     ensure!(
         other
             .call(
@@ -155,7 +155,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             == json!([])
     );
     ensure!(other.call(router, Method::GET, &second, None).await?.0 == StatusCode::FORBIDDEN);
-    permissions(subject, Some("asset-a"), false).await?;
+    identity::change_grants(case_tenant(), subject, permissions(Some("asset-a"), false)?).await?;
     let effective = browser
         .call(router, Method::GET, "/api/v1/authorization", None)
         .await?;
@@ -206,7 +206,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         .await?["asset"]["summary"]["total"]
             == 1
     );
-    permissions(subject, None, true).await?;
+    identity::change_grants(case_tenant(), subject, permissions(None, true)?).await?;
     ok(
         &mut browser,
         router,
@@ -264,7 +264,7 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             .0
             == StatusCode::NOT_FOUND
     );
-    permissions(subject, None, true).await?;
+    identity::change_grants(case_tenant(), subject, permissions(None, true)?).await?;
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-c'),('{TENANT}','tie-a'),('{TENANT}','tie-b')",
         TENANT = case_tenant()
@@ -311,16 +311,17 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
         }
         ensure!(seen == ["tie-a", "tie-b", "tie-c"]);
     }
-    fixture.close().await
+    fixture.resources.finish(async { Ok(()) }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.queries: maximum stored sort keys remain pageable"]
 async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()> {
     use crate::authorization::{Grant, Permission, Scope};
-    let fixture = Fixture::open().await?;
+    let fixture = AssetHttp::open().await?;
+    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
     let router = &fixture.router;
-    let mut browser = fixture.browser.clone();
+    let mut browser = fixture.author.clone();
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &["inventory_read", "inventory_assign"],
@@ -329,7 +330,7 @@ async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
     });
-    crate::test_support::identity::seed_grants(case_tenant(), &fixture.subject, grants).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants).await?;
     let field = "custom.cursor_sort";
     let definition = json!({"key":field,"version":1,"valueType":{"kind":"string","maxLength":1024,"allowEmpty":false},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});
     ok(
@@ -422,15 +423,16 @@ async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()
             );
         }
     }
-    fixture.close().await
+    fixture.resources.finish(async { Ok(()) }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.queries: saved definitions roundtrip at the parser boundary"]
 async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let fixture = AssetHttp::open().await?;
+    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
     let router = &fixture.router;
-    let mut browser = fixture.browser.clone();
+    let mut browser = fixture.author.clone();
     let text = vec![format!("device.name=={}", "z".repeat(1010)); 8].join(";");
     ensure!(text.len() == 8191);
     for suffix in ["", "z"] {
@@ -499,5 +501,5 @@ async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
         "unreplayable saved definition: {denied:?}"
     );
     ensure!(browser.call(router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
-    fixture.close().await
+    fixture.resources.finish(async { Ok(()) }).await
 }

@@ -2,7 +2,7 @@
     clippy::cognitive_complexity,
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
-use crate::test_support::software::{Fixture, create_software_version, write};
+use crate::test_support::software::{Fixture, seed_software_version, write};
 use crate::test_support::{http::*, *};
 async fn private_formats(
     user: &mut Browser,
@@ -162,14 +162,15 @@ async fn private_formats(
 }
 
 async fn dependency_denial_over_http(
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
     user: &mut Browser,
     router: &Router,
     definition: &Value,
 ) -> Result<()> {
-    let (dependency, digest) = create_software_version(user, router, definition.clone()).await?;
+    let (dependency, digest) = seed_software_version(runtime, definition.clone()).await?;
     let mut input = definition.clone();
     input["dependencies"] = json!([{"resource":dependency,"version":"v1","sha256":digest}]);
-    let (dependent, _) = create_software_version(user, router, input).await?;
+    let (dependent, _) = seed_software_version(runtime, input).await?;
     for resource in [&dependency, &dependent] {
         ensure!(
             user.call(
@@ -230,7 +231,7 @@ async fn private_formats_and_dependency_routes() -> Result<()> {
                 fixture.registered["snapshot"].clone(),
             )
             .await?;
-            dependency_denial_over_http(&mut user, &fixture.router, &definition).await
+            dependency_denial_over_http(&fixture.runtime, &mut user, &fixture.router, &definition).await
         })
         .await
 }

@@ -103,16 +103,17 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.sources: real Router and persisted assets"]
 async fn sources_resolution_and_retained_quality() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let fixture = AssetHttp::open().await?;
+    pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')", tenant=case_tenant()))?;
     let router = &fixture.router;
-    let mut browser = fixture.browser.clone();
+    let mut browser = fixture.author.clone();
     source_matrix(&mut browser, router).await?;
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-b')",
         TENANT = case_tenant()
     ))?;
     retained_collection_quality(&mut browser, router).await?;
-    fixture.close().await
+    fixture.resources.finish(async { Ok(()) }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

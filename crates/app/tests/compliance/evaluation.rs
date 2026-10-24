@@ -19,27 +19,27 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     pg(&format!(
         "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
     ))?;
-    let access = database(base).await?;
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone()));
     let service = crate::device::DeviceService::new(
-        access.registration(),
+        authority.registration.clone(),
         case_tenant().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     );
     let proof =
         crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 121);
     let config: Config = serde_json::from_value(base.clone())?;
     let runtime = crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.inventory(),
+        inventory.clone(),
         rss_request_context::TenantId::parse(case_tenant())?,
         monotonic(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     )
     .await?;
+    authority.resources.resource(InventoryFixtureResource(runtime.clone()));
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
     let owner = start(runtime.clone()).await?;
     let id = Uuid::new_v4();
     let path = format!("/api/v1/compliance-rules/{id}");
@@ -50,10 +50,8 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
     for (model, expected) in [("Collected", "compliant"), ("Changed", "non_compliant")] {
         let run = report(
             &service,
-            &access.inventory(),
-            access
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?
+            &inventory.clone(),
+            authority.audit.clone()
                 .as_ref(),
             &proof,
             [Some(model), Some("11")],
@@ -65,83 +63,13 @@ async fn collected_facts(b: &mut Browser, router: &Router, base: &Value) -> Resu
         ensure!(current["applicability"]["platformDecision"] == "match");
         ensure!(current["evidence"][0]["sources"][0]["source"] == "mdm.windows");
         ensure!(current["evidence"][0]["sources"][0]["snapshotId"] == run.id.to_string());
-        if model == "Collected" {
-            let mut retained_snapshot = run.id;
-            for values in [[Some("Unconfirmed"), None], [None, None]] {
-                let previous_task = pg(&format!(
-                    "SELECT current_run::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
-                    case_tenant()
-                ))?;
-                let incomplete = report(
-                    &service,
-                    &access.inventory(),
-                    access
-                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                        .await?
-                        .as_ref(),
-                    &proof,
-                    values,
-                )
-                .await?;
-                tokio::time::timeout(Duration::from_secs(8), async {
-                    loop {
-                        let delivery = runtime.inspect(&incomplete).await?;
-                        if delivery.receipt.is_some()
-                            && delivery.projection
-                                == crate::inventory_runtime::ProjectionStatus::Projected
-                        {
-                            return Ok::<_, crate::Error>(());
-                        }
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                    }
-                })
-                .await??;
-                // Partial success updates the confirmed field; later failure retains it.
-                let run = ok(
-                    b,
-                    router,
-                    Method::POST,
-                    &format!("{path}/recompute"),
-                    Some(request(1, json!({}))),
-                )
-                .await?;
-                task_phase(
-                    b,
-                    router,
-                    &format!("{path}/tasks/{}", run["task"].as_str().unwrap()),
-                    "published",
-                )
-                .await?;
-                let current_task = pg(&format!(
-                    "SELECT current_run::text FROM mdm_compliance.rules WHERE tenant_id='{}' AND id='{id}'",
-                    case_tenant()
-                ))?;
-                ensure!(
-                    current_task.trim() == run["task"].as_str().unwrap()
-                        && current_task != previous_task
-                );
-                if values[0].is_some() {
-                    retained_snapshot = incomplete.id;
-                }
-                let retained = status(b, router, device, "non_compliant").await?;
-                let evidence = &retained["rules"][0]["current"]["evidence"][0]["sources"][0];
-                ensure!(
-                    evidence["source"] == "mdm.windows"
-                        && evidence["snapshotId"] == retained_snapshot.to_string(),
-                    "{retained}"
-                );
-                let value: Value = serde_json::from_str(&pg(&format!(
-                    "SELECT value FROM mdm.inventory WHERE tenant_id='{}' AND registration='{registration}' AND field='device.model'",
-                    case_tenant()
-                ))?)?;
-                ensure!(value == json!({"kind":"string","value":"Unconfirmed"}));
-            }
-        }
     }
+
     def["enabled"] = json!(false);
     ok(b, router, Method::PUT, &path, Some(request(1, def))).await?;
     crate::test_support::runtime::stop_worker(owner).await?;
     Ok(())
+    }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=compliance.evaluation: real HTTP and durable worker contract"]

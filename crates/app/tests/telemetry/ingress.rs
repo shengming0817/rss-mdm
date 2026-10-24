@@ -679,8 +679,7 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         let last=manifest.steps.last().unwrap();
         let policy=Uuid::parse_str(&last.target)?;
         let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
-        let mut administrator=Browser::default();
-        ensure!(administrator.login(&f.router,"admin").await?==StatusCode::OK);
+        let mut administrator = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let agent=manifest.steps.iter().find_map(|s|match &s.action {crate::baseline::manifest::Action::Policy{definition} if matches!(definition.action,rss_mdm_policy::Action::AgentCollection{..})=>Some(definition),_=>None}).unwrap();
         let (status,_)=administrator.call(&f.router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"after":null,"scopeResult":null}))).await?;
         ensure!(status==StatusCode::CONFLICT,"unsigned baseline preview claimed execution readiness");

@@ -173,6 +173,7 @@ pub(crate) enum Platform {
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     pub(crate) resources: super::runtime::Resources,
+    platform: Platform,
     pub(crate) source_snapshot: Value,
     pub(crate) dependency: Uuid,
     pub(crate) dependency_digest: Value,
@@ -198,14 +199,121 @@ impl Fixture {
             Platform::Windows => json!(["inventory.collect.v1", "software.msi.system.v1"]),
             Platform::MacOs => json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         };
-        Self::with_profiles(platform, capabilities, context(platform), true, true).await
+        let mut fixture = Self::with_profiles(platform, capabilities, context(platform)).await?;
+        let dependency = fixture.seed_dependency().await?;
+        fixture.seed_root(json!([dependency])).await?;
+        Ok(fixture)
+    }
+    pub(crate) async fn seed_dependency(&mut self) -> Result<Value> {
+        let platform = self.platform;
+        let (platform_name, architecture) = match platform { Platform::MacOs => ("macos", "aarch64"), Platform::Windows => ("windows", "x86_64") };
+        let planning = &self.planning;
+        let router = &self.router;
+        let author = &self.author;
+        let registered = json!({"snapshot":self.source_snapshot});
+        let dependency = self.dependency;
+        let dependency_bytes = &self.dependency_bytes;
+        let dependency_digest: [u8; 32] = Sha256::digest(dependency_bytes).into();
+        let dependency_definition = json!({"material":{"format":"pkg","installer":"scripts/install.sh"},"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_dependency_bytes =
+            format!("controlled windows dependency msi {dependency}").into_bytes();
+        let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
+        let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let dependency_resource = seed_resource(
+            &planning.runtime,
+            planning.tenant,
+            dependency,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                dependency_definition
+            } else {
+                windows_dependency_definition
+            },
+        )
+        .await?;
+        if platform == Platform::MacOs {
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .header("x-csrf-token",author.csrf.as_ref().unwrap())
+        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
+            upload_fixture(&router, request).await?;
+        } else {
+            upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
+        }
+        seed_enabled(
+            &planning,
+            self
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &dependency_resource,
+        )
+        .await?;
+        self.dependency_digest = json!(dependency_resource.digest().bytes());
+        Ok(json!({"resource":dependency,"version":"v1","sha256":self.dependency_digest}))
+    }
+    pub(crate) async fn seed_root(&mut self, dependencies: Value) -> Result<()> {
+        let platform = self.platform;
+        let (platform_name, architecture) = match platform { Platform::MacOs => ("macos", "aarch64"), Platform::Windows => ("windows", "x86_64") };
+        let planning = &self.planning;
+        let router = &self.router;
+        let author = &self.author;
+        let registered = json!({"snapshot":self.source_snapshot});
+        let resource = self.resource;
+        let bytes = &self.bytes;
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        let removal = &self.removal;
+        let removal_digest: [u8; 32] = Sha256::digest(removal).into();
+        let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
+        let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
+        let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let root_resource = seed_resource(
+            &planning.runtime,
+            planning.tenant,
+            resource,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                definition
+            } else {
+                windows_definition
+            },
+        )
+        .await?;
+        if platform == Platform::MacOs {
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .header("x-csrf-token",author.csrf.as_ref().unwrap())
+        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
+            upload_fixture(&router, request).await?;
+            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
+        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
+        .header("x-csrf-token",author.csrf.as_ref().unwrap())
+        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
+        .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
+            upload_fixture(&router, request).await?;
+        } else {
+            upload_windows(&author, &router, resource, &windows_bytes).await?;
+        }
+        seed_enabled(
+            &planning,
+            self
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &root_resource,
+        )
+        .await?;
+        Ok(())
     }
     pub(crate) async fn with_profiles(
         platform: Platform,
         capabilities: Value,
         execution_context: Value,
-        prepare_dependency: bool,
-        prepare_root: bool,
     ) -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
@@ -214,8 +322,6 @@ impl Fixture {
             capabilities,
             execution_context,
             base,
-            prepare_dependency,
-            prepare_root,
         )
         .await
     }
@@ -224,8 +330,6 @@ impl Fixture {
         capabilities: Value,
         execution_context: Value,
         base: Value,
-        prepare_dependency: bool,
-        prepare_root: bool,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let setup_guard = super::software::content_setup_guard().await?;
@@ -248,9 +352,8 @@ impl Fixture {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
             "127.0.0.1".parse()?,
         )));
-        let mut author = Browser::default();
-        ensure!(author.login(&router, "other").await? == StatusCode::OK);
-        let subject = browser_subject(&author, &router).await?;
+        let author = crate::test_support::authority::Authority::prepared_browser("other")?;
+        let subject = prepared_subject(&author)?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &[
@@ -328,105 +431,17 @@ impl Fixture {
         let registered = json!({"snapshot": snapshot});
         let dependency = Uuid::new_v4();
         let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
-        let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
-        let dependency_definition = json!({"material":{"format":"pkg","installer":"scripts/install.sh"},"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        let windows_dependency_bytes =
-            format!("controlled windows dependency msi {dependency}").into_bytes();
-        let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
-        let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        let dependency_version = if prepare_dependency {
-        let dependency_resource = seed_resource(
-            &planning.runtime,
-            planning.tenant,
-            dependency,
-            platform_name,
-            architecture,
-            if platform == Platform::MacOs {
-                dependency_definition
-            } else {
-                windows_dependency_definition
-            },
-        )
-        .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
-        } else {
-            upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
-        }
-        seed_enabled(
-            &planning,
-            execution
-                .content
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
-            &dependency_resource,
-        )
-        .await?;
-        json!({"resourceDigest": dependency_resource.digest().bytes()})
-        } else { Value::Null };
-        let dependencies = if prepare_dependency {
-            json!([{"resource":dependency,"version":"v1","sha256":dependency_version["resourceDigest"]}])
-        } else { json!([]) };
         let resource = Uuid::new_v4();
         let bytes = format!("controlled software package {resource}").into_bytes();
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
-        let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
-        let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
-        let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
-        let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        if prepare_root {
-        let root_resource = seed_resource(
-            &planning.runtime,
-            planning.tenant,
-            resource,
-            platform_name,
-            architecture,
-            if platform == Platform::MacOs {
-                definition
-            } else {
-                windows_definition
-            },
-        )
-        .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
-            upload_fixture(&router, request).await?;
-        } else {
-            upload_windows(&author, &router, resource, &windows_bytes).await?;
-        }
-        seed_enabled(
-            &planning,
-            execution
-                .content
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
-            &root_resource,
-        )
-        .await?;
-        }
 
         Ok(Self {
             resources: Default::default(),
+            platform,
             source_snapshot: registered["snapshot"].clone(),
             dependency,
-            dependency_digest: dependency_version["resourceDigest"].clone(),
+            dependency_digest: Value::Null,
             base,
             queries: execution.queries,
             content: execution.content,

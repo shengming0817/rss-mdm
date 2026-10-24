@@ -59,3 +59,6 @@ rss-transactional-messaging-postgres.workspace = true
 
 [lints]
 workspace=true
+
+[dev-dependencies]
+jsonschema.workspace = true

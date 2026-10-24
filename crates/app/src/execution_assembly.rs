@@ -100,72 +100,10 @@ pub(crate) async fn open(
                 .on_runtime(runtime.clone(), tenant, &audit_budget.control())
                 .await?,
         );
-        storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
-        let outbox = Arc::new(
-            PgOutboxStore::new(
-                runtime.clone(),
-                messaging_domain(),
-                DeliveryBudget::new(
-                    Duration::from_secs(60),
-                    Duration::from_secs(6),
-                    Duration::from_secs(6),
-                    Duration::from_secs(6),
-                )
-                .map_err(|_| bad())?,
-            )
-            .map_err(|_| bad())?,
-        );
-        let copy = outbox.clone();
-        let store = runtime
-            .local_tx(tenant, deadline(), move |tx| {
-                Box::pin(async move {
-                    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
-                        .await?;
-                    storage::admit(tx).await.map_err(|_| {
-                        PgError::from(sqlx::Error::Protocol("command admission".into()))
-                    })?;
-                    rss_device_command_postgres::PgStore::new(tx, copy, command_clock)
-                        .await
-                        .inspect_err(|_| {
-                            eprintln!("command startup: device-command admission failed")
-                        })
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |_| {
-                    eprintln!("command startup: transaction failed");
-                    Err(bad())
-                },
-                |_| {
-                    eprintln!("command startup: transaction failed");
-                    Err(bad())
-                },
-                |_| Err(Error::CommitUnknown),
-                |_| Err(Error::CommitUnknown),
-                |_| {
-                    eprintln!("command startup: transaction failed");
-                    Err(bad())
-                },
-            )?;
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .acquire_timeout(Duration::from_secs(5))
-            .connect_with(database.options()?)
-            .await
-            .map_err(|_| bad())?;
-        let timer = recovery::Timer::new();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
-        let reconcile = match rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await {
-            Ok(s) => s,
-            Err(_) => {
-                eprintln!("command startup: reconcile admission failed");
-                pool.close().await;
-                return Err(bad());
-            }
-        };
+        runtime.local_tx(tenant, deadline(), |tx| Box::pin(async move {
+            tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c))).await
+        })).await.fold(Ok, |_| Err(bad()), |_| Err(bad()), |_| Err(Error::CommitUnknown), |_| Err(Error::CommitUnknown), |_| Err(bad()))?;
+        let (outbox, store, reconcile) = open_storage(runtime.clone(), database.options()?, tenant, &protection, command_clock).await?;
         config.enrollment_entries.validate()?;
         let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
             Arc::new(
@@ -297,6 +235,82 @@ pub(crate) async fn open(
         runtime.close().await;
     }
     result
+}
+
+/// Execution storage admission on the host's runtime, independent of product assembly.
+pub(crate) async fn open_storage(
+    runtime: Arc<PgRuntime>,
+    options: sqlx::postgres::PgConnectOptions,
+    tenant: TenantId,
+    protection: &rss_mdm_native_protection::Protector,
+    command_clock: rss_device_command_postgres::CommandClock,
+) -> Result<(Arc<PgOutboxStore<()>>, rss_device_command_postgres::PgStore<()>, rss_reconcile_postgres::PgStore), Error> {
+    let bad = || Error::Configuration(crate::ConfigIssue::Execution);
+    storage::bind_native_key(&runtime, tenant, protection.fingerprint_id()).await?;
+    let outbox = Arc::new(
+        PgOutboxStore::new(
+            runtime.clone(),
+            messaging_domain(),
+            DeliveryBudget::new(
+                Duration::from_secs(60),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+                Duration::from_secs(6),
+            )
+            .map_err(|_| bad())?,
+        )
+        .map_err(|_| bad())?,
+    );
+    let copy = outbox.clone();
+    let store = runtime
+        .local_tx(tenant, deadline(), move |tx| {
+            Box::pin(async move {
+                storage::admit(tx).await.map_err(|_| {
+                    PgError::from(sqlx::Error::Protocol("command admission".into()))
+                })?;
+                rss_device_command_postgres::PgStore::new(tx, copy, command_clock)
+                    .await
+                    .inspect_err(|_| {
+                        eprintln!("command startup: device-command admission failed")
+                    })
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |_| {
+                eprintln!("command startup: transaction failed");
+                Err(bad())
+            },
+            |_| {
+                eprintln!("command startup: transaction failed");
+                Err(bad())
+            },
+            |_| Err(Error::CommitUnknown),
+            |_| Err(Error::CommitUnknown),
+            |_| {
+                eprintln!("command startup: transaction failed");
+                Err(bad())
+            },
+        )?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect_with(options)
+        .await
+        .map_err(|_| bad())?;
+    let timer = recovery::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(6), &cancel);
+    let reconcile = match rss_reconcile_postgres::PgStore::new(pool.clone(), &control).await {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!("command startup: reconcile admission failed");
+            pool.close().await;
+            return Err(bad());
+        }
+    };
+    Ok((outbox, store, reconcile))
 }
 
 #[derive(Clone)]

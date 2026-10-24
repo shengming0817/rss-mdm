@@ -153,14 +153,14 @@ pub(crate) async fn complete_grant(
 pub(crate) fn application_service(
     access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pki: &crate::agent_pki::AgentPki,
-    access: &crate::Database,
+    access: Arc<rss_mdm_registration_service::Store>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Result<Arc<Service>> {
     Ok(Arc::new(Service::new(Assembly {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32]).unwrap(),
         tenant: rss_request_context::TenantId::parse(case_tenant())?,
-        store: access.registration(),
+        store: access,
         access_audit,
         audit,
         issuer: pki.issuer.clone(),
@@ -194,11 +194,9 @@ pub(crate) async fn seed_profile(
     profile: Value,
 ) -> Result<Value> {
     let config: crate::agent_pki::Config = serde_json::from_value(base["agent_pki"].clone())?;
-    let access = database(base).await?;
+    let (pool, runtime, audit) = crate::audit_test_support::request_store().await?;
+    let access = Arc::new(rss_mdm_registration_service::Store::from_pool(pool.clone(), Arc::new(crate::registration_lifecycle::Bridge)));
     let result = async {
-        let audit = access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?;
         let pki = config
             .load(
                 base["identity"]["instance_id"].as_str().unwrap(),
@@ -210,11 +208,12 @@ pub(crate) async fn seed_profile(
                 None,
             )?
             .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
-        let service = application_service(audit.clone(), &pki, &access, audit, execution)?;
+        let service = application_service(audit.clone(), &pki, access, audit, execution)?;
         seed_service(&service, label, device, profile).await
     }
     .await;
-    access.close().await;
+    runtime.close().await;
+    pool.close().await;
     result
 }
 
@@ -352,7 +351,7 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
     let label = Box::leak(super::runtime::credential(&Uuid::new_v4().to_string()).into_boxed_str());
     let (request,candidate,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let device = registration["deviceId"].as_str().unwrap();
-    set_device_grants(browser, router, device, &["inventory_read", "credentials"]).await?;
+    change_device_grants(browser, device, &["inventory_read", "credentials"]).await?;
     Ok(Agent {
         password: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         credential: label,

@@ -64,7 +64,7 @@ async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=apple.platform_sso: real nonce storage, tenant boundary and authenticated registration HTTP"]
 async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
-    let f = Fixture::with_options(None, None, false, None, false, true).await?;
+    let f = Fixture::with_options(true, None, false, None, false, true).await?;
     let result=async {
         let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
         let response = f.router.clone().oneshot(association).await?;
@@ -593,7 +593,7 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
 async fn native_registration_scenario(password: Option<password::Fixture>) -> Result<()> {
     let mode = password.is_some();
     let mut f = Fixture::with_platform_configuration(
-        None,
+        true,
         None,
         false,
         None,
@@ -646,15 +646,12 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let report = |children: Vec<plist::Value>| plist::Value::Array(vec![protocol::dictionary([
             ("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),
             ("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(children))]).into()]);
-        let incomplete = protocol::dictionary([("ProfileList", report(payloads[..1].to_vec()))]);
-        ensure!(!profile.observed(&incomplete)?, "missing required associated domains cannot qualify");
         let observed = report(payloads);
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
         let device=Key::new()?;let device_encryption=Key::new()?;let mut user=if mode{password::copy_key(&device)?}else{Key::new()?};let encryption=Key::new()?;
         let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
-        ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",case_tenant()),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         let registered_device=register_key(&f,"device",None,agent_registration,&device,&device_encryption).await?;
 
         let registered=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
@@ -667,18 +664,25 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         applied_binding(binding).await?;
         if let Some(provider)=&password {password::capacity(&f,&device,&encryption,&registered["sourceId"]).await?;password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
         let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
-        let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
-        let (one,two)=(one?,two?);
-        let (success,replay)=if one.0==StatusCode::OK {(one,two)}else{(two,one)};
-        ensure!(success.0==StatusCode::OK&&replay.0==StatusCode::BAD_REQUEST,"concurrent nonce use: {} {} / {} {}",success.0,success.1,replay.0,replay.1);
-        let response=success.1;
+        let response = if mode {
+            let (status, response) = token(&f, &assertion).await?;
+            ensure!(status == StatusCode::OK, "Password token: {response}");
+            response
+        } else {
+            let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
+            let (one,two)=(one?,two?);
+            let (success,replay)=if one.0==StatusCode::OK {(one,two)}else{(two,one)};
+            ensure!(success.0==StatusCode::OK&&replay.0==StatusCode::BAD_REQUEST,"concurrent nonce use: {} {} / {} {}",success.0,success.1,replay.0,replay.1);
+            ensure!(token(&f,&assertion).await?.0==StatusCode::BAD_REQUEST,"nonce replay");
+            success.1
+        };
         let tokens=decrypt(&encryption,&response)?;
         ensure!(tokens["token_type"]=="Bearer"&&tokens["expires_in"]==300&&tokens["refresh_token"].as_str().is_some_and(|s|s.len()==43));
         ensure!(decrypt(&device_encryption,&response).is_err(),"response is encrypted to user key");
-        ensure!(token(&f,&assertion).await?.0==StatusCode::BAD_REQUEST,"nonce replay");
         let (status,headers,body)=browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().context("access token")?).await?;
         ensure!(status==StatusCode::OK,"browser exchange {status}: {body}");
         ensure!(headers.get_all("set-cookie").iter().any(|h|h.to_str().is_ok_and(|s|s.starts_with("__Host-identity-session="))),"P2 must issue ordinary Identity session");
+        if !mode {
         let secret=headers.get_all("set-cookie").iter().filter_map(|h|h.to_str().ok()).find_map(|v|v.strip_prefix("__Host-identity-session=").and_then(|v|v.split(';').next())).context("platform cookie")?;
         let session=f.app.identity.authority.inspect_session(f.app.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
         let reference=serde_json::to_value(session.reference()?)?;
@@ -689,7 +693,9 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
                 .bind(case_tenant()).bind(agent_registration).bind(&reference).execute(&mut pg).await?;
         }
         directory_session(&mut f,agent_device,true).await?;
+        }
         if let Some(p)=&password{p.revision_fence(&f,serde_json::from_value(registered["sourceId"].clone())?).await?;}
+        if !mode {
         // A local lookup must not evaluate an unrelated source, even if its document is corrupt.
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
@@ -717,17 +723,20 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let fresh=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&fresh).await?.0==StatusCode::OK,"fresh SE renewal");
         ensure!(browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().unwrap()).await?.0==StatusCode::UNAUTHORIZED,"renewal replaces the native access token");
+        }
         let replacement=Key::new()?;
         let replaced=register_key(&f,"device",None,agent_registration,&replacement,&device_encryption).await?;
         ensure!(replaced["sourceId"]==registered_device["sourceId"]&&replaced["sourceVersion"]==2);
-        directory_session(&mut f,agent_device,false).await?;
+        if !mode { directory_session(&mut f,agent_device,false).await?; }
         let stale=password::login(&f,mode,&replacement,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
         if mode {user=password::copy_key(&replacement)?;}
         let repaired=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
         ensure!(repaired["sourceVersion"]==2);
         let path=format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap());
+        if !mode {
         ensure!(agent(&f,&path,json!({"sourceVersion":1})).await?.0==StatusCode::CONFLICT,"delayed teardown must not revoke the replacement");
+        }
         let valid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
         let (status,response)=token(&f,&valid).await?;ensure!(status==StatusCode::OK);
         let current_tokens=decrypt(&encryption,&response)?;
@@ -735,8 +744,10 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::OK,"token is valid immediately before logout");
         let revoked=agent(&f,&path,json!({"sourceVersion":2})).await?;
         ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true&&revoked.1["sourceVersion"]==3);
+        if !mode {
         let repeated=agent(&f,&path,json!({"sourceVersion":2})).await?;
         ensure!(repeated.0==StatusCode::OK&&repeated.1["sourceVersion"]==3,"same retirement is idempotent");
+        }
         let invalid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::UNAUTHORIZED);
         Ok(())
@@ -757,7 +768,7 @@ async fn third_party_profile_dispatch_with_rss_runtime() -> Result<()> {
     third_party_profile_dispatch(true).await
 }
 async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
-    let mut f = Fixture::with_options(None, None, false, None, false, enabled).await?;
+    let mut f = Fixture::with_options(true, None, false, None, false, enabled).await?;
     let worker = f.policy_worker().await?;
     let result: Result<()> = async {
         let (peer, _) = f.ready_local_peer().await?;

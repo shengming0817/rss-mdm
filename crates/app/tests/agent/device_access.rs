@@ -2,7 +2,7 @@
 use crate::test_support::{
     agent::*,
     agent_execution::{self as execution, Fixture},
-    http::{Browser, browser_subject},
+    http::{Browser, prepared_subject},
     process::*,
     runtime::*,
     *,
@@ -376,8 +376,8 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
     resources.finish(async {
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
-        let mut manager=Browser::default();ensure!(manager.login(&f.router,"admin").await?==StatusCode::OK);
-        let manager_id=browser_subject(&manager,&f.router).await?;
+        let manager = crate::test_support::authority::Authority::prepared_browser("admin")?;
+        let manager_id=prepared_subject(&manager)?;
         crate::test_support::identity::seed_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
         let id=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let saved_author=std::mem::replace(&mut f.author,manager);

@@ -29,8 +29,7 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
     let (router, resources) = app(&base).await?;
     resources
         .finish(async {
-            let mut admin = Browser::default();
-            ensure!(admin.login(&router, "admin").await? == StatusCode::OK);
+            let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
             let initial = ok(&mut admin, &router, Method::GET, PATH, None).await?;
             ensure!(
                 initial["saved"]["revision"] == 0
@@ -124,9 +123,8 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                 .await?
                     == complete
             );
-            let mut other = Browser::default();
-            ensure!(other.login(&router, "other").await? == StatusCode::OK);
-            let subject = browser_subject(&other, &router).await?;
+            let mut other = crate::test_support::authority::Authority::prepared_browser("other")?;
+            let subject = prepared_subject(&other)?;
             identity::seed_grants(case_tenant(), &subject, vec![]).await?;
             ensure!(other.call(&router, Method::GET, PATH, None).await?.0 == StatusCode::FORBIDDEN);
             other.operation = Some(Uuid::new_v4());

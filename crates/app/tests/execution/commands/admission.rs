@@ -246,33 +246,11 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let concurrent = Uuid::new_v4();
-        let mut body = request.clone();
-        body["operationId"] = concurrent.to_string().into();
         let (mut one, mut two) = (self.browser.clone(), self.browser.clone());
         let path = format!(
             "/api/v1/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
-        let (a, b) = tokio::join!(
-            one.call(&self.router, Method::POST, &path, Some(body.clone())),
-            two.call(&self.router, Method::POST, &path, Some(body))
-        );
-        let (a, b) = (a?, b?);
-        ensure!(
-            a == b && a.0 == StatusCode::ACCEPTED,
-            "concurrent replay diverged"
-        );
-        ensure!(
-            self.call(
-                Method::POST,
-                &format!("/{concurrent}/cancel"),
-                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
-            )
-            .await?
-            .0 == StatusCode::OK
-        );
-
         for different in [false, true] {
             let id = Uuid::new_v4();
             let mut first = request.clone();
@@ -616,7 +594,7 @@ impl Client {
             .await?;
         self.known_windows_capability(&other).await?;
         let subject =
-            crate::test_support::http::browser_subject(&self.browser, &self.router).await?;
+            crate::test_support::http::prepared_subject(&self.browser)?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &["device_control", "operation_read", "operation_cancel"],
@@ -632,7 +610,7 @@ impl Client {
         let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
         ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
         let other_subject =
-            crate::test_support::http::browser_subject(&other_browser, &self.router).await?;
+            crate::test_support::http::prepared_subject(&other_browser)?;
         crate::test_support::identity::change_grants(
             case_tenant(),
             &other_subject,

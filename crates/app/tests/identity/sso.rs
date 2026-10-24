@@ -191,7 +191,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     );
     let mut alice = Browser::default();
     roundtrip(&router, &mut alice, provider, "alice").await?;
-    let alice_principal=browser_subject(&alice,&router).await?;
+    let alice_principal=authorization_subject(&alice,&router).await?;
     let without_mapping=admin.call(&router,Method::GET,&format!("/api/v1/user-profiles/{alice_principal}?view=latest"),None).await?;
     ensure!(without_mapping.0==StatusCode::OK);
     ensure!(without_mapping.1["fields"].as_array().unwrap().is_empty());
@@ -206,7 +206,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     let second_path=format!("{tenant}/providers/{second_id}/enabled");
     let second_enabled=admin.call(&router,Method::POST,&second_path,Some(json!({"expectedVersion":second["version"],"enabled":true}))).await?;
     ensure!(second_enabled.0==StatusCode::OK);
-    let admin_id=browser_subject(&admin,&router).await?;
+    let admin_id=authorization_subject(&admin,&router).await?;
     let admin_profile=format!("{tenant}/accounts/{admin_id}/profile");
     let local=admin.call(&router,Method::GET,&admin_profile,None).await?;
     ensure!(local.0==StatusCode::OK);
@@ -219,10 +219,10 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(admin.call(&router,Method::GET,&format!("{}?{}",callback.path(),callback.query().context("callback query")?),None).await?.0==StatusCode::SEE_OTHER);
     let mut linked=Browser::default();
     roundtrip(&router,&mut linked,second_id,"bob").await?;
-    ensure!(browser_subject(&linked,&router).await?==admin_id,"linked login changed the relationship principal");
+    ensure!(authorization_subject(&linked,&router).await?==admin_id,"linked login changed the relationship principal");
     admin=Browser::default();
     ensure!(admin.login_password(&router,"admin",PASSWORD).await?==StatusCode::OK);
-    ensure!(browser_subject(&admin,&router).await?==admin_id,"link changed the relationship principal");
+    ensure!(authorization_subject(&admin,&router).await?==admin_id,"link changed the relationship principal");
     let device=crate::test_support::case::name("sso-personnel");
     let directory_rule=json!({"subject":{"kind":"user","user":{"tenantId":case_tenant(),"instanceId":INSTANCE,"principalId":admin_id}},"grants":[{"operation":"inventory_read","scope":{"kind":"all_devices"}},{"operation":"enrollment","scope":{"kind":"all_devices"}},{"operation":"inventory_sensitive_read","scope":{"kind":"tenant"}},{"operation":"user_profiles_read","scope":{"kind":"tenant"}}]});
     crate::test_support::process::pg(&format!("BEGIN; SET LOCAL rss.tenant_id='{}'; INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}'); INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{}','{}','{}',1,'{}'::jsonb); COMMIT;",case_tenant(),case_tenant(),device,case_tenant(),INSTANCE,uuid::Uuid::new_v4(),directory_rule))?;

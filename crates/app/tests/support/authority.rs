@@ -168,7 +168,7 @@ impl Authority {
                     clock: monotonic(),
                     audit_store: self.audit.clone(),
                     requests,
-                    tenant: case_tenant().into(),
+                    tenant: self.identity.tenant.to_string(),
                 },
                 rss_mdm_management_http::boundary::admit,
             ))

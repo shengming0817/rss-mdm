@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     let mut f = Fixture::with_mdm_software().await?;
     let (peer, _device) = f.ready_local_peer().await?;
-    setup::grants(&f.browser, &f.router).await?;
+    setup::grants(&f.browser).await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),

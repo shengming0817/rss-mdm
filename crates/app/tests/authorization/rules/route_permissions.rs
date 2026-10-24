@@ -115,7 +115,7 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
     // full applications per grant needlessly multiplies component connection pools.
     let (router, app_resources) = app(base).await?;
     app_resources.finish(async {
-    let member = browser_subject(session, &router).await?;
+    let member = prepared_subject(session)?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let hosted = router.clone();

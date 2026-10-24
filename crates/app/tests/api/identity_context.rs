@@ -114,8 +114,7 @@ async fn navigation_uses_current_identity_management_policy() -> Result<()> {
     fixture_resources
         .finish(async {
             let browser = fixture.browser("other")?;
-            let router = fixture.router(fixture.authorization())?;
-            let subject = browser_subject(&browser, &router).await?;
+            let subject = prepared_subject(&browser)?;
             host_context_matrix(&fixture.base, &browser, &subject).await?;
             Ok(())
         })

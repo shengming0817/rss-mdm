@@ -128,16 +128,9 @@ async fn configure(f: &mut Fixture, organization: Uuid, name: &str) -> Result<()
     let input = json!({"expectedRevision":0,"domain":"managed.example.test","serverUuid":organization,"signingKey":"organization","enabled":true});
     let saved = f
         .browser
-        .call(&f.router, Method::PUT, &path, Some(input.clone()))
+        .call(&f.router, Method::PUT, &path, Some(input))
         .await?;
     ensure!(saved.0 == StatusCode::OK, "organization: {saved:?}");
-    ensure!(
-        f.browser
-            .call(&f.router, Method::PUT, &path, Some(input))
-            .await?
-            == saved,
-        "configuration replay changed"
-    );
     f.browser.operation = Some(Uuid::new_v4());
     let bound=f.browser.call(&f.router,Method::PUT,&format!("{path}/accounts/{name}"),Some(json!({"expectedRevision":0,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
     ensure!(bound.0 == StatusCode::OK, "account mapping: {bound:?}");

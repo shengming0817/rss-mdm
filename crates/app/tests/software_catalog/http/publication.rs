@@ -36,11 +36,9 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         ]),
         local.clone(),
         cfg.clone(),
-        false,
-        false,
     )
     .await?;
-    let subject = browser_subject(&f.author, &f.router).await?;
+    let subject = prepared_subject(&f.author)?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[

@@ -14,9 +14,7 @@ async fn durable_reports_and_projection() -> Result<()> {
     let audit_store = fixture.audit.as_ref();
     let mut session = fixture.browser("other")?;
     let browser = &mut session;
-    set_device_grants(
-        browser,
-        router,
+    change_device_grants(browser,
         crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )

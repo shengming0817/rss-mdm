@@ -192,9 +192,8 @@ impl Fixture {
                     let router = router.layer(axum::Extension(
                         rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
                     ));
-                    let mut author = Browser::default();
-                    ensure!(author.login(&router, "other").await? == StatusCode::OK);
-                    let author_id = browser_subject(&author, &router).await?;
+                    let author = crate::test_support::authority::Authority::prepared_browser("other")?;
+                    let author_id = prepared_subject(&author)?;
                     let mut grants = crate::test_support::identity::device_grants(
                         Some(case_device_id()),
                         &[

@@ -6,7 +6,7 @@ use crate::test_support::{channel_onboarding as setup, process::pg, runtime::cre
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.onboarding: real native peer and durable Policy"]
 async fn absent_agent_group_installs_fixed_package_and_registers_independently() -> Result<()> {
-    let mut f = Fixture::with_agent(None).await?;
+    let mut f = Fixture::with_agent().await?;
     let (peer, device) = f.ready_local_peer().await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
@@ -351,7 +351,7 @@ async fn next_after_cooldown(
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
-    let mut f = Fixture::with_agent(None).await?;
+    let mut f = Fixture::with_agent().await?;
     let (peer, device) = f.ready_local_peer().await?;
     setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
     let (platform, _) = peer.next("DeviceInformation").await?;

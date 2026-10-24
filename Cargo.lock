@@ -4099,6 +4099,7 @@ dependencies = [
  "base64 0.22.1",
  "futures",
  "http-body-util",
+ "jsonschema",
  "rss-audit-postgres",
  "rss-contract",
  "rss-identity-core",

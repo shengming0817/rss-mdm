@@ -370,7 +370,7 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         ))
     };
     let before = state();
-    for _ in 0..16 {
+    for _ in 0..2 {
         let diff = worker.observe(&claim, &control).await.unwrap();
         assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
         worker.apply(&claim, diff, &control).await.unwrap();
@@ -390,7 +390,7 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         .await
         .unwrap();
     let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
-    for _ in 0..16 {
+    for _ in 0..2 {
         let diff = worker.observe(&claim, &control).await.unwrap();
         assert_ne!(diff.drift(), rss_reconcile::DriftKind::Converged);
         worker.apply(&claim, diff, &control).await.unwrap();

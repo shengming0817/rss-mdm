@@ -19,7 +19,26 @@ async fn fixture() -> Result<Fixture> {
     fixture_with(&[]).await
 }
 async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
-    let f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let mut f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let mut authority = authority::Authority::open().await?;
+    f.resources.extend(std::mem::take(&mut authority.resources));
+    let service = agent::service(&authority).await?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?,
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(authority.pool.clone())), authority.identity.tenant,
+        monotonic(), authority.audit.clone()).await?;
+    f.resources.resource(InventoryFixtureResource(inventory.clone()));
+    f.router = f.router.merge(authority.router(Router::new().nest("/api/v1",
+        rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())).into_axum(),
+    ))?).merge(rss_mdm_agent_channel::router(Arc::new(rss_mdm_agent_channel::HttpState {
+        content: f.content.clone(), telemetry: None, enrollment: service, audit_store: authority.audit.clone(),
+        access: Arc::new(rss_mdm_agent_channel::Store::from_pool(authority.pool.clone())), inventory,
+    }), rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(4)), host: "mdm.example.test:9445".into(),
+        clock: monotonic(), audit_store: authority.audit.clone(), requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        tenant: case_tenant().into(),
+    }).into_axum());
+    f.user.network = None;
     let tenant = [
         "resource_read",
         "resource_write",
@@ -53,9 +72,7 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
     }
     identity::seed_grants(case_tenant(), &f.subject, grants).await?;
     // Installer consumers need a current signed configuration; deployment/publication is a separate journey.
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let access = database(&base).await?;
-    let mut tx = access.archive_pool().begin().await?;
+    let mut tx = authority.pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
@@ -70,7 +87,6 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
     )
     .await?;
     tx.commit().await?;
-    access.close().await;
 
     Ok(f)
 }
@@ -1802,14 +1818,11 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
             == saved
     );
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let runtime = agent::seed_profile(
-        &base,
-        f.execution.clone(),
-        "connection-peer",
-        crate::test_support::case::name("connection-peer"),
-        profile(false),
-    )
-    .await?;
+    let authority = authority::Authority::from_config(base).await?;
+    let service = agent::service(&authority).await?;
+    let runtime = authority.resources.finish(agent::seed_service(
+        &service, "connection-peer", crate::test_support::case::name("connection-peer"), profile(false),
+    )).await?;
     let peer = agent::evidence("connection-peer").context("real connection peer")?;
     let publish = json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
     let refused = user
@@ -2010,7 +2023,7 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
         let mut inventory_user=authority::Authority::prepared_browser("other")?;
-        let subject=browser_subject(&inventory_user, &f.router).await?;
+        let subject=prepared_subject(&inventory_user)?;
         identity::seed_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
         let observed=inventory_user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
         ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==3 && observed.1["failure"].is_null(),"inventory reader could not see target and installed facts: {observed:?}");

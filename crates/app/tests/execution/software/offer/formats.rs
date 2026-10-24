@@ -88,7 +88,8 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         _ => anyhow::bail!("unknown matrix entry"),
     };
     let mut f =
-        Fixture::with_profiles(platform, profiles, local.clone(), format != "msix", false).await?;
+        Fixture::with_profiles(platform, profiles, local.clone()).await?;
+    if format != "msix" { f.seed_dependency().await?; }
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let stack = worker(&f.base, f.execution.clone()).await?;

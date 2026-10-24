@@ -21,7 +21,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                             == StatusCode::UNAUTHORIZED
                     );
                     let mut member = fixture.browser("other")?;
-                    let subject = browser_subject(&member, &router).await?;
+                    let subject = prepared_subject(&member)?;
                     seed_management_grants(&subject, json!(["authorization_read"])).await?;
                     ensure!(
                         member.call(&router, Method::GET, PATH, None).await?.0
@@ -369,7 +369,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ),
     )?;
     let mut browser = fixture.authority.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     seed_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let result = async {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -469,7 +469,7 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
         ),
     )?;
     let mut browser = fixture.authority.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     seed_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let healthy = fixture.query().await?;
     ensure!(component(&healthy, "automation")["dependencies"][0]["state"] == "available");

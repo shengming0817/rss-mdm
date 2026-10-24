@@ -39,7 +39,7 @@ impl Fixture {
         ));
         let router = Self::routes(&authority, archive.clone())?;
         let admin = authority.browser("admin")?;
-        let subject = browser_subject(&admin, &router).await?;
+        let subject = prepared_subject(&admin)?;
         identity::seed_grants(
             case_tenant(),
             &subject,
@@ -392,7 +392,7 @@ async fn generation_alerts_and_two_sessions_use_one_tenant_identity() -> Result<
     resources.finish(async {
     f.initialize().await?;
     let mut other = f.authority.browser("other")?;
-    let subject = browser_subject(&other, &f.router).await?;
+    let subject = prepared_subject(&other)?;
     identity::seed_grants(
         case_tenant(),
         &subject,
@@ -644,7 +644,7 @@ async fn replayed_export_rechecks_generation_after_peer_password_change() -> Res
     ));
     let peer_router = Fixture::routes(&f.authority, peer)?;
     let mut peer_browser = f.authority.browser("admin")?;
-    ensure!(browser_subject(&peer_browser, &peer_router).await? == f.subject);
+    ensure!(prepared_subject(&peer_browser)? == f.subject);
     peer_browser.operation = Some(Uuid::new_v4());
     // Queue the password writer first at the tenant lock. It holds the authorization
     // lock, so the old-instance export prepares plaintext then waits behind it.

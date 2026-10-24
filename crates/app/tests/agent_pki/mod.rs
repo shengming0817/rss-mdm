@@ -829,7 +829,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         csrf: Some(secret.csrf()),
         ..Default::default()
     };
-    let subject = crate::test_support::http::browser_subject(&observer, &host.browser).await?;
+    let subject = crate::test_support::http::prepared_subject(&observer)?;
     let query_path = format!(
         "/api/v1/pki/agent/trust/devices/{}/observation",
         active.runtime.device_id

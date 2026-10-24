@@ -355,10 +355,10 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         ensure!(browser.call(&f.router,Method::POST,&format!("{ROOT}/{}/cancel",sessions[0]),None).await?.0==StatusCode::OK);
         ensure!(!backend(&f.router,"rp-a",&secrets[0],&format!("sessions/{}",sessions[0]),None).await?.0.is_success());
         let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",execution::case_device_id());
-        ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);f.access_authenticator=None;
-        let operator=browser_subject(&f.author,&f.router).await?;
+        f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;f.access_authenticator=None;
+        let operator=prepared_subject(&f.author)?;
         let mut grants=f.grants.clone();grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
+        crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let offboarding=Uuid::new_v4();
         let denied=f.access_call(Method::PUT,&path,Some(json!({"operationId":offboarding,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}}))).await?;
         ensure!(denied.0==StatusCode::OK,"offboard {denied:?}");

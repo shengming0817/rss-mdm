@@ -389,9 +389,8 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             .0
             == StatusCode::OK
     );
-    let mut member = Browser::default();
-    ensure!(member.login(&router, "other").await? == StatusCode::OK);
-    let subject = browser_subject(&member, &router).await?;
+    let mut member = crate::test_support::authority::Authority::prepared_browser("other")?;
+    let subject = prepared_subject(&member)?;
     crate::test_support::identity::seed_grants(
         case_tenant(),
         &subject,

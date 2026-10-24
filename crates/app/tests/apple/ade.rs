@@ -470,7 +470,7 @@ impl Control {
             der.as_os_str(),
         ])?;
         let f = Fixture::with_ade_endpoint(
-            None,
+            false,
             None,
             false,
             Some(rss_mdm_apple_channel::ade::Fixture {

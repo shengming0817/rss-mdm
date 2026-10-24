@@ -9,10 +9,9 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         context(Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    fixture.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
@@ -232,10 +231,9 @@ async fn new_approval_changes_execution_version() -> Result<()> {
         Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         context(Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    fixture.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
@@ -326,10 +324,9 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         context(Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    f.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let prefix = case::name("rollout");

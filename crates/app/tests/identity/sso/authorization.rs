@@ -50,7 +50,7 @@ pub(super) async fn trusted_facts_and_independent_expiry(
     version: i64,
     clock: &rss_identity_postgres::ControlledFactTime,
 ) -> Result<()> {
-    let principal = browser_subject(alice, router).await?;
+    let principal = authorization_subject(alice, router).await?;
     let user = json!({"instanceId":INSTANCE,"tenantId":case_tenant(),"principalId":principal});
     let source = json!({"providerId":provider,"issuer":std::env::var("MDM_TEST_SSO_ISSUER")?,"configurationVersion":version});
     let cases = [

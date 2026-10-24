@@ -51,7 +51,7 @@ async fn hosted(
     let mut other = f.browser("other")?;
     admin.network = Some(network.clone());
     other.network = Some(network);
-    let subject = browser_subject(&other, &router).await?;
+    let subject = prepared_subject(&other)?;
     identity::seed_grants(case_tenant(), &subject, vec![]).await?;
     Ok((router, admin, other, server))
 }

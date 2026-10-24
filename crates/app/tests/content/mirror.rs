@@ -2,11 +2,10 @@
     clippy::cognitive_complexity,
     reason = "test scenarios retain distinct authorization, failure and recovery assertions"
 )]
-use crate::test_support::software::{Fixture, create_software_version, write};
+use crate::test_support::software::{Fixture, seed_software_version, write};
 use crate::test_support::{http::*, process::*, runtime::*, *};
 async fn mirror_resource(
-    user: &mut Browser,
-    router: &Router,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
     definition: &Value,
     server: &publication_support::Server,
     path: &str,
@@ -18,7 +17,7 @@ async fn mirror_resource(
         json!(rss_mdm_resource::Digest::of(digest).bytes());
     definition["artifacts"]["package"]["origin"] =
         json!(format!("{}artifacts/{path}", server.base));
-    let (resource, _) = create_software_version(user, router, definition).await?;
+    let (resource, _) = seed_software_version(runtime, definition).await?;
     let operation = Uuid::new_v4();
     Ok((
         format!(
@@ -37,7 +36,7 @@ async fn mirror_matrix(
     {
         let (path, bytes) = ("wrong.msi", &b"abd"[..]);
         let (url, operation) =
-            mirror_resource(user, router, definition, server, path, bytes).await?;
+            mirror_resource(runtime, definition, server, path, bytes).await?;
         let response = user.call(router, Method::POST, &url, None).await?;
         ensure!(
             response.0 == StatusCode::BAD_REQUEST && response.1["code"] == "malformed_request",
@@ -52,7 +51,7 @@ async fn mirror_matrix(
         );
     }
     let (url, operation) =
-        mirror_resource(user, router, definition, server, "audit.msi", b"abc").await?;
+        mirror_resource(runtime, definition, server, "audit.msi", b"abc").await?;
     pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
     let failed = user.call(router, Method::POST, &url, None).await;
     pg(
@@ -81,7 +80,7 @@ async fn mirror_matrix(
     );
     for revoke in [false, true] {
         let (url, operation) =
-            mirror_resource(user, router, definition, server, "paused.msi", b"abc").await?;
+            mirror_resource(runtime, definition, server, "paused.msi", b"abc").await?;
         let started = Arc::new(tokio::sync::Notify::new());
         let resume = Arc::new(tokio::sync::Notify::new());
         server.state.lock().unwrap().artifact_pause = Some((started.clone(), resume.clone()));

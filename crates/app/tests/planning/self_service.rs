@@ -893,9 +893,8 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     let accepted_one = call(&f, Method::POST, INVOKE, Some(one.clone()), true, true).await?;
     ensure!(accepted_one.0 == StatusCode::ACCEPTED);
     let original = f.author.clone();
-    let mut employee = Browser::default();
-    ensure!(employee.login(&f.router, "admin").await? == StatusCode::OK);
-    let other = browser_subject(&employee, &f.router).await?;
+    let employee = crate::test_support::authority::Authority::prepared_browser("admin")?;
+    let other = prepared_subject(&employee)?;
     ensure!(other != f.author_id);
     crate::test_support::identity::seed_grants(case_tenant(), &other, f.grants.clone()).await?;
     f.author = employee;
@@ -1023,8 +1022,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     )
     .await?;
     let (resource, _, _) = f.resource().await?;
-    let mut admin = Browser::default();
-    ensure!(admin.login(&f.router, "admin").await? == StatusCode::OK);
+    let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
     let group = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{group}");
     let group_value = json!({"name":"Self service employees","enabled":true,"members":[crate::test_support::identity::user(case_tenant(), &f.author_id)]});
@@ -1042,7 +1040,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             .0
             == StatusCode::OK
     );
-    let publisher = browser_subject(&admin, &f.router).await?;
+    let publisher = prepared_subject(&admin)?;
     crate::test_support::identity::seed_grants(case_tenant(), &publisher, f.grants.clone()).await?;
     let mut published = Vec::new();
     for access in [
@@ -1324,14 +1322,12 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         software::Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         software::context(software::Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    f.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let mut other = Browser::default();
-    ensure!(other.login(&f.router, "admin").await? == StatusCode::OK);
+    let mut other = crate::test_support::authority::Authority::prepared_browser("admin")?;
     let employee = f
         .author
         .call(&f.router, Method::GET, "/api/v1/authorization", None)
@@ -1636,23 +1632,6 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     }).await
 }
 
-#[test]
-fn explicit_unpublished_access_null_follows_the_write_contract() {
-    let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../management-http/schema/PolicyWrite.json"
-    ))
-    .unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    let body = serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":uuid::Uuid::new_v4(),"action":{"kind":"execution","resource":{"id":"repair","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":null,"published":false,"presentation":{"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}}}});
-    assert!(validator.is_valid(&body));
-    let mut missing = body;
-    missing["input"]["definition"]["selfService"]
-        .as_object_mut()
-        .unwrap()
-        .remove("access");
-    assert!(!validator.is_valid(&missing));
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts_separate()
@@ -1670,8 +1649,6 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             "software.msi.user.v1"
         ]),
         local.clone(),
-        false,
-        false,
     )
     .await?;
     let resources = std::mem::take(&mut f.resources);

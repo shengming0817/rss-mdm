@@ -618,21 +618,6 @@ pub(crate) async fn from_compiled(
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
-    // Existing durable intent only: normal fixtures and non-initialized tenants are never seeded.
-    // A failed attempt remains visible and resumes under the same identities after restart.
-    #[cfg(test)]
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        crate::baseline::resume(&state),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("baseline initialization blocked: {error}"),
-        Err(_) => eprintln!(
-            "baseline initialization outcome unknown; resume original intent after restart"
-        ),
-    }
     let routers = from_state(state, host, monotonic);
     Ok(routers)
 }
@@ -784,7 +769,26 @@ pub(crate) fn from_state(
         management_boundary.clone(),
     );
     let directory = crate::settings::Directory {
-        state: state.clone(),
+        tenant: state.identity.tenant,
+        management_tenant: state.identity.management_tenant,
+        identity: state.identity.authority.clone(),
+        federation: state.identity.federation.clone(),
+        tenant_administration: state.identity.tenant_administration.clone(),
+        user_profiles: Arc::new(crate::user_profiles::Backend {
+            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &state.flow.cursor_key)),
+            identity: state.identity.authority.clone(), tenant: state.identity.tenant, instance: state.identity.instance,
+            audit: state.audit_store.clone(),
+        }),
+        audit: state.audit_store.clone(), clock: state.clock.clone(), protection: state.protection.clone(),
+        pki: state.pki.clone(), software: software_access(&state), registration: state.agent_enrollment.clone(),
+        webhooks: state.webhooks.clone(), windows: state.access.windows_store(), windows_loaded: state.windows.is_some(),
+        windows_push_revision: state.windows.as_ref().filter(|w| w.channel.push.is_some()).and_then(|w| w.config.push.as_ref().map(|p| p.revision)),
+        apple_materials: state.apple.as_ref().map(|apple| apple.config.materials.clone()),
+        s3_revision: state.content_writer.as_ref().and_then(|store| match &store.config.storage {
+            rss_mdm_content_service::Storage::S3(value) => i64::try_from(value.revision).ok(), _ => None,
+        }),
+        signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
+        recovery: state.execution.recovery_credentials(),
         apple: apple_state.clone(),
     };
     let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());

@@ -1,6 +1,6 @@
 //! Real HTTP/PG source evidence and durable Policy authority; no OS success is inferred.
 use crate::test_support::agent_execution::*;
-use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use anyhow::Context;
 async fn fixture() -> Result<Fixture> {
     let mut base: Value =
@@ -406,8 +406,7 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         let request = Uuid::parse_str(native.1["enrollmentId"].as_str().unwrap())?;
         let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
         let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&access.registration(), case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
-        let mut admin = Browser::default();
-        ensure!(admin.login(&f.router, "admin").await? == StatusCode::OK);
+        let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
         let mut tx = c.begin().await?;
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;

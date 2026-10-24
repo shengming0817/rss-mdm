@@ -507,9 +507,7 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let old_generation: u64 = pg(&format!("SELECT generation FROM mdm_access.registrations WHERE tenant_id='{}' AND id='{registration}'", case_tenant()))?.trim().parse()?;
     let old_credential = pg(&format!("SELECT id FROM mdm_access.credentials WHERE tenant_id='{}' AND registration='{registration}' AND state='active'", case_tenant()))?.trim().to_owned();
     let secret = credential("recovery-software");
-    set_device_grants(
-        &mut author,
-        &router,
+    change_device_grants(&mut author,
         case_device(),
         &[
             "credentials",

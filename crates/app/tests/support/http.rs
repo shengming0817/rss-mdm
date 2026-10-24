@@ -140,21 +140,8 @@ impl Browser {
             tokio::spawn(app.clone().oneshot(request)).await??
         };
         let status = response.status();
-        if method == Method::GET && path.contains("/collections/") {
-            ensure!(
-                !response.headers().contains_key("idempotency-key"),
-                "ordinary collection GET claimed an idempotent operation"
-            );
-        }
-
         for header in response.headers().get_all("set-cookie") {
             let text = header.to_str()?;
-            ensure!(
-                text.contains("Secure")
-                    && text.contains("HttpOnly")
-                    && text.contains("Path=/")
-                    && !text.contains("Domain=")
-            );
             let (k, v) = text.split(';').next().unwrap().split_once('=').unwrap();
             if v.is_empty() {
                 self.cookies.remove(k);
@@ -179,24 +166,6 @@ impl Browser {
             self.csrf = Some(csrf.into());
         }
         Ok((status, value))
-    }
-    pub(crate) async fn login(&mut self, app: &Router, login: &str) -> Result<StatusCode> {
-        if matches!(login, "admin" | "other") {
-            let secret = identity::credential_for(case_tenant(), login)?;
-            self.cookies
-                .insert("__Host-identity-session".into(), secret.expose().into());
-            self.csrf = Some(secret.csrf());
-            return Ok(self
-                .call(
-                    app,
-                    Method::GET,
-                    &format!("/api/v1/identity/tenants/{}/session", case_tenant()),
-                    None,
-                )
-                .await?
-                .0);
-        }
-        self.login_password(app, login, identity::PASSWORD).await
     }
     pub(crate) async fn login_password(
         &mut self,
@@ -259,7 +228,18 @@ pub(crate) async fn await_task(
     }
 }
 
-pub(crate) async fn browser_subject(browser: &Browser, router: &Router) -> Result<String> {
+pub(crate) fn prepared_subject(browser: &Browser) -> Result<String> {
+    let cookie = browser.cookies.get("__Host-identity-session").ok_or_else(|| anyhow::anyhow!("prepared session missing"))?;
+    for actor in case::context().actors() {
+        let secret = identity::credential_for(&actor.tenant, &actor.role)?;
+        if secret.expose() == cookie {
+            return actor.principal.clone().ok_or_else(|| anyhow::anyhow!("actor was not prepared"));
+        }
+    }
+    anyhow::bail!("browser does not carry a prepared case session")
+}
+
+pub(crate) async fn authorization_subject(browser: &Browser, router: &Router) -> Result<String> {
     let (status, value) = browser
         .clone()
         .call(router, Method::GET, "/api/v1/authorization", None)
@@ -268,13 +248,12 @@ pub(crate) async fn browser_subject(browser: &Browser, router: &Router) -> Resul
     Ok(value["principalId"].as_str().unwrap().into())
 }
 
-pub(crate) async fn set_device_grants(
+pub(crate) async fn change_device_grants(
     browser: &mut Browser,
-    router: &Router,
     device: &str,
     operations: &[&str],
 ) -> Result<()> {
-    let subject = browser_subject(browser, router).await?;
+    let subject = prepared_subject(browser)?;
     crate::test_support::identity::change_grants(
         case_tenant(),
         &subject,

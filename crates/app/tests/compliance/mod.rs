@@ -64,7 +64,7 @@ async fn assign(
     .await
 }
 
-async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
+fn grants(device: Option<&str>) -> Result<Vec<crate::authorization::Grant>> {
     let mut grants = crate::test_support::identity::device_grants(
         device,
         &["compliance_read", "inventory_read", "inventory_assign"],
@@ -84,7 +84,7 @@ async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
             });
         }
     }
-    crate::test_support::identity::change_grants(case_tenant(), subject, grants).await
+    Ok(grants)
 }
 
 async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -> Result<Value> {
@@ -160,8 +160,8 @@ impl Fixture {
                 )).into_axum()),
         ).merge(authority.authorization()))?;
         let browser = authority::Authority::prepared_browser("admin")?;
-        let subject = browser_subject(&browser, &router).await?;
-        grants(&subject, None).await?;
+        let subject = prepared_subject(&browser)?;
+        identity::seed_grants(case_tenant(), &subject, grants(None)?).await?;
         pg(&format!(
             "INSERT INTO mdm_access.devices VALUES('{TENANT}','compliance-a'),('{TENANT}','compliance-b')",
             TENANT = case_tenant()

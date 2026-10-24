@@ -8,7 +8,26 @@ use rss_mdm_management_http::{
 use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub(crate) struct Directory {
-    pub state: Arc<crate::api::Assembly>,
+    pub tenant: rss_request_context::TenantId,
+    pub management_tenant: rss_request_context::TenantId,
+    pub identity: rss_identity_postgres::Authority,
+    pub federation: Option<rss_identity_postgres::Federation>,
+    pub tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
+    pub user_profiles: Arc<crate::user_profiles::Backend>,
+    pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub clock: Arc<dyn crate::clock::Clock>,
+    pub protection: Arc<rss_mdm_native_protection::Protector>,
+    pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
+    pub software: Arc<rss_mdm_software_service::management::catalog::Access<rss_mdm_content_service::software::SoftwareContent>>,
+    pub registration: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+    pub webhooks: Arc<crate::webhooks::Backend>,
+    pub windows: Arc<rss_mdm_windows_channel::Store>,
+    pub windows_loaded: bool,
+    pub windows_push_revision: Option<i64>,
+    pub apple_materials: Option<rss_mdm_apple_channel::runtime_materials::runtime::Selection>,
+    pub s3_revision: Option<i64>,
+    pub signing_key: Option<String>,
+    pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub apple: Arc<rss_mdm_apple_channel::HttpState>,
 }
 fn route(id: &str) -> Option<&'static str> {
@@ -55,8 +74,8 @@ impl Source for Directory {
         items: Vec<Item>,
     ) -> futures::future::BoxFuture<'a, Result<Vec<Entry>, Error>> {
         Box::pin(async move {
-            let business = proof.tenant_id() == self.state.identity.tenant.to_string();
-            if !business && proof.tenant_id() != self.state.identity.management_tenant.to_string() {
+            let business = proof.tenant_id() == self.tenant.to_string();
+            if !business && proof.tenant_id() != self.management_tenant.to_string() {
                 return Err(Error::Forbidden);
             }
             proof.bind_audit(&audit)?;
@@ -77,19 +96,7 @@ impl Source for Directory {
                 let mut projection = Projection::unknown(href);
                 match item.id {
                     "user-attributes" if business => {
-                        let backend = crate::user_profiles::Backend {
-                            cursor: rss_mdm_query::cursor::CursorCodec::from_key(
-                                ring::hmac::Key::new(
-                                    ring::hmac::HMAC_SHA256,
-                                    &self.state.flow.cursor_key,
-                                ),
-                            ),
-                            identity: self.state.identity.authority.clone(),
-                            tenant: self.state.identity.tenant,
-                            instance: self.state.identity.instance,
-                            audit: self.state.audit_store.clone(),
-                        };
-                        match backend.configured_count(&proof, &audit).await {
+                        match self.user_profiles.configured_count(&proof, &audit).await {
                             Ok(count) => {
                                 configured(&mut projection, count);
                                 projection.ready = true;
@@ -103,7 +110,7 @@ impl Source for Directory {
                             Some("current_process_loaded_not_external_qualification");
                     }
                     "organization" | "host-config" if !business => {
-                        if let Some(service) = &self.state.identity.tenant_administration {
+                        if let Some(service) = &self.tenant_administration {
                             match service.directory(&proof, item.id == "host-config").await {
                                 Ok(value) => {
                                     let values =
@@ -138,12 +145,12 @@ impl Source for Directory {
                     }
                     "audit" | "ledger" => {
                         projection.status =
-                            if item.id == "audit" || self.state.audit_store.uses_ledger() {
+                            if item.id == "audit" || self.audit.uses_ledger() {
                                 Status::Loaded
                             } else {
                                 Status::Unconfigured
                             };
-                        projection.reason = Some(if self.state.audit_store.uses_ledger() {
+                        projection.reason = Some(if self.audit.uses_ledger() {
                             "fixed_installation_key_no_same_chain_rotation"
                         } else {
                             "explicit_plain_installation_integrity_mode"
@@ -158,7 +165,7 @@ impl Source for Directory {
                         projection.reason =
                             Some("external_ca_custody_requires_deployment_operator_observation");
                         let mut count = 0;
-                        for binding in self.state.pki.bindings() {
+                        for binding in self.pki.bindings() {
                             let trust = binding.public().map_err(|_| Error::Conflict)?;
                             if matches!(item.id, "scep-decrypter" | "ca-webhook")
                                 && !matches!(
@@ -177,7 +184,7 @@ impl Source for Directory {
                         }
                     }
                     "windows-key" => {
-                        projection.status = if self.state.windows.is_some() {
+                        projection.status = if self.windows_loaded {
                             Status::Loaded
                         } else {
                             Status::Unconfigured
@@ -185,10 +192,10 @@ impl Source for Directory {
                         projection.reason = Some("current_process_loaded_not_device_confirmation");
                     }
                     "recovery-key" | "recovery-rsa" if business => {
-                        if let Some(protection) = self.state.execution.recovery_credentials() {
+                        if let Some(protection) = self.recovery.as_ref() {
                             configured(&mut projection, 1);
                             projection.status = if item.id == "recovery-rsa"
-                                && self.state.clock.unix_seconds().ok().is_none_or(|now| {
+                                && self.clock.unix_seconds().ok().is_none_or(|now| {
                                     protection.active_recipient().require_current(now).is_err()
                                 }) {
                                 Status::Unavailable
@@ -203,27 +210,23 @@ impl Source for Directory {
                         }
                     }
                     "oidc" if business => {
-                        if let Some(federation) = &self.state.identity.federation {
+                        if let Some(federation) = &self.federation {
                             use rss_mdm_authorization_service::credential::RequestCredential;
                             let credential = continuation.secret().duplicate()?;
                             let session = match credential {
                                 RequestCredential::Cookie(secret) => {
-                                    self.state
-                                        .identity
-                                        .authority
+                                    self.identity
                                         .inspect_session(
-                                            self.state.identity.tenant,
+                                            self.tenant,
                                             secret,
                                             crate::identity::deadline(),
                                         )
                                         .await
                                 }
                                 RequestCredential::Bearer(secret) => {
-                                    self.state
-                                        .identity
-                                        .authority
+                                    self.identity
                                         .inspect_bearer(
-                                            self.state.identity.tenant,
+                                            self.tenant,
                                             secret,
                                             crate::identity::deadline(),
                                         )
@@ -267,7 +270,7 @@ impl Source for Directory {
                         }
                     }
                     "oidc-state" => {
-                        projection.status = if self.state.identity.federation.is_some() {
+                        projection.status = if self.federation.is_some() {
                             Status::Loaded
                         } else {
                             Status::Unconfigured
@@ -357,8 +360,8 @@ impl Source for Directory {
                             });
                     }
                     "agent-package" if business => {
-                        let access = crate::api::software_access(&self.state);
-                        match rss_mdm_software_service::agent_packages::list(&access).await {
+                        let access = &self.software;
+                        match rss_mdm_software_service::agent_packages::list(access).await {
                             Ok(packages) => {
                                 configured(&mut projection, packages.len());
                                 projection.ready = !packages.is_empty();
@@ -371,25 +374,17 @@ impl Source for Directory {
                     "s3-key" | "storage" if business => {
                         let authority =
                             rss_mdm_content_service::connections::authority::Authority {
-                                tenant: self.state.identity.tenant,
-                                protection: self.state.protection.clone(),
-                                audit: self.state.audit_store.clone(),
+                                tenant: self.tenant,
+                                protection: self.protection.clone(),
+                                audit: self.audit.clone(),
                             };
                         match authority.read(&proof, &audit).await {
                             Ok(directory) => {
                                 projection.revision = Some(directory.revision);
                                 projection.desired_revision = directory.desired_revision;
                                 configured(&mut projection, directory.versions.len());
-                                let now = self.state.clock.unix_seconds().ok();
-                                let loaded =
-                                    self.state.content_writer.as_ref().and_then(
-                                        |store| match &store.config.storage {
-                                            rss_mdm_content_service::Storage::S3(value) => {
-                                                i64::try_from(value.revision).ok()
-                                            }
-                                            _ => None,
-                                        },
-                                    );
+                                let now = self.clock.unix_seconds().ok();
+                                let loaded = self.s3_revision;
                                 projection.applied_revision = loaded;
                                 if let Some(loaded) = loaded {
                                     let valid = directory.versions.iter().any(|v| {
@@ -452,18 +447,14 @@ impl Source for Directory {
                                     let desired: BTreeMap<String, i64> =
                                         serde_json::from_value(value["accountBindings"].clone())
                                             .map_err(|_| Error::Malformed)?;
-                                    let loaded = self
-                                        .state
-                                        .apple
-                                        .as_ref()
-                                        .map(|apple| &apple.config.materials.accounts);
+                                    let loaded = self.apple_materials.as_ref().map(|materials| &materials.accounts);
                                     projection.desired_revision = None;
                                     projection.applied_revision = None;
                                     projection.status = account_material_status(
                                         &value,
                                         &desired,
                                         loaded,
-                                        self.state.clock.unix_seconds().ok(),
+                                        self.clock.unix_seconds().ok(),
                                     )?;
                                     projection.ready = matches!(projection.status, Status::Loaded);
                                     projection.reason = Some(match projection.status {
@@ -473,9 +464,9 @@ impl Source for Directory {
                                     });
                                 } else {
                                     let loaded =
-                                        self.state.apple.as_ref().and_then(|apple| match purpose {
-                                            Purpose::Apns => apple.config.materials.apns,
-                                            Purpose::Profile => apple.config.materials.profile,
+                                        self.apple_materials.as_ref().and_then(|materials| match purpose {
+                                            Purpose::Apns => materials.apns,
+                                            Purpose::Profile => materials.profile,
                                             Purpose::ManagedAccount => None,
                                         });
                                     projection.applied_revision = loaded;
@@ -486,7 +477,7 @@ impl Source for Directory {
                                                     v["revision"].as_i64() == Some(revision)
                                                 })
                                             });
-                                        let now = self.state.clock.unix_seconds().ok();
+                                        let now = self.clock.unix_seconds().ok();
                                         let usable = selected.is_some_and(|v| {
                                             v["revoked"].as_bool() == Some(false)
                                                 && v["expiresAt"].as_i64().is_some_and(|expires| {
@@ -524,7 +515,7 @@ impl Source for Directory {
                         }
                     }
                     "registration" if business => {
-                        if let Some(service) = &self.state.agent_enrollment {
+                        if let Some(service) = &self.registration {
                             match service.settings(&proof).await {
                                 Ok(settings) => {
                                     configured(&mut projection, settings.values.platforms.len());
@@ -549,9 +540,9 @@ impl Source for Directory {
                     }
                     "smtp" if business => {
                         let service = rss_mdm_mail_service::authority::Authority {
-                            tenant: self.state.identity.tenant,
-                            protection: self.state.protection.clone(),
-                            audit: self.state.audit_store.clone(),
+                            tenant: self.tenant,
+                            protection: self.protection.clone(),
+                            audit: self.audit.clone(),
                         };
                         match service.read(&proof, &audit).await {
                             Ok(value) => {
@@ -583,7 +574,7 @@ impl Source for Directory {
                     }
                     "wns" if business => {
                         match rss_mdm_windows_channel::wns_materials::snapshot(
-                            &self.state.access.windows_store(),
+                            &self.windows,
                             &proof,
                         )
                         .await
@@ -592,12 +583,7 @@ impl Source for Directory {
                                 configured(&mut projection, values.versions.len());
                                 projection.revision = Some(values.revision);
                                 projection.desired_revision = values.desired_revision;
-                                projection.applied_revision = self
-                                    .state
-                                    .windows
-                                    .as_ref()
-                                    .filter(|w| w.channel.push.is_some())
-                                    .and_then(|w| w.config.push.as_ref().map(|p| p.revision));
+                                projection.applied_revision = self.windows_push_revision;
                                 if let Some(applied) = projection.applied_revision {
                                     let valid = values.versions.iter().any(|v| {
                                         v.revision == applied
@@ -628,18 +614,18 @@ impl Source for Directory {
                         }
                     }
                     "task-key" if business => {
-                        match self.state.execution.task_trust(&proof, &audit).await {
+                        match rss_mdm_execution_service::task_signing::service::read_task_trust(&self.audit, self.tenant, &proof, &audit, None).await {
                             Ok(trust) => {
                                 configured(&mut projection, trust.keys.len());
                                 projection.revision = i64::try_from(trust.revision).ok();
-                                projection.ready = self.state.execution.loaded_task_signing_key().is_some_and(|id| trust.keys.iter().any(|k| k.id == id && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active));
+                                projection.ready = self.signing_key.as_deref().is_some_and(|id| trust.keys.iter().any(|k| k.id == id && k.state == rss_mdm_agent_wire::task_trust::KeyState::Active));
                                 projection.reason = Some("device_acknowledgements_gate_activation");
                             }
                             Err(error) => unavailable(&mut projection, error.into())?,
                         }
                     }
                     "trust" | "crl" if business => {
-                        let trusts = self.state.pki.bindings();
+                        let trusts = self.pki.bindings();
                         configured(&mut projection, trusts.len());
                         projection.reason =
                             Some("device_distribution_and_crl_publication_are_separate");
@@ -661,9 +647,7 @@ impl Source for Directory {
                     }
                     "webhook-own" if business => {
                         use rss_mdm_management_http::webhooks::{Command, Source};
-                        match self
-                            .state
-                            .webhooks
+                        match self.webhooks
                             .execute(proof.clone(), audit.clone(), Command::Materials)
                             .await
                         {
@@ -727,9 +711,7 @@ impl Source for Directory {
                     "user-attributes" => Some(Permission::UserAttributeDefinitionsWrite),
                     _ => None,
                 };
-                let recent = self
-                    .state
-                    .clock
+                let recent = self.clock
                     .unix_seconds()
                     .ok()
                     .is_some_and(|now| proof.recently_authenticated(now, 300).unwrap_or(false));

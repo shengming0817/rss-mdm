@@ -166,7 +166,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         format!("http://{address}"),
     ));
     let device = case::name("timeline-device");
-    let subject = browser_subject(&f.admin, &f.router).await?;
+    let subject = prepared_subject(&f.admin)?;
     let mut grants = identity::device_grants(
         Some(device),
         &[
@@ -261,7 +261,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let (replay_status,_)=f.admin.call(&f.router,Method::PUT,&format!("/api/v1/devices/{device}/manual-fields/custom.office_floor"),Some(json!({"operationId":manual,"expectedRevision":0,"input":{"action":"set","value":{"kind":"integer","value":9}}}))).await?;
     ensure!(replay_status == StatusCode::OK);
     let other = f.authority.browser("other")?;
-    let denied_subject = browser_subject(&other, &f.router).await?;
+    let denied_subject = prepared_subject(&other)?;
     identity::seed_grants(
         case_tenant(),
         &denied_subject,
@@ -503,7 +503,7 @@ async fn administrators_use_existing_access_and_tenant_isolation_is_preserved() 
                         case_tenant()
                     ))?
             );
-            let subject = browser_subject(&other, &f.router).await?;
+            let subject = prepared_subject(&other)?;
             identity::seed_grants(
                 case_tenant(),
                 &subject,

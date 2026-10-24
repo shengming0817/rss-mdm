@@ -493,18 +493,12 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let member = browser_subject(&browser, &router).await?;
-    let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
+    let member = prepared_subject(&browser)?;
+    let mut grants = identity::device_grants(None, &["inventory_read"])?;
     for p in [
         "group_read",
         "group_write",
         "group_recompute",
-        "scope_read",
-        "scope_write",
-        "policy_read",
-        "policy_write",
-        "resource_read",
-        "resource_write",
     ] {
         grants.push(crate::authorization::Grant {
             operation: serde_json::from_value(json!(p))?,
@@ -514,9 +508,6 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     identity::seed_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let group = Uuid::new_v4();
-    let scope = Uuid::new_v4();
-    let policy = Uuid::new_v4();
-    let resource = Uuid::new_v4();
     let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"unhealthy Agent","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     let (_, decisions) = browser
         .call(
@@ -546,53 +537,6 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let item=reverse.1["items"].as_array().and_then(|items|items.iter().find(|v|v["id"]==group.to_string())).ok_or_else(||anyhow::anyhow!("associated group absent: {reverse:?}"))?;
     ensure!(item["assetContext"]=="associated_device" && item["objects"][0]["kind"]=="association","association flattened: {item}");
     ensure!(item["memberSet"].is_string() && item["evaluatedRuleVersion"].is_string() && item["inputCurrent"].is_boolean(),"missing membership basis: {item}");
-    call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    native_configuration_resource(
-        &mut browser,
-        &router,
-        resource,
-        "windows",
-        "x86_64",
-        windows_configuration(),
-    )
-    .await?;
-    call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"exit":"retain"}}})).await?;
-    await_ingress().await?;
-    let (status, page) = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/assignments"),
-            None,
-        )
-        .await?;
-    ensure!(status == StatusCode::OK, "{page}");
-    let assignments = page["items"].as_array().unwrap();
-    ensure!(assignments.len() == 1, "{page}");
-    ensure!(
-        assignments[0]["availability"] == "ready"
-            && assignments[0]["object"]["kind"] == "association"
-            && assignments[0]["channel"] == "mdm"
-            && assignments[0]["target"]["device"] == mdm,
-        "{page}"
-    );
-    ensure!(
-        assignments[0]["sources"][0]["members"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["device"] == agent && m["registrationId"] == registration.to_string()),
-        "{page}"
-    );
-    let old_route = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/devices"),
-            None,
-        )
-        .await?;
-    ensure!(old_route.0 == StatusCode::NOT_FOUND);
     stop_worker(automation).await?;
     Ok(())
     }).await

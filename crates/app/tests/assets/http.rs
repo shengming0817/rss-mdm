@@ -1,82 +1,9 @@
-use crate::test_support::{http::Browser, http::browser_subject};
+use crate::test_support::http::Browser;
 use crate::test_support::{process::*, runtime::*, *};
-struct AssetRuntime(Arc<rss_transactional_messaging_postgres::PgRuntime>);
-impl rss_runtime::ManagedResource for AssetRuntime {
-    fn name(&self) -> &str {
-        "asset-test-runtime"
-    }
-    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        self.0.close().await;
-        Ok(())
-    }
-}
-// Only asset routes and the real authentication/audit boundary; no Agent or Planning.
-struct AssetHttp {
-    resources: Resources,
-    router: Router,
-    author: Browser,
-    author_id: String,
-    grants: Vec<crate::authorization::Grant>,
-}
-impl AssetHttp {
-    async fn open() -> Result<Self> {
-        let mut authority = authority::Authority::open().await?;
-        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
-        authority.resources.resource(AssetRuntime(runtime.clone()));
-        let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
-        authority
-            .resources
-            .resource(InventoryFixtureResource(inventory.clone()));
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
-        let budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-        let audit = Arc::new(
-            authority
-                .audit
-                .on_runtime(runtime.clone(), tenant, &budget.control())
-                .await?,
-        );
-        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            audit,
-            runtime,
-            tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-        ));
-        let routes = Router::new()
-            .nest(
-                "/api/v1",
-                rss_mdm_management_http::assets::routes()
-                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                        assets,
-                    }))
-                    .into_axum(),
-            )
-            .merge(authority.authorization());
-        let router = authority.router(routes)?;
-        let author = authority.browser("other")?;
-        let author_id = browser_subject(&author, &router).await?;
-        let grants = crate::test_support::identity::device_grants(
-            None,
-            &["inventory_read", "inventory_assign"],
-        )?;
-        crate::test_support::identity::seed_grants(case_tenant(), &author_id, grants.clone())
-            .await?;
-        Ok(Self {
-            resources: authority.resources,
-            router,
-            author,
-            author_id,
-            grants,
-        })
-    }
-}
+use super::{AssetHttp, AssetRuntime};
 mod identity_read {
     use super::AssetHttp;
-    use crate::test_support::http::{Browser, set_device_grants};
+    use crate::test_support::http::{Browser, change_device_grants};
     use crate::test_support::{process::*, runtime::*, *};
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real read authorization and PostgreSQL projection"]
@@ -91,9 +18,7 @@ mod identity_read {
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
         );
-        set_device_grants(
-            &mut browser,
-            &authorized,
+        change_device_grants(&mut browser,
             crate::test_support::case::name("device-1"),
             &["inventory_read"],
         )

@@ -95,7 +95,7 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
         ensure!(filled["revision"].as_u64()==Some(cleared["revision"].as_u64().unwrap()+1) && filled["user"]==initial_owner["user"]);
         let old_author=f.author.clone();
         f.author=crate::test_support::authority::Authority::prepared_browser("admin")?;
-        let admin=crate::test_support::http::browser_subject(&f.author,&f.router).await?;
+        let admin=crate::test_support::http::prepared_subject(&f.author)?;
         crate::test_support::identity::seed_grants(case_tenant(),&admin,f.grants.clone()).await?;
         let switch=json!({"operationId":Uuid::new_v4(),"expectedRevision":bound.1["revision"]});
         let switched=call(&f,Method::PUT,Some(switch),true,true).await?;
@@ -183,7 +183,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         ensure!(expired.0==StatusCode::OK && expired.1["endpoints"][0]["currentUser"]["state"]=="invalidated");
         crate::test_support::process::pg(&format!("UPDATE mdm_access.agent_issuances i SET not_after={} FROM mdm_access.credentials k WHERE (k.tenant_id,k.id)=(i.tenant_id,i.credential) AND k.tenant_id='{}' AND k.registration='{}'",expiry.trim(),case_tenant(),registration))?;
         // A separate live management session can observe revocation of the exact Agent session.
-        f.author=manager_session(&f.router).await?;
+        f.author=crate::test_support::authority::Authority::prepared_browser("other")?;
         let page=f.author.call(&f.router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         ensure!(page.0==StatusCode::OK,"page {page:?}");
         let cursor=page.1["nextCursor"].as_str().context("two authorized endpoints")?.to_owned();
@@ -201,11 +201,6 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
             Ok(())
         }).await
     }).await
-}
-async fn manager_session(router: &Router) -> Result<Browser> {
-    let mut browser = Browser::default();
-    ensure!(browser.login(router, "other").await? == StatusCode::OK);
-    Ok(browser)
 }
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: Identity management can take product authorization while directory rechecks a session"]

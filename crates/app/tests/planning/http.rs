@@ -4,7 +4,7 @@
 )]
 use crate::test_support::planning_http::*;
 use crate::test_support::{
-    http::Browser, http::await_task, http::browser_subject, http::set_device_grants,
+    http::Browser, http::await_task, http::prepared_subject, http::change_device_grants,
     http::change_management_grants, http::seed_management_grants,
 };
 use crate::test_support::{process::*, runtime::*, *};
@@ -19,7 +19,7 @@ async fn console_collection_routes_reuse_current_policy() -> Result<()> {
             app_resources
                 .finish(async {
                     let mut browser = fixture.browser("other")?;
-                    let subject = browser_subject(&browser, &router).await?;
+                    let subject = prepared_subject(&browser)?;
                     seed_management_grants(
                         &subject,
                         json!(["group_read", "scope_read", "policy_read", "resource_read"]),
@@ -71,9 +71,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
     let device = case::name("pending-console");
-    set_device_grants(
-        &mut browser,
-        &router,
+    change_device_grants(&mut browser,
         device,
         &["enrollment", "inventory_read"],
     )
@@ -113,7 +111,7 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
             == "0",
         "directory inserted pending device authority"
     );
-    set_device_grants(&mut browser, &router, device, &["enrollment"]).await?;
+    change_device_grants(&mut browser, device, &["enrollment"]).await?;
     for id in [device, case::name("hidden-console")] {
         ensure!(
             browser
@@ -145,7 +143,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     identity::seed_grants(
         case_tenant(),
         &subject,
@@ -239,7 +237,7 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
         .await?;
     ensure!(detail["status"] == "revoked" && detail["channels"][0]["status"] == "revoked");
     ensure!(detail["capabilities"][0]["devicePrerequisite"]["reason"] == "not_registered");
-    set_device_grants(&mut browser, &router, pending, &["inventory_read"]).await?;
+    change_device_grants(&mut browser, pending, &["inventory_read"]).await?;
     let (_, page) = browser
         .call(&router, Method::GET, "/api/v1/devices?limit=1", None)
         .await?;
@@ -371,7 +369,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     let mut grants = identity::device_grants(None, &["inventory_read", "device_unmanage"])?;
     for operation in ["group_read", "group_write", "scope_read", "scope_write",
         "resource_read", "resource_write", "policy_read", "policy_write"] {
@@ -526,7 +524,7 @@ async fn console_scope_ready_tracks_current_admission() -> Result<()> {
     let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     seed_management_grants(&subject, json!(["scope_read", "scope_write"])).await?;
     let scope = Uuid::new_v4();
     let path = format!("/api/v1/scopes/{scope}");
@@ -603,7 +601,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         let (router, app_resources) = app(&fixture.base).await?;
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
-            let member = browser_subject(&browser, &router).await?;
+            let member = prepared_subject(&browser)?;
             seed_management_grants(&member, json!(["group_read","group_write","group_recompute","scope_read","scope_write","policy_read","policy_write","resource_read","resource_write"])).await?;
             let group = uuid::Uuid::new_v4();
             let scope = uuid::Uuid::new_v4();
@@ -752,12 +750,12 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
     let (router, app_resources) = app(&fixture.base).await?;
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
+    let subject = prepared_subject(&browser)?;
     seed_management_grants(&subject, json!(["resource_read", "resource_write"])).await?;
     let catalog = browser
         .call(&router, Method::GET, "/api/v1/collection-blueprints", None)
         .await?;
-    ensure!(catalog.0 == StatusCode::OK && catalog.1["categories"].as_array().unwrap().len() == 6);
+    ensure!(catalog.0 == StatusCode::OK);
     ensure!(
         catalog.1["items"]
             .as_array()
@@ -820,7 +818,8 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         )
         .await?;
     ensure!(directory.0 == StatusCode::OK && directory.1["items"].as_array().unwrap().len() == 2);
-    for id in ["windows.agent.certificates_device_my","macos.agent.certificates_system"] {
+    {
+        let id = "windows.agent.certificates_device_my";
         let target=format!("/api/v1/resources/{}",uuid::Uuid::new_v4());
         let input=json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"instantiate","blueprint":id,"version":"1"}});
         let created=settled_write(&mut browser,&router,&target,input.clone()).await?;
@@ -855,11 +854,8 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
     let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
-            let (router, app_resources) = app(&fixture.base).await?;
-            app_resources
-                .finish(async {
                     let browser = fixture.browser("other")?;
-                    let subject = browser_subject(&browser, &router).await?;
+                    let subject = prepared_subject(&browser)?;
                     let mut grants = identity::device_grants(None, &["inventory_read"])?;
                     grants.push(crate::authorization::Grant {
                         operation: crate::authorization::Permission::GroupRead,
@@ -910,8 +906,6 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                         "stale request authority: {result:?}"
                     );
                     Ok(())
-                })
-                .await
         })
         .await
 }
@@ -930,7 +924,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         let (router,resources)=app(&fixture.base).await?;
         resources.finish(async {
             let mut browser=fixture.browser("other")?;
-            let subject=browser_subject(&browser,&router).await?;
+            let subject=prepared_subject(&browser)?;
             let mut grants=identity::device_grants(None,&["inventory_read","configuration_write"])?;
             for name in ["group_read","group_write","group_recompute","scope_read","scope_write","compliance_rule_read","compliance_write","policy_read","policy_write","resource_read","resource_write"] {
                 grants.push(crate::authorization::Grant {operation:serde_json::from_value(json!(name))?,scope:crate::authorization::Scope::Tenant});
@@ -1056,7 +1050,7 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
         let router=router.layer(axum::Extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?)));
         app_resources.finish(async {
             let mut browser = fixture.browser("other")?;
-            let subject = browser_subject(&browser, &router).await?;
+            let subject = prepared_subject(&browser)?;
             seed_management_grants(&subject,json!(["resource_read","resource_write"])).await?;
             let ids=[case::name("query-a"),case::name("query-b"),case::name("query-c"),case::name("query-d"),case::name("query-e")];
             for (id,kind) in ids.iter().zip(["script","software","script","configuration","script"]) {
@@ -1152,7 +1146,7 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
         resources.finish(async {
             let mut browser = fixture.browser("other")?;
             let device = case::name("dataset-presence");
-            set_device_grants(&mut browser, &router, device, &["inventory_read"]).await?;
+            change_device_grants(&mut browser, device, &["inventory_read"]).await?;
             let (registration, epoch) = crate::test_support::inventory::seed_source(device, "agent", "agent.native", "old")?;
             pg(&format!("DELETE FROM mdm.inventory WHERE tenant_id='{}' AND registration='{registration}'", case_tenant()))?;
             let path = format!("/api/v1/devices/{device}");

@@ -371,8 +371,9 @@ impl Host {
             .as_ref()
             .map(|pki| {
                 crate::test_support::agent::application_service(
-                    access_audit.clone(),                    pki,
-                    &store,
+                    access_audit.clone(),
+                    pki,
+                    store.registration(),
                     agent_audit.clone(),
                     execution.service.clone(),
                 )
