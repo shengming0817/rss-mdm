@@ -141,7 +141,16 @@ pub enum Kind {
     TelemetryProfile,
 }
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 /// Operating system selected by an exact variant lookup.
@@ -153,7 +162,16 @@ pub enum Platform {
     MacOS,
 }
 #[derive(
-    Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 /// CPU architecture selected by an exact variant lookup.
@@ -585,7 +603,9 @@ struct Entry {
     state: State,
 }
 /// Immutable provenance captured when a blueprint creates a tenant resource.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct BlueprintOrigin {
     /// Official blueprint identity.
@@ -883,9 +903,6 @@ impl References {
     }
 }
 
-mod mapping;
-pub use mapping::{Conversion, ValueMapping};
-
 /// Immutable official collection starting points.
 pub mod blueprints;
 
@@ -900,3 +917,9 @@ pub use telemetry::{
     TelemetryBoost, TelemetryBudget, TelemetryFieldReference, TelemetryProfile,
     TelemetryProfileSpec, TelemetryProjection, TelemetryTemplate,
 };
+
+impl From<rss_mdm_agent_wire::runtime::WireError> for Error {
+    fn from(_: rss_mdm_agent_wire::runtime::WireError) -> Self {
+        Self::InvalidInput
+    }
+}

@@ -1,4 +1,7 @@
 //! Local counter normalization is an explicit Network-only recipe, not a generic conversion.
+use rss_mdm_agent_wire::runtime::{
+    AgentCollectionMapping, Conversion, NativeMissing, ValueMapping,
+};
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
 use rss_mdm_resource::*;
 
@@ -101,7 +104,8 @@ fn normalization_roundtrips_only_for_network_recipe() {
 fn field_semantics_require_explicit_normalization_and_a_distinct_generated_start() {
     let input = spec();
     let mapping = &input.mappings["custom.network.received"];
-    let mapping = w::TelemetryNativeMapping {
+    let mapping = w::AgentCollectionMapping {
+        missing: w::NativeMissing::Missing,
         query: mapping.query.clone(),
         counter_normalization: mapping.counter_normalization,
         mapping: serde_json::from_value(serde_json::to_value(&mapping.mapping).unwrap()).unwrap(),
@@ -157,9 +161,9 @@ fn field_semantics_require_explicit_normalization_and_a_distinct_generated_start
     unmarked.counter_normalization = None;
     unmarked.mapping.columns.insert(
         "interval_start".into(),
-        w::TelemetryValueMapping {
+        w::ValueMapping {
             pointer: "/sent_bytes".into(),
-            conversion: w::TelemetryConversion::Integer,
+            conversion: w::Conversion::Integer,
             columns: Default::default(),
         },
     );

@@ -157,6 +157,40 @@
       "policy": "11111111-2222-4333-8444-555555555555",
       "policyVersion": "11111111-2222-4333-8444-555555555555",
       "registrationId": "11111111-2222-4333-8444-555555555555",
+      "resourceDigest": [
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8,
+        8
+      ],
       "sampleMillis": 5000,
       "source": "agent.script",
       "sourceEpoch": "11111111-2222-4333-8444-555555555555",
@@ -169,8 +203,8 @@
       "uploadMillis": 10000
     },
     "keyId": "vector-key",
-    "signature": "6S3qK09aT4bO9c_4B2MdAtZxTCXHng22vmoeL7y_LzPDadhi-jTeRsnEAZTGolAKL1PzzSCPeztTPz7PmrTPBA"
+    "signature": "oohqY3LJxLnD0giUI0ua1hGEP88t2pAtAiJ320Int_y0bjCVpq_oZlQ8v2minuq_ztvVcMjr9PfGBymaX8zRAQ"
   },
-  "signingBytesLength": 1678,
-  "signingBytesSha256": "29866998df76d1edc3dea32ca823e52319ddc838f64e1bf58b7f7d048ae37b19"
+  "signingBytesLength": 1761,
+  "signingBytesSha256": "ca52eb73502b311a81c8fffc796d4451e9e293bd58eeb806c6ec944143e5f220"
 }

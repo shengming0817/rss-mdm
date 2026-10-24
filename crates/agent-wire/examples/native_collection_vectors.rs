@@ -1,4 +1,6 @@
 //! Reproducible current native task/result vectors for independent Agent consumers.
+#[path = "../tests/support/projection.rs"]
+mod projection;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::Ed25519KeyPair;
 use rss_mdm_agent_wire::{CollectionScope, runtime::*};
@@ -68,7 +70,8 @@ fn vector(
     };
     let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
     let tasks:Vec<_>=[TaskPermit::Offer,TaskPermit::Start].into_iter().map(|permit|{
-        let spec=CollectionTaskSpec{wire_version:COLLECTION_TASK_VERSION,execution:NativeExecutionBinding{generated_uid:if plan.execution_identity()==ExecutionIdentity::System || plan.platform()==TaskPlatform::Windows {None}else{Some("00000000-0000-0000-0000-000000000501".into())},identity:plan.execution_identity(),context_revision:1,target:if plan.execution_identity() == ExecutionIdentity::System { SoftwareExecutionTarget::Device } else { SoftwareExecutionTarget::User { identity:if plan.platform()==TaskPlatform::Windows {"S-1-5-21-1-2-3-1001".into()}else{"501".into()},session_id:id } }},tenant_id:id,device_id:"device".into(),platform:plan.platform(),architecture:TaskArchitecture::X86_64,registration_id:id,generation:7,task_id:id,attempt_id:id,permit,expires_at:110,deadline:200,resource_digest:[1;32],resource:TaskResource{id:"native".into(),version:"v1".into(),variant:"default".into()},authorization:TaskAuthorization::Policy{policy_id:id,policy_version:id},plan_digest:plan.digest(),plan:plan.clone()};
+        let (fields,mappings)=projection::projection(&plan);
+        let spec=CollectionTaskSpec{fields,mappings,wire_version:COLLECTION_TASK_VERSION,execution:NativeExecutionBinding{generated_uid:if plan.execution_identity()==ExecutionIdentity::System || plan.platform()==TaskPlatform::Windows {None}else{Some("00000000-0000-0000-0000-000000000501".into())},identity:plan.execution_identity(),context_revision:1,target:if plan.execution_identity() == ExecutionIdentity::System { SoftwareExecutionTarget::Device } else { SoftwareExecutionTarget::User { identity:if plan.platform()==TaskPlatform::Windows {"S-1-5-21-1-2-3-1001".into()}else{"501".into()},session_id:id } }},tenant_id:id,device_id:"device".into(),platform:plan.platform(),architecture:TaskArchitecture::X86_64,registration_id:id,generation:7,task_id:id,attempt_id:id,permit,expires_at:110,deadline:200,resource_digest:[1;32],resource:TaskResource{id:"native".into(),version:"v1".into(),variant:"default".into()},authorization:TaskAuthorization::Policy{policy_id:id,policy_version:id},plan_digest:plan.digest(),plan:plan.clone()};
         let payload=TaskPayload::Collection(Box::new(spec));let bytes=payload.signing_bytes("vector-key").unwrap();
         json!({"payloadJson":serde_json::to_string(&payload).unwrap(),"signingBytesLength":bytes.len(),"signingBytesSha256":format!("{:x}",Sha256::digest(&bytes)),"signature":URL_SAFE_NO_PAD.encode(key.sign(&bytes).as_ref())})
     }).collect();

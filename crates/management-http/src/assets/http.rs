@@ -144,9 +144,14 @@ fn authorize(
                 Err(rss_mdm_inventory_service::Error::Forbidden)
             }
         }
+        Command::FieldReferences { .. } => {
+            auth.proof.manage(Permission::InventoryFieldsWrite)?;
+            auth.proof
+                .manage(Permission::ResourceRead)
+                .map_err(rss_mdm_inventory_service::Error::from)
+        }
         Command::FieldLayoutWrite { .. }
         | Command::FieldWrite { .. }
-        | Command::FieldReferences { .. }
         | Command::RetentionWrite { .. }
         | Command::RetentionRead { .. } => auth
             .proof
@@ -201,7 +206,7 @@ async fn run(
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => audit.target_device(device),
-        Command::FieldWrite { field, .. } | Command::FieldReferences { field } => {
+        Command::FieldWrite { field, .. } | Command::FieldReferences { field, .. } => {
             audit.target(field.as_str())
         }
         Command::QueryStatus { task, .. }
@@ -497,9 +502,20 @@ async fn field_references(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(key): Path<String>,
+    query: std::result::Result<
+        axum::extract::Query<FieldReferenceQuery>,
+        axum::extract::rejection::QueryRejection,
+    >,
 ) -> std::result::Result<HttpResponse, Error> {
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    run(&app, &auth, &audit, Command::FieldReferences { field }).await
+    let axum::extract::Query(query) = query.map_err(|_| Error::Malformed)?;
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::FieldReferences { field, query },
+    )
+    .await
 }
 
 #[derive(Deserialize)]

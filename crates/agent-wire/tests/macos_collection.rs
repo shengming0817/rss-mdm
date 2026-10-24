@@ -1,3 +1,5 @@
+#[path = "support/projection.rs"]
+mod projection;
 use rss_mdm_agent_wire::{CollectionEnvironment, CollectionScope, runtime::*};
 use serde_json::json;
 
@@ -361,7 +363,10 @@ fn signed_macos_collection_binds_identity_plan_and_permit() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     let plan = plan(brew("/opt/homebrew"));
     let id = uuid::Uuid::from_u128(1);
+    let (fields, mappings) = projection::projection(&plan);
     let task = CollectionTaskSpec {
+        fields,
+        mappings,
         wire_version: COLLECTION_TASK_VERSION,
         tenant_id: id,
         device_id: "mac".into(),

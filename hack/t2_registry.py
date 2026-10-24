@@ -2256,3 +2256,6 @@ if __name__ == '__main__':
     parser.add_argument('--module-ids', action='store_true', required=True)
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
+
+# Shared projection declarations and pure semantics moved from Resource to agent-wire (#2914).
+consume(('crates/agent-wire/src/mapping.rs',), 'planning.http planning.agent_policy execution.agent.delivery assets.http telemetry.ingress.postgres windows.management apple.collection')

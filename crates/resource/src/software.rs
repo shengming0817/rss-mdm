@@ -47,7 +47,7 @@ fn invalid(kind: Validation) -> Error {
 }
 
 /// Exact admitted source revision; neither a URL nor a credential.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareSource {
     /// Tenant-local source identity.
@@ -58,7 +58,7 @@ pub struct SoftwareSource {
     pub sha256: [u8; 32],
 }
 /// A member of the complete immutable artifact set.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareArtifact {
     /// Opaque content reference, not a download URL.
@@ -82,7 +82,7 @@ impl SoftwareArtifact {
     }
 }
 /// Reboot permission. A reported requirement does not itself authorize a reboot.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareReboot {
     /// Block an installation requiring reboot.
@@ -91,7 +91,7 @@ pub enum SoftwareReboot {
     Report,
 }
 /// Explicit permission to replace a newer version.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareDowngrade {
     /// Never downgrade.
@@ -100,7 +100,7 @@ pub enum SoftwareDowngrade {
     Allow,
 }
 /// Exact same-tenant dependency; graph validation occurs under product resource locks.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareDependency {
     /// Resource identity in this version's tenant.
@@ -111,7 +111,7 @@ pub struct SoftwareDependency {
     pub sha256: [u8; 32],
 }
 /// Every ZIP member other than manifest.json is declared here.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BundleEntry {
     /// Exact uncompressed length; empty payload files are allowed.
@@ -120,7 +120,7 @@ pub struct BundleEntry {
     pub sha256: [u8; 32],
 }
 /// Canonical manifest.json value. Its canonical bytes and all entries are approved together.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BundleManifest {
     /// Must be 1. Unknown versions are rejected.
@@ -137,7 +137,7 @@ mod validation;
 pub use behavior::*;
 
 /// Installation material independent of any executable plan.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareMaterial {
     /// Observed application bundle identity for native PKG deployment, when available.
@@ -148,7 +148,7 @@ pub struct SoftwareMaterial {
     pub installer: String,
 }
 /// Supported material families, including existing source-based definitions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SoftwareFormat {
     /// Windows executable.
@@ -184,7 +184,7 @@ impl SoftwareFormat {
     }
 }
 /// Single current definition; behavior owns format-specific installer semantics.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SoftwareSpec {
     /// Exact approved source revision.
@@ -213,7 +213,7 @@ pub struct SoftwareSpec {
     pub export: SoftwareExport,
 }
 /// Validated immutable software. Construction does not grant authority or prove execution.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "SoftwareSpec", into = "SoftwareSpec")]
 pub struct SoftwareDefinition {
     spec: Box<SoftwareSpec>,

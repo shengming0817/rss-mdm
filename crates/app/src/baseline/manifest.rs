@@ -500,7 +500,7 @@ fn performance(
 
 fn performance_mapping(
     f: &d::FieldDefinition,
-) -> Result<(String, r::AgentCollectionMapping), Error> {
+) -> Result<(String, rss_mdm_agent_wire::runtime::AgentCollectionMapping), Error> {
     let (query, path) = match f.key.as_str() {
         "custom.baseline.cpu_busy_percent" => ("cpu", "/busy_percent"),
         "custom.baseline.memory_total_bytes" => ("memory", "/total_bytes"),
@@ -510,25 +510,25 @@ fn performance_mapping(
         _ => return Err(Error::Malformed),
     };
     let array = f.item_key.is_some();
-    let scalar = r::ValueMapping {
+    let scalar = rss_mdm_agent_wire::runtime::ValueMapping {
         pointer: path.into(),
         conversion: if query == "cpu" {
-            r::Conversion::Identity
+            rss_mdm_agent_wire::runtime::Conversion::Identity
         } else {
-            r::Conversion::Integer
+            rss_mdm_agent_wire::runtime::Conversion::Integer
         },
         columns: BTreeMap::new(),
     };
     let mapping = if array {
-        r::ValueMapping {
+        rss_mdm_agent_wire::runtime::ValueMapping {
             pointer: String::new(),
-            conversion: r::Conversion::Identity,
+            conversion: rss_mdm_agent_wire::runtime::Conversion::Identity,
             columns: [
                 (
                     "id".into(),
-                    r::ValueMapping {
+                    rss_mdm_agent_wire::runtime::ValueMapping {
                         pointer: "/id".into(),
-                        conversion: r::Conversion::Identity,
+                        conversion: rss_mdm_agent_wire::runtime::Conversion::Identity,
                         columns: BTreeMap::new(),
                     },
                 ),
@@ -541,10 +541,10 @@ fn performance_mapping(
     };
     Ok((
         f.key.as_str().to_owned(),
-        r::AgentCollectionMapping {
+        rss_mdm_agent_wire::runtime::AgentCollectionMapping {
             query: query.into(),
             mapping,
-            missing: r::NativeMissing::Missing,
+            missing: rss_mdm_agent_wire::runtime::NativeMissing::Missing,
             counter_normalization: None,
         },
     ))
@@ -661,6 +661,28 @@ mod tests {
         let mut blueprints = 0;
         for step in &a.steps {
             match &step.action {
+                Action::Policy { definition } => match &definition.action {
+                    rss_mdm_policy::Action::AgentCollection {
+                        schedule,
+                        frequency,
+                        ..
+                    }
+                    | rss_mdm_policy::Action::NativeCollection {
+                        schedule,
+                        frequency,
+                        ..
+                    } => {
+                        assert!(matches!(frequency, rss_mdm_policy::Frequency::EveryTrigger));
+                        assert!(matches!(
+                            schedule.trigger,
+                            rss_mdm_policy::schedule::Trigger::Interval {
+                                anchor: 0,
+                                seconds: 3600
+                            }
+                        ));
+                    }
+                    _ => (),
+                },
                 Action::Resource { input, .. } => {
                     let _: rss_mdm_flow_service::resource_catalog::Change =
                         serde_json::from_value(input.clone()).expect("ordinary Resource contract");

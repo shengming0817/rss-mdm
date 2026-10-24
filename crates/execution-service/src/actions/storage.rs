@@ -522,6 +522,14 @@ impl ScheduledPolicy {
                     &binding.execution_context,
                 ))?;
                 let spec = wire::CollectionTaskSpec {
+                    fields: v
+                        .frozen
+                        .fields
+                        .iter()
+                        .map(rss_mdm_inventory_service::collection::wire::to_wire_field)
+                        .collect::<std::result::Result<_, _>>()
+                        .map_err(|_| Error::Malformed)?,
+                    mappings: v.frozen.definition.spec().mappings.clone(),
                     wire_version: wire::COLLECTION_TASK_VERSION,
                     execution,
                     tenant_id: checked_input(Uuid::parse_str(&tx.tenant_id().to_string()))?,

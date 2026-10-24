@@ -324,3 +324,20 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 `{operationId,expectedRevision,input:{}}`，退出当前评估、释放当前组/字段引用及规则配额；
 同操作重试返回原回执，在途旧任务结算为 superseded。删除后普通 Get 为 404，原 ID 不可重建；
 历史版本和设备评估仍可读取，`filter=deleted==true` 可发现规则墓碑。只支持当前 V1 全新安装，不提供旧库升级。
+
+## 通用字段映射与发布
+
+自定义字段先经 `/api/v1/asset-fields/{field}` 定义；采集 Resource 通过原 `/api/v1/resources/{id}`
+版本接口声明该字段的映射，Policy 冻结当前已批准版本。类型、来源、平台、查询引用或预算不合法时拒绝发布。
+纯手工字段不要求采集映射；新增字段不会自动创建默认 Policy 或扩大本地 Agent 能力。
+未知展示扩展仍按原产品规则保存，不参与可信字段解释。
+
+`GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
+`limit` 默认 64、范围 1–128，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
+映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
+此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
+
+管理端映射与编辑契约由 [Collection schema](../../crates/management-http/schema/Collection.json) 派生提供，
+生成入口为 `cargo run --locked -p rss-mdm-management-http --example collection_schema`。
+类型源是真实 Resource HTTP 输入/输出和字段目录类型，不维护 Web 手写结构副本。
+企业采集的字段映射随签名任务/遥测配置下发；Agent 本地打包能力和桌面设置权限不受该接口控制。

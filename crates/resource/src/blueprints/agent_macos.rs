@@ -3,6 +3,9 @@
 //! ref: osquery/osquery osquery/tables/system/darwin/homebrew_packages.cpp@5.23.1
 //! ref: osquery/osquery specs/darwin/package_receipts.table@5.23.1
 use super::*;
+use rss_mdm_agent_wire::runtime::{
+    AgentCollectionMapping, Conversion, NativeMissing, ValueMapping,
+};
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
 fn budget() -> w::NativeBudget {
     w::NativeBudget {

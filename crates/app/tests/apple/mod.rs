@@ -932,7 +932,7 @@ impl Fixture {
                     field.into(),
                     NativeMapping {
                         query: rss_mdm_resource::NativeQuery::Apple(query.into()),
-                        mapping: rss_mdm_resource::ValueMapping::identity(""),
+                        mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                     },
                 )
             })

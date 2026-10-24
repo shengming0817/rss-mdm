@@ -97,57 +97,16 @@ pub async fn template(
 /// Validate projected columns and converted scalar types before publishing a template.
 pub fn validate_mapping(
     field: &rss_mdm_inventory::FieldDefinition,
-    mapping: &rss_mdm_resource::ValueMapping,
+    mapping: &rss_mdm_agent_wire::runtime::ValueMapping,
 ) -> Result<(), Error> {
-    fn check(ty: &ValueType, mapping: &rss_mdm_resource::ValueMapping) -> Result<(), Error> {
-        use rss_mdm_resource::Conversion;
-        if !mapping.columns.is_empty() {
-            let ValueType::Object { properties } = ty else {
-                return Err(Error::Malformed);
-            };
-            if mapping.columns.keys().ne(properties.keys()) {
-                return Err(Error::Malformed);
-            }
-            for (name, column) in &mapping.columns {
-                check(&properties[name], column)?;
-            }
-        } else {
-            let valid = match &mapping.conversion {
-                Conversion::Identity => true,
-                Conversion::ArrayMember {
-                    present, absent, ..
-                } => ty.decode_json(present).is_ok() && ty.decode_json(absent).is_ok(),
-                Conversion::CimTime => matches!(ty, ValueType::Time),
-                Conversion::Integer | Conversion::Scale { .. } => {
-                    matches!(ty, ValueType::Integer | ValueType::Time)
-                }
-                Conversion::Number => matches!(ty, ValueType::Number),
-                Conversion::Enum { values } => values.values().all(|v| ty.decode_json(v).is_ok()),
-                Conversion::Bitmask { flags } => ty
-                    .decode_json(&serde_json::json!(flags.values().collect::<Vec<_>>()))
-                    .is_ok(),
-            };
-            if !valid {
-                return Err(Error::Malformed);
-            }
-        }
-        Ok(())
-    }
-    mapping.validate().map_err(|_| Error::Malformed)?;
-    let target = match (&field.value_type, &mapping.conversion) {
-        (ValueType::Array { items, .. }, conversion)
-            if !matches!(conversion, rss_mdm_resource::Conversion::Bitmask { .. }) =>
-        {
-            items.as_ref()
-        }
-        (ty, _) => ty,
-    };
-    check(target, mapping)
+    mapping
+        .validate_type(&super::wire::to_wire_field(field)?.value_type)
+        .map_err(|_| Error::Malformed)
 }
 /// Shared mapping boundary for native, SQL and script output. Missing data is never a tombstone.
 pub fn mapped_value(
     field: &rss_mdm_inventory::FieldDefinition,
-    mapping: &rss_mdm_resource::ValueMapping,
+    mapping: &rss_mdm_agent_wire::runtime::ValueMapping,
     raw: &serde_json::Value,
 ) -> NativeValue {
     let Some(raw) = raw.pointer(&mapping.pointer) else {
@@ -157,7 +116,7 @@ pub fn mapped_value(
         (&field.value_type, raw)
         && !matches!(
             mapping.conversion,
-            rss_mdm_resource::Conversion::Bitmask { .. }
+            rss_mdm_agent_wire::runtime::Conversion::Bitmask { .. }
         )
     {
         return NativeValue::list(
@@ -165,7 +124,7 @@ pub fn mapped_value(
             rows.iter()
                 .map(|row| {
                     let value = mapping
-                        .project(row)
+                        .project_selected(row)
                         .map_err(|_| rss_mdm_inventory::Invalid::Value)?;
                     items.decode_json(&value)
                 })
@@ -173,7 +132,7 @@ pub fn mapped_value(
         )
         .unwrap_or(NativeValue::Invalid);
     }
-    let Ok(projected) = mapping.project(raw) else {
+    let Ok(projected) = mapping.project_selected(raw) else {
         return NativeValue::Invalid;
     };
     if projected.is_null() && field.nullable {
@@ -260,20 +219,12 @@ pub fn result_with_unsupported(
 pub fn validate_agent_mapping(
     field: &rss_mdm_inventory::FieldDefinition,
     definition: &rss_mdm_resource::AgentCollectionDefinition,
-    binding: &rss_mdm_resource::AgentCollectionMapping,
+    binding: &rss_mdm_agent_wire::runtime::AgentCollectionMapping,
 ) -> Result<(), Error> {
+    use rss_mdm_agent_wire::runtime::{Conversion as C, NativeMissing};
     use rss_mdm_agent_wire::runtime::{NativeCardinality, NativeType as N};
-    use rss_mdm_resource::{Conversion as C, NativeMissing};
     let query = &definition.spec().plan.spec().queries[&binding.query];
-    let mapping = rss_mdm_agent_wire::runtime::TelemetryNativeMapping {
-        query: binding.query.clone(),
-        counter_normalization: binding.counter_normalization,
-        mapping: serde_json::from_value(
-            serde_json::to_value(&binding.mapping).map_err(|_| Error::Malformed)?,
-        )
-        .map_err(|_| Error::Malformed)?,
-    };
-    mapping
+    binding
         .validate_counter_normalization(&query.definition, &super::wire::to_wire_field(field)?)
         .map_err(|_| Error::Malformed)?;
     let mut projected_field = field.clone();
@@ -375,7 +326,7 @@ pub fn validate_agent_mapping(
     }
     fn mapped(
         p: &std::collections::BTreeMap<String, N>,
-        m: &rss_mdm_resource::ValueMapping,
+        m: &rss_mdm_agent_wire::runtime::ValueMapping,
         t: &ValueType,
     ) -> bool {
         if !m.columns.is_empty() {
@@ -602,8 +553,8 @@ fn system_field_matches(
 #[cfg(test)]
 mod mapping_tests {
     use super::*;
+    use rss_mdm_agent_wire::runtime::{Conversion, ValueMapping};
     use rss_mdm_inventory::{Scalar, builtin};
-    use rss_mdm_resource::{Conversion, ValueMapping};
     use serde_json::json;
 
     #[test]
@@ -964,7 +915,7 @@ mod mapping_tests {
             assert!(validate_agent_mapping(&field, &template, &changed).is_err());
         }
         let mut changed = original;
-        changed.missing = rss_mdm_resource::NativeMissing::Delete;
+        changed.missing = rss_mdm_agent_wire::runtime::NativeMissing::Delete;
         assert!(validate_agent_mapping(&field, &template, &changed).is_err());
     }
 }

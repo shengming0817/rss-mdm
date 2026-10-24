@@ -1,6 +1,9 @@
 //! Windows Agent templates; ordinary tenant Resources, never implicit Script fallbacks.
 //! ref: microsoft/windows-rs crates/libs/windows/src/Windows/Win32/System/Wmi/mod.rs@0.61.0
 use super::*;
+use rss_mdm_agent_wire::runtime::{
+    AgentCollectionMapping, Conversion, NativeMissing, ValueMapping,
+};
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
 fn budget() -> w::NativeBudget {
     w::NativeBudget {

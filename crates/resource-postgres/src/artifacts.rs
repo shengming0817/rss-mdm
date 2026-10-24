@@ -164,3 +164,22 @@ pub async fn field_reference_details_in(
             .bind(tenant).bind(field).fetch_one(c).await
     })).await
 }
+
+/// Bounded keyset page of exact field references; lifecycle is read from the resource owner.
+pub async fn field_mapping_references_in(
+    tx: &mut PgTransaction<'_>,
+    field: &str,
+    after: Option<(String, String)>,
+    limit: u16,
+) -> Result<Vec<(String, String, bool)>, PgError> {
+    if !(1..=129).contains(&limit) {
+        return Err(STORAGE.fault("field_refs::limit"));
+    }
+    let tenant = tx.tenant_id().to_string();
+    let field = field.to_owned();
+    let (owner, version) = after.unwrap_or_default();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query_as("SELECT owner,version,telemetry FROM mdm_resource.field_refs WHERE tenant_id=$1::uuid AND field=$2 AND (owner,version)>($3,$4) ORDER BY owner,version LIMIT $5")
+            .bind(tenant).bind(field).bind(owner).bind(version).bind(i64::from(limit)).fetch_all(c).await
+    })).await
+}

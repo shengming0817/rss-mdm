@@ -2,6 +2,7 @@
 //! ref: Microsoft Learn DevInfo, DevDetail, DeviceStatus, Win32AppInventory,
 //! EnterpriseModernAppManagement, BitLocker, Defender, DMClient and Update CSP.
 use super::*;
+use rss_mdm_agent_wire::runtime::{Conversion, ValueMapping};
 fn mapping(pointer: &str, conversion: Conversion) -> ValueMapping {
     ValueMapping {
         pointer: pointer.into(),

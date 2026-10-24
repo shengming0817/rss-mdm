@@ -1,7 +1,7 @@
 #![deny(missing_docs)]
 //! Strict Agent protocol values for RSS MDM.
 //!
-//! This package owns JSON values only. Device authority, persistence and HTTP authentication
+//! This package owns protocol values and bounded pure projections. Device authority, persistence and HTTP authentication
 //! remain product responsibilities. V1 binds script and software tasks to one strict major.
 
 #[path = "device_access.rs"]
@@ -51,7 +51,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "d04bc4339bf12c7b93e72255acc369a5f1b01534132fbd62a847ee7f91f288c0";
+    "e7ad6df9aee7b973f9da55fa535fa8ac032a637df398a534d8192ec30ece009a";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -710,3 +710,7 @@ fn nonnegative_time<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     }
     Ok(value)
 }
+
+#[path = "mapping.rs"]
+mod mapping;
+pub use mapping::*;
