@@ -33,6 +33,7 @@ tmp/
 /.codex-backups/
 
 # Local env / secrets
+/apns_certs/
 /deployment/certs/
 /.venv/
 __pycache__/
@@ -79,3 +80,4 @@ __pycache__/
 /crates/windows-mdm/schema/upstream/admx/
 /crates/windows-mdm/schema/upstream/learn/
 /crates/apple-mdm/schema/upstream/
+/deployment/software_package/
