@@ -1886,7 +1886,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let policy=Uuid::new_v4();
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;
         let binding=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",case_device_id());
-        let associated=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid}}}}))).await?;
+        let associated=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid}}}}))).await?;
         ensure!(associated.0==StatusCode::OK,"associate {associated:?}");
         let claim=tokio::time::timeout(Duration::from_secs(30),async {loop {
             let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[]}))).await?;
@@ -1955,15 +1955,17 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let materials=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(materials.0==StatusCode::OK,"materials {materials:?}");
         let material=materials.1.as_array().context("materials array")?.iter().find(|m|m["binding"]["subject"]["kind"]=="rss_login" && m["validity"]=="verified").context("RSS material")?;
-        let secret_path=format!("{list}/{}/versions/{}/secret",material["id"].as_str().context("material id")?,material["version"]);
-        let disclosed=f.author.call(&f.router,Method::GET,&secret_path,None).await?;
+        let access_path=format!("/api/v1/devices/{}/device-access/materials/{}/versions/{}",case_device_id(),material["id"].as_str().context("material id")?,material["version"]);
+        let disclosure=json!({"operationId":Uuid::new_v4()});
+        ensure!(f.access_authorize(&access_path,Some(disclosure.clone())).await?.is_none());
+        let disclosed=f.author.call(&f.router,Method::POST,&format!("{access_path}/secret"),Some(disclosure.clone())).await?;
         ensure!(disclosed.0==StatusCode::OK && disclosed.1["secret"]==secret,"disclose {disclosed:?}");
         let used=json!({"operationId":Uuid::new_v4(),"material":material["id"],"version":material["version"],"usedAt":crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?});
         for _ in 0..2 {let response=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/device-access/recovery-uses",Some(case_credential()),Some(used.clone())).await?;ensure!(response.0==StatusCode::OK,"use {response:?}");}
         ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.rss_login_uses WHERE tenant_id='{}'",case_tenant()))?.trim()=="1");
-        let unbound=f.author.call(&f.router,Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
+        let unbound=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?;
         ensure!(unbound.0==StatusCode::OK);
-        ensure!(!f.author.call(&f.router,Method::GET,&secret_path,None).await?.0.is_success());
+        ensure!(!f.author.call(&f.router,Method::POST,&format!("{access_path}/secret"),Some(disclosure)).await?.0.is_success());
         let late=credential_event(&f,&context,&original,json!({"kind":"start"})).await?;
         ensure!(!late.0.is_success());
         Ok(())

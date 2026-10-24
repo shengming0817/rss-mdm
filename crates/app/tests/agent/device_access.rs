@@ -681,7 +681,7 @@ async fn verify_unbound_retention(base: &Value, receipt: &wire::CredentialReceip
 
 // Exercise real HTTP and WebAuthn cryptography; no test-only proof issuance or SQL bypass.
 impl Fixture {
-    async fn access_call(
+    pub(crate) async fn access_call(
         &mut self,
         method: Method,
         path: &str,
@@ -692,7 +692,7 @@ impl Fixture {
         }
         self.author.call(&self.router, method, path, body).await
     }
-    async fn access_authorize(
+    pub(crate) async fn access_authorize(
         &mut self,
         path: &str,
         body: Option<Value>,
