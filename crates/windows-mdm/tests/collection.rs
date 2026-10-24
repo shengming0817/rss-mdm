@@ -70,10 +70,14 @@ fn modern_package_settings_are_not_software_instances() {
         let plan = plan(inventory);
         let mut state = plan.start("RSS").unwrap();
         round(&mut state, &plan, 1, |_| (200, "Example_publisher"));
-        let packages = "AppSettingPolicy/Example_1.0.0.0_arm64__publisher";
+        let packages = "AppSettingPolicy/AppUpdateSettings/DoNotUpdate/MaintainProcessorArchitectureOnUpdate/NonRemovable/Example_1.0.0.0_arm64__publisher";
         round(&mut state, &plan, 2, |_| (200, packages));
         round(&mut state, &plan, 3, |uri| {
             assert!(!uri.contains("/AppSettingPolicy/"));
+            assert!(!uri.contains("/AppUpdateSettings/"));
+            assert!(!uri.contains("/DoNotUpdate/"));
+            assert!(!uri.contains("/MaintainProcessorArchitectureOnUpdate/"));
+            assert!(!uri.contains("/NonRemovable/"));
             (200, "value")
         });
         round(&mut state, &plan, 4, |uri| {

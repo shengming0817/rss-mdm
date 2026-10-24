@@ -31,11 +31,33 @@ pub enum Inventory {
 }
 impl Inventory {
     fn settings_child(self, depth: usize, child: &str) -> bool {
-        // Full enrollment exposes this user settings container under Device too.
-        // It is not a PackageFullName and has no package metadata leaves.
+        // Full enrollment exposes fixed settings across Device/User and signing
+        // origins. Build the closed set from Microsoft's existing CSP schema.
+        static SETTINGS: std::sync::LazyLock<BTreeSet<&'static str>> =
+            std::sync::LazyLock::new(|| {
+                super::generated::NODES
+                    .iter()
+                    .filter_map(
+                        |node| match node.path.split('/').collect::<Vec<_>>().as_slice() {
+                            [
+                                ".",
+                                "Device" | "User",
+                                "Vendor",
+                                "MSFT",
+                                "EnterpriseModernAppManagement",
+                                "AppManagement",
+                                "AppStore" | "nonStore" | "System",
+                                "*",
+                                name,
+                            ] if *name != "*" => Some(*name),
+                            _ => None,
+                        },
+                    )
+                    .collect()
+            });
         depth == 1
             && matches!(self, Self::Store | Self::NonStore | Self::System)
-            && child == "AppSettingPolicy"
+            && SETTINGS.contains(child)
     }
     /// Exact device namespace root.
     pub fn root(self) -> &'static str {
