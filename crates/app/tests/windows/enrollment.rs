@@ -298,7 +298,19 @@ async fn discover_and_policy(
     token.username = Secret(app.windows()?.channel.enrollment_username(enrollment)?);
     token.password = Secret(password.to_owned());
     let policy_wire = String::from_utf8(soap::encode(&policy, &CodecLimits::default())?)?
-        .replace("<o:Password Type=", "<o:Password o:Type=");
+        .replace("<o:Password Type=", "<o:Password o:Type=")
+        .replace(
+            "<p:lastUpdate xsi:nil=\"true\"/>",
+            "<p:lastUpdate>0001-01-01T00:00:00</p:lastUpdate>",
+        )
+        .replace(
+            "<p:preferredLanguage xsi:nil=\"true\"/>",
+            "<p:preferredLanguage>en-US</p:preferredLanguage>",
+        )
+        .replace(
+            &format!("<a:To>{}</a:To>", found.policy_url),
+            &format!("<a:To>\n {}\n</a:To>", found.policy_url),
+        );
     let response = client
         .post(&found.policy_url)
         .header("content-type", "application/soap+xml")

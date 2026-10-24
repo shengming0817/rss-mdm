@@ -104,6 +104,13 @@
       "sha256": "e0d91ade16ec0a97b2ee1b1783aecf850a33514e2bf6af0ec773e78c2b34f86a",
       "bytes": 39270,
       "retrieved_utc": "2026-10-24T12:08:00.110748+00:00"
+    },
+    {
+      "title": "Microsoft On-premises authentication device enrollment (complete samples)",
+      "url": "https://learn.microsoft.com/en-us/windows/client-management/on-premise-authentication-device-enrollment",
+      "sha256": "90ee8840502636e2d29226f2b5603eb33b98583cbc284c32e311cb0b957ee65c",
+      "bytes": 76315,
+      "retrieved_utc": "2026-10-24T15:11:21.058979+00:00"
     }
   ],
   "archive": {
@@ -127,7 +134,9 @@
     "results.xml": "ee0a113d248e51bcacef3b4dab050ef11e60657ae46b5df879d8095d56f326b2",
     "status-details.xml": "2e025e65a5d3b988d95b5e359ead470d4c95be4614f3899db21e33dd65e19e19",
     "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15",
-    "discovery-native-windows11.xml": "33997f567930ba594cdca8dd5bd8d7fdfb8fd893fafb82bfc553507d879cfd11"
+    "discovery-native-windows11.xml": "33997f567930ba594cdca8dd5bd8d7fdfb8fd893fafb82bfc553507d879cfd11",
+    "policy-official-on-premise.xml": "fb7aa03cdc3bb1adac895d100b83d7074418523aaf5bcd5f8c41e27ee1679ae7",
+    "issue-official-on-premise.xml": "12447991922199dc604a57baba86ba8cde607925e32a727e1bc46240fde2f0c8"
   },
   "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal.",
   "native_capture": {

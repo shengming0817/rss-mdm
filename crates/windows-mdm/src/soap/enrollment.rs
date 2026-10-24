@@ -425,23 +425,18 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
                 return Err(E::Duplicate);
             }
             token = true;
-            if p.scalar(TRUST, "TokenType", p.limits.uri_bytes, false)? != TOKEN {
+            if uri(p, TRUST, "TokenType")? != TOKEN {
                 return Err(E::Unsupported);
             }
         } else if p.is(TRUST, "RequestType")? {
             if request.is_some() {
                 return Err(E::Duplicate);
             }
-            request = Some(
-                match p
-                    .scalar(TRUST, "RequestType", p.limits.uri_bytes, false)?
-                    .as_str()
-                {
-                    ISSUE => false,
-                    RENEW => true,
-                    _ => return Err(E::Unsupported),
-                },
-            );
+            request = Some(match uri(p, TRUST, "RequestType")?.as_str() {
+                ISSUE => false,
+                RENEW => true,
+                _ => return Err(E::Unsupported),
+            });
         } else if p.is(SECURITY, "BinarySecurityToken")? {
             if csr.is_some() {
                 return Err(E::Duplicate);
@@ -462,6 +457,17 @@ pub(super) fn read_issue(p: &mut Input<'_>) -> Result<Issue> {
                 let key = s.attr("", "Name").ok_or(E::Structure)?.to_string();
                 text(&key, p.limits.identifier_bytes, false)?;
                 let value = p.scalar(CONTEXT, "Value", p.limits.field_bytes, true)?;
+                let value = match key.as_str() {
+                    "OSEdition"
+                    | "OSVersion"
+                    | "ApplicationVersion"
+                    | "DeviceType"
+                    | "EnrollmentType"
+                    | "UXInitiated"
+                    | "NotInOobe"
+                    | "TargetedUserLoggedIn" => xml_token(&value).to_owned(),
+                    _ => value,
+                };
                 p.end(CONTEXT, "ContextItem")?;
                 values.push((key, value));
             }
@@ -521,7 +527,8 @@ pub(super) fn validate_issue(i: &Issue, l: &CodecLimits) -> Result<()> {
             }
             "DeviceName" | "DeviceID" => text(v, l.identifier_bytes, false)?,
             "UXInitiated" | "NotInOobe" | "TargetedUserLoggedIn" => {
-                if !matches!(v.as_str(), "true" | "false" | "0" | "1") {
+                // Microsoft's complete OnPremise example uses capitalized True.
+                if !matches!(v.as_str(), "true" | "false" | "True" | "False" | "0" | "1") {
                     return Err(E::InvalidValue);
                 }
             }
