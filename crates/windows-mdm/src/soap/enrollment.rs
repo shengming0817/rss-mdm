@@ -16,7 +16,7 @@ const ISSUE: &str = "http://docs.oasis-open.org/ws-sx/ws-trust/200512/Issue";
 pub struct Discover {
     /// Nonblank email claim bounded by `field_bytes`; no email syntax or ownership verification.
     pub email: Secret<String>,
-    /// One of `1.0` through `7.0`, within the identifier budget.
+    /// One of `1.0` through `9.0`, within the identifier budget.
     pub request_version: String,
     /// Exactly `CIMClient_Windows`.
     pub device_type: String,
@@ -214,7 +214,7 @@ pub(super) fn validate_discover(d: &Discover, l: &CodecLimits) -> Result<()> {
     }
     if !matches!(
         d.request_version.as_str(),
-        "1.0" | "2.0" | "3.0" | "4.0" | "5.0" | "6.0" | "7.0"
+        "1.0" | "2.0" | "3.0" | "4.0" | "5.0" | "6.0" | "7.0" | "8.0" | "9.0"
     ) || d.device_type != "CIMClient_Windows"
     {
         return Err(E::Unsupported);

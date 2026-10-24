@@ -252,7 +252,7 @@ async fn discover_and_policy(
 ) -> anyhow::Result<()> {
     let origin = &app.windows()?.config.enrollment.origin;
     let mut discovery = soap::decode(
-        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
+        include_bytes!("../../../windows-mdm/tests/fixtures/discovery-native-windows11.xml"),
         Operation::Discover,
         &CodecLimits::default(),
     )?;

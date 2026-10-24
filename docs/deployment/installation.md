@@ -175,7 +175,7 @@ Docker Desktop/Engine 可承载 MDM 后端、HTTPS 网关、PostgreSQL，以及�
 
 默认公网只发布 gateway 的 TCP 443（容器内无特权监听 8443）；分离端口须应用 renderer 生成的 ports override。gateway、web、server 使用各自网络命名空间：gateway 与 server 通过专用 ingress bridge 通信，web 只连接 frontend 网络。后端管理监听使用明确的内部地址，`trusted_gateway` 只信任该网络的固定 gateway IP；不能配置整个子网或接受外部身份头。多租户按不同 hostname 分流，各自使用独立 server 地址，网关共享配置由 `deployment.gateway_directory` 汇集。
 
-| 默认同域入口（HTTPS 443） | 流向与身份核验 |
+| 公开入口示例（HTTPS 443） | 流向与身份核验 |
 |---|---|
 | `mdm.example.test/` | Nginx → web:8080 静态页面 |
 | `mdm.example.test/api/` | Nginx → 唯一内部 HTTP 入口；管理会话、CSRF 与权限由后端验证 |

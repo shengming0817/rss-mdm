@@ -97,6 +97,13 @@
       "sha256": "3c0e23f6c17f98ca0f708e68052a78fe9648d99f7c4cd1f4f949f72470f06e62",
       "bytes": 46708,
       "retrieved_utc": "2026-09-09T01:19:25.524651+00:00"
+    },
+    {
+      "title": "MS-MDE2 DiscoveryRequest versions 1.0 through 9.0",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/36e33def-59ab-484f-b0bc-701496346925",
+      "sha256": "e0d91ade16ec0a97b2ee1b1783aecf850a33514e2bf6af0ec773e78c2b34f86a",
+      "bytes": 39270,
+      "retrieved_utc": "2026-10-24T12:08:00.110748+00:00"
     }
   ],
   "archive": {
@@ -119,7 +126,18 @@
     "policy-response.xml": "1d89319fb118a062e77facb4a5dc56ea7b28c6001899faf8ac351d3af7647a9b",
     "results.xml": "ee0a113d248e51bcacef3b4dab050ef11e60657ae46b5df879d8095d56f326b2",
     "status-details.xml": "2e025e65a5d3b988d95b5e359ead470d4c95be4614f3899db21e33dd65e19e19",
-    "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15"
+    "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15",
+    "discovery-native-windows11.xml": "33997f567930ba594cdca8dd5bd8d7fdfb8fd893fafb82bfc553507d879cfd11"
   },
-  "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal."
+  "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal.",
+  "native_capture": {
+    "file": "discovery-native-windows11.xml",
+    "origin": "Windows 11 Pro ARM64 10.0.26300.9711 MDMRegistration.dll DiscoverManagementServiceEx",
+    "captured_utc": "2026-10-24",
+    "sanitized": [
+      "MessageID",
+      "To",
+      "EmailAddress"
+    ]
+  }
 }

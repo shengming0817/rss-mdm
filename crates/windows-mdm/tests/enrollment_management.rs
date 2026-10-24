@@ -123,7 +123,7 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
 fn current_windows_discovery_and_optional_context_remain_standard_inputs() {
     use rss_mdm_windows_mdm::soap::{self, Body, Operation};
     let limits = CodecLimits::default();
-    for version in ["4.0", "5.0", "6.0", "7.0"] {
+    for version in ["4.0", "5.0", "6.0", "7.0", "8.0", "9.0"] {
         let xml = String::from_utf8(include_bytes!("fixtures/discovery-request.xml").to_vec())
             .unwrap()
             .replace(
@@ -132,6 +132,26 @@ fn current_windows_discovery_and_optional_context_remain_standard_inputs() {
             );
         assert!(soap::decode(xml.as_bytes(), Operation::Discover, &limits).is_ok());
     }
+    let native = soap::decode(
+        include_bytes!("fixtures/discovery-native-windows11.xml"),
+        Operation::Discover,
+        &limits,
+    )
+    .unwrap();
+    let Body::Discover(input) = &native.body else {
+        panic!()
+    };
+    assert_eq!(input.request_version, "9.0");
+    assert_eq!(input.application_version, "10.0.26300.9711");
+    assert_eq!(
+        soap::decode(
+            &soap::encode(&native, &limits).unwrap(),
+            Operation::Discover,
+            &limits
+        )
+        .unwrap(),
+        native
+    );
     let mut issue = soap::decode(
         include_bytes!("fixtures/issue-request.xml"),
         Operation::Issue,
