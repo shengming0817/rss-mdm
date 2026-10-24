@@ -1,12 +1,16 @@
 //! Session-authorized issuer lifecycle; device acknowledgements use native authenticated owners.
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
-    routing::{get, post},
 };
 use rss_mdm_agent_wire::pki::{Purpose, Trust};
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_pki_service::registry::{Receipt, Registry, Rotation, Transition};
 use std::sync::Arc;
 pub(crate) struct HttpState {
@@ -17,13 +21,29 @@ pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/pki/agent/trust/devices/{device}/observation",
-            get(agent_trust_observation),
+            get(agent_trust_observation)
+                .owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
         )
-        .route("/pki/{purpose}/trust", get(trust))
-        .route("/pki/rotations", post(prepare))
-        .route("/pki/signing/recover", post(recover))
-        .route("/pki/crls", post(publish))
-        .route("/pki/{purpose}/rotations", post(transition))
+        .route(
+            "/pki/{purpose}/trust",
+            get(trust).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/pki/rotations",
+            post(prepare).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/pki/signing/recover",
+            post(recover).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/pki/crls",
+            post(publish).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/pki/{purpose}/rotations",
+            post(transition).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+        )
 }
 fn purpose(value: &str) -> Result<Purpose, Error> {
     match value {

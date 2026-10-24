@@ -1,43 +1,80 @@
 //! Certificate archive HTTP adapter; no cryptographic or storage decisions live here.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::HeaderMap,
-    routing::{get, post, put},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_certificate_archive_service as archive;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post, put},
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<archive::Archive>> {
     Router::new()
-        .route("/certificate-archive/vault", get(state))
-        .route("/certificate-archive/vault/initialize", post(initialize))
-        .route("/certificate-archive/vault/unlock", post(unlock))
-        .route("/certificate-archive/vault/lock", post(lock))
-        .route("/certificate-archive/vault/password", post(password))
-        .route("/certificate-archive/entries", get(list))
+        .route(
+            "/certificate-archive/vault",
+            get(state).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Get]),
+        )
+        .route(
+            "/certificate-archive/vault/initialize",
+            post(initialize).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
+        )
+        .route(
+            "/certificate-archive/vault/unlock",
+            post(unlock).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
+        )
+        .route(
+            "/certificate-archive/vault/lock",
+            post(lock).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
+        )
+        .route(
+            "/certificate-archive/vault/password",
+            post(password).owned(&contracts::CERTIFICATE_VAULT, &[RouteOperation::Update]),
+        )
+        .route(
+            "/certificate-archive/entries",
+            get(list).owned(&contracts::CERTIFICATES, &[RouteOperation::List]),
+        )
         .route(
             "/certificate-archive/entries/{entry}/versions",
-            get(history),
+            get(history).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
         )
-        .route("/certificate-archive/entries/{entry}", put(manage))
+        .route(
+            "/certificate-archive/entries/{entry}",
+            put(manage).owned(&contracts::CERTIFICATES, &[RouteOperation::Lifecycle]),
+        )
         .route(
             "/certificate-archive/entries/{entry}/metadata",
-            put(metadata),
+            put(metadata).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
         )
-        .route("/certificate-archive/import", post(import))
-        .route("/certificate-archive/generate", post(generate))
-        .route("/certificate-archive/export", post(export))
+        .route(
+            "/certificate-archive/import",
+            post(import).owned(&contracts::CERTIFICATES, &[RouteOperation::Create]),
+        )
+        .route(
+            "/certificate-archive/generate",
+            post(generate).owned(&contracts::CERTIFICATES, &[RouteOperation::Create]),
+        )
+        .route(
+            "/certificate-archive/export",
+            post(export).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
+        )
         .route(
             "/certificate-archive/settings",
-            get(settings).put(change_settings),
+            get(settings)
+                .owned(&contracts::CERTIFICATE_SETTINGS, &[RouteOperation::Get])
+                .put(change_settings)
+                .owned(&contracts::CERTIFICATE_SETTINGS, &[RouteOperation::Update]),
         )
         .route(
             "/certificate-archive/operations/{operation}",
-            get(operation),
+            get(operation).owned(&contracts::CERTIFICATE_OPERATIONS, &[RouteOperation::Get]),
         )
 }
 fn input<T>(value: Result<Json<T>, axum::extract::rejection::JsonRejection>) -> Result<T, Error> {

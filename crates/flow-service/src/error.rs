@@ -6,6 +6,8 @@ pub enum Error {
     MdmSoftwareDisabled,
     #[error("invalid request")]
     Malformed,
+    #[error("resource cursor invalidated; restart pagination")]
+    ResourceCursorInvalidated,
     #[error(transparent)]
     Planning(#[from] planning::error::PlanningError),
     #[error(transparent)]

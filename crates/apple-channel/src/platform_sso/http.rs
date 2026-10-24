@@ -1,12 +1,16 @@
 use super::*;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{DefaultBodyLimit, Form, Path, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_registration_service::{DevicePrincipal, agent::Service};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -20,26 +24,74 @@ struct AgentState {
 }
 pub fn agent_routes(app: Arc<HttpState>, service: Arc<Service>) -> Router {
     Router::new()
-        .route("/platform-sso/status", get(status))
-        .route("/platform-sso/bootstrap", post(bootstrap))
-        .route("/platform-sso/register", post(register))
-        .route("/platform-sso/sources/{id}/revoke", post(revoke))
+        .route(
+            "/platform-sso/status",
+            get(status).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/platform-sso/bootstrap",
+            post(bootstrap).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/platform-sso/register",
+            post(register).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/platform-sso/sources/{id}/revoke",
+            post(revoke).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .layer(DefaultBodyLimit::max(65536))
         .layer(axum::middleware::map_response(private_response))
         .with_state(AgentState { app, service })
 }
 pub fn browser_routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/api/v1/apple/platform-sso/{tenant}/jwks", get(jwks))
-        .route("/api/v1/apple/platform-sso/{tenant}/nonce", post(nonce))
-        .route("/api/v1/apple/platform-sso/{tenant}/token", post(token))
+        .route(
+            "/api/v1/apple/platform-sso/{tenant}/jwks",
+            get(jwks).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/apple/platform-sso/{tenant}/nonce",
+            post(nonce).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/api/v1/apple/platform-sso/{tenant}/token",
+            post(token).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/api/v1/apple/platform-sso/{tenant}/browser/begin",
-            post(begin),
+            post(begin).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/api/v1/apple/platform-sso/{tenant}/browser/complete",
-            post(complete),
+            post(complete).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .layer(DefaultBodyLimit::max(65536))
         .layer(axum::middleware::map_response(private_response))
@@ -47,7 +99,10 @@ pub fn browser_routes() -> Router<Arc<HttpState>> {
 pub fn management_routes() -> Router<Arc<HttpState>> {
     Router::new().route(
         "/api/v1/apple/platform-sso/configuration",
-        get(configuration),
+        get(configuration).owned(
+            &contracts::PLATFORM_SSO_CONFIGURATION,
+            &[RouteOperation::Get],
+        ),
     )
 }
 fn tenant(app: &HttpState, t: Uuid) -> Result<(), Error> {

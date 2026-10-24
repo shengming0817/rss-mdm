@@ -1,13 +1,17 @@
 //! Native package-manager reads over the existing frozen publication authority.
 use axum::{
-    Json, Router,
+    Json,
     body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use base64::Engine;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_software_service::management::publication::service::PublicationDirectory;
 use rss_mdm_software_service::publication::{
     self as p, ExportDocument, PublicationService, PublishedSoftware,
@@ -104,15 +108,15 @@ fn contract(headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 pub fn routes() -> Router<Arc<StateData>> {
     Router::new()
-      .route("/api/v1/software/native/sources/{source}/information",get(information))
-      .route("/api/v1/software/native/sources/{source}/manifestSearch",post(search))
-      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",get(manifest))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",get(frozen_information))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",post(frozen_search))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",get(frozen_manifest))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",get(refs))
-      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",post(upload_pack))
-      .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",get(artifact))
+      .route("/api/v1/software/native/sources/{source}/information",get(information).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/manifestSearch",post(search).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/packageManifests/{package}",get(manifest).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/information",get(frozen_information).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/manifestSearch",post(frozen_search).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/packageManifests/{package}",get(frozen_manifest).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/info/refs",get(refs).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/exports/{publication}/git-upload-pack",post(upload_pack).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
+      .route("/api/v1/software/native/sources/{source}/artifacts/{resource}/{version}/{digest}/{*file}",get(artifact).owned(&contracts::PROTOCOL_MANAGEMENT_HTTP, &[RouteOperation::Action]))
       .layer(axum::extract::DefaultBodyLimit::max(1024*1024))
       .layer(axum::middleware::from_fn(no_store))
 }

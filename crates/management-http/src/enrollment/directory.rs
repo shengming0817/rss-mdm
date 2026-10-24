@@ -1,10 +1,11 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::Value;
 use std::sync::Arc;
 pub struct HttpState {
@@ -16,8 +17,14 @@ pub struct HttpState {
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/devices", get(list))
-        .route("/devices/{device}", get(detail))
+        .route(
+            "/devices",
+            get(list).owned(&contracts::DEVICES, &[RouteOperation::List]),
+        )
+        .route(
+            "/devices/{device}",
+            get(detail).owned(&contracts::DEVICES, &[RouteOperation::Get]),
+        )
 }
 async fn list(
     State(s): State<Arc<HttpState>>,

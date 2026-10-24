@@ -1,11 +1,13 @@
 //! Product ADE control plane; registration, identity and installed-profile owners stay canonical.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 pub(crate) mod authority;
 mod client;
 pub(crate) mod management;
 mod protocol;
 pub mod worker;
 use crate::{Error, Failure, HttpState, database::db};
-use axum::{
+
+use rss_mdm_http_contract::{
     Router,
     routing::{get, post, put},
 };
@@ -18,38 +20,45 @@ pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/organizations/{id}/ade",
-            get(management::status),
+            get(management::status).owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/configuration",
-            put(management::configure),
+            put(management::configure)
+                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Update]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/public-key",
-            get(management::public_key),
+            get(management::public_key)
+                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/operations",
-            post(management::operation),
+            post(management::operation)
+                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Update]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/operations/{operation}",
-            get(management::operation_status),
+            get(management::operation_status)
+                .owned(&contracts::ADE_CONFIGURATION, &[RouteOperation::Get]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/devices",
-            get(management::devices),
+            get(management::devices).owned(&contracts::ADE_DEVICES, &[RouteOperation::List]),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/profiles",
-            get(management::profiles),
+            get(management::profiles).owned(&contracts::ADE_PROFILES, &[RouteOperation::List]),
         )
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/api/v1/apple/ade/enroll/{organization}/{profile}",
-            post(protocol::enroll),
+            post(protocol::enroll).owned(
+                &contracts::PROTOCOL_APPLE_CHANNEL,
+                &[RouteOperation::Action],
+            ),
         )
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }

@@ -56,6 +56,16 @@ class Selection(unittest.TestCase):
         self.assertEqual(diagnostic.getvalue(), failure.stderr)
         self.assertEqual(caught.exception.inputs, location)
 
+    def test_route_source_proof_runs_without_dependency_package_selection(self):
+        selection = make_selection(['rss-mdm-management-http', 'rss-mdm-app'], [], [], [
+            dict(kind='business', input='crates/management-http/src/resource_catalog/http.rs', modules=['planning.http'])])
+        self.assertTrue(ci.selected_gate('route-contract', selection))
+        selection['cargo']['packages'].append('rss-mdm-http-contract')
+        self.assertFalse(ci.selected_gate('route-contract', selection))
+        isolated = make_selection(['rss-mdm-resource'], [], [], [
+            dict(kind='business', input='crates/resource/src/directory.rs', modules=['planning.http'])])
+        self.assertFalse(ci.selected_gate('route-contract', isolated))
+
     def test_native_source_checks_follow_their_actual_owners(self):
         selection = make_selection(['rss-mdm-winget-source'], [], [], [])
         self.assertFalse(ci.selected_gate('native-schema', selection))
@@ -256,7 +266,7 @@ class Selection(unittest.TestCase):
             self.assertEqual((out / 'result.json').read_text(), 'previous execution')
             self.assertEqual((out / 'selection.json').read_text(), 'previous selection')
             plan = json.loads((out / 'plan.json').read_text())
-            self.assertTrue(all(gate['selected'] for name, gate in plan['gates'].items() if name != 'ownership'))
+            self.assertTrue(all(gate['selected'] for name, gate in plan['gates'].items() if name not in {'ownership', 'route-contract'}))
             self.assertFalse(plan['gates']['ownership']['selected'])
             for name in ('pin',):
                 self.assertTrue(plan['gates'][name]['check'])

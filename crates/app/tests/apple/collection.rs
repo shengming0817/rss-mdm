@@ -345,6 +345,10 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
             .await?;
         }
         "rights" => {
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                .bind(case_tenant())
+                .execute(&mut pg)
+                .await?;
             sqlx::query("UPDATE mdm_apple.devices SET access_rights=access_rights & ~16 WHERE tenant_id=$1::uuid AND registration=(SELECT registration FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2)").bind(case_tenant()).bind(run).execute(&mut pg).await?;
         }
         _ => unreachable!(),

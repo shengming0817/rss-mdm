@@ -1,18 +1,22 @@
 //! Apple runtime material authority. Candidates, selected revisions and runtime observations differ.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod crypto;
 pub mod runtime;
 mod storage;
 use crate::{Error, Failure, HttpState, database::db};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
 use rss_mdm_authorization_service::{
     Permission,
     context::{AuthorizedPrincipal, RequestAuth},
+};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
 };
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext};
 use serde::{Deserialize, Serialize};
@@ -86,17 +90,32 @@ pub struct PublicVersion {
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/api/v1/apple/materials/{purpose}", get(status))
-        .route("/api/v1/apple/materials/{purpose}/keys", post(key))
+        .route(
+            "/api/v1/apple/materials/{purpose}",
+            get(status).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/api/v1/apple/materials/{purpose}/keys",
+            post(key).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
+        )
         .route(
             "/api/v1/apple/materials/{purpose}/certificates",
-            post(certificate),
+            post(certificate).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
         )
-        .route("/api/v1/apple/materials/{purpose}/apply", post(apply))
-        .route("/api/v1/apple/materials/{purpose}/revoke", post(revoke))
+        .route(
+            "/api/v1/apple/materials/{purpose}/apply",
+            post(apply).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
+        )
+        .route(
+            "/api/v1/apple/materials/{purpose}/revoke",
+            post(revoke).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Update]),
+        )
         .route(
             "/api/v1/apple/material-operations/{operation}",
-            get(operation),
+            get(operation).owned(
+                &contracts::APPLE_MATERIAL_OPERATIONS,
+                &[RouteOperation::Get],
+            ),
         )
         .layer(axum::extract::DefaultBodyLimit::max(256 * 1024))
 }

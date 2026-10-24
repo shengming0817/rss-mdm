@@ -1,8 +1,12 @@
 use super::*;
 use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -58,13 +62,40 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
 }
 pub fn routes() -> Router<Arc<Compliance>> {
     Router::new()
-        .route("/compliance-rules", get(list))
-        .route("/compliance-rules/{id}", get(read).put(put))
-        .route("/compliance-rules/{id}/versions/{revision}", get(version))
-        .route("/compliance-rules/{id}/recompute", post(recompute))
-        .route("/compliance-rules/{id}/tasks/{task}", get(task))
-        .route("/devices/{id}/compliance", get(current))
-        .route("/devices/{id}/compliance/history", get(history))
+        .route(
+            "/compliance-rules",
+            get(list).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::List]),
+        )
+        .route(
+            "/compliance-rules/{id}",
+            get(read)
+                .owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Get])
+                .put(put)
+                .owned(
+                    &contracts::COMPLIANCE_RULES,
+                    &[RouteOperation::Create, RouteOperation::Update],
+                ),
+        )
+        .route(
+            "/compliance-rules/{id}/versions/{revision}",
+            get(version).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/compliance-rules/{id}/recompute",
+            post(recompute).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/compliance-rules/{id}/tasks/{task}",
+            get(task).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/compliance",
+            get(current).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/compliance/history",
+            get(history).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

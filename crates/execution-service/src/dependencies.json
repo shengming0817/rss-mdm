@@ -52,7 +52,7 @@
   "mdm_apple.devices": "660307b80ce5a896e2bc7ed9c58e5ba8ffeb3292cca11884cd06ee254bcaf02b",
   "mdm_apple.organizations": "084b0796c5322f249426b9f3dd5cd8501845d627adf671025f5dae0cbad0bb68",
   "mdm_apple.platform_session_qualifications(p_source uuid, config jsonb, as_of bigint)": "d30ab6d118d7cd2e410bf262cffb27dedefe5eaf221468bca2145cfaedab0bfe",
-  "mdm_apple.profile_qualifications": "76c8a70a19215d360676b34232aedb0b9e31eed45e33cc02bb1de293013335d5",
+  "mdm_apple.profile_qualifications": "d26d352b4968a304652fc6ea861a2fce50747a2a7d9542d8bde38e1491c523c3",
   "mdm_apple.profiles": "44ea5c3766863c2fd891b82fa46c26fbd60b4f022eb8138833c1f109f4fc2414",
   "mdm_apple.psso_challenges": "b2a6f028923bd1e9eb6fdc2e4156823ab9fe7ce4277645265d565cbce9577722",
   "mdm_apple.psso_sources": "57fb56719187f044d33f17b1b15876f6de5533d083214a331ab0d2d879728dbf",

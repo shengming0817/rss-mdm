@@ -2,13 +2,17 @@ use super::*;
 use crate::authorization::Permission;
 use crate::authorization::context::RequestAuth;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query as Params, State},
-    routing::{get, post, put},
 };
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response as HttpResponse},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 type BodyInput<T> = std::result::Result<Json<T>, axum::extract::rejection::JsonRejection>;
@@ -22,34 +26,102 @@ fn params<T>(v: ParamInput<T>) -> std::result::Result<T, Error> {
 
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/asset-fields", get(fields))
+        .route(
+            "/asset-fields",
+            get(fields).owned(&contracts::ASSET_FIELDS, &[RouteOperation::List]),
+        )
         .route(
             "/asset-field-layout",
-            get(field_layout).put(field_layout_write),
+            get(field_layout)
+                .owned(&contracts::ASSET_LAYOUT, &[RouteOperation::Get])
+                .put(field_layout_write)
+                .owned(&contracts::ASSET_LAYOUT, &[RouteOperation::Update]),
         )
         .route(
             "/devices/{id}/collections/{run}/fields/{field}/items",
-            get(collection_items),
+            get(collection_items).owned(&contracts::DEVICES, &[RouteOperation::Action]),
         )
-        .route("/asset-fields/{field}", put(field_write))
-        .route("/asset-retention-policies", post(retention_write))
+        .route(
+            "/asset-fields/{field}",
+            put(field_write).owned(
+                &contracts::ASSET_FIELDS,
+                &[
+                    RouteOperation::Create,
+                    RouteOperation::Update,
+                    RouteOperation::Delete,
+                ],
+            ),
+        )
+        .route(
+            "/asset-retention-policies",
+            post(retention_write).owned(&contracts::ASSET_RETENTION, &[RouteOperation::Create]),
+        )
         .route(
             "/asset-retention-policies/{key}/{revision}",
-            get(retention_read),
+            get(retention_read).owned(&contracts::ASSET_RETENTION, &[RouteOperation::Get]),
         )
-        .route("/asset-fields/{field}/references", get(field_references))
-        .route("/device-queries", post(search))
-        .route("/device-queries/{id}", get(query_status))
-        .route("/device-queries/{id}/items", get(query_items))
-        .route("/device-queries/{id}/facets/{facet}", get(query_facets))
-        .route("/devices/{id}/inventory", get(detail))
-        .route("/devices/{id}/inventory-scopes", get(inventory_scopes))
-        .route("/devices/{id}/collections/{run}", get(collection_run))
-        .route("/devices/{id}/inventory-lists/{field}", get(list_items))
-        .route("/devices/{id}/manual-fields/{field}", put(manual))
-        .route("/saved-queries", get(saved_list))
-        .route("/saved-queries/{id}", get(saved_read).put(saved_write))
-        .route("/saved-queries/{id}/execute", post(saved_execute))
+        .route(
+            "/asset-fields/{field}/references",
+            get(field_references).owned(&contracts::ASSET_FIELDS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/device-queries",
+            post(search).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create]),
+        )
+        .route(
+            "/device-queries/{id}",
+            get(query_status).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Get]),
+        )
+        .route(
+            "/device-queries/{id}/items",
+            get(query_items).owned(&contracts::ASSET_RESULTS, &[RouteOperation::List]),
+        )
+        .route(
+            "/device-queries/{id}/facets/{facet}",
+            get(query_facets).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/inventory",
+            get(detail).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/inventory-scopes",
+            get(inventory_scopes).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/collections/{run}",
+            get(collection_run).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/inventory-lists/{field}",
+            get(list_items).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{id}/manual-fields/{field}",
+            put(manual).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/saved-queries",
+            get(saved_list).owned(&contracts::SAVED_QUERIES, &[RouteOperation::List]),
+        )
+        .route(
+            "/saved-queries/{id}",
+            get(saved_read)
+                .owned(&contracts::SAVED_QUERIES, &[RouteOperation::Get])
+                .put(saved_write)
+                .owned(
+                    &contracts::SAVED_QUERIES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
+        )
+        .route(
+            "/saved-queries/{id}/execute",
+            post(saved_execute).owned(&contracts::SAVED_QUERIES, &[RouteOperation::Action]),
+        )
 }
 fn owner(auth: &RequestAuth) -> Owner {
     Owner {

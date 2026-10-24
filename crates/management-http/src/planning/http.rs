@@ -2,10 +2,14 @@
 use super::*;
 use crate::authorization::{Permission, context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
     routing::{get, post},
 };
 use rss_mdm_inventory_service::groups::{
@@ -18,17 +22,70 @@ fn body<T>(value: BodyInput<T>) -> std::result::Result<T, Error> {
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/groups", get(group_directory))
-        .route("/devices/{device}/groups", get(device_groups))
-        .route("/scopes", get(scope_directory))
-        .route("/groups/{id}", get(group_read).post(group_write))
-        .route("/groups/{id}/references", get(group_references))
-        .route("/groups/{id}/previews", post(group_preview))
-        .route("/groups/{group}/results/{result}/{kind}", get(group_page))
-        .route("/scopes/{scope}/results/{result}/{kind}", get(scope_page))
-        .route("/scopes/{id}", get(scope_read).post(scope_write))
-        .route("/groups/{group}/tasks/{task}", get(group_task))
-        .route("/scopes/{scope}/tasks/{task}", get(scope_task))
+        .route(
+            "/groups",
+            get(group_directory).owned(&contracts::GROUPS, &[RouteOperation::List]),
+        )
+        .route(
+            "/devices/{device}/groups",
+            get(device_groups).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/scopes",
+            get(scope_directory).owned(&contracts::SCOPES, &[RouteOperation::List]),
+        )
+        .route(
+            "/groups/{id}",
+            get(group_read)
+                .owned(&contracts::GROUPS, &[RouteOperation::Get])
+                .post(group_write)
+                .owned(
+                    &contracts::GROUPS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
+        )
+        .route(
+            "/groups/{id}/references",
+            get(group_references).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/groups/{id}/previews",
+            post(group_preview).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/groups/{group}/results/{result}/{kind}",
+            get(group_page).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/scopes/{scope}/results/{result}/{kind}",
+            get(scope_page).owned(&contracts::SCOPES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/scopes/{id}",
+            get(scope_read)
+                .owned(&contracts::SCOPES, &[RouteOperation::Get])
+                .post(scope_write)
+                .owned(
+                    &contracts::SCOPES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
+        )
+        .route(
+            "/groups/{group}/tasks/{task}",
+            get(group_task).owned(&contracts::GROUPS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/scopes/{scope}/tasks/{task}",
+            get(scope_task).owned(&contracts::SCOPES, &[RouteOperation::Action]),
+        )
 }
 // Group receipts/read models include derived membership counts. Every result
 // projection and task summary uses the full tenant input, so grant changes must

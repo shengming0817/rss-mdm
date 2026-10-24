@@ -1,7 +1,9 @@
 //! Reuse tenant rule handlers behind installation management admission.
 //! ref: axum axum/src/routing/mod.rs@8762520da82cd99b78b35869069b36cfa305d4b9.
 use crate::authorization::http::{self, AuthenticationState, HttpState};
-use axum::{Router, middleware};
+use axum::middleware;
+use rss_mdm_http_contract::Router;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use std::sync::Arc;
 
 pub fn router(
@@ -27,7 +29,9 @@ pub fn router(
                 .merge(registry)
                 .route(
                     "/settings/catalog",
-                    axum::routing::get(crate::settings::platform).layer(axum::Extension(settings)),
+                    rss_mdm_http_contract::routing::get(crate::settings::platform)
+                        .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get])
+                        .layer(axum::Extension(settings)),
                 ),
         )
         .route_layer(middleware::from_fn_with_state(

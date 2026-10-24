@@ -50,7 +50,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
         resource(&mut f.author,&f.router,profile_id,2,json!({"action":"activate","version":"v1"})).await?;
-        let (status,directory)=f.author.call(&f.router,Method::GET,"/api/v1/resources?kind=telemetry_profile&active=true",None).await?;
+        let (status,directory)=f.author.call(&f.router,Method::GET,"/api/v1/resources?filter=kind==telemetry_profile;active==true",None).await?;
         ensure!(status==StatusCode::OK && directory["items"].as_array().is_some_and(|items| items.iter().any(|item| item["id"]==profile_id.to_string() && item["kind"]=="telemetry_profile" && item["activeVersion"]=="v1")),"telemetry resource directory: {status} {directory}");
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);

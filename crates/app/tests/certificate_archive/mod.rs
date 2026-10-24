@@ -71,7 +71,9 @@ impl Fixture {
             Router::new()
                 .nest(
                     "/api/v1",
-                    rss_mdm_management_http::certificate_archive::routes().with_state(archive),
+                    rss_mdm_management_http::certificate_archive::routes()
+                        .with_state(archive)
+                        .into_axum(),
                 )
                 .merge(authority.authorization()),
         )

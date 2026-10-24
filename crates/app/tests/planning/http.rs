@@ -431,7 +431,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         .call(
             &router,
             Method::GET,
-            "/api/v1/resources?kind=script&active=false",
+            "/api/v1/resources?filter=kind==script;active==false",
             None,
         )
         .await?;
@@ -442,7 +442,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
     );
     for path in [
         "/api/v1/groups?kind=wrong",
-        "/api/v1/resources?kind=wrong",
+        "/api/v1/resources?filter=kind==wrong",
         "/api/v1/policies?limit=0",
         "/api/v1/policies?action=wrong",
         "/api/v1/scopes?limit=1001",
@@ -802,7 +802,7 @@ async fn collection_blueprints_instantiate_replay_and_keep_tenant_versions() -> 
         .call(
             &router,
             Method::GET,
-            "/api/v1/resources?kind=native_collection",
+            "/api/v1/resources?filter=kind==native_collection",
             None,
         )
         .await?;
@@ -1025,5 +1025,106 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             Ok(())
         }).await?;
         stop_worker(worker).await?;Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=planning.http"]
+async fn resource_query_executes_filter_sort_projection_and_bound_continuations() -> Result<()> {
+    let mut fixture = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut fixture.resources);
+    resources.finish(async {
+        let config: Config = serde_json::from_value(fixture.base.clone())?;
+        let access = database(&fixture.base).await?;
+        let audit_store = access.audit_store_fixture(&config.audit).await?;
+        let (router, _, runtime, planning, app_resources) = crate::api::application_fixture(
+            config, Arc::new(crate::clock::SystemClock), monotonic(), access, None, audit_store,
+        ).await?;
+        let router=router.layer(axum::Extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?)));
+        app_resources.finish(async {
+            let mut browser = fixture.browser("other")?;
+            let subject = browser_subject(&browser, &router).await?;
+            set_management_grants(&subject,json!(["resource_read","resource_write"])).await?;
+            let ids=[case::name("query-a"),case::name("query-b"),case::name("query-c"),case::name("query-d"),case::name("query-e")];
+            for (id,kind) in ids.iter().zip(["script","software","script","configuration","script"]) {
+                let path=format!("/api/v1/resources/{id}");
+                call(&mut browser,&router,&path,0,json!({"action":"create","kind":kind})).await?;
+                call(&mut browser,&router,&path,1,json!({"action":"present","presentation":{"name":id,"extension":{"kept":true}}})).await?;
+            }
+            call(&mut browser,&router,&format!("/api/v1/resources/{}",ids[2]),2,json!({"action":"present","presentation":{"name":ids[2],"extension":{"kept":true},"changed":true}})).await?;
+            // A foreign tenant's same-ID header must never enter this tenant's page.
+            pg(&format!("WITH peer AS (SELECT convert_to(jsonb_set(convert_from(document,'UTF8')::jsonb,'{{1}}',to_jsonb('{}'::text))::text,'UTF8') AS document FROM mdm_resource.aggregates WHERE tenant_id='{}' AND id='{}') INSERT INTO mdm_resource.aggregates(tenant_id,id,revision,document,digest) SELECT '{}','{}',99,document,sha256(document) FROM peer",case::peer(),case_tenant(),ids[0],case::peer(),ids[0]))?;
+            let tenant=rss_request_context::TenantId::parse(case_tenant())?;
+            let active=case::name("query-active");
+            let store=rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(),tenant,
+                rss_mdm_flow_service::transaction::deadline()).await?;
+            let blueprint=rss_mdm_resource::blueprints::get("windows.identity","1").unwrap();
+            let id=rss_mdm_resource::Id::new(active)?;
+            for (revision,command) in [
+                (0,rss_mdm_resource_postgres::Command::Create(blueprint.definition.kind())),
+                (1,rss_mdm_resource_postgres::Command::Insert(blueprint.instantiate(tenant,id.clone())?)),
+                (2,rss_mdm_resource_postgres::Command::Activate(rss_mdm_resource::Id::new(blueprint.label())?)),
+            ] {
+                store.execute(&rss_mdm_resource_postgres::Request {
+                    id:rss_mdm_resource::Id::new(uuid::Uuid::new_v4().to_string())?,
+                    resource:id.clone(),expected_storage_revision:revision,
+                    as_of:rss_contract::Timepoint::try_from(10_i64)?,command,
+                },rss_mdm_flow_service::transaction::deadline()).await?;
+            }
+            let mut candidates=ids.to_vec();candidates.push(active);
+            let filter=format!("id=in=({});active==false",candidates.join(","));
+            let uri=|filter:&str,sort:&str,fields:&str,limit:&str,cursor:Option<&str>| {
+                let mut query=url::form_urlencoded::Serializer::new(String::new());
+                query.extend_pairs([("filter",filter),("sort",sort),("fields",fields),("limit",limit)]);
+                if let Some(cursor)=cursor{query.append_pair("cursor",cursor);}
+                format!("/api/v1/resources?{}",query.finish())
+            };
+            let active_filter=format!("id=in=({});active==true",candidates.join(","));
+            let only_active=browser.call(&router,Method::GET,&uri(&active_filter,"id","id,activeVersion","100",None),None).await?;
+            ensure!(only_active.0==StatusCode::OK && only_active.1["items"].as_array().unwrap().len()==1
+                && only_active.1["items"][0]["id"]==active && only_active.1["items"][0]["activeVersion"]==blueprint.label(),
+                "active predicate was not selective: {only_active:?}");
+            let sort="kind,-revision";
+            let fields="id,revision,kind,presentation";
+            let first=browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",None),None).await?;
+            ensure!(first.0==StatusCode::OK,"query: {first:?}");
+            ensure!(first.1["items"][0]["id"]==ids[3] && first.1["items"][1]["id"]==ids[2],"global multi-key order: {}",first.1);
+            ensure!(first.1["items"][0]["presentation"]["extension"]["kept"]==true);
+            ensure!(first.1["items"][0].as_object().unwrap().len()==4);
+            let token=first.1["nextCursor"].as_str().unwrap().to_owned();
+            ensure!(token!=ids[2],"cursor exposed the former ID-only continuation");
+            let second=browser.call(&router,Method::GET,&uri(&filter,sort,fields,"1",Some(&token)),None).await?;
+            ensure!(second.0==StatusCode::OK && second.1["items"][0]["id"]==ids[0],"equal sort values need ID tie-break: {second:?}");
+            let third=browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",second.1["nextCursor"].as_str()),None).await?;
+            ensure!(third.0==StatusCode::OK && third.1["items"][0]["id"]==ids[4] && third.1["items"][1]["id"]==ids[1] && third.1["nextCursor"].is_null(),"terminal page: {third:?}");
+            let scripts=format!("id=in=({});kind==script;revision=ge=2",ids.join(","));
+            let projected=browser.call(&router,Method::GET,&uri(&scripts,"-id","presentation","1",None),None).await?;
+            ensure!(projected.0==StatusCode::OK && projected.1["items"][0].as_object().unwrap().len()==1 && projected.1["items"][0]["presentation"]["name"]==ids[4]);
+            let projected_next=browser.call(&router,Method::GET,&uri(&scripts,"-id","presentation","10",projected.1["nextCursor"].as_str()),None).await?;
+            ensure!(projected_next.0==StatusCode::OK && projected_next.1["items"].as_array().unwrap().len()==2 && projected_next.1["items"][0]["presentation"]["name"]==ids[2] && projected_next.1["items"][1]["presentation"]["name"]==ids[0] && projected_next.1["nextCursor"].is_null(),"projection removed seek data: {projected_next:?}");
+            let empty=browser.call(&router,Method::GET,&uri("revision=lt=0","id","id","1",None),None).await?;
+            ensure!(empty.0==StatusCode::OK && empty.1["items"]==json!([]) && empty.1["nextCursor"].is_null());
+            for query in [uri(&filter,"-id",fields,"2",Some(&token)),uri(&filter,sort,"id","2",Some(&token)),uri(&scripts,sort,fields,"2",Some(&token))] {
+                let rejected=browser.call(&router,Method::GET,&query,None).await?;
+                ensure!(rejected.0==StatusCode::CONFLICT && rejected.1["code"]=="resource_cursor_invalidated","context accepted or wrong error: {rejected:?}");
+            }
+            for raw in ["sort=active","fields=","filter=kind==bogus","filter=id==%27x%27%20OR%201=1","limit=1&limit=2","filter=id==%FF","filter=id==a*","after=x","filter=active=gt=false"] {
+                ensure!(browser.call(&router,Method::GET,&format!("/api/v1/resources?{raw}"),None).await?.0==StatusCode::BAD_REQUEST,"invalid query accepted: {raw}");
+            }
+            set_management_grants(&subject,json!(["resource_read","resource_write","scope_read"])).await?;
+            ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::CONFLICT,"old authorization binding accepted");
+            let stale=crate::device::test_support::admin(case_tenant(),"other-a").await?;
+            stale.manage(crate::authorization::Permission::ResourceRead)?;
+            let catalog=crate::flow::catalog(planning.audit_store.clone(),runtime.clone(),tenant,
+                Arc::new(crate::clock::SystemClock)).await?;
+            set_management_grants(&subject,json!([])).await?;
+            ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::FORBIDDEN,"cursor granted authority");
+            let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"management_read");
+            stale.bind_audit(&audit)?;
+            let result=catalog.directory(&stale,&rss_mdm_resource::directory::Query::parse("limit=1")?,&audit).await;
+            audit.finalize(None);
+            ensure!(matches!(result,Err(rss_mdm_flow_service::Error::Forbidden)),"cached authorization survived revocation");
+            Ok(())
+        }).await
     }).await
 }

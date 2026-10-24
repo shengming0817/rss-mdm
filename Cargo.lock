@@ -3535,6 +3535,7 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-content-service",
  "rss-mdm-execution-service",
+ "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-pki-service",
@@ -3628,6 +3629,7 @@ dependencies = [
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
  "rss-mdm-group-postgres",
+ "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
@@ -3711,6 +3713,7 @@ dependencies = [
  "rss-mdm-device-service",
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
+ "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
@@ -4125,6 +4128,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-query",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",
@@ -4177,6 +4181,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "rss-mdm-http-contract"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http 1.5.0",
+ "serde",
+ "serde_json",
+ "syn 2.0.119",
+ "tower",
 ]
 
 [[package]]
@@ -4299,11 +4315,13 @@ dependencies = [
  "rss-mdm-device-service",
  "rss-mdm-execution-service",
  "rss-mdm-flow-service",
+ "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-mail-service",
  "rss-mdm-pki-service",
  "rss-mdm-policy",
+ "rss-mdm-query",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -4414,6 +4432,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rss-mdm-query"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ring",
+ "rss-contract",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "rss-mdm-recovery-credentials"
 version = "0.1.0"
 dependencies = [
@@ -4485,6 +4516,7 @@ dependencies = [
  "jsonschema",
  "rss-contract",
  "rss-mdm-agent-wire",
+ "rss-mdm-query",
  "rss-request-context",
  "schemars 1.2.2",
  "serde",
@@ -4501,6 +4533,7 @@ dependencies = [
  "futures",
  "rss-contract",
  "rss-mdm-backend-postgres-support",
+ "rss-mdm-query",
  "rss-mdm-resource",
  "rss-request-context",
  "rss-transactional-messaging",
@@ -4703,6 +4736,7 @@ dependencies = [
  "rss-mdm-certificate",
  "rss-mdm-device-trust",
  "rss-mdm-execution-service",
+ "rss-mdm-http-contract",
  "rss-mdm-inventory",
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",

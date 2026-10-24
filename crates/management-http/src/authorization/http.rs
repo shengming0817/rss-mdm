@@ -1,8 +1,12 @@
 use super::*;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
     routing::{get, put},
 };
 use serde::Deserialize;
@@ -12,17 +16,55 @@ use uuid::Uuid;
 
 pub fn routes() -> Router<Arc<HttpState>> {
     rule_routes()
-        .route("/authorization/user-groups", get(groups))
-        .route("/authorization/user-groups/{id}", put(group_write))
-        .route("/authorization/user-groups/{id}/members", get(members))
-        .route("/authorization/departments", get(departments))
+        .route(
+            "/authorization/user-groups",
+            get(groups).owned(&contracts::USER_GROUPS, &[RouteOperation::List]),
+        )
+        .route(
+            "/authorization/user-groups/{id}",
+            put(group_write).owned(
+                &contracts::USER_GROUPS,
+                &[
+                    RouteOperation::Create,
+                    RouteOperation::Update,
+                    RouteOperation::Delete,
+                ],
+            ),
+        )
+        .route(
+            "/authorization/user-groups/{id}/members",
+            get(members).owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List]),
+        )
+        .route(
+            "/authorization/departments",
+            get(departments).owned(
+                &contracts::AUTHORIZATION_DEPARTMENTS,
+                &[RouteOperation::List],
+            ),
+        )
 }
 /// The same rule protocol is used within the installation management tenant.
 pub fn rule_routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/authorization", get(effective))
-        .route("/authorization/rules", get(rules))
-        .route("/authorization/rules/{id}", put(rule_write))
+        .route(
+            "/authorization",
+            get(effective).owned(&contracts::EFFECTIVE_AUTHORITY, &[RouteOperation::Get]),
+        )
+        .route(
+            "/authorization/rules",
+            get(rules).owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List]),
+        )
+        .route(
+            "/authorization/rules/{id}",
+            put(rule_write).owned(
+                &contracts::AUTHORIZATION_RULES,
+                &[
+                    RouteOperation::Create,
+                    RouteOperation::Update,
+                    RouteOperation::Delete,
+                ],
+            ),
+        )
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

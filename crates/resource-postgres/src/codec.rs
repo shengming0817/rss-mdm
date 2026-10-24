@@ -344,7 +344,7 @@ pub(crate) fn directory_header(
     tenant: TenantId,
     resource: &str,
     revision: i64,
-) -> Result<Value, PgError> {
+) -> Result<rss_mdm_resource::directory::Record, PgError> {
     let value: Value = STORAGE.decode(bytes)?;
     let a = array(&value, 8)?;
     if n(&a[0])? != 1
@@ -354,14 +354,7 @@ pub(crate) fn directory_header(
     {
         return Err(STORAGE.fault("codec::directory_header"));
     }
-    let kind = match read_kind(&a[3])? {
-        Kind::Software => "software",
-        Kind::Script => "script",
-        Kind::Configuration => "configuration",
-        Kind::NativeCollection => "native_collection",
-        Kind::AgentCollection => "agent_collection",
-        Kind::TelemetryProfile => "telemetry_profile",
-    };
+    let kind = read_kind(&a[3])?;
     if !a[4].is_null() {
         STORAGE.invalid(
             "codec::directory_header",
@@ -393,7 +386,7 @@ pub(crate) fn directory_header(
         match read_state(&entry[1])? {
             State::Frozen => (),
             State::Active => {
-                if active.replace(key.as_str().to_owned()).is_some() {
+                if active.replace(key).is_some() {
                     return Err(STORAGE.fault("codec::directory_header"));
                 }
             }
@@ -401,9 +394,13 @@ pub(crate) fn directory_header(
             State::Archived => (),
         };
     }
-    Ok(
-        json!({"id":resource,"revision":revision,"kind":kind,"activeVersion":active,"presentation":a[7]}),
-    )
+    Ok(rss_mdm_resource::directory::Record {
+        id: id(&a[2])?,
+        revision,
+        kind,
+        active_version: active,
+        presentation: STORAGE.json("codec::presentation", serde_json::from_value(a[7].clone()))?,
+    })
 }
 
 #[cfg(test)]
@@ -437,7 +434,11 @@ mod directory_tests {
         ]))
         .unwrap();
         assert_eq!(
-            directory_header(&header, tenant, "script", 3).unwrap(),
+            serde_json::Value::Object(
+                rss_mdm_resource::directory::Query::parse("")
+                    .unwrap()
+                    .project(directory_header(&header, tenant, "script", 3).unwrap())
+            ),
             json!({"id":"script","revision":3,"kind":"script","activeVersion":"current","presentation":{}})
         );
         assert!(directory_header(&header, tenant, "other", 3).is_err());

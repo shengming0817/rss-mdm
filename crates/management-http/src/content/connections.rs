@@ -1,21 +1,31 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_content_service::connections::{
     Receipt, Request,
     authority::{Authority, Directory},
 };
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use std::sync::Arc;
 
 pub fn routes() -> Router<Arc<Authority>> {
     Router::new()
-        .route("/storage/connections", get(read).post(create))
-        .route("/storage/connections/operations/{id}", get(operation))
+        .route(
+            "/storage/connections",
+            get(read)
+                .owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Get])
+                .post(create)
+                .owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Update]),
+        )
+        .route(
+            "/storage/connections/operations/{id}",
+            get(operation).owned(&contracts::STORAGE_CONNECTIONS, &[RouteOperation::Get]),
+        )
 }
 async fn read(
     State(service): State<Arc<Authority>>,

@@ -182,6 +182,14 @@ impl Planning {
         if tx.tenant_id() != self.tenant || id.is_nil() || definition.references().len() > 1000 {
             return Err(Error::Malformed.into());
         }
+        // Match the production transaction fence before scope/checkpoint writes.
+        // Otherwise a concurrent worker can hold the watermark while waiting for
+        // our checkpoint row, as this fixture waits for its watermark lock.
+        let tenant = self.tenant;
+        tx.with_connection(move |c| {
+            Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await })
+        })
+        .await?;
         self.validate_scope_references_in(tx, &definition).await?;
         let tenant = self.tenant.to_string();
         let document = checked_input(serde_json::to_value(&definition))?;

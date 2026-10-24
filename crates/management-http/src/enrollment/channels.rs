@@ -2,12 +2,16 @@
 use super::http::HttpState;
 use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     http::HeaderMap,
-    routing::{get, put},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, put},
+};
 use rss_mdm_registration_service::{
     admission::{Change, Setting},
     quotas::Channel,
@@ -67,8 +71,14 @@ struct Entry {
 }
 pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/registration-channels", get(read))
-        .route("/registration-channels/{channel}/admission", put(change))
+        .route(
+            "/registration-channels",
+            get(read).owned(&contracts::REGISTRATION_CHANNELS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/registration-channels/{channel}/admission",
+            put(change).owned(&contracts::REGISTRATION_CHANNELS, &[RouteOperation::Update]),
+        )
 }
 async fn read(
     State(app): State<Arc<HttpState>>,

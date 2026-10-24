@@ -1,5 +1,6 @@
 //! WNS 运行凭据由 Windows 领域保管，部署侧验证真实 OAuth 后申请宿主应用。
 use crate::{Error, Failure, database::db};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_native_protection::{DerivedAad, ProtectionContext, Protector};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -259,15 +260,25 @@ pub async fn qualify(
     Ok(())
 }
 
-pub fn routes(state: std::sync::Arc<crate::HttpState>) -> axum::Router {
-    use axum::routing::get;
-    axum::Router::new()
-        .route("/api/v1/windows/wns", get(read).post(create))
+pub fn routes(state: std::sync::Arc<crate::HttpState>) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::routing::get;
+    rss_mdm_http_contract::Router::new()
+        .route(
+            "/api/v1/windows/wns",
+            get(read)
+                .owned(&contracts::WNS, &[RouteOperation::Get])
+                .post(create)
+                .owned(&contracts::WNS, &[RouteOperation::Update]),
+        )
         .route(
             "/api/v1/windows/wns/revoke",
-            axum::routing::post(revoke_http),
+            rss_mdm_http_contract::routing::post(revoke_http)
+                .owned(&contracts::WNS, &[RouteOperation::Update]),
         )
-        .route("/api/v1/windows/wns/operations/{id}", get(operation))
+        .route(
+            "/api/v1/windows/wns/operations/{id}",
+            get(operation).owned(&contracts::WNS, &[RouteOperation::Get]),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
         .with_state(state)
 }

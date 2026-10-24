@@ -1,12 +1,16 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, State},
     middleware,
     response::Response,
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use serde::Deserialize;
 use std::sync::Arc;
 pub struct Services {
@@ -68,7 +72,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let software_content = Router::new()
         .route(
             "/api/v1/software/installations/{id}/package",
-            get(crate::software_content::download),
+            get(crate::software_content::download).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
         )
         .with_state(state.execution.clone());
     let directory = Arc::new(crate::enrollment::directory::HttpState {
@@ -117,7 +124,9 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::content::connections::routes().with_state(state.storage_connections))
         .route(
             "/settings/catalog",
-            get(crate::settings::tenant).layer(Extension(state.settings)),
+            get(crate::settings::tenant)
+                .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get])
+                .layer(Extension(state.settings)),
         )
         .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::telemetry::routes(state.telemetry.clone()))
@@ -146,7 +155,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             )),
         )
         .merge(crate::authorization::routes().with_state(authorization))
-        .route("/devices/{id}/actions", post(action));
+        .route(
+            "/devices/{id}/actions",
+            post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        );
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes().with_state(planning.clone()))
@@ -185,7 +197,9 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let host_context = Router::new()
         .route(
             "/api/v1/identity-host/tenants/{tenant}/context",
-            get(identity_context).with_state(identity_context_state),
+            get(identity_context)
+                .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
+                .with_state(identity_context_state),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication_state.clone(),
@@ -195,7 +209,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(planning_routes)
         .merge(operations)
         .merge(resources)
-        .route("/mdm-candidate/workspace", get(workspace))
+        .route(
+            "/mdm-candidate/workspace",
+            get(workspace).owned(&contracts::WORKSPACE, &[RouteOperation::Get]),
+        )
         .route_layer(middleware::from_fn_with_state(
             authentication_state,
             crate::authorization::http::protect,
@@ -286,9 +303,11 @@ pub(crate) fn management_identity_context(
     Router::new()
         .route(
             &format!("/api/v1/identity-host/tenants/{tenant}/context"),
-            get(management_context).with_state(Arc::new(IdentityContextState {
-                identity_management: policy,
-            })),
+            get(management_context)
+                .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
+                .with_state(Arc::new(IdentityContextState {
+                    identity_management: policy,
+                })),
         )
         .route_layer(middleware::from_fn_with_state(
             authentication,

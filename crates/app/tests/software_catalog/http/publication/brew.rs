@@ -47,7 +47,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let hosted = router.clone();
+    let hosted = router.clone().into_axum();
     let server = crate::test_support::software::HttpServer::start(listener, hosted);
     let id = publication
         .id()

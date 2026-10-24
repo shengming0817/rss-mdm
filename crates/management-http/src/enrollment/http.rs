@@ -6,6 +6,7 @@ use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
 };
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use std::sync::Arc;
 async fn create_enrollment(
     State(app): State<Arc<HttpState>>,
@@ -144,20 +145,38 @@ impl HttpState {
 #[serde(deny_unknown_fields)]
 struct EmptyRequest {}
 
-pub fn routes() -> axum::Router<Arc<HttpState>> {
-    use axum::routing::{get, post};
-    axum::Router::new()
+pub fn routes() -> rss_mdm_http_contract::Router<Arc<HttpState>> {
+    use rss_mdm_http_contract::routing::{get, post};
+    rss_mdm_http_contract::Router::new()
         .merge(super::quotas::routes())
         .merge(super::registration_user::routes())
         .merge(super::channels::routes())
-        .route("/enrollments", post(create_enrollment))
-        .route("/enrollments/{id}", get(enrollment_status))
-        .route("/devices/{device}/registrations", get(registrations))
-        .route("/enrollments/{id}/resume", post(resume_enrollment))
-        .route("/enrollments/{id}/cancel", post(cancel_enrollment))
+        .route(
+            "/enrollments",
+            post(create_enrollment)
+                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/enrollments/{id}",
+            get(enrollment_status).owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Get]),
+        )
+        .route(
+            "/devices/{device}/registrations",
+            get(registrations).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/enrollments/{id}/resume",
+            post(resume_enrollment)
+                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/enrollments/{id}/cancel",
+            post(cancel_enrollment)
+                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Action]),
+        )
         .route(
             "/devices/{device}/registrations/{registration}/revoke",
-            post(revoke_registration),
+            post(revoke_registration).owned(&contracts::DEVICES, &[RouteOperation::Lifecycle]),
         )
 }
 

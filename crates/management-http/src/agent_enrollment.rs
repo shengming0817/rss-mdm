@@ -1,14 +1,18 @@
 //! Session-authenticated Agent authorization, separate from native Enrollment passwords.
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_agent_wire::enroll as wire;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_registration_service::agent::{Failure, Service};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -32,44 +36,116 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
     Router::new()
         .route(
             "/agent-connections",
-            get(connection_state).put(save_connections),
+            get(connection_state)
+                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get])
+                .put(save_connections)
+                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Update]),
         )
-        .route("/agent-connections/publish", post(publish_connections))
-        .route("/agent-connections/devices", get(unconfirmed_devices))
+        .route(
+            "/agent-connections/publish",
+            post(publish_connections)
+                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Update]),
+        )
+        .route(
+            "/agent-connections/devices",
+            get(unconfirmed_devices).owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get]),
+        )
         .route(
             "/agent-connections/configuration",
-            get(download_connections),
+            get(download_connections).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
         )
         .route(
             "/agent-connection-operations/{id}",
-            get(connection_operation),
+            get(connection_operation).owned(
+                &contracts::AGENT_CONNECTION_OPERATIONS,
+                &[RouteOperation::Get],
+            ),
         )
         .route(
             "/agent-connections/devices/{device}/observation",
-            get(connection_observation),
+            get(connection_observation)
+                .owned(&contracts::AGENT_CONNECTIONS, &[RouteOperation::Get]),
         )
-        .route("/agent-configurations", post(create_configuration))
-        .route("/agent-configurations/{id}", get(read_configuration))
+        .route(
+            "/agent-configurations",
+            post(create_configuration)
+                .owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/agent-configurations/{id}",
+            get(read_configuration).owned(&contracts::AGENT_CONFIGURATIONS, &[RouteOperation::Get]),
+        )
         .route(
             "/agent-configuration-operations/{id}",
-            get(configuration_operation),
+            get(configuration_operation).owned(
+                &contracts::AGENT_CONFIGURATION_OPERATIONS,
+                &[RouteOperation::Get],
+            ),
         )
         .route(
             "/agent-configurations/{id}/revoke",
-            post(revoke_configuration),
+            post(revoke_configuration).owned(
+                &contracts::AGENT_CONFIGURATIONS,
+                &[RouteOperation::Lifecycle],
+            ),
         )
-        .route("/agent-requests/{id}/authorize", post(authorize))
-        .route("/agent-requests/{id}/reenroll/{device}", post(reenroll))
-        .route("/agent-requests/{id}/cancel", post(revoke))
+        .route(
+            "/agent-requests/{id}/authorize",
+            post(authorize).owned(
+                &contracts::AGENT_REQUEST_COMMANDS,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/agent-requests/{id}/reenroll/{device}",
+            post(reenroll).owned(
+                &contracts::AGENT_REQUEST_COMMANDS,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/agent-requests/{id}/cancel",
+            post(revoke).owned(
+                &contracts::AGENT_REQUEST_COMMANDS,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/agent-enrollment-settings",
-            get(settings).put(update_settings),
+            get(settings)
+                .owned(
+                    &contracts::AGENT_ENROLLMENT_SETTINGS,
+                    &[RouteOperation::Get],
+                )
+                .put(update_settings)
+                .owned(
+                    &contracts::AGENT_ENROLLMENT_SETTINGS,
+                    &[RouteOperation::Update],
+                ),
         )
-        .route("/agent-registrations/{id}/recovery", post(recovery))
-        .route("/agent-issuances/{id}/recover", post(recover_issuance))
+        .route(
+            "/agent-registrations/{id}/recovery",
+            post(recovery).owned(
+                &contracts::AGENT_REGISTRATION_RECOVERY,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/agent-issuances/{id}/recover",
+            post(recover_issuance).owned(
+                &contracts::AGENT_ISSUANCE_RECOVERY,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/agent-issuances/{id}/recovery-operations/{operation}",
-            get(issuance_recovery_operation),
+            get(issuance_recovery_operation).owned(
+                &contracts::AGENT_ISSUANCE_RECOVERY,
+                &[RouteOperation::Action],
+            ),
         )
         .with_state(Arc::new(app))
 }

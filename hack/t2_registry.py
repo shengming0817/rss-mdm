@@ -2178,3 +2178,23 @@ consume(('crates/inventory-service/schema/collection-metadata.sql',), 'assets.qu
 # Read-only qualifications share their owners with locked authentication consumers.
 consume(('crates/apple-channel/schema/platform-qualifications.sql','crates/apple-channel/schema/profile-qualifications.sql','crates/apple-channel/src/profiles.rs','crates/apple-channel/src/rewrap.rs'), 'apple.platform_sso apple.profile')
 consume(('crates/authorization-service/schema/authority.sql','crates/device-service/schema/object-qualification.sql','crates/flow-service/schema/qualification.sql','crates/execution-service/schema/device-access-qualification.sql'), 'apple.platform_sso device.views planning.group_scope planning.policy device-access.http authorization.programmatic')
+
+
+# Resource query execution and common ingress composition have distinct proof owners.
+consume(('crates/query/src/*', 'crates/resource/src/directory.rs'), 'planning.http')
+consume(('crates/http-contract/src/*',),
+        ' '.join(name for name, module in MODULES.items()
+                 if module.build == APP and 'identity' in module.fixtures)
+        + ' api.diagnostics host.lifecycle')
+T1_INPUTS += ('crates/query/tests/*', 'crates/http-contract/tests/*',
+              'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs', 'crates/management-http/examples/management_capabilities.rs')
+consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.agent.history')
+
+
+if __name__ == '__main__':
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description='Read canonical T2 registration identities')
+    parser.add_argument('--module-ids', action='store_true', required=True)
+    parser.parse_args()
+    print(json.dumps(sorted(MODULES)))

@@ -1,11 +1,10 @@
 //! Tenant key management and installation-wide programmatic admission.
 use crate::Error;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{
@@ -13,6 +12,11 @@ use rss_mdm_authorization_service::{
     api_key_store::{self, KeyChange, KeyMutation},
     context::RequestAuth,
     network_policy::{self, NetworkChange},
+};
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -25,17 +29,38 @@ pub struct Management {
 }
 pub fn key_routes(state: Arc<Management>) -> Router {
     Router::new()
-        .route("/api-keys", get(list).post(create))
-        .route("/api-keys/{id}", get(detail).put(update))
-        .route("/api-keys/{id}/rotate", post(rotate))
-        .route("/api-keys/{id}/revoke", post(revoke))
+        .route(
+            "/api-keys",
+            get(list)
+                .owned(&contracts::API_KEYS, &[RouteOperation::List])
+                .post(create)
+                .owned(&contracts::API_KEYS, &[RouteOperation::Create]),
+        )
+        .route(
+            "/api-keys/{id}",
+            get(detail)
+                .owned(&contracts::API_KEYS, &[RouteOperation::Get])
+                .put(update)
+                .owned(&contracts::API_KEYS, &[RouteOperation::Update]),
+        )
+        .route(
+            "/api-keys/{id}/rotate",
+            post(rotate).owned(&contracts::API_KEYS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/api-keys/{id}/revoke",
+            post(revoke).owned(&contracts::API_KEYS, &[RouteOperation::Lifecycle]),
+        )
         .with_state(state)
 }
 pub fn network_routes(state: Arc<Management>) -> Router {
     Router::new()
         .route(
             "/api-access/network-policy",
-            get(network).put(network_change),
+            get(network)
+                .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Get])
+                .put(network_change)
+                .owned(&contracts::API_NETWORK_POLICY, &[RouteOperation::Update]),
         )
         .with_state(state)
 }

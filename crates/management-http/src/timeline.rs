@@ -2,11 +2,12 @@
 //! ref: axum axum/src/extract/query.rs@axum-v0.8.9
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_timeline_service::{Page, Timeline};
 use std::sync::Arc;
 fn input(
@@ -26,8 +27,14 @@ fn error(error: rss_mdm_timeline_service::Error) -> Error {
 }
 pub fn routes() -> Router<Arc<Timeline>> {
     Router::new()
-        .route("/devices/{device}/timeline", get(device))
-        .route("/audit-events", get(search))
+        .route(
+            "/devices/{device}/timeline",
+            get(device).owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List]),
+        )
+        .route(
+            "/audit-events",
+            get(search).owned(&contracts::AUDIT, &[RouteOperation::List]),
+        )
 }
 async fn device(
     State(service): State<Arc<Timeline>>,

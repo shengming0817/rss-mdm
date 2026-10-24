@@ -493,6 +493,7 @@ pub trait References: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + 'a>>;
 }
 pub struct ResourceCatalog {
+    directory_cursor: rss_mdm_query::cursor::CursorCodec,
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
@@ -519,10 +520,14 @@ impl ResourceCatalog {
         clock: Arc<dyn crate::clock::Clock>,
         references: Arc<dyn References>,
     ) -> std::result::Result<Self, Error> {
+        let key = crate::storage::cursor_key(&runtime, tenant).await?;
+        let directory_cursor = rss_mdm_query::cursor::CursorCodec::new(&key)
+            .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
         let resources = pg::ResourceStore::new(runtime.clone(), tenant, deadline())
             .await
             .map_err(|_| Error::Unavailable(Failure::ResourceAdmission))?;
         Ok(Self {
+            directory_cursor,
             audit_store,
             runtime,
             tenant,

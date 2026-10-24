@@ -16,6 +16,9 @@ impl IntoResponse for Error {
             Error::MdmSoftwareDisabled => (StatusCode::CONFLICT, "mdm_software_disabled"),
             Error::EnrollmentPaused => (StatusCode::CONFLICT, "enrollment_paused"),
             Error::RegistrationLimit => (StatusCode::TOO_MANY_REQUESTS, "registration_limit"),
+            Error::ResourceCursorInvalidated => {
+                (StatusCode::CONFLICT, "resource_cursor_invalidated")
+            }
             Error::Conflict => (StatusCode::CONFLICT, "operation_conflict"),
             Error::DeviceViewCursorInvalidated => {
                 (StatusCode::CONFLICT, "device_view_cursor_invalidated")

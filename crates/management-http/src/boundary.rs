@@ -1,7 +1,7 @@
 //! This ingress owns request admission, body limits, audit settlement and wire errors.
 use crate::{Error, Failure};
 use axum::{
-    Json, Router,
+    Json,
     extract::{Request, State},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
@@ -11,6 +11,7 @@ use rss_mdm_audit_integration::{
     RequestAudit,
     completion::{Replacement, ResponseFailure},
 };
+use rss_mdm_http_contract::Router;
 use std::sync::Arc;
 #[derive(Clone)]
 pub struct Envelope {
@@ -51,6 +52,11 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
+    let uri_limit = if route == "/api/v1/resources" {
+        rss_mdm_query::MAX_RAW_QUERY_BYTES + "/api/v1/resources?".len()
+    } else {
+        8192
+    };
     let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
@@ -63,7 +69,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
     let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
-        || request.uri().to_string().len() > 8192
+        || request.uri().to_string().len() > uri_limit
         || request
             .headers()
             .get(header::HOST)

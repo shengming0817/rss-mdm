@@ -1,4 +1,5 @@
 //! Agent runtime V1 ingress; request fields carry no tenant or registration authority.
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod diagnostic;
 mod error;
 pub use diagnostic::{ConfigIssue, Failure};
@@ -31,15 +32,18 @@ pub use tasks::TaskState;
 
 use crate::database::db;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     body::Bytes,
     extract::{Path, State, rejection::BytesRejection},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use rss_mdm_inventory::ReportSource as InventorySource;
 use rss_observation::{Batch, Body, Change, Id};
 use rss_request_context::TenantId;
@@ -49,8 +53,20 @@ use uuid::Uuid;
 
 fn routes() -> Router<Arc<HttpState>> {
     Router::new()
-        .route("/reports", post(report))
-        .route("/reports/{id}", get(status))
+        .route(
+            "/reports",
+            post(report).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/reports/{id}",
+            get(status).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .merge(telemetry::routes())
 }
 

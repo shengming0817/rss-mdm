@@ -17,6 +17,8 @@ pub enum Error {
     Configuration(ConfigIssue),
     #[error("invalid request")]
     Malformed,
+    #[error("resource cursor invalidated; restart pagination")]
+    ResourceCursorInvalidated,
     #[error("request body too large")]
     RequestTooLarge,
     #[error(transparent)]

@@ -4,11 +4,12 @@ use crate::{
     authorization::context::{AuthorizedPrincipal, RequestAuth},
 };
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{Path, Query, State},
-    routing::get,
 };
 use rss_mdm_audit_integration::RequestAudit;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{Router, routing::get};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -106,14 +107,39 @@ pub trait Source: Send + Sync {
 }
 pub fn routes(source: Arc<dyn Source>) -> Router {
     Router::new()
-        .route("/user-attribute-definitions", get(definitions))
+        .route(
+            "/user-attribute-definitions",
+            get(definitions).owned(&contracts::USER_ATTRIBUTES, &[RouteOperation::List]),
+        )
         .route(
             "/user-attribute-definitions/{id}",
-            get(definition).put(change),
+            get(definition)
+                .owned(&contracts::USER_ATTRIBUTES, &[RouteOperation::Get])
+                .put(change)
+                .owned(
+                    &contracts::USER_ATTRIBUTES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
         )
-        .route("/user-attribute-operations/{id}", get(operation))
-        .route("/user-profiles/me", get(me))
-        .route("/user-profiles/{id}", get(person))
+        .route(
+            "/user-attribute-operations/{id}",
+            get(operation).owned(
+                &contracts::USER_ATTRIBUTE_OPERATIONS,
+                &[RouteOperation::Get],
+            ),
+        )
+        .route(
+            "/user-profiles/me",
+            get(me).owned(&contracts::USER_PROFILES, &[RouteOperation::Action]),
+        )
+        .route(
+            "/user-profiles/{id}",
+            get(person).owned(&contracts::USER_PROFILES, &[RouteOperation::Get]),
+        )
         .with_state(source)
 }
 type Response = Result<Json<Value>, Error>;

@@ -1,12 +1,16 @@
 use crate::Error;
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::HeaderMap,
     response::Response,
-    routing::{get, post},
 };
 use rss_mdm_agent_wire::runtime as wire;
+use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+use rss_mdm_http_contract::{
+    Router,
+    routing::{get, post},
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
@@ -17,29 +21,125 @@ fn body<T>(v: Body<T>) -> Result<T, Error> {
 }
 pub(crate) fn routes() -> Router<Arc<TaskState>> {
     Router::new()
-        .route("/device-access", get(access_directory))
-        .route("/device-access/begin", post(access_begin))
-        .route("/device-access/confirm", post(access_confirm))
-        .route("/device-access/recovery-uses", post(access_recovery_use))
-        .route("/task-trust/observations", post(observe_task_trust))
-        .route("/task-trust", get(task_trust).post(acknowledge_task_trust))
-        .route("/tasks/claim", post(claim))
-        .route("/tasks/{id}/enrollment", post(native_enrollment))
+        .route(
+            "/device-access",
+            get(access_directory).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/device-access/begin",
+            post(access_begin).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/device-access/confirm",
+            post(access_confirm).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/device-access/recovery-uses",
+            post(access_recovery_use).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/task-trust/observations",
+            post(observe_task_trust).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/task-trust",
+            get(task_trust)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .post(acknowledge_task_trust)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
+        )
+        .route(
+            "/tasks/claim",
+            post(claim).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
+            "/tasks/{id}/enrollment",
+            post(native_enrollment).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/current-user",
-            get(current_user).put(login_user).delete(logout_user),
+            get(current_user)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .put(login_user)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .delete(logout_user)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                ),
         )
-        .route("/self-service", get(directory))
+        .route(
+            "/self-service",
+            get(directory).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/self-service/invocations",
-            post(invoke).layer(DefaultBodyLimit::max(131072)),
+            post(invoke)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .layer(DefaultBodyLimit::max(131072)),
         )
-        .route("/self-service/invocations/{id}", get(invocation_status))
+        .route(
+            "/self-service/invocations/{id}",
+            get(invocation_status).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
         .route(
             "/tasks/{id}/events",
-            post(event).layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
+            post(event)
+                .owned(
+                    &contracts::PROTOCOL_AGENT_CHANNEL,
+                    &[RouteOperation::Action],
+                )
+                .layer(DefaultBodyLimit::max(wire::MAX_TASK_REQUEST_BYTES)),
         )
-        .route("/tasks/{id}/content", get(download))
+        .route(
+            "/tasks/{id}/content",
+            get(download).owned(
+                &contracts::DOWNLOAD_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
 }
 async fn authenticate(
     app: &TaskState,
@@ -170,7 +270,13 @@ pub struct TaskState {
 }
 
 pub(crate) fn installation_routes() -> Router<Arc<rss_mdm_execution_service::ExecutionService>> {
-    Router::new().route("/installations/{id}/package", get(installation_package))
+    Router::new().route(
+        "/installations/{id}/package",
+        get(installation_package).owned(
+            &contracts::DOWNLOAD_AGENT_CHANNEL,
+            &[RouteOperation::Action],
+        ),
+    )
 }
 
 async fn installation_package(
