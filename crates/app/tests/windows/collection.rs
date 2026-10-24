@@ -186,9 +186,9 @@ async fn template_flow(
                         uri: "./DevDetail/DevTyp".into(),
                     },
                 ),
-                mapping: rss_mdm_resource::ValueMapping {
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping {
                     pointer: "".into(),
-                    conversion: rss_mdm_resource::Conversion::Enum {
+                    conversion: rss_mdm_agent_wire::runtime::Conversion::Enum {
                         values: [(
                             "template-workstation".into(),
                             json!("canonical-workstation"),
@@ -328,6 +328,10 @@ async fn template_flow(
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     let pending = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_access.collection_runs c ON(c.tenant_id,c.id)=(r.tenant_id,r.id) WHERE r.tenant_id=$1::uuid AND v.policy=$2 AND r.gateway_accepted AND c.sealed_at IS NULL)")

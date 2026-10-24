@@ -1,6 +1,6 @@
 use super::views::people;
 use super::*;
-use rss_mdm_device_service::{Associations, Confirm, Revoke, State, ViewQuery};
+use rss_mdm_device_service::{Associations, Confirm, Revoke, State};
 use rss_mdm_registration_service::device::endpoints::{self, PrimaryRegistration};
 use serde_json::json;
 
@@ -34,17 +34,28 @@ pub(crate) async fn setup() -> anyhow::Result<(
     )?;
     Ok((access, service, admin, root))
 }
-pub(super) fn query(limit: usize) -> ViewQuery {
-    ViewQuery {
-        search: None,
-        platform: None,
-        asset_state: None,
-        cursor: None,
-        limit,
-        descending: false,
-        status: None,
-        channel: None,
-        source: None,
+pub(super) fn query(limit: usize) -> rss_mdm_query::directory::Query {
+    parameters(limit, None, None)
+}
+pub(super) fn parameters(
+    limit: usize,
+    filter: Option<&str>,
+    cursor: Option<&str>,
+) -> rss_mdm_query::directory::Query {
+    let mut url = url::form_urlencoded::Serializer::new(String::new());
+    url.append_pair("limit", &limit.to_string());
+    if let Some(filter) = filter {
+        url.append_pair("filter", filter);
+    }
+    if let Some(cursor) = cursor {
+        url.append_pair("cursor", cursor);
+    }
+    rss_mdm_device_service::directory::parse(&url.finish()).unwrap()
+}
+pub(super) fn window(cursor: Option<&str>) -> rss_mdm_query::window::Query {
+    rss_mdm_query::window::Query {
+        limit: 64,
+        cursor: cursor.map(str::to_owned),
     }
 }
 pub(crate) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<Uuid> {
@@ -125,7 +136,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     let page = s.views(&admin, &query(64), &people(&authority)?).await.context("device views")?;
     assert_eq!(
-        page["statistics"],
+        s.statistics(&admin,&query(64),&people(&authority)?).await?["statistics"],
         json!({"endpointCount":2,"deviceViewCount":1})
     );
     let id: Uuid = serde_json::from_value(page["items"][0]["reference"]["id"].clone())?;
@@ -157,7 +168,7 @@ async fn automatic_match_duplicate_detection_and_revocation_suppression() -> any
     sqlx::query("UPDATE mdm_access.registrations SET state='revoked' WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(duplicate).execute(&mut c).await?;
     assert_eq!(s.reconcile().await.context("reconcile unchanged")?, 0);
     assert_eq!(
-        s.views(&admin, &query(64), &people(&authority)?).await.context("device views")?["statistics"]["deviceViewCount"],
+        s.statistics(&admin, &query(64), &people(&authority)?).await.context("device views")?["statistics"]["deviceViewCount"],
         3
     );
     let restore = Confirm {
@@ -229,7 +240,7 @@ async fn generation_continues_after_delayed_report_and_keeps_members_pending() -
     let pending = s.get(&admin, id).await?;
     assert!(pending.members.iter().any(|m| m.registration_id == old));
     assert_eq!(
-        s.views(&admin, &query(64), &people(&authority)?)
+        s.statistics(&admin, &query(64), &people(&authority)?)
             .await
             .context("device views")?["statistics"]["deviceViewCount"],
         1
@@ -338,12 +349,12 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
         rss_audit_postgres::Integrity::Plain,
     )
     .await?;
-    let mut changes = s.changes(&admin, None).await?;
+    let mut changes = s.changes(&admin, &window(None)).await?;
     let mut found = 0;
     loop {
         found += changes["items"].as_array().context("changes")?.len();
         if let Some(cursor) = changes["nextCursor"].as_str() {
-            changes = s.changes(&admin, Some(cursor)).await?;
+            changes = s.changes(&admin, &window(Some(cursor))).await?;
         } else {
             break;
         }
@@ -442,12 +453,12 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
         rss_audit_postgres::Integrity::Plain,
     )
     .await?;
-    let mut changes = s.changes(&admin, None).await?;
+    let mut changes = s.changes(&admin, &window(None)).await?;
     let mut found = 0;
     loop {
         found += changes["items"].as_array().context("changes")?.len();
         if let Some(cursor) = changes["nextCursor"].as_str() {
-            changes = s.changes(&admin, Some(cursor)).await?;
+            changes = s.changes(&admin, &window(Some(cursor))).await?;
         } else {
             break;
         }
@@ -471,7 +482,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
             items.extend(page["items"].as_array().context("items")?.iter().cloned());
             if let Some(next) = page["nextCursor"].as_str() {
                 assert!(page["checkpoint"].is_null());
-                page = service.changes(admin, Some(next)).await?;
+                page = service.changes(admin, &window(Some(next))).await?;
             } else {
                 return Ok((
                     items,
@@ -483,9 +494,14 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
             }
         }
     }
-    let (items, empty) = drain(&service, &admin, service.changes(&admin, None).await?).await?;
+    let (items, empty) = drain(
+        &service,
+        &admin,
+        service.changes(&admin, &window(None)).await?,
+    )
+    .await?;
     assert!(items.is_empty());
-    let idle = service.changes(&admin, Some(&empty)).await?;
+    let idle = service.changes(&admin, &window(Some(&empty))).await?;
     assert_eq!(idle["items"], json!([]));
     assert_eq!(idle["checkpoint"], empty);
     let mdm = crate::test_support::case::name("checkpoint-mdm");
@@ -520,7 +536,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         rss_audit_postgres::Integrity::Plain,
     )
     .await?;
-    let first = service.changes(&admin, Some(&empty)).await?;
+    let first = service.changes(&admin, &window(Some(&empty))).await?;
     assert!(first["nextCursor"].is_string());
     // A write after the first page must wait for the next polling window.
     let event = audit("device_association_revoke");
@@ -569,14 +585,18 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     let (items, checkpoint) = drain(
         &restarted,
         &admin,
-        restarted.changes(&admin, Some(&checkpoint)).await?,
+        restarted
+            .changes(&admin, &window(Some(&checkpoint)))
+            .await?,
     )
     .await?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["action"], "device_association_revoke");
     assert!(items[0]["position"].as_u64().context("position")? > last);
     for _ in 0..2 {
-        let page = restarted.changes(&admin, Some(&checkpoint)).await?;
+        let page = restarted
+            .changes(&admin, &window(Some(&checkpoint)))
+            .await?;
         assert_eq!(page["items"], json!([]));
         assert!(page["nextCursor"].is_null());
         assert_eq!(page["checkpoint"], checkpoint);
@@ -588,10 +608,10 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     )
     .await?;
     assert!(matches!(
-        restarted.changes(&admin, Some(&checkpoint)).await,
+        restarted.changes(&admin, &window(Some(&checkpoint))).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
-    let hidden_first = restarted.changes(&admin, None).await?;
+    let hidden_first = restarted.changes(&admin, &window(None)).await?;
     assert_eq!(hidden_first["items"], json!([]));
     assert!(
         hidden_first["nextCursor"].is_string(),
@@ -601,7 +621,9 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     let (hidden, checkpoint) = drain(&restarted, &admin, hidden_first).await?;
     assert!(hidden.is_empty());
     assert_eq!(
-        restarted.changes(&admin, Some(&checkpoint)).await?["items"],
+        restarted
+            .changes(&admin, &window(Some(&checkpoint)))
+            .await?["items"],
         json!([])
     );
     access.close().await;

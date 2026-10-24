@@ -2,6 +2,9 @@
 //! ref: osquery/osquery osquery/tables/system/windows/bitlocker_info.cpp@5.23.1
 //! ref: osquery/osquery osquery/tables/system/darwin/gatekeeper.cpp@5.23.1
 use super::*;
+use rss_mdm_agent_wire::runtime::{
+    AgentCollectionMapping, Conversion, NativeMissing, ValueMapping,
+};
 use rss_mdm_agent_wire::{CollectionScope, runtime as w};
 fn mapping(pointer: &str, conversion: Conversion) -> ValueMapping {
     ValueMapping {

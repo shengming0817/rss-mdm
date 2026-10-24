@@ -250,7 +250,18 @@ pub(crate) async fn wait_task(
     family: crate::automation::TaskKind,
     target: &str,
 ) -> Value {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    wait_task_with_budget(m, id, family, target, Duration::from_secs(30)).await
+}
+
+pub(crate) async fn wait_task_with_budget(
+    m: &Planning,
+    id: Uuid,
+    family: crate::automation::TaskKind,
+    target: &str,
+    budget: Duration,
+) -> Value {
+    let mut last = None;
+    tokio::time::timeout(budget, async {
         loop {
             let result = execute(
                 m,
@@ -274,6 +285,7 @@ pub(crate) async fn wait_task(
                 }
                 Err(error) => panic!("task status failed: {error:?}"),
             };
+            last = Some(value.clone());
             if value["status"] == "completed" {
                 return value;
             }
@@ -282,7 +294,7 @@ pub(crate) async fn wait_task(
         }
     })
     .await
-    .expect("bounded fixture task did not complete")
+    .unwrap_or_else(|error| panic!("bounded fixture {family:?} task {id} for {target} did not complete: {error}; last={last:?}; health={:?}", m.automation_health()))
 }
 
 pub(crate) async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {
@@ -372,10 +384,11 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
             request: rss_mdm_inventory_service::operation::Operation {
                 operation_id: task,
                 expected_revision: 0,
-                input: assets::Query::default(),
+                input: assets::rsql::QueryInput::default(),
             }
             .into(),
             scope: assets::ReadScope {
+                authority: "internal".into(),
                 collection_scope: rss_mdm_inventory::CollectionScope::Device,
                 sensitive: true,
                 subject: prefix.to_string(),
@@ -444,6 +457,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                         None,
                         1,
                         &assets::ReadScope {
+                            authority: "internal".into(),
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             sensitive: true,
                             subject: "history-evidence".into(),

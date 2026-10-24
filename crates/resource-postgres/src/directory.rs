@@ -144,7 +144,7 @@ fn expression(sql: &mut QueryBuilder<Postgres>, expr: &Expression<Field, Scalar>
                 Operator::Ge => " >= ",
                 Operator::In => " IN ",
                 Operator::Out => " NOT IN ",
-                Operator::Icontains => unreachable!("Resource rejects substring predicates"),
+                _ => unreachable!("Resource admits only its declared operators"),
             });
             if operator.set() {
                 sql.push("(");

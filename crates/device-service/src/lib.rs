@@ -1,8 +1,10 @@
 //! Product-owned endpoint associations. Registration never depends on this service.
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction ownership).
-mod changes;
+pub mod association_directory;
+pub mod changes;
 mod cursor;
-mod directory;
+pub mod directory;
+mod directory_filter;
 pub mod lifecycle;
 pub mod lifecycle_management;
 mod model;
@@ -10,7 +12,7 @@ pub mod personnel;
 pub mod planning;
 mod presentation;
 mod views;
-pub use views::{ViewQuery, ViewRef};
+pub use views::ViewRef;
 mod identity;
 pub use identity::Hardware;
 mod read;

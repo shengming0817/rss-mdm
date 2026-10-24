@@ -1,27 +1,14 @@
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
-use serde::{Deserialize, Serialize};
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Query {
-    #[serde(default = "limit")]
-    pub limit: usize,
-    pub cursor: Option<String>,
-}
-fn limit() -> usize {
-    64
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Cursor {
-    family: String,
-    tenant: String,
-    device: String,
-    authority: String,
-    after: Uuid,
-}
+use rss_mdm_query::{cursor::CursorCodec, window::Query};
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "devices",
+    default_limit: 64,
+    max_limit: 1000,
+    order: "group identity",
+    context: &[],
+};
 impl Groups {
     pub async fn memberships(
         &self,
@@ -36,30 +23,6 @@ impl Groups {
         proof.manage(Permission::GroupRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
         let authority = proof.authorization()?.query_binding(proof)?;
-        let after = if let Some(token) = &query.cursor {
-            if token.len() > 4096 {
-                return Err(Error::Malformed);
-            }
-            let bytes = URL_SAFE_NO_PAD
-                .decode(token)
-                .map_err(|_| Error::Malformed)?;
-            if bytes.len() <= 32 {
-                return Err(Error::Malformed);
-            }
-            let (body, signature) = bytes.split_at(bytes.len() - 32);
-            ring::hmac::verify(&self.cursor_key, body, signature).map_err(|_| Error::Conflict)?;
-            let cursor: Cursor = serde_json::from_slice(body).map_err(|_| Error::Conflict)?;
-            if cursor.family != "device_groups"
-                || cursor.tenant != self.tenant.to_string()
-                || cursor.device != device
-                || cursor.authority != authority
-            {
-                return Err(Error::Conflict);
-            }
-            Some(cursor.after)
-        } else {
-            None
-        };
         audit.target_device(device);
         audit.set_action("management_read");
         crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
@@ -78,6 +41,10 @@ impl Groups {
             let objects=s.objects.clone();let device_owned=device.to_string();
             let resolved=tx.with_connection(move|c|Box::pin(async move {objects.memberships(c,tenant,&device_owned).await})).await?;
             let watermark=tx.with_connection(move|c|Box::pin(async move {rss_mdm_inventory_postgres::watermark_in(c,tenant).await.map_err(|_|sqlx::Error::Protocol("inventory watermark".into()))})).await?;
+            let stamp=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_array(coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0))").bind(tenant.to_string()).fetch_one(c).await})).await?;
+            let codec=CursorCodec::from_key(s.cursor_key.clone());
+            let binding=checked_input(rss_mdm_query::cursor::fingerprint(&("device-groups",p.tenant_id(),p.instance_id(),p.principal_id(),*device,&*authority,watermark,stamp)))?;
+            let after=q.cursor.as_ref().map(|token| -> Result<Uuid> {codec.decode(&checked_input(rss_contract::PageCursor::parse(token))?,&binding).map_err(|_|Error::Conflict.into())}).transpose()?;
             let keys=resolved.objects.iter().map(crate::objects::ObjectRef::key).collect::<Vec<_>>();
             let mut items=group_checked(s.groups.memberships_in(tx,device,&keys,after,q.limit).await?)?;
             let more=items.len()>q.limit;items.truncate(q.limit);
@@ -96,8 +63,7 @@ impl Groups {
             }
             let next=if more {
                 let after=checked_input(Uuid::parse_str(items.last().and_then(|i|i["id"].as_str()).ok_or(Error::Conflict)?))?;
-                let mut bytes=checked_input(serde_json::to_vec(&Cursor{family:"device_groups".into(),tenant:tenant.to_string(),device:device.to_string(),authority:authority.clone(),after}))?;
-                bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
+                Some(checked_input(codec.encode(&binding,&after))?.as_str().to_owned())
             } else {None};
             p.check_live()?;audit.require_request_settlement();
             Ok(serde_json::json!({"items":items,"nextCursor":next,"associationCurrent":resolved.current}))

@@ -153,7 +153,7 @@ async fn report_on(
                             query: rss_mdm_resource::NativeQuery::Windows(
                                 rss_mdm_resource::WindowsRead::Scalar { uri: query.into() },
                             ),
-                            mapping: rss_mdm_resource::ValueMapping::identity(""),
+                            mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                         },
                     )
                 })

@@ -20,17 +20,77 @@ pub(crate) async fn observations(
     request: &Request,
     native_values: bool,
 ) -> Result<Vec<Observation>, Error> {
-    let profile = matches!(
-        request,
-        Request::InstallProfile { .. } | Request::RemoveProfile { .. }
-    );
-    let assessment = if profile {
-        Some(crate::profiles::assessment(c, tenant, operation).await?)
-    } else {
-        None
-    };
-    let rows = sqlx::query("SELECT id,registration,generation,phase,state,response,received_at,accepted,native_outcome FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=$2 ORDER BY ordinal,phase")
-        .bind(tenant).bind(operation).fetch_all(c).await.map_err(db)?;
+    observations_many(
+        c,
+        key,
+        tenant,
+        vec![(operation, request.clone())],
+        native_values,
+    )
+    .await?
+    .remove(&operation)
+    .ok_or(Error::Unavailable(Failure::AppleStorage))
+}
+pub(crate) async fn observations_many(
+    c: &mut PgConnection,
+    key: &Protector,
+    tenant: &str,
+    requests: Vec<(Uuid, Request)>,
+    native_values: bool,
+) -> Result<std::collections::BTreeMap<Uuid, Vec<Observation>>, Error> {
+    if requests.len() > 1000 {
+        return Err(Error::Malformed);
+    }
+    let ids = requests.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let profiles:Vec<(Uuid,String)>=sqlx::query_as("SELECT operation,verification FROM mdm_apple.profile_qualifications WHERE tenant_id=$1::uuid AND operation=ANY($2)").bind(tenant).bind(&ids).fetch_all(&mut *c).await.map_err(db)?;
+    let profiles = profiles
+        .into_iter()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let rows=sqlx::query("WITH selected AS MATERIALIZED (SELECT operation,id,registration,generation,phase,state,response,received_at,accepted,native_outcome,ordinal FROM mdm_apple.attempts WHERE tenant_id=$1::uuid AND operation=ANY($2)),budget AS(SELECT count(*)<=8192 AND coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok ORDER BY operation,ordinal,phase")
+        .bind(tenant).bind(ids).fetch_all(&mut *c).await.map_err(db)?;
+    rss_mdm_query_postgres::observe_rows("execution.apple", &rows).map_err(db)?;
+    let mut grouped = std::collections::BTreeMap::<Uuid, Vec<_>>::new();
+    for row in rows {
+        if !row.try_get::<bool, _>("within_budget").map_err(db)? {
+            return Err(Error::Malformed);
+        }
+        if let Some(operation) = row.try_get::<Option<Uuid>, _>("operation").map_err(db)? {
+            grouped.entry(operation).or_default().push(row);
+        }
+    }
+    requests
+        .into_iter()
+        .map(|(operation, request)| {
+            let profile = matches!(
+                request,
+                Request::InstallProfile { .. } | Request::RemoveProfile { .. }
+            );
+            let assessment = if profile {
+                Some(crate::profiles::decode_assessment(
+                    profiles.get(&operation).map(String::as_str),
+                )?)
+            } else {
+                None
+            };
+            let rows = grouped.remove(&operation).unwrap_or_default();
+            Ok((
+                operation,
+                decode_observations(rows, key, tenant, &request, native_values, assessment)?,
+            ))
+        })
+        .collect()
+}
+fn decode_observations(
+    rows: Vec<sqlx::postgres::PgRow>,
+    key: &Protector,
+    tenant: &str,
+    request: &Request,
+    native_values: bool,
+    assessment: Option<rss_mdm_apple_mdm::native::profiles::Verification>,
+) -> Result<Vec<Observation>, Error> {
     rows.into_iter()
         .map(|r| {
             let phase: Phase = typed(r.try_get("phase").map_err(db)?)?;

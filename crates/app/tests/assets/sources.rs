@@ -8,7 +8,7 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     ))?;
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "conflict");
-    let query = json!({"criteria":predicate("device.model","string",json!("Same"))});
+    let query = rsql_query(predicate("device.model", "string", json!("Same")));
     let found = ok(
         browser,
         router,
@@ -64,7 +64,11 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
             TENANT = case_tenant()
         ))?;
     }
-    let query = json!({"criteria":predicate("device.model","string",json!("quality-sequence"))});
+    let query = rsql_query(predicate(
+        "device.model",
+        "string",
+        json!("quality-sequence"),
+    ));
     for expected in [newer, older] {
         let detail = ok(
             browser,
@@ -215,7 +219,7 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
         &fixture.router,
         Method::POST,
         "/api/v1/device-queries",
-        Some(json!({"criteria":condition})),
+        Some(rsql_query(condition.clone())),
     )
     .await?;
     ensure!(
@@ -236,7 +240,7 @@ async fn historical_users_are_isolated_and_conditions_never_join_their_facts() -
         &fixture.router,
         Method::POST,
         "/api/v1/device-queries",
-        Some(json!({"criteria":one})),
+        Some(rsql_query(one.clone())),
     )
     .await?;
     ensure!(query["asset"]["summary"]["matched"] == 1);

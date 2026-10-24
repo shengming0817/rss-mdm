@@ -3568,6 +3568,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "time",
  "url",
  "uuid",
  "zeroize",
@@ -3721,6 +3722,7 @@ dependencies = [
  "rss-mdm-inventory-service",
  "rss-mdm-native-protection",
  "rss-mdm-pki-service",
+ "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -3990,6 +3992,7 @@ dependencies = [
  "ring",
  "rss-audit-core",
  "rss-audit-postgres",
+ "rss-contract",
  "rss-identity-core",
  "rss-identity-postgres",
  "rss-mdm-agent-wire",
@@ -3998,6 +4001,8 @@ dependencies = [
  "rss-mdm-inventory",
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-registration-service",
  "rss-request-context",
  "rss-runtime",
@@ -4085,6 +4090,8 @@ dependencies = [
  "rss-mdm-native-protection",
  "rss-mdm-policy",
  "rss-mdm-policy-postgres",
+ "rss-mdm-query",
+ "rss-mdm-query-postgres",
  "rss-mdm-recovery-credentials",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
@@ -4213,6 +4220,7 @@ dependencies = [
  "rss-observation",
  "rss-request-context",
  "rss-timeseries",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4270,6 +4278,7 @@ dependencies = [
  "rss-runtime",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4463,6 +4472,7 @@ dependencies = [
  "rss-mdm-query",
  "serde_json",
  "sqlx",
+ "tracing",
 ]
 
 [[package]]
@@ -4546,7 +4556,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlparser",
- "time",
 ]
 
 [[package]]

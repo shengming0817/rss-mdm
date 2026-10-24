@@ -1,18 +1,14 @@
 //! Device-level declarations preserve the same protected native evidence as operation details.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use serde::Deserialize;
+use rss_mdm_query::{cursor::CursorCodec, window::Query};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Query {
-    #[serde(default = "limit")]
-    pub limit: usize,
-    pub cursor: Option<String>,
-}
-fn limit() -> usize {
-    16
-}
+pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "devices",
+    default_limit: 16,
+    max_limit: 64,
+    order: "declaration operation identity",
+    context: &[],
+};
 pub struct Page {
     pub items: Vec<Item>,
     pub next_cursor: Option<String>,
@@ -33,6 +29,7 @@ impl Queries {
         device: &str,
         query: &Query,
         audit: &RequestAudit,
+        codec: &CursorCodec,
     ) -> std::result::Result<Page, QueryError> {
         if !(1..=64).contains(&query.limit) || query.cursor.as_ref().is_some_and(|s| s.len() > 4096)
         {
@@ -43,10 +40,10 @@ impl Queries {
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
-            (self, proof, device, query, audit),
+            (self, proof, device, query, audit, codec),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, device, q, audit) = *ctx;
+                    let (s, p, device, q, audit, codec) = *ctx;
                     let authorization = crate::action_admission::authorized(
                         tx,
                         p,
@@ -91,26 +88,31 @@ impl Queries {
                             current_registration: false,
                         });
                     };
-                    let aad = crate::protection::aad(
-                        s.tenant,
-                        "ddm.cursor",
-                        &(device, &registration, &authority),
-                    )?;
-                    let after = if let Some(token) = &q.cursor {
-                        let bytes = URL_SAFE_NO_PAD
-                            .decode(token)
-                            .map_err(|_| Error::Malformed)?;
-                        let plain = s
-                            .protection
-                            .open_bytes(&bytes, &aad)
-                            .map_err(|_| Error::Conflict)?;
-                        Some(
-                            serde_json::from_slice::<Uuid>(plain.expose())
-                                .map_err(|_| Error::Conflict)?,
-                        )
-                    } else {
-                        None
-                    };
+                    let generation = crate::query_generation::read(tx).await?;
+                    let binding = rss_mdm_query::cursor::fingerprint(&(
+                        "device-ddm",
+                        s.tenant.to_string(),
+                        p.instance_id(),
+                        p.principal_id(),
+                        device,
+                        &registration,
+                        &authority,
+                        generation,
+                    ))
+                    .map_err(|_| Error::Malformed)?;
+                    let after: Option<Uuid> = q
+                        .cursor
+                        .as_ref()
+                        .map(|token| {
+                            codec
+                                .decode(
+                                    &rss_contract::PageCursor::parse(token)
+                                        .map_err(|_| Error::Malformed)?,
+                                    &binding,
+                                )
+                                .map_err(|_| Error::Conflict)
+                        })
+                        .transpose()?;
                     let apple = s.apple_results.clone();
                     let tenant = s.tenant.to_string();
                     let selected = registration.clone();
@@ -132,29 +134,29 @@ impl Queries {
                             })
                         })
                         .await?;
+                    let ids=keys.iter().take(q.limit).map(|(id,_)|*id).collect::<Vec<_>>();
+                    let operations=storage::load_many(tx,&s.protection,ids.clone()).await?;
+                    let tenant=s.tenant.to_string();
+                    let statuses=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(String,String)>("SELECT command_id,status FROM rss_device_command.commands WHERE tenant_id=$1::uuid AND command_id=ANY($2)").bind(tenant).bind(ids.iter().map(Uuid::to_string).collect::<Vec<_>>()).fetch_all(c).await})).await?;
+                    let statuses=statuses.into_iter().map(|(id,status)|Ok((stored(Uuid::parse_str(&id))?,stored(dc::Status::restore(&status))?))).collect::<Result<std::collections::BTreeMap<_,_>>>()?;
+                    let mut permission=std::collections::BTreeMap::new();let mut observations=std::collections::BTreeMap::new();
+                    for values in [false,true]{
+                     let mut selected=Vec::new();
+                     for op in operations.values(){
+                      if op.device!=device||op.registration!=registration.registration_id||op.registration_generation!=registration.generation{return Err(Error::Conflict.into());}
+                      let allow=s.native_values(&authorization,p,device,op)?;permission.insert(op.id,allow);
+                      if allow==values {selected.push((op,*statuses.get(&op.id).ok_or(Error::Conflict)?));}
+                     }
+                     observations.extend(crate::apple::observations(tx,s.apple_results.clone(),&selected,values).await?);
+                    }
                     let mut items = Vec::new();
                     let mut bytes = 0;
                     let mut last = None;
                     let mut more = keys.len() > q.limit;
                     for (id, user) in keys.into_iter().take(q.limit) {
-                        let op = storage::load(tx, &s.protection, id).await?;
-                        if op.device != device
-                            || op.registration != registration.registration_id
-                            || op.registration_generation != registration.generation
-                        {
-                            return Err(Error::Conflict.into());
-                        }
-                        let native_values = s.native_values_in(tx, p, device, &op).await?;
-                        let command = s.command_status(tx, &op).await?;
-                        let observation = protocol::observation(
-                            tx,
-                            &s.protection,
-                            s.apple_results.clone(),
-                            &op,
-                            command,
-                            native_values,
-                        )
-                        .await?;
+                        let op=operations.get(&id).ok_or(Error::Conflict)?;
+                        let native_values=*permission.get(&id).ok_or(Error::Conflict)?;
+                        let observation=observations.remove(&id).ok_or(Error::Conflict)?;
                         let records::NativeObservation::Declarations { facts, .. } = &observation
                         else {
                             return Err(Error::Conflict.into());
@@ -187,18 +189,19 @@ impl Queries {
                         last = Some(id);
                     }
                     let next = if more {
-                        let encoded = serde_json::to_vec(&last.ok_or(Error::Conflict)?)
-                            .map_err(|_| Error::Malformed)?;
                         Some(
-                            URL_SAFE_NO_PAD.encode(
-                                s.protection
-                                    .seal_bytes(&encoded, &aad)
-                                    .map_err(|_| Error::Conflict)?,
-                            ),
+                            codec
+                                .encode(&binding, &last.ok_or(Error::Conflict)?)
+                                .map_err(|_| Error::Malformed)?
+                                .as_str()
+                                .to_owned(),
                         )
                     } else {
                         None
                     };
+                    if generation != crate::query_generation::read(tx).await? {
+                        return Err(Error::Conflict.into());
+                    }
                     p.check_live()?;
                     audit.require_request_settlement();
                     Ok(Page {

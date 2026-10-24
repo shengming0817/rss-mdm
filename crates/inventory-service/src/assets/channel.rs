@@ -32,75 +32,129 @@ pub async fn detail_in(
     generation: i64,
     source: ReportSource,
 ) -> Result<Option<Current>, Error> {
-    let device: Option<String> = sqlx::query_scalar("SELECT device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=$2 AND generation=$3")
-        .bind(tenant.to_string()).bind(registration).bind(generation).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(device) = device else {
-        return Ok(None);
-    };
-    crate::device::store::lock_channel(c, &tenant.to_string(), &device, source.channel()).await?;
-    let epoch: Option<Uuid> = sqlx::query_scalar("SELECT s.epoch FROM mdm_access.report_sources s JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(s.tenant_id,s.registration) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.generation=$3 AND r.state='active' AND r.channel=$4 AND s.source=$5 AND s.enabled")
-        .bind(tenant.to_string()).bind(registration).bind(generation).bind(source.channel().as_str()).bind(source.as_str())
-        .fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(epoch) = epoch else {
-        return Ok(None);
-    };
-    let field = match source {
-        ReportSource::AgentBuiltin => rss_mdm_inventory::builtin::MDM_ENROLLMENT,
-        _ => rss_mdm_inventory::builtin::AGENT_INSTALLATION,
-    };
-    let scope =
-        crate::device::scope_dataset(tenant, registration, source.as_str(), epoch, field.as_str())?;
-    let latest=sqlx::query("SELECT id,result,attempts,evidence::text AS evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND registration=$2 AND source=$3 AND epoch=$4 AND scope=$5 AND sealed_at IS NOT NULL ORDER BY sequence DESC LIMIT 1")
-        .bind(tenant.to_string()).bind(registration).bind(source.as_str()).bind(epoch).bind(scope.encode().map_err(|_|Error::Malformed)?)
-        .fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(latest) = latest else {
-        return Ok(None);
-    };
-    if latest.try_get::<String, _>("result").map_err(db)? != "snapshot" {
-        return Ok(None);
+    Ok(details_in(c, tenant, &[(registration, generation, source)])
+        .await?
+        .remove(&(registration, generation, source.as_str().to_owned())))
+}
+/// Resolve a fixed authorized page against current registration and source generations.
+pub async fn details_in(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    targets: &[(Uuid, i64, ReportSource)],
+) -> Result<std::collections::BTreeMap<(Uuid, i64, String), Current>, Error> {
+    use std::collections::BTreeMap;
+    if targets.len() > 1000 {
+        return Err(Error::Malformed);
     }
-    let id: Uuid = latest.try_get("id").map_err(db)?;
-    let attempt: crate::collection::Attempts =
-        serde_json::from_str(latest.try_get("attempts").map_err(db)?)
-            .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
-    let received_at = attempt
-        .fields()
-        .get(&field)
-        .and_then(|f| f.received_at)
-        .ok_or(Error::Malformed)?;
-    let evidence: Option<crate::collection::channel::AgentEvidence> = latest
-        .try_get::<Option<String>, _>("evidence")
-        .map_err(db)?
-        .map(|s| {
-            let value: serde_json::Value = serde_json::from_str(&s)?;
-            // Raw device reports are not server-verified installation evidence.
-            if source == ReportSource::AgentBuiltin && value.get("agentReport").is_some() {
-                Ok(None)
-            } else {
-                serde_json::from_value(value)
-            }
-        })
-        .transpose()
-        .map_err(|_| Error::Malformed)?
-        .flatten();
-    let facts = rss_mdm_inventory_postgres::read_in(c, tenant, &[scope])
+    if targets.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let ids = targets.iter().map(|t| t.0).collect::<Vec<_>>();
+    let devices: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id,device FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND id=ANY($2)",
+    )
+    .bind(tenant.to_string())
+    .bind(&ids)
+    .fetch_all(&mut *c)
+    .await
+    .map_err(db)?;
+    let devices = devices.into_iter().collect::<BTreeMap<_, _>>();
+    let locks = targets
+        .iter()
+        .filter_map(|(id, _, source)| devices.get(id).map(|d| (d.clone(), source.channel())))
+        .collect::<Vec<_>>();
+    crate::device::store::lock_channels(c, &tenant.to_string(), &locks).await?;
+    let generations = targets.iter().map(|t| t.1).collect::<Vec<_>>();
+    let sources = targets
+        .iter()
+        .map(|t| t.2.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let channels = targets
+        .iter()
+        .map(|t| t.2.channel().as_str().to_owned())
+        .collect::<Vec<_>>();
+    let rows:Vec<(Uuid,i64,String,Uuid)>=sqlx::query_as("SELECT r.id,r.generation,s.source,s.epoch FROM unnest($2::uuid[],$3::bigint[],$4::text[],$5::text[]) t(id,generation,source,channel) JOIN mdm_access.registrations r ON r.tenant_id=$1::uuid AND r.id=t.id AND r.generation=t.generation AND r.channel=t.channel AND r.state='active' JOIN mdm_access.report_sources s ON s.tenant_id=r.tenant_id AND s.registration=r.id AND s.source=t.source AND s.enabled").bind(tenant.to_string()).bind(ids).bind(generations).bind(sources).bind(channels).fetch_all(&mut *c).await.map_err(db)?;
+    let mut by_scope = BTreeMap::new();
+    let mut scopes = Vec::new();
+    for (registration, generation, source, epoch) in rows {
+        let source = ReportSource::parse(&source).map_err(|_| Error::Malformed)?;
+        let field = match source {
+            ReportSource::AgentBuiltin => rss_mdm_inventory::builtin::MDM_ENROLLMENT,
+            _ => rss_mdm_inventory::builtin::AGENT_INSTALLATION,
+        };
+        let scope = crate::device::scope_dataset(
+            tenant,
+            registration,
+            source.as_str(),
+            epoch,
+            field.as_str(),
+        )?;
+        by_scope.insert(
+            scope.encode().map_err(|_| Error::Malformed)?,
+            (registration, generation, source, field),
+        );
+        scopes.push(scope);
+    }
+    let keys = by_scope.keys().cloned().collect::<Vec<_>>();
+    let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT DISTINCT ON(scope) scope,id,result,attempts,evidence::text AS evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND scope=ANY($2) AND sealed_at IS NOT NULL ORDER BY scope,sequence DESC),budget AS(SELECT coalesce(sum(pg_column_size(selected)),0)<=16777216 AS ok FROM selected) SELECT selected.*,budget.ok AS within_budget FROM budget LEFT JOIN selected ON budget.ok").bind(tenant.to_string()).bind(keys).fetch_all(&mut *c).await.map_err(db)?;
+    rss_mdm_query_postgres::observe_rows("assets.channel", &rows).map_err(db)?;
+    let facts = rss_mdm_inventory_postgres::read_in(c, tenant, &scopes)
         .await
         .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
-    Ok(facts.into_iter().find_map(|fact| {
-        if fact.field != field
-            || fact.fact.evidence.source.as_str() != source.as_str()
-            || fact.fact.evidence.snapshot_id != id.to_string()
+    let mut result = BTreeMap::new();
+    for latest in rows {
+        if !latest.try_get::<bool, _>("within_budget").map_err(db)? {
+            return Err(Error::Unavailable(Failure::AssetBytesLimit));
+        }
+        let Some(scope) = latest.try_get::<Option<String>, _>("scope").map_err(db)? else {
+            continue;
+        };
+        if latest.try_get::<String, _>("result").map_err(db)? != "snapshot" {
+            continue;
+        }
+        let (registration, generation, source, field) =
+            *by_scope.get(&scope).ok_or(Error::Malformed)?;
+        let id: Uuid = latest.try_get("id").map_err(db)?;
+        let attempt: crate::collection::Attempts =
+            serde_json::from_str(latest.try_get("attempts").map_err(db)?)
+                .map_err(|_| Error::Unavailable(Failure::InventoryQuery))?;
+        let received_at = attempt
+            .fields()
+            .get(&field)
+            .and_then(|f| f.received_at)
+            .ok_or(Error::Malformed)?;
+        let evidence: Option<crate::collection::channel::AgentEvidence> = latest
+            .try_get::<Option<String>, _>("evidence")
+            .map_err(db)?
+            .map(|s| {
+                let value: serde_json::Value = serde_json::from_str(&s)?;
+                // Raw device reports are not server-verified installation evidence.
+                if source == ReportSource::AgentBuiltin && value.get("agentReport").is_some() {
+                    Ok(None)
+                } else {
+                    serde_json::from_value(value)
+                }
+            })
+            .transpose()
+            .map_err(|_| Error::Malformed)?
+            .flatten();
+        if let Some(fact) = facts.iter().find(|fact| {
+            fact.scope == scope
+                && fact.field == field
+                && fact.fact.evidence.source.as_str() == source.as_str()
+                && fact.fact.evidence.snapshot_id == id.to_string()
+        }) && let State::Known(Scalar::String(value)) = &fact.fact.state
         {
-            return None;
+            result.insert(
+                (registration, generation, source.as_str().to_owned()),
+                Current {
+                    state: value.clone(),
+                    snapshot: id,
+                    received_at,
+                    evidence,
+                },
+            );
         }
-        match fact.fact.state {
-            State::Known(Scalar::String(value)) => Some(Current {
-                state: value,
-                snapshot: id,
-                received_at,
-                evidence: evidence.clone(),
-            }),
-            _ => None,
-        }
-    }))
+    }
+    Ok(result)
 }

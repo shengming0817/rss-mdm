@@ -162,6 +162,16 @@ impl Queries {
         device: &str,
         op: &storage::Operation,
     ) -> Result<bool> {
+        let snapshot = crate::action_admission::current(tx, proof).await?;
+        self.native_values(&snapshot, proof, device, op)
+    }
+    pub(crate) fn native_values(
+        &self,
+        snapshot: &crate::authorization::Snapshot,
+        proof: &AuthorizedPrincipal,
+        device: &str,
+        op: &storage::Operation,
+    ) -> Result<bool> {
         let mut native_values = true;
         if !op.authority.control_matches(
             &op.request,
@@ -178,7 +188,12 @@ impl Queries {
             required.extend_from_slice(op.authority.required());
             required.sort();
             required.dedup();
-            storage::authorized_native(tx, proof, device, &required).await?;
+            if required.is_empty() {
+                return Err(Error::Forbidden.into());
+            }
+            for permission in required {
+                snapshot.require(proof, permission, permission.device().then_some(device))?;
+            }
         }
         if op.request.profile_target().is_some() {
             let mut required = op.request.task.permissions()?;
@@ -186,7 +201,6 @@ impl Queries {
             required.push(Permission::InventoryCollect);
             required.sort();
             required.dedup();
-            let snapshot = crate::action_admission::current(tx, proof).await?;
             for permission in required {
                 match snapshot.require(proof, permission, permission.device().then_some(device)) {
                     Ok(()) => {}

@@ -663,6 +663,8 @@ pub struct TaskContent {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(extend("allOf" = serde_json::json!([{"if":{"properties":{"profile":{"const":"osquery"}}},"then":{"required":["sqlParameters"],"properties":{"arguments":{"maxItems":0},"environment":{"maxProperties":0},"runAs":{"const":"system"},"sqlParameters":{"type":"object"}}},"else":{"properties":{"sqlParameters":{"type":"null"}}}}])))]
 pub struct TaskSpec {
+    /// Explicit frozen collection projection, or a non-collection purpose.
+    pub projection: super::ScriptProjection,
     /// Exact wire major.
     #[schemars(schema_with = "crate::runtime::version_schema")]
     pub wire_version: u8,
@@ -739,6 +741,7 @@ pub struct TaskSpec {
 impl TaskSpec {
     /// Validate the signed closed profile without authenticating it.
     pub fn validate(&self) -> Result<(), WireError> {
+        self.projection.validate(self.profile, self.platform)?;
         self.authorization.validate(self.tenant_id)?;
         self.execution_target.validate_for(self.platform)?;
         match (&self.execution_target, self.run_as) {
@@ -871,6 +874,10 @@ pub const COLLECTION_TASK_VERSION: u8 = 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionTaskSpec {
+    /// Exact catalog definitions frozen with the resource.
+    pub fields: Vec<super::FieldDefinition>,
+    /// Exact query projections; interpretation grants no execution or local read permission.
+    pub mappings: BTreeMap<String, super::AgentCollectionMapping>,
     /// Exact wire major.
     #[schemars(extend("const" = COLLECTION_TASK_VERSION))]
     pub wire_version: u8,
@@ -923,6 +930,7 @@ pub struct CollectionTaskSpec {
 impl CollectionTaskSpec {
     /// Check the complete closed contract; authentication remains the consumer's job.
     pub fn validate(&self) -> Result<(), WireError> {
+        super::validate_native_projection(&self.fields, &self.mappings, &self.plan, false)?;
         self.authorization.validate(self.tenant_id)?;
         self.execution.validate(&self.plan)?;
         if self.wire_version != COLLECTION_TASK_VERSION

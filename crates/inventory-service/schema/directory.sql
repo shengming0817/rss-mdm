@@ -1,5 +1,17 @@
 -- Scalar directory projection over the permanent source-facts relation.
 BEGIN;
+-- Raw narrow source rows, before deduplication or value decoding. UNION ALL
+-- allows the caller's overflow probe to stop at its explicit source-row budget.
+CREATE VIEW mdm_assets.directory_inputs WITH (security_barrier=true) AS
+SELECT tenant_id FROM mdm.inventory WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT tenant_id FROM mdm.manual_assignments WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT tenant_id FROM mdm.field_versions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+UNION ALL
+SELECT tenant_id FROM mdm.collection_definitions WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid;
+REVOKE ALL ON mdm_assets.directory_inputs FROM PUBLIC;
+GRANT SELECT ON mdm_assets.directory_inputs TO mdm_access,mdm_identity_runtime;
 CREATE VIEW mdm_assets.directory_fields WITH (security_barrier=true) AS
 WITH facts AS (
  SELECT * FROM mdm_assets.directory_sources

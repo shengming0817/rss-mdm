@@ -1,7 +1,7 @@
 //! Bounded list reads pinned to the same asset watermark and source-selection rules as Group.
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rss_mdm_inventory::{Evidence, Scalar, State, ValueType};
+use rss_mdm_query::cursor::CursorCodec;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ListState {
@@ -80,9 +80,11 @@ impl AssetService {
             offset,
             source,
         };
-        let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
-        bytes.extend(ring::hmac::sign(&self.asset_cursor_key, &bytes).as_ref());
-        Ok(URL_SAFE_NO_PAD.encode(bytes))
+        Ok(checked_input(
+            CursorCodec::from_key(self.asset_cursor_key.clone()).encode("inventory-list", &cursor),
+        )?
+        .as_str()
+        .to_owned())
     }
     pub(super) async fn list_watermark(&self, tx: &mut PgTransaction<'_>) -> Result<i64> {
         let tenant = self.tenant;
@@ -249,14 +251,12 @@ impl AssetService {
             if token.len() > 4096 {
                 return Err(Error::Malformed.into());
             }
-            let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-            if bytes.len() <= 32 {
-                return Err(Error::Malformed.into());
-            }
-            let (payload, signature) = bytes.split_at(bytes.len() - 32);
-            ring::hmac::verify(&self.asset_cursor_key, payload, signature)
+            let c: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
+                .decode(
+                    &checked_input(rss_contract::PageCursor::parse(token))?,
+                    "inventory-list",
+                )
                 .map_err(|_| Error::Conflict)?;
-            let c: Cursor = checked_input(serde_json::from_slice(payload))?;
             if c.kind != "inventory-list-v1"
                 || c.tenant != self.tenant.to_string()
                 || c.device != device

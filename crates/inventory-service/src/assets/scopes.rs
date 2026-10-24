@@ -2,7 +2,7 @@
 //! ref: sqlx v0.8.6 sqlx-core/src/transaction.rs (borrowed transaction, no commit owner).
 //! ref: SeaORM 1.1.17 src/executor/paginator.rs (filter the selected working set before pagination).
 use super::*;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rss_mdm_query::cursor::CursorCodec;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
@@ -121,9 +121,14 @@ impl AssetService {
                 watermark,
                 after: selected.last().ok_or(Error::Malformed)?.clone(),
             };
-            let mut bytes = checked_input(serde_json::to_vec(&cursor))?;
-            bytes.extend(ring::hmac::sign(&self.asset_cursor_key, &bytes).as_ref());
-            Some(URL_SAFE_NO_PAD.encode(bytes))
+            Some(
+                checked_input(
+                    CursorCodec::from_key(self.asset_cursor_key.clone())
+                        .encode("inventory-scopes", &cursor),
+                )?
+                .as_str()
+                .to_owned(),
+            )
         } else {
             None
         };
@@ -148,14 +153,12 @@ impl AssetService {
         if token.len() > 65536 {
             return Err(Error::Malformed.into());
         }
-        let bytes = checked_input(URL_SAFE_NO_PAD.decode(token))?;
-        if bytes.len() <= 32 {
-            return Err(Error::Malformed.into());
-        }
-        let (payload, signature) = bytes.split_at(bytes.len() - 32);
-        ring::hmac::verify(&self.asset_cursor_key, payload, signature)
+        let cursor: Cursor = CursorCodec::from_key(self.asset_cursor_key.clone())
+            .decode(
+                &checked_input(rss_contract::PageCursor::parse(token))?,
+                "inventory-scopes",
+            )
             .map_err(|_| Error::Conflict)?;
-        let cursor: Cursor = checked_input(serde_json::from_slice(payload))?;
         if cursor.kind != "inventory-scopes-v1"
             || cursor.tenant != self.tenant.to_string()
             || cursor.device != device

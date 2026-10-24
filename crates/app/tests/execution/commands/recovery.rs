@@ -111,6 +111,12 @@ impl Client {
             "SELECT c.status,o.status FROM rss_device_command.commands c JOIN rss_transactional_messaging.outbox o ON o.tenant_id=c.tenant_id AND o.message_id=c.outbox_message_id WHERE c.tenant_id=$1::uuid AND c.command_id=$2",
         ).bind(case_tenant()).bind(expiry.to_string()).fetch_one(&mut pg).await?;
         ensure!(persisted == ("queued".into(), "pending".into()));
+        let sibling=Uuid::new_v4();
+        ensure!(self.call(Method::POST,"",Some(json!({"operationId":sibling,"action":{"kind":"restart"},"deadline":expires_at+100}))).await?.0==StatusCode::ACCEPTED);
+        let first=self.browser.call(&self.router,Method::GET,"/api/v1/operations?limit=1&fields=id,kind",None).await?;
+        ensure!(first.0==StatusCode::OK,"pre-recovery directory: {first:?}");
+        let token=first.1["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("recovery continuation"))?;
+        let continuation=format!("/api/v1/operations?limit=1&fields=id,kind&cursor={token}");
         clock.advance_to(expires_at * 1_000_000)?;
         let timer = recovery::Timer::new();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -161,6 +167,7 @@ impl Client {
             "recovery did not complete {:?}",
             report
         );
+        ensure!(self.browser.call(&self.router,Method::GET,&continuation,None).await?.0==StatusCode::CONFLICT,"command recovery did not invalidate the original page");
         let read = self
             .call(Method::GET, &format!("/{}", expiry), None)
             .await?;

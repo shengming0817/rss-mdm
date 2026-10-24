@@ -22,14 +22,15 @@ macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量
 | --- | --- |
 | GET /asset-field-layout | 本租户共享布局、revision 与当前 editable 能力 |
 | PUT /asset-field-layout | Operation 包装的完整布局替换，expectedRevision 为布局版本 |
-| GET /asset-fields | 唯一版本化目录、类型、来源优先级、敏感级别及可用操作 |
+| GET /asset-fields?filter&sort&fields&limit&cursor | 版本化字段目录，返回 items/nextCursor；支持显式分页和元数据投影 |
+| GET /asset-fields/{field} | 当前可见字段的独立详情 |
 | PUT /asset-fields/{field} | Operation 包装的 put/delete，expectedRevision 为字段版本 |
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
-| GET /devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100 | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
+| GET /devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=… | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
 | GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
-| POST /device-queries | 异步受理，Operation 包含 criteria/select/sort |
+| POST /device-queries | 异步受理，Operation 包含 filter/scope/fields/sort |
 | GET /device-queries/{task} | 状态、全结果计数与结果入口 |
 | GET /device-queries/{task}/items?limit=1000&cursor=… | 固定结果分页 |
 | GET /device-queries/{task}/facets/{facet}?limit=1000&cursor=… | 全结果汇总分页 |
@@ -39,7 +40,7 @@ macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量
 | PUT /saved-queries/{id} | CAS put/delete |
 | POST /saved-queries/{id}/execute | 按当前权限执行，正文为 Operation，expectedRevision 为保存查询版本，input 为 `{}` |
 
-资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|fields", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
+资产响应为 `{ "asset": { "kind": "detail|page|accepted|query_status|facets|assignment|saved|saved_list|field_list|field_descriptor", ... } }`。详情/列表的 fields 以字段键索引，包含 state、sources 和原始 lastKnown 证据；Manual revisions 供下一次 CAS 使用。数组通过独立 lists 返回状态、数量、摘要、来源和起始游标；用清单接口读取条目，详情不内嵌整份大清单。
 
 赋值例：
 
@@ -49,11 +50,24 @@ macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量
 
 置空和删除分别为 `input:{"action":"null"}`、`input:{"action":"delete"}`。相同操作重放原回执，异正文或旧 revision 冲突；删除保留 revision，重新赋值使用当前 revision。成功审计和回执与业务同事务，审计不存字段明文。
 
-搜索 input 与 Group 使用相同条件；搜索外层为 operationId、expectedRevision=0、input：
+搜索采用 RSQL；服务端按当前 Catalog 编译为 Group 使用的同一类型化条件。外层为 operationId、expectedRevision=0、input：
 
 ```json
-{"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}}},"select":["custom.asset_tag","custom.office_floor"],"sort":{"field":"custom.office_floor","descending":false}}
+{"filter":"custom.office_floor=ge=3","scope":{"selector":{"kind":"device"},"quantifier":"one"},"fields":["device.name","custom.office_floor"],"sort":[{"field":"custom.office_floor","descending":true}]}
 ```
+
+省略 scope 使用 Device/One；LocalUser、Exact、AllAuthorized 的 selector/quantifier 约束保持不变。
+`==`、`!=`、`=in=`、`=out=`、范围比较和 `;`/`,` 组合复用共享语法。
+资产额外支持 `=contains=`、`=notcontains=`、`=containsany=`、`=containsall=`、
+`=isnull=true`、`=isnotnull=true`；操作符仍须由字段类型允许，大小写敏感包含不会替换成 icontains。
+字符串按 RSQL 引号与反斜线转义，空值谓词不把 missing/unknown 当作 null。
+多字段 sort 按声明顺序比较，非 known 值排在末尾，再以设备身份打破同值顺序。
+保存查询只持久化类型化定义，读取返回规范 RSQL；规范化只保留必要括号，并选择语义等价的紧凑值表示。保存前同时检查规范文本的 parser 预算和返回定义的请求预算，确保读取后可再次保存、执行；超限在写入前拒绝。不接受旧 criteria/select 或单对象 sort。
+
+固定结果页和源清单只接收声明的 limit/cursor 及 scope 上下文，不支持对已冻结结果重新过滤、排序或投影。
+游标绑定租户、主体、授权和源身份，不能跨 task、设备、字段、scope 或来源复用。
+采集条目分页使用 nextCursor；原始 ordinal 仍作为条目身份返回，不再接受 offset。
+
 
 AND/OR 为 `{kind:"and|or",children:[…]}`；in/not_in 使用同类型 `values` 数组；is_null/is_not_null 不带操作数。Group create/rule 直接使用该 criteria；preview 异步生成成员与类型化解释页，旧同步接口和 assets 元组已移除。
 
@@ -87,7 +101,7 @@ inventory_fields_write 管理目录并允许读取配置所需的字段定义，
 个人保存查询使用当前 inventory_read，并按 tenant/instance/principal 限定本人。put 的 input 为 `{action:"put",definition:{name:"…",query:{…}}}`；不保存 cursor、结果或授权集合。删除 UUID 不复用；执行重新验证当前目录与权限。
 
 查询返回 202 和任务入口，以已提交水位分批计算并保存不可变结果。应用保留采集质量历史，查询页与详情复用同一投影；分页期间新质量记录不改写旧结果。成员、排序和全结果汇总不加载全租户到内存。
-分页有界；排序按类型化值和 DeviceId，未知值置后。游标由宿主签名，绑定主体、授权集合、结果与分页投影。
+分页有界；排序按类型化值和 DeviceId，未知值置后。游标由宿主签名，绑定主体、授权集合、结果与分页投影。固定结果游标只携带结果身份，在同一不可变任务中恢复排序键；二进制排序键的长度不再放大游标，1024 字节存储预算与 4096 字符游标预算分别遵守。
 每页重新验证权限；权限集合变更返回 403，重新发起查询。事实变化不改写已完成结果。签名密钥由产品按租户持久保存，多实例与宿主重启后可继续使用同一游标；游标仍绑定结果和授权范围。
 超过树、字节、访问或解释预算明确失败，不截断为完整结果。没有字段时钟触发。
 
@@ -148,7 +162,7 @@ Windows Firewall CSP 状态与 WSC health 使用不同字段；BitLocker convers
 
 标准采集使用 Policy action `native_collection` 或 `agent_collection`，绑定精确 Resource 版本。每个包使用可调整的 interval 周期，默认为一小时；Frequency 固定为 every_trigger，misfire 固定为 coalesce_one，离线恢复只处理最近到期周期。启用持续采集，停用停止新增运行并保留可信事实；不接受手动触发或 rerun。页面刷新只读取已有资产和运行状态。符合既有授权与冻结定义的 Agent 主动报告继续由原报告入口接收。脚本/SQL 仍使用现有 execution action，一次性运维执行使用原 remote-operation `execute`；不改变其执行语义。管理员需要 inventory_collect、resource_write、policy_write 等对应权限，无新增审批状态。发布 Resource 新版本不会自动改动 Policy 的精确绑定。Agent 注册只冻结通道维护采集，Windows 会话不再自动采集固定 model/OS，Apple 旧 collection-runs 创建入口已删除；注册认证与通道维护仍由原 owner 执行。
 
-`GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?offset=0&limit=100` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
+`GET /api/v1/devices/{id}/collections/{run}` 返回统一进度、来源、模板版本和逐字段质量。列表字段另有 itemCount/invalidItems，终态 run 可通过 `GET /api/v1/devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=…` 分页读取逐条质量，最多1000条。无效列表保留旧可信值，质量页不回传不可信原文。
 
 资产详情中的 lists 只返回摘要，各来源摘要自带独立游标，冲突时仍可分页检查每份来源清单。使用 `GET /api/v1/devices/{id}/inventory-lists/{field}?limit=100&cursor=…` 读取选值后的列表。游标绑定字段、设备、租户、授权范围及资产水位；后续变更不混入旧分页。完整空列表与未执行、失败、部分输出分别表达。字段和清单没有 TTL。
 
@@ -329,3 +343,20 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 `{operationId,expectedRevision,input:{}}`，退出当前评估、释放当前组/字段引用及规则配额；
 同操作重试返回原回执，在途旧任务结算为 superseded。删除后普通 Get 为 404，原 ID 不可重建；
 历史版本和设备评估仍可读取，`filter=deleted==true` 可发现规则墓碑。只支持当前 V1 全新安装，不提供旧库升级。
+
+## 通用字段映射与发布
+
+自定义字段先经 `/api/v1/asset-fields/{field}` 定义；采集 Resource 通过原 `/api/v1/resources/{id}`
+版本接口声明该字段的映射，Policy 冻结当前已批准版本。类型、来源、平台、查询引用或预算不合法时拒绝发布。
+纯手工字段不要求采集映射；新增字段不会自动创建默认 Policy 或扩大本地 Agent 能力。
+未知展示扩展仍按原产品规则保存，不参与可信字段解释。
+
+`GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
+`limit` 默认 64、范围 1–128，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
+映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
+此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
+
+管理端映射与编辑契约由 [Collection schema](../../crates/management-http/schema/Collection.json) 派生提供，
+生成入口为 `cargo run --locked -p rss-mdm-management-http --example collection_schema`。
+类型源是真实 Resource HTTP 输入/输出和字段目录类型，不维护 Web 手写结构副本。
+企业采集的字段映射随签名任务/遥测配置下发；Agent 本地打包能力和桌面设置权限不受该接口控制。

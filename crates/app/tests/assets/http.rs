@@ -198,7 +198,7 @@ mod storage {
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real capability storage and transactions"]
     async fn asset_commit_unknown_recovers_original_receipts() {
-        use assets::{Command as AssetCommand, Owner, Query, SavedChange, SavedDefinition};
+        use assets::{Command as AssetCommand, Owner, SavedChange, SavedDefinition};
         let runtime = runtime(tenant()).await;
         let mut resources = crate::test_support::runtime::Resources::default();
         let service = independent_assets(runtime.clone(), tenant(), &mut resources).await;
@@ -214,7 +214,7 @@ mod storage {
                 SavedChange::Put {
                     definition: Box::new(SavedDefinition {
                         name: "mine".into(),
-                        query: Query::default(),
+                        query: assets::rsql::QueryInput::default(),
                     }),
                 },
             ),
@@ -422,13 +422,13 @@ mod manual {
             &mut browser,
             router,
             Method::GET,
-            "/api/v1/asset-fields",
+            "/api/v1/asset-fields?limit=1024",
             None,
         )
         .await?;
         for field in rss_mdm_inventory::builtin::fields() {
             ensure!(
-                catalog["asset"]["fields"]
+                catalog["asset"]["items"]
                     .as_array()
                     .unwrap()
                     .iter()
@@ -695,12 +695,16 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
         "field publication replay changed"
     );
     let saved = format!("/api/v1/saved-queries/{}", Uuid::new_v4());
-    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":key,"op":"eq","value":{"kind":"string","value":"yes"}}},"select":[key],"sort":null}}}});
+    let value = json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"name":"field reference","query":{"filter":format!("{key}==yes"),"fields":[key],"sort":[]}}}});
     let response = fixture
         .author
         .call(&fixture.router, Method::PUT, &saved, Some(value))
         .await?;
     ensure!(response.0 == StatusCode::OK, "saved query: {response:?}");
+    let denied_refs = fixture.author.call(&fixture.router, Method::GET, &format!("{path}/references"), None).await?;
+    ensure!(denied_refs.0 == StatusCode::FORBIDDEN, "resource references require ResourceRead");
+    fixture.grants.push(Grant { operation: Permission::ResourceRead, scope: Scope::Tenant });
+    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let references = fixture
         .author
         .call(

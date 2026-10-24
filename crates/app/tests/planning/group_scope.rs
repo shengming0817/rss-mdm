@@ -158,6 +158,7 @@ async fn durable_asset_group_scope_pipeline() {
     ));
     denied_audit.finalize(None);
     let query_scope = assets::ReadScope {
+        authority: "internal".into(),
         collection_scope: rss_mdm_inventory::CollectionScope::Device,
         sensitive: true,
         subject: "query-owner".into(),
@@ -168,22 +169,17 @@ async fn durable_asset_group_scope_pipeline() {
         &assets::Command::Search {
             request: inventory_operation(
                 0,
-                assets::Query {
-                    criteria: Some(assets::InventoryCondition {
-                        selector: assets::ScopeSelector::Device,
-                        quantifier: assets::ScopeQuantifier::One,
-                        criteria: assets::Criteria::Predicate {
-                            field: rss_mdm_inventory::builtin::IS_LOANER,
-                            op: assets::Operator::Eq,
-                            value: Some(assets::Scalar::Boolean(true)),
-                            values: None,
-                        },
-                    }),
-                    select: vec![rss_mdm_inventory::builtin::IS_LOANER],
-                    sort: Some(assets::Sort {
+                assets::rsql::QueryInput {
+                    filter: Some(format!(
+                        "{}==true",
+                        rss_mdm_inventory::builtin::IS_LOANER.as_str()
+                    )),
+                    scope: Default::default(),
+                    fields: vec![rss_mdm_inventory::builtin::IS_LOANER],
+                    sort: vec![assets::Sort {
                         field: rss_mdm_inventory::builtin::IS_LOANER,
                         descending: true,
-                    }),
+                    }],
                 },
             )
             .into(),
@@ -1786,11 +1782,14 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .unwrap();
         let scope_task = Uuid::parse_str(scope_receipt["task"].as_str().unwrap()).unwrap();
         assert_eq!(
-            wait_task(
+            // 1001 endpoints require at least 63 bounded projection pages.
+            // This verifies publication correctness, not a 30-second throughput SLA.
+            wait_task_with_budget(
                 &service,
                 scope_task,
                 crate::automation::TaskKind::Scope,
-                &scope_id.to_string()
+                &scope_id.to_string(),
+                Duration::from_secs(120)
             )
             .await["members"],
             count

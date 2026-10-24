@@ -2,7 +2,7 @@ use super::*;
 use serde::{Deserialize, Serialize};
 macro_rules! view {
     ($name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
-        #[derive(Clone, Debug, Deserialize, Serialize)]
+        #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
         #[serde(rename_all(serialize = "camelCase"), deny_unknown_fields)]
         pub struct $name { $(pub $field: $ty),* }
     };
@@ -20,7 +20,7 @@ view!(BlueprintOrigin {
 });
 view!(ResourceVersion { id: String, digest: [u8;32], state: String, variants: Vec<Variant> });
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum Response {
     Read(ResourceRead),

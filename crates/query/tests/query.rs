@@ -106,3 +106,28 @@ fn cursor_authenticates_context_and_position() {
         Err(Error::CursorInvalidated)
     );
 }
+
+#[test]
+fn fixed_windows_reject_reinterpretation_and_keep_context_strict() {
+    let schema = rss_mdm_query::window::Schema {
+        id: "test",
+        default_limit: 10,
+        max_limit: 100,
+        order: "frozen source ordinal",
+        context: &["scope"],
+    };
+    let (q, context) = schema.parse("limit=2&scope=device").unwrap();
+    assert_eq!(q.limit, 2);
+    assert_eq!(context["scope"], "device");
+    for raw in [
+        "offset=0",
+        "after=x",
+        "sort=id",
+        "filter=id==x",
+        "fields=id",
+        "limit=101",
+        "scope=x&scope=y",
+    ] {
+        assert!(schema.parse(raw).is_err(), "{raw}");
+    }
+}

@@ -1,30 +1,47 @@
 //! Authorized relational selection followed by bounded presentation hydration.
-use crate::views::{Group, ViewQuery, ViewRef};
+pub use crate::directory_filter::{SCHEMA, parse};
+use crate::views::ViewRef;
 use crate::*;
 use rss_mdm_audit_integration::budget::AuditBudget;
 use rss_mdm_authorization_service::{Permission, Snapshot, context::AuthorizedPrincipal};
+use rss_mdm_query::{cursor::CursorCodec, directory::Query};
 use serde_json::{Value, json};
 use sqlx::{Arguments, Row, postgres::PgArguments};
 use std::{collections::BTreeSet, time::Duration};
 
 const PEOPLE: &str = concat!(
-    "WITH platform_configuration AS (SELECT $16::jsonb AS config),",
+    "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
     ",people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
+    include_str!("directory_relation.sql"),
     include_str!("directory.sql")
 );
 const REFERENCES: &str = concat!(
-    "WITH platform_configuration AS (SELECT $16::jsonb AS config),",
+    "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
     include_str!("platform_sessions.sql"),
     ",people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+    include_str!("directory_relation.sql"),
     include_str!("directory.sql")
+);
+const PEOPLE_STATISTICS: &str = concat!(
+    "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    ",people AS (SELECT principal_id,active,login,status,display_name FROM identity_personnel),",
+    include_str!("directory_relation.sql"),
+    include_str!("directory_statistics.sql")
+);
+const REFERENCE_STATISTICS: &str = concat!(
+    "WITH platform_configuration AS (SELECT $7::jsonb AS config),",
+    include_str!("platform_sessions.sql"),
+    ",people AS (SELECT NULL::uuid AS principal_id,false AS active,NULL::text AS login,NULL::text AS status,NULL::text AS display_name WHERE false),",
+    include_str!("directory_relation.sql"),
+    include_str!("directory_statistics.sql")
 );
 struct Access {
     allowed: Option<Vec<String>>,
     sensitive: Option<Vec<String>>,
     owners: Option<Vec<String>>,
     binding: String,
-    display: bool,
     generation: Value,
 }
 fn permission_scope(
@@ -32,7 +49,16 @@ fn permission_scope(
     proof: &AuthorizedPrincipal,
     permission: Permission,
 ) -> Result<Option<Vec<String>>> {
-    match snapshot.devices_for(proof, permission) {
+    // Tenant capabilities (notably InventorySensitiveRead) apply only inside
+    // the independently authorized device candidates. devices_for rejects these
+    // capabilities; treating that rejection as denial would hide permitted data.
+    // This adapter does not introduce device-scoped sensitive grants.
+    let scope = if permission.device() {
+        snapshot.devices_for(proof, permission)
+    } else {
+        snapshot.require(proof, permission, None).map(|()| None)
+    };
+    match scope {
         Ok(scope) => Ok(scope.map(|s| s.into_iter().collect())),
         Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {
             Ok(Some(Vec::new()))
@@ -63,15 +89,18 @@ impl Associations {
                     tx.with_connection_context(proof, |proof, c| {
                         Box::pin(async move {
                             let snapshot = read::authorization(c, proof).await?;
-                            let (display, binding) = views::scope(&snapshot, proof)?;
+                            let (_, binding) = views::scope(&snapshot, proof)?;
                             Ok(Access {
                                 allowed: snapshot
                                     .inventory_devices(proof)?
                                     .map(|s| s.into_iter().collect()),
-                                sensitive: if display { None } else { Some(Vec::new()) },
+                                sensitive: permission_scope(
+                                    &snapshot,
+                                    proof,
+                                    Permission::InventorySensitiveRead,
+                                )?,
                                 owners: permission_scope(&snapshot, proof, Permission::Enrollment)?,
                                 binding,
-                                display,
                                 generation: read_generation(c, proof.tenant_id()).await?,
                             })
                         })
@@ -92,35 +121,55 @@ impl Associations {
     pub(super) async fn directory_page(
         &self,
         proof: &AuthorizedPrincipal,
-        query: &ViewQuery,
+        query: &Query,
         personnel: &personnel::Reader<'_>,
     ) -> Result<Value> {
+        self.directory_read(proof, query, personnel, false).await
+    }
+    pub async fn statistics(
+        &self,
+        proof: &AuthorizedPrincipal,
+        query: &Query,
+        personnel: &personnel::Reader<'_>,
+    ) -> Result<Value> {
+        self.directory_read(proof, query, personnel, true).await
+    }
+    async fn directory_read(
+        &self,
+        proof: &AuthorizedPrincipal,
+        query: &Query,
+        personnel: &personnel::Reader<'_>,
+        statistics: bool,
+    ) -> Result<Value> {
+        if proof.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
         let budget = AuditBudget::new(Duration::from_secs(15));
         let access = self.directory_access(proof, &budget).await?;
-        let binding = cursor::digest(
-            &json!({"kind":"device-directory-v2","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":access.binding,"platform":personnel.platform_configuration()?,
-            "query":{"search":query.search,"platform":query.platform,"status":query.status,"source":query.source,"channel":query.channel,"assetState":query.asset_state,"descending":query.descending}}),
-        )?;
-        let old = query
-            .cursor
-            .as_deref()
-            .map(|token| self.decode(token))
-            .transpose()?;
-        if old
-            .as_ref()
-            .is_some_and(|old| old.offset != 0 || old.context["binding"] != binding)
-        {
-            return Err(Error::CursorInvalidated);
-        }
-        let after = old
-            .as_ref()
-            .map(|old| {
-                old.context["after"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or(Error::Malformed)
+        query
+            .require_schema(&SCHEMA)
+            .map_err(|_| Error::Malformed)?;
+        let binding = query
+            .binding(&(
+                proof.tenant_id(),
+                proof.instance_id(),
+                proof.principal_id(),
+                &access.binding,
+                &access.generation,
+                personnel.platform_configuration()?,
+            ))
+            .map_err(|_| Error::Malformed)?;
+        let codec = CursorCodec::from_key(self.key.clone());
+        let old: Option<Continuation> = query
+            .cursor()
+            .map(|token| {
+                codec
+                    .decode(token, &binding)
+                    .map_err(|_| Error::CursorInvalidated)
             })
             .transpose()?;
+        let after = old.as_ref().map(|c| c.after.clone());
+        let descending = query.sort()[0].descending;
         let mut args = PgArguments::default();
         macro_rules! arg {
             ($v:expr) => {
@@ -131,44 +180,59 @@ impl Associations {
         arg!(access.allowed.clone());
         arg!(access.sensitive.clone());
         arg!(access.owners.clone());
-        arg!(query.search.as_ref().map(|s| s.trim().to_lowercase()));
-        arg!(query.platform.map(|p| match p {
-            rss_mdm_inventory::Platform::Windows => "windows",
-            rss_mdm_inventory::Platform::Macos => "macos",
-        }));
-        arg!(query.status.clone());
-        arg!(query.source.clone());
-        arg!(query.channel.clone());
-        arg!(
-            serde_json::to_value(
-                query
-                    .asset_state
-                    .unwrap_or(crate::lifecycle_management::AssetState::Active)
-            )
-            .map_err(|_| Error::Storage)?
-            .as_str()
-            .ok_or(Error::Storage)?
-            .to_owned()
-        );
-        arg!(after);
-        arg!(query.descending);
-        arg!((query.limit + 1) as i64);
+        arg!(crate::directory_filter::predicate(query)?);
         arg!(proof.instance_id().to_owned());
-        arg!(access.display);
         arg!(personnel.platform_configuration()?);
+        arg!(query.mentions("search"));
+        let candidate_limit: i64 = if statistics { 16384 } else { 4096 };
+        arg!(candidate_limit);
+        if !statistics {
+            arg!(after);
+            arg!(descending);
+            arg!((query.limit() + 1) as i64);
+        }
         let (identity, rows) = personnel
             .query(
                 proof,
-                if proof.session().is_ok() {
-                    PEOPLE
-                } else {
-                    REFERENCES
+                match (statistics, proof.session().is_ok()) {
+                    (false, true) => PEOPLE,
+                    (false, false) => REFERENCES,
+                    (true, true) => PEOPLE_STATISTICS,
+                    (true, false) => REFERENCE_STATISTICS,
                 },
                 args,
                 1,
             )
             .await?;
         let value: Value = rows.first().ok_or(Error::Storage)?.try_get("value")?;
+        let measured = &value["budget"];
+        let input_rows = measured["inputRows"].as_u64().ok_or(Error::Storage)?;
+        if !rss_mdm_query_postgres::within_budget(
+            if statistics {
+                "device.statistics.sources"
+            } else {
+                "device.views.sources"
+            },
+            input_rows,
+            input_rows * 16,
+            candidate_limit as u64 * 256,
+            candidate_limit as u64 * 4096,
+        ) {
+            return Err(Error::Capacity);
+        }
+        if !rss_mdm_query_postgres::within_budget(
+            if statistics {
+                "device.statistics.candidates"
+            } else {
+                "device.views.candidates"
+            },
+            measured["rows"].as_u64().ok_or(Error::Storage)?,
+            measured["bytes"].as_u64().ok_or(Error::Storage)?,
+            candidate_limit as u64,
+            candidate_limit as u64 * 512,
+        ) {
+            return Err(Error::Capacity);
+        }
         let generation = json!([
             value["watermark"],
             value["relationRevision"],
@@ -177,23 +241,34 @@ impl Associations {
         if generation != access.generation {
             return Err(Error::CursorInvalidated);
         }
+        if statistics {
+            let final_access = self.directory_access(proof, &budget).await?;
+            let (final_identity, _) = personnel
+                .query(proof, "SELECT 1", PgArguments::default(), 1)
+                .await?;
+            if final_access.binding != access.binding
+                || final_access.generation != generation
+                || revision(final_identity) != revision(identity)
+            {
+                return Err(Error::CursorInvalidated);
+            }
+            proof.check_live()?;
+            return Ok(json!({"statistics":value["statistics"],"asOf":value["asOf"]}));
+        }
         let now = value["asOf"].as_i64().ok_or(Error::Storage)?;
         let mut until = identity
             .valid_until
             .min(value["validUntil"].as_i64().unwrap_or(i64::MAX));
         if let Some(old) = &old {
-            let expires = old.context["expires"].as_i64().ok_or(Error::Malformed)?;
-            if expires <= now
-                || old.context["generation"] != generation
-                || old.context["identity"] != revision(identity)
-            {
+            let expires = old.expires;
+            if expires <= now || old.identity != revision(identity) {
                 return Err(Error::CursorInvalidated);
             }
             until = until.min(expires);
         }
         let mut objects = value["objects"].as_array().ok_or(Error::Storage)?.clone();
-        let more = objects.len() > query.limit;
-        objects.truncate(query.limit);
+        let more = objects.len() > query.limit();
+        objects.truncate(query.limit());
         let selected = objects
             .iter()
             .flat_map(|o| o["devices"].as_array().into_iter().flatten())
@@ -271,7 +346,20 @@ impl Associations {
             .current_users(proof, &mut endpoints, &bindings)
             .await?;
         personnel
-            .project(proof, access.display, endpoints.iter_mut())
+            .project(proof, false, endpoints.iter_mut())
+            .await?;
+        personnel
+            .project(
+                proof,
+                true,
+                endpoints.iter_mut().filter(|row| {
+                    access.sensitive.as_ref().is_none_or(|ids| {
+                        row["id"]
+                            .as_str()
+                            .is_some_and(|id| ids.iter().any(|v| v == id))
+                    })
+                }),
+            )
             .await?;
         for group in &mut groups {
             let ids = match &group.reference {
@@ -313,17 +401,43 @@ impl Associations {
         if until <= final_now {
             return Err(Error::CursorInvalidated);
         }
-        if query.descending {
+        if descending {
             groups.reverse();
         }
         let next = if more {
-            Some(self.encode(json!({"binding":binding,"generation":generation,"identity":revision(identity),"expires":until,"after":groups.last().ok_or(Error::Storage)?.key()}),0)?)
+            Some(
+                codec
+                    .encode(
+                        &binding,
+                        &Continuation {
+                            identity: revision(identity),
+                            expires: until,
+                            after: groups.last().ok_or(Error::Storage)?.key(),
+                        },
+                    )
+                    .map_err(|_| Error::Malformed)?
+                    .as_str()
+                    .to_owned(),
+            )
         } else {
             None
         };
         proof.check_live()?;
-        Ok(
-            json!({"items":groups.iter().map(Group::summary).collect::<Vec<_>>(),"statistics":value["statistics"],"nextCursor":next}),
-        )
+        let items = groups
+            .iter()
+            .map(|g| {
+                let mut row = g.summary();
+                row["key"] = json!(g.key());
+                query.project(row).map_err(|_| Error::Malformed)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({"items":items,"nextCursor":next}))
     }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Continuation {
+    after: String,
+    identity: Value,
+    expires: i64,
 }

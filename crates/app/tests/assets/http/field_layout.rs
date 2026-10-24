@@ -52,9 +52,9 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         grants(&fixture.author_id, &[Permission::InventoryFieldsWrite]).await?;
         let initial = fixture.author.call(&fixture.router, Method::GET, PATH, None).await?;
         ensure!(initial.0 == StatusCode::OK && initial.1["asset"]["editable"] == true && initial.1["asset"]["groups"] == json!([]));
-        let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?;
+        let catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
         ensure!(catalog.0 == StatusCode::OK, "configuration metadata rejected: {catalog:?}");
-        let fields = catalog.1["asset"]["fields"].as_array().unwrap();
+        let fields = catalog.1["asset"]["items"].as_array().unwrap();
         let selected = fields.iter().find(|field| field["key"].as_str().is_some_and(|key| key.starts_with("custom."))).ok_or_else(|| anyhow::anyhow!("fixture must offer an existing custom field"))?;
         let groups = json!([{ "id":Uuid::new_v4(),"name":"资产","fields":[selected["key"].clone()] }]);
         let saved = fixture.author.call(&fixture.router, Method::PUT, PATH, Some(operation(0, groups.clone()))).await?;
@@ -66,12 +66,12 @@ async fn field_manager_discovers_layout_inputs_without_asset_read() -> Result<()
         let detail = format!("/api/v1/devices/{device}/inventory");
         ensure!(fixture.author.call(&fixture.router, Method::GET, &detail, None).await?.0 == StatusCode::FORBIDDEN);
         grants(&fixture.author_id, &[Permission::InventoryRead]).await?;
-        let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?;
+        let reader_catalog = fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?;
         ensure!(reader_catalog.0 == StatusCode::OK);
         let value = fixture.author.call(&fixture.router, Method::GET, &detail, None).await?;
         ensure!(value.0 == StatusCode::OK && value.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "metadata-is-not-values");
         grants(&fixture.author_id, &[]).await?;
-        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields", None).await?.0 == StatusCode::FORBIDDEN);
+        ensure!(fixture.author.call(&fixture.router, Method::GET, "/api/v1/asset-fields?limit=1024", None).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
     }).await
 }

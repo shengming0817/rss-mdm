@@ -182,7 +182,7 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 `POST /api/v1/device-views/{kind}/{id}/asset-state` 接收
 `{operationId,state:active|archived|deleted}`，要求 InventoryAssign。
 归档允许退出中的资产；软删除要求所有注册已失效。列表默认只显示 active，
-可用 `assetState` 查询归档或删除的资产，显式详情及审计历史保留。
+可用 `filter=assetState==archived` 或 `filter=assetState==deleted` 查询归档或删除的资产，显式详情及审计历史保留。
 恢复为 active 不恢复凭据、旧任务或互注册授权。
 
 完成退管后，管理员创建新的 MDM 注册请求才能重新授权该端；Agent 使用新 CSR 请求，
@@ -206,3 +206,23 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 用户属性定义目录使用相同查询参数，返回 `items/nextCursor/sources`，保留 fieldId 身份；
 `sources` 是当前来源可用性元数据，不参与字段投影。列表默认不返回已删除定义。
+
+## 设备与执行目录查询
+
+`GET /devices`、`GET /device-views`、`GET /operations` 使用 `filter/sort/fields/limit/cursor`，
+返回 `items/nextCursor`。例如 `/operations?filter=kind==action_run;status==running&sort=-id,-kind&fields=id,kind,status,detailUrl&limit=50`。
+执行唯一身份为 `(id,kind)`；设备视图以 `key` 稳定排序，平台、通道和来源是成员集合过滤，不提供集合排序。
+统一视图仍要求同一成员满足完整条件，只有全部成员可见才合并关联；人员搜索和展示受各自权限约束。
+普通设备身份的 source/channel 包含其注册历史；统一视图的对应过滤使用当前展示的注册和签发记录。
+
+精确统计通过 `/devices/statistics`、`/device-views/statistics`、`/operations/statistics` 独立获取，只接受 filter。
+统计只包含完整授权且匹配过滤的集合，返回观察时刻；翻页不会隐式计算统计。
+查询超出执行或读取预算时失败，不截断候选后返回完整集合或伪造统计。
+
+继续翻页时保留有效 filter/sort/fields，将 nextCursor 原样传回。相关数据、授权或人员资格变化使续页明确失效，
+应从首页重查；这不是历史快照。资产异步查询保持自身固定水位，见[资产指南](assets.md)。
+当前关联通过 `GET /device-associations` 发现；`/device-associations/changes` 保留固定审计窗口及 checkpoint，
+不作为当前关联目录。管理子列表使用各自声明的固定顺序和不透明游标。
+
+本次是当前后端契约替换；after/afterKind、独立 descending/固定过滤参数及旧 DTO 均退出，
+调用方必须使用新契约。原生设备协议不随管理目录改变。

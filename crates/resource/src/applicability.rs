@@ -3,7 +3,7 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 /// Additional prerequisites within the Resource variant's exact OS and architecture.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Applicability {
     /// Inclusive minimum numeric OS version.
@@ -20,7 +20,7 @@ pub struct Applicability {
     pub capabilities: BTreeSet<String>,
 }
 /// Authenticated, current endpoint evidence, separate from administrator-authored requirements.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionEnvironment {
     /// Numeric OS version, absent when not observed.

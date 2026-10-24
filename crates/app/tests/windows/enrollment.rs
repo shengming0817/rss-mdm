@@ -574,6 +574,10 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     // Expire the fixture through the test administrator, then use the actual owner pruner.
     let mut pg =
         PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut pg)
+        .await?;
     ensure!(sqlx::query("UPDATE mdm_access.management_sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE tenant_id=$1::uuid AND registration=$2")
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?.rows_affected() == 1);
     ensure!(

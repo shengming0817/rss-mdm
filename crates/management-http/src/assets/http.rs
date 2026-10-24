@@ -3,7 +3,7 @@ use crate::authorization::Permission;
 use crate::authorization::context::RequestAuth;
 use axum::{
     Extension, Json,
-    extract::{Path, Query as Params, State},
+    extract::{Path, Query as Params, RawQuery, State},
 };
 use axum::{
     http::StatusCode,
@@ -28,7 +28,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/asset-fields",
-            get(fields).owned(&contracts::ASSET_FIELDS, &[RouteOperation::List]),
+            get(fields)
+                .owned(&contracts::ASSET_FIELDS, &[RouteOperation::List])
+                .queried(&rss_mdm_inventory_service::assets::field_directory::SCHEMA),
         )
         .route(
             "/asset-field-layout",
@@ -39,18 +41,23 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/collections/{run}/fields/{field}/items",
-            get(collection_items).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(collection_items)
+                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::assets::windows::COLLECTION_ITEMS),
         )
         .route(
             "/asset-fields/{field}",
-            put(field_write).owned(
-                &contracts::ASSET_FIELDS,
-                &[
-                    RouteOperation::Create,
-                    RouteOperation::Update,
-                    RouteOperation::Delete,
-                ],
-            ),
+            get(field_read)
+                .owned(&contracts::ASSET_FIELDS, &[RouteOperation::Get])
+                .put(field_write)
+                .owned(
+                    &contracts::ASSET_FIELDS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
         )
         .route(
             "/asset-retention-policies",
@@ -62,11 +69,15 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/asset-fields/{field}/references",
-            get(field_references).owned(&contracts::ASSET_FIELDS, &[RouteOperation::Action]),
+            get(field_references)
+                .owned(&contracts::ASSET_FIELDS, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES),
         )
         .route(
             "/device-queries",
-            post(search).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create]),
+            post(search)
+                .owned(&contracts::ASSET_QUERIES, &[RouteOperation::Create])
+                .catalog_queried(&rss_mdm_inventory_service::assets::rsql::CONTRACT),
         )
         .route(
             "/device-queries/{id}",
@@ -74,11 +85,15 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/device-queries/{id}/items",
-            get(query_items).owned(&contracts::ASSET_RESULTS, &[RouteOperation::List]),
+            get(query_items)
+                .owned(&contracts::ASSET_RESULTS, &[RouteOperation::List])
+                .windowed(&rss_mdm_inventory_service::assets::windows::RESULTS),
         )
         .route(
             "/device-queries/{id}/facets/{facet}",
-            get(query_facets).owned(&contracts::ASSET_QUERIES, &[RouteOperation::Action]),
+            get(query_facets)
+                .owned(&contracts::ASSET_QUERIES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::assets::windows::FACETS),
         )
         .route(
             "/devices/{id}/inventory",
@@ -86,7 +101,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/inventory-scopes",
-            get(inventory_scopes).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(inventory_scopes)
+                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::assets::windows::SCOPES),
         )
         .route(
             "/devices/{id}/collections/{run}",
@@ -94,7 +111,9 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/inventory-lists/{field}",
-            get(list_items).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(list_items)
+                .owned(&contracts::DEVICES, &[RouteOperation::Action])
+                .windowed(&rss_mdm_inventory_service::assets::windows::LISTS),
         )
         .route(
             "/devices/{id}/manual-fields/{field}",
@@ -136,7 +155,6 @@ fn authorize(
     command: &Command,
 ) -> std::result::Result<(), rss_mdm_inventory_service::Error> {
     match command {
-        Command::Fields => field_access(auth).map(|_| ()),
         Command::FieldLayoutRead { access } => {
             if &field_access(auth)? == access {
                 Ok(())
@@ -144,9 +162,14 @@ fn authorize(
                 Err(rss_mdm_inventory_service::Error::Forbidden)
             }
         }
+        Command::FieldReferences { .. } => {
+            auth.proof.manage(Permission::InventoryFieldsWrite)?;
+            auth.proof
+                .manage(Permission::ResourceRead)
+                .map_err(rss_mdm_inventory_service::Error::from)
+        }
         Command::FieldLayoutWrite { .. }
         | Command::FieldWrite { .. }
-        | Command::FieldReferences { .. }
         | Command::RetentionWrite { .. }
         | Command::RetentionRead { .. } => auth
             .proof
@@ -201,7 +224,7 @@ async fn run(
         | Command::CollectionRun { device, .. }
         | Command::CollectionItems { device, .. }
         | Command::ListItems { device, .. } => audit.target_device(device),
-        Command::FieldWrite { field, .. } | Command::FieldReferences { field } => {
+        Command::FieldWrite { field, .. } | Command::FieldReferences { field, .. } => {
             audit.target(field.as_str())
         }
         Command::QueryStatus { task, .. }
@@ -218,7 +241,7 @@ async fn run(
     authorize(auth, &command)?;
     let value = app
         .assets
-        .execute(&command, audit, &|| authorize(auth, &command))
+        .execute_authorized(&command, audit, &auth.proof, &|| authorize(auth, &command))
         .await?;
     let envelope: AssetEnvelope =
         serde_json::from_value(value).map_err(|_| Error::Unavailable(Failure::AssetsStorage))?;
@@ -273,20 +296,30 @@ async fn fields(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    run(&app, &auth, &audit, Command::Fields).await
+    audit.set_action("inventory_read");
+    let q = rss_mdm_inventory_service::assets::field_directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(app.assets.fields(&auth.proof, &q, &audit).await?).into_response())
 }
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    cursor: Option<String>,
-    limit: Option<usize>,
+async fn field_read(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(key): Path<String>,
+) -> std::result::Result<HttpResponse, Error> {
+    audit.set_action("inventory_read");
+    audit.target(&key);
+    let key = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
+    Ok(Json(app.assets.field(&auth.proof, key, &audit).await?).into_response())
 }
 async fn search(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    payload: BodyInput<Operation<Query>>,
+    payload: BodyInput<Operation<rss_mdm_inventory_service::assets::rsql::QueryInput>>,
 ) -> std::result::Result<HttpResponse, Error> {
     let request = body(payload)?;
     let scope = ReadScope::from_proof(&auth.proof)?;
@@ -430,9 +463,11 @@ async fn query_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(task): Path<Uuid>,
-    parameters: ParamInput<Page>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let page = params(parameters)?;
+    let (page, _context) = rss_mdm_inventory_service::assets::windows::RESULTS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     run(
         &app,
         &auth,
@@ -440,7 +475,7 @@ async fn query_items(
         Command::QueryItems {
             task,
             scope: ReadScope::from_proof(&auth.proof)?,
-            limit: page.limit.unwrap_or(1000),
+            limit: page.limit,
             cursor: page.cursor,
         },
     )
@@ -451,9 +486,11 @@ async fn query_facets(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((task, facet)): Path<(Uuid, Facet)>,
-    parameters: ParamInput<Page>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let page = params(parameters)?;
+    let (page, _context) = rss_mdm_inventory_service::assets::windows::FACETS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     run(
         &app,
         &auth,
@@ -462,7 +499,7 @@ async fn query_facets(
             task,
             facet,
             scope: ReadScope::from_proof(&auth.proof)?,
-            limit: page.limit.unwrap_or(1000),
+            limit: page.limit,
             cursor: page.cursor,
         },
     )
@@ -497,9 +534,24 @@ async fn field_references(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(key): Path<String>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    run(&app, &auth, &audit, Command::FieldReferences { field }).await
+    let (page, _) = rss_mdm_inventory_service::assets::windows::FIELD_REFERENCES
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    let query = FieldReferenceQuery {
+        limit: page.limit as u16,
+        cursor: page.cursor,
+        authority: auth.proof.authorization()?.query_binding(&auth.proof)?,
+    };
+    run(
+        &app,
+        &auth,
+        &audit,
+        Command::FieldReferences { field, query },
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -507,20 +559,16 @@ async fn field_references(
 struct CollectionSelector {
     scope: Option<String>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ScopePage {
-    cursor: Option<String>,
-    limit: Option<usize>,
-}
 async fn inventory_scopes(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    parameters: ParamInput<ScopePage>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let page = params(parameters)?;
+    let (page, _context) = rss_mdm_inventory_service::assets::windows::SCOPES
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     run(
         &app,
         &auth,
@@ -528,7 +576,7 @@ async fn inventory_scopes(
         Command::InventoryScopes {
             device,
             scope: ReadScope::from_proof(&auth.proof)?,
-            limit: page.limit.unwrap_or(50),
+            limit: page.limit,
             cursor: page.cursor,
         },
     )
@@ -543,13 +591,6 @@ fn read_scope(auth: &RequestAuth, scope: Option<String>) -> std::result::Result<
             .map_err(|_| Error::Malformed)?;
     }
     Ok(read)
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ListPage {
-    scope: Option<String>,
-    cursor: Option<String>,
-    limit: Option<usize>,
 }
 async fn collection_run(
     State(app): State<Arc<HttpState>>,
@@ -578,11 +619,13 @@ async fn list_items(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, key)): Path<(String, String)>,
-    parameters: ParamInput<ListPage>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let page = params(parameters)?;
+    let (page, context) = rss_mdm_inventory_service::assets::windows::LISTS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    let scope = read_scope(&auth, page.scope)?;
+    let scope = read_scope(&auth, context.get("scope").cloned())?;
     run(
         &app,
         &auth,
@@ -591,30 +634,25 @@ async fn list_items(
             device,
             field,
             scope,
-            limit: page.limit.unwrap_or(50),
+            limit: page.limit,
             cursor: page.cursor,
         },
     )
     .await
 }
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct ItemPage {
-    scope: Option<String>,
-    offset: Option<usize>,
-    limit: Option<usize>,
-}
 async fn collection_items(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path((device, id, key)): Path<(String, Uuid, String)>,
-    parameters: ParamInput<ItemPage>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    let page = params(parameters)?;
+    let (page, context) = rss_mdm_inventory_service::assets::windows::COLLECTION_ITEMS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
     let field = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
-    let scope = read_scope(&auth, page.scope)?;
+    let scope = read_scope(&auth, context.get("scope").cloned())?;
     run(
         &app,
         &auth,
@@ -624,8 +662,8 @@ async fn collection_items(
             run: id,
             field,
             scope,
-            offset: page.offset.unwrap_or(0),
-            limit: page.limit.unwrap_or(100),
+            cursor: page.cursor,
+            limit: page.limit,
         },
     )
     .await

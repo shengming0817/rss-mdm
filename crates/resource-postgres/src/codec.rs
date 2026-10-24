@@ -345,6 +345,28 @@ pub(crate) fn directory_header(
     resource: &str,
     revision: i64,
 ) -> Result<rss_mdm_resource::directory::Record, PgError> {
+    read_directory_header(bytes, tenant, resource, revision).map(|(record, _)| record)
+}
+pub(crate) fn header_states(
+    bytes: &[u8],
+    tenant: TenantId,
+    resource: &str,
+    revision: i64,
+) -> Result<std::collections::BTreeMap<Id, State>, PgError> {
+    read_directory_header(bytes, tenant, resource, revision).map(|(_, states)| states)
+}
+fn read_directory_header(
+    bytes: &[u8],
+    tenant: TenantId,
+    resource: &str,
+    revision: i64,
+) -> Result<
+    (
+        rss_mdm_resource::directory::Record,
+        std::collections::BTreeMap<Id, State>,
+    ),
+    PgError,
+> {
     let value: Value = STORAGE.decode(bytes)?;
     let a = array(&value, 8)?;
     if n(&a[0])? != 1
@@ -375,15 +397,16 @@ pub(crate) fn directory_header(
         .as_array()
         .filter(|v| v.len() <= 10000)
         .ok_or_else(|| STORAGE.fault("codec::directory_header"))?;
-    let mut keys = std::collections::BTreeSet::new();
+    let mut keys = std::collections::BTreeMap::new();
     let mut active = None;
     for v in states {
         let entry = array(v, 2)?;
         let key = id(&entry[0])?;
-        if !keys.insert(key.clone()) {
+        let state = read_state(&entry[1])?;
+        if keys.insert(key.clone(), state).is_some() {
             return Err(STORAGE.fault("codec::directory_header"));
         }
-        match read_state(&entry[1])? {
+        match state {
             State::Frozen => (),
             State::Active => {
                 if active.replace(key).is_some() {
@@ -394,13 +417,17 @@ pub(crate) fn directory_header(
             State::Archived => (),
         };
     }
-    Ok(rss_mdm_resource::directory::Record {
-        id: id(&a[2])?,
-        revision,
-        kind,
-        active_version: active,
-        presentation: STORAGE.json("codec::presentation", serde_json::from_value(a[7].clone()))?,
-    })
+    Ok((
+        rss_mdm_resource::directory::Record {
+            id: id(&a[2])?,
+            revision,
+            kind,
+            active_version: active,
+            presentation: STORAGE
+                .json("codec::presentation", serde_json::from_value(a[7].clone()))?,
+        },
+        keys,
+    ))
 }
 
 #[cfg(test)]
@@ -441,6 +468,9 @@ mod directory_tests {
             ),
             json!({"id":"script","revision":3,"kind":"script","activeVersion":"current","presentation":{}})
         );
+        let states = header_states(&header, tenant, "script", 3).unwrap();
+        assert_eq!(states[&Id::new("current").unwrap()], State::Active);
+        assert_eq!(states[&Id::new("next").unwrap()], State::Frozen);
         assert!(directory_header(&header, tenant, "other", 3).is_err());
         let conflicting = serde_json::to_vec(&json!([
             1,

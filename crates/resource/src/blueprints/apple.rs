@@ -1,5 +1,6 @@
 //! Fixed Apple command packs. Profiles and certificates explicitly cover managed objects only.
 use super::*;
+use rss_mdm_agent_wire::runtime::ValueMapping;
 fn pack(id: &str, category: &str, adapter: NativeAdapter, fields: &[(&str, &str)]) -> Blueprint {
     Blueprint {
         id: format!("macos.{id}"),

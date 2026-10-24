@@ -39,6 +39,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
+        projection: ScriptProjection::None,
         wire_version: 1,
         tenant_id: id,
         device_id: "device".into(),

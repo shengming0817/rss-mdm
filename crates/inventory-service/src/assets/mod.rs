@@ -16,13 +16,15 @@ pub mod channel;
 pub mod filter;
 
 mod directory;
+pub mod field_directory;
 mod field_layout;
 mod fields;
+pub mod windows;
 pub use field_layout::{FieldDisplayGroup, FieldLayout, FieldLayoutAccess};
 mod lists;
 mod runs;
 mod scopes;
-pub use fields::{FieldChange, FieldImpact};
+pub use fields::{FieldChange, FieldImpact, FieldMappingReference, FieldReferenceQuery, FieldView};
 mod model;
 pub mod planning;
 mod summaries;
@@ -31,6 +33,7 @@ mod quality;
 mod query;
 mod query_read;
 mod query_sort;
+pub mod rsql;
 pub mod saved_directory;
 mod store;
 pub use filter::{criteria_view, rule};
@@ -113,10 +116,10 @@ impl AssetService {
                 run,
                 field,
                 scope,
-                offset,
+                cursor,
                 limit,
             } => {
-                self.collection_items(tx, device, *run, *field, scope, (*offset, *limit))
+                self.collection_items(tx, device, *run, *field, scope, (cursor.as_deref(), *limit))
                     .await?
             }
             Command::ListItems {
@@ -133,22 +136,15 @@ impl AssetService {
                 run: self.collection_run(tx, device, *run, scope).await?,
             },
             Command::FieldWrite { field, change } => self.field_write(tx, *field, change).await?,
-            Command::FieldReferences { field } => Response::FieldReferences {
-                field: *field,
-                impact: self.field_impact(tx, *field).await?,
-            },
-            Command::Fields => Response::Fields {
-                dictionary: rss_mdm_inventory::DICTIONARY.into(),
-                fields: catalog_in(tx, self.tenant, i64::MAX)
-                    .await?
-                    .fields()
-                    .map(|f| {
-                        let mut v = checked_input(serde_json::to_value(f))?;
-                        v["operations"] = checked_input(serde_json::to_value(f.operations()))?;
-                        Ok(v)
-                    })
-                    .collect::<Result<_>>()?,
-            },
+            Command::FieldReferences { field, query } => {
+                let page = self.field_mapping_references(tx, *field, query).await?;
+                Response::FieldReferences {
+                    field: *field,
+                    impact: self.field_impact(tx, *field).await?,
+                    mappings: page.items,
+                    next_cursor: page.next_cursor,
+                }
+            }
             Command::Detail { device, scope } => {
                 if scope
                     .devices
@@ -274,7 +270,17 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> std::result::Result<Value, Error> {
-        self.execute_with_initialization(command, audit, authorize, None)
+        self.execute_with_initialization(command, audit, authorize, None, None)
+            .await
+    }
+    pub async fn execute_authorized(
+        &self,
+        command: &Command,
+        audit: &RequestAudit,
+        proof: &crate::authorization::context::AuthorizedPrincipal,
+        authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+    ) -> std::result::Result<Value, Error> {
+        self.execute_with_initialization(command, audit, authorize, None, Some(proof))
             .await
     }
     /// Baseline fields and retention use the ordinary asset mutation and receipt owner.
@@ -293,6 +299,7 @@ impl AssetService {
                     .map_err(Error::from)
             },
             Some(proof),
+            Some(proof),
         )
         .await
     }
@@ -302,6 +309,7 @@ impl AssetService {
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
         initialization: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
+        principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> std::result::Result<Value, Error> {
         authorize()?;
         crate::transaction::run(
@@ -309,10 +317,10 @@ impl AssetService {
             &self.runtime,
             self.tenant,
             audit,
-            &(self, command, audit, authorize, initialization),
+            &(self, command, audit, authorize, initialization, principal),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, command, audit, authorize, initialization) = *ctx;
+                    let (service, command, audit, authorize, initialization, principal) = *ctx;
                     if let Some(proof) = initialization {
                         let target = match command {
                             Command::FieldWrite { field, .. } => field.as_str(),
@@ -327,7 +335,9 @@ impl AssetService {
                         )
                         .await?;
                     }
-                    service.execute_in(tx, command, audit, authorize).await
+                    service
+                        .execute_in(tx, command, audit, authorize, *principal)
+                        .await
                 })
             },
             crate::transaction::TransactionOwner::Assets,
@@ -340,8 +350,36 @@ impl AssetService {
         command: &Command,
         audit: &RequestAudit,
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
+        principal: Option<&rss_mdm_authorization_service::context::AuthorizedPrincipal>,
     ) -> Result<Value> {
         crate::transaction::lock(tx).await?;
+        if let Some(p) = principal {
+            let current = query_authority(tx, p).await?;
+            match command {
+                Command::Search { scope, .. }
+                | Command::QueryStatus { scope, .. }
+                | Command::QueryItems { scope, .. }
+                | Command::QueryFacets { scope, .. }
+                | Command::SavedExecute { scope, .. }
+                | Command::Detail { scope, .. }
+                | Command::InventoryScopes { scope, .. }
+                | Command::CollectionRun { scope, .. }
+                | Command::CollectionItems { scope, .. }
+                | Command::ListItems { scope, .. } => {
+                    let mut fresh = ReadScope::from_snapshot(p, &current)?;
+                    fresh.collection_scope = scope.collection_scope.clone();
+                    if &fresh != scope {
+                        return Err(Error::Forbidden.into());
+                    }
+                }
+                Command::FieldReferences { query, .. }
+                    if query.authority != current.query_binding(p)? =>
+                {
+                    return Err(Error::Forbidden.into());
+                }
+                _ => {}
+            }
+        }
         authorize()?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = operation_identity(command, audit)?;

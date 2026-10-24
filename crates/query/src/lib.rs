@@ -3,6 +3,7 @@ pub mod cursor;
 pub mod directory;
 mod parameters;
 mod parser;
+pub mod window;
 pub use parameters::Parameters;
 use serde::{Deserialize, Serialize};
 
@@ -27,13 +28,22 @@ pub enum Operator {
     In,
     Out,
     Icontains,
+    Contains,
+    NotContains,
+    ContainsAny,
+    ContainsAll,
+    IsNull,
+    IsNotNull,
 }
 impl Operator {
     pub fn range(self) -> bool {
         matches!(self, Self::Lt | Self::Le | Self::Gt | Self::Ge)
     }
     pub fn set(self) -> bool {
-        matches!(self, Self::In | Self::Out)
+        matches!(
+            self,
+            Self::In | Self::Out | Self::ContainsAny | Self::ContainsAll
+        )
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,3 +76,21 @@ pub fn parse_filter(input: &str) -> Result<Expression<String, String>> {
 pub const MAX_RAW_QUERY_BYTES: usize = 16 * 1024;
 /// Decoded RSQL byte ceiling.
 pub const MAX_FILTER_BYTES: usize = 8 * 1024;
+
+/// Dynamic fields are supplied by an existing product catalog, never a second registry.
+#[derive(Debug, Serialize)]
+pub struct CatalogQuery {
+    pub id: &'static str,
+    pub catalog_resource: &'static str,
+    pub max_fields: usize,
+    pub max_sort: usize,
+}
+impl CatalogQuery {
+    pub fn validate(&self, fields: usize, sort: usize) -> Result<()> {
+        if fields > self.max_fields || sort > self.max_sort {
+            Err(Error::Budget)
+        } else {
+            Ok(())
+        }
+    }
+}

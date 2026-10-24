@@ -1,7 +1,7 @@
 //! Collection range is immutable evidence; it is not the policy's target set.
 use serde::{Deserialize, Serialize};
 /// Exact namespace of collected values. Device and authenticated Apple user namespaces are executable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TemplateScope {
     /// Complete device-wide namespace.

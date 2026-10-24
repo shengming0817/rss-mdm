@@ -228,3 +228,24 @@ GRANT SELECT(tenant_id,registration,profiles) ON mdm_commands.action_polls TO md
 
 GRANT UPDATE(access_binding) ON mdm_commands.action_runs TO mdm_command_runtime;
 GRANT SELECT ON mdm_policy.policies,mdm_policy.versions TO mdm_access;
+
+GRANT SELECT ON mdm_commands.query_revisions TO mdm_command_runtime,mdm_access;
+GRANT EXECUTE ON FUNCTION mdm_commands.advance_query_revision(uuid) TO mdm_command_runtime,mdm_access;
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.operations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.action_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.attempts FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.attempt_items FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.attempt_frames FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.attempts FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.profiles FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.declarations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.status_reports FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_windows.collections FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.management_messages FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.agent_grants FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.registrations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+
+GRANT EXECUTE ON FUNCTION mdm_commands.lock_query_revision(uuid),mdm_commands.observe_query_commands(uuid,text[],bigint[]) TO mdm_command_runtime;
+
+CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();

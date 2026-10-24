@@ -131,47 +131,9 @@ describe!(
     false,
     "1001 lookahead rejects excess; each organization also bounds embedded accounts to 1000"
 );
-describe!(
-    ASSET_FIELDS,
-    "crates/inventory/src/catalog.rs",
-    page(Paging::Window, &[], Some(1024), Some(1024), None, None),
-    &["key"],
-    None,
-    false,
-    "1024 is catalog admission ceiling; whole catalog returned, not a client-selected page"
-);
-describe!(
-    ASSET_RESULTS,
-    "crates/inventory-service/src/assets/query_read.rs",
-    page(
-        Paging::Keyset,
-        &[f("cursor", "string")],
-        Some(1000),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["sort_key", "device"],
-    None,
-    true,
-    "criteria, optional single-field sort and select apply at asynchronous query creation; result pages read immutable stored sort_key/device order"
-);
-describe!(
-    ASSOCIATION_CHANGES,
-    "crates/device-service/src/changes.rs",
-    page(
-        Paging::Keyset,
-        &[f("cursor", "string")],
-        Some(64),
-        Some(64),
-        None,
-        Some("nextCursor")
-    ),
-    &["position"],
-    None,
-    false,
-    "audit scan up to 64 records/8 MiB followed by permission filtering; checkpoint also returned"
-);
+pub static ASSET_FIELDS: Description = Description::QueryOwner;
+pub static ASSET_RESULTS: Description = Description::QueryOwner;
+pub static ASSOCIATION_CHANGES: Description = Description::QueryOwner;
 describe!(
     AUDIT,
     "crates/timeline-service/src/model.rs",
@@ -239,22 +201,7 @@ describe!(
     "latest version selected descending within each entry"
 );
 pub static COMPLIANCE_RULES: Description = Description::QueryOwner;
-describe!(
-    DEVICES,
-    "crates/registration-service/src/device/directory.rs",
-    page(
-        Paging::Keyset,
-        &[f("after", "string")],
-        Some(64),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id"],
-    Some("descending"),
-    false,
-    "C collation"
-);
+pub static DEVICES: Description = Description::QueryOwner;
 describe!(
     DEVICE_ACCESS,
     "crates/registration-service/src/device_access/storage.rs",
@@ -271,15 +218,7 @@ describe!(
     false,
     "device path binds authority; top-level array without lookahead or continuation"
 );
-describe!(
-    DEVICE_ASSOCIATIONS,
-    "crates/management-http/src/device_views.rs",
-    page(Paging::Missing, &[], None, None, None, None),
-    &[],
-    None,
-    false,
-    "changes is an audit feed, not the current association directory"
-);
+pub static DEVICE_ASSOCIATIONS: Description = Description::QueryOwner;
 describe!(
     DEVICE_TIMELINE,
     "crates/timeline-service/src/model.rs",
@@ -296,41 +235,8 @@ describe!(
     false,
     "device timeline binds path device; source advancement <=64 records/8MiB/5 seconds and fixed index window"
 );
-describe!(
-    DEVICE_VIEWS,
-    "crates/device-service/src/views.rs",
-    page(
-        Paging::Keyset,
-        &[f("cursor", "string")],
-        Some(64),
-        Some(100),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["object_key"],
-    Some("descending"),
-    false,
-    "object_key is the internal stable association/endpoint identity, C collation"
-);
-describe!(
-    EXECUTIONS,
-    "crates/execution-service/src/directory.rs",
-    page(
-        Paging::Keyset,
-        &[
-            f("after", "uuid"),
-            f("afterKind", "enum(command,action_run)")
-        ],
-        Some(64),
-        Some(1000),
-        Some("limit"),
-        Some("nextCursor")
-    ),
-    &["id", "kind"],
-    Some("descending"),
-    false,
-    "continuation is an id/kind object"
-);
+pub static DEVICE_VIEWS: Description = Description::QueryOwner;
+pub static EXECUTIONS: Description = Description::QueryOwner;
 pub static GROUPS: Description = Description::QueryOwner;
 pub static POLICIES: Description = Description::QueryOwner;
 describe!(

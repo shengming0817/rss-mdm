@@ -64,8 +64,14 @@
     {
       "name": "mdm_commands.active_access_binding",
       "search_path": "search_path=pg_catalog"
+    },
+    {
+      "name": "mdm_commands.advance_query_revision",
+      "search_path": "search_path=pg_catalog"
     }
   ],
-  "external_relations": [],
+  "external_relations": [
+    "mdm_commands.query_revisions"
+  ],
   "verified_schemas": []
 }

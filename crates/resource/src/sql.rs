@@ -6,7 +6,7 @@ use sqlparser::{ast::*, dialect::SQLiteDialect, parser::Parser};
 use std::{collections::BTreeSet, ops::ControlFlow};
 
 /// A bounded single-table SELECT against the product's audited osquery surface.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct SqlTemplate(String);
 impl TryFrom<String> for SqlTemplate {

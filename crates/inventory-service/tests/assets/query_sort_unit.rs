@@ -56,3 +56,15 @@ fn numeric_sort_preserves_fractional_negative_values_and_canonical_zero() {
     assert!(keys.windows(2).all(|p| p[0] < p[1]));
     assert!(key(Some(&State::Known(Scalar::Array(vec![]))), false).is_err());
 }
+
+#[test]
+fn composite_sort_respects_each_direction_and_nonknown_last() {
+    let mut rows = vec![("a", 2), ("a", 1), ("aa", 3), ("", 4)];
+    let encode = |(name, n): &(&str, i64)| {
+        let mut result = key(Some(&State::Known(Scalar::String((*name).into()))), false).unwrap();
+        result.extend(key(Some(&State::Known(Scalar::Integer(*n))), true).unwrap());
+        result
+    };
+    rows.sort_by_key(encode);
+    assert_eq!(rows, vec![("", 4), ("a", 2), ("a", 1), ("aa", 3)]);
+}

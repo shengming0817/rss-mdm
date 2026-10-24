@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context;
 use sqlx::Connection;
 
 #[tokio::test]
@@ -80,14 +81,14 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
                 "device.model".into(),
                 NativeMapping {
                     query: rss_mdm_resource::NativeQuery::Apple("Model".into()),
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                 },
             ),
             (
                 field.into(),
                 NativeMapping {
                     query: rss_mdm_resource::NativeQuery::Apple("ActiveManagedUsers".into()),
-                mapping: rss_mdm_resource::ValueMapping::identity(""),
+                mapping: rss_mdm_agent_wire::runtime::ValueMapping::identity(""),
                 },
             ),
         ]
@@ -179,7 +180,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     ensure!(
         first.0 == StatusCode::OK
             && first.1["asset"]["items"][0]["quality"] == "success"
-            && first.1["asset"]["nextOffset"] == 1,
+            && first.1["asset"]["nextCursor"].is_string(),
         "item quality: {first:?}"
     );
     // A prior run observed macOS 14. The current peer reports 15 in its
@@ -247,7 +248,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             &f.router,
             Method::GET,
             &format!(
-                "/api/v1/devices/{}/collections/{refresh}/fields/{field}/items",
+                "/api/v1/devices/{}/collections/{refresh}/fields/{field}/items?limit=2",
                 case_device()
             ),
             None,
@@ -261,11 +262,12 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             && invalid.1["asset"]["items"][1]["value"].is_null(),
         "partial row quality: {invalid:?}"
     );
+    let cursor = invalid.1["asset"]["nextCursor"].as_str().context("collection continuation")?;
     let tail = f.browser.call(&f.router, Method::GET,
-        &format!("/api/v1/devices/{}/collections/{refresh}/fields/{field}/items?offset=2&limit=1", case_device()), None).await?;
+        &format!("/api/v1/devices/{}/collections/{refresh}/fields/{field}/items?cursor={cursor}&limit=2", case_device()), None).await?;
     ensure!(tail.0 == StatusCode::OK && tail.1["asset"]["items"][0]["index"] == 2
         && tail.1["asset"]["items"][0]["value"] == json!({"kind":"string","value":"fixture-user-four"})
-        && tail.1["asset"]["nextOffset"].is_null(), "diagnostic ordinal: {tail:?}");
+        && tail.1["asset"]["nextCursor"].is_null(), "diagnostic ordinal: {tail:?}");
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let list = f

@@ -83,6 +83,11 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     target_host.close()
     audit_backpressure(target_config, admin, other, management, tenant, password, sql, builds, root, stack, owner, database)
 
+    # The preceding recovery/backpressure phase can exceed the five-minute
+    # recent-auth window. Exercise delegation with freshly authenticated actors;
+    # the explicit expiry rejection below still tests the production boundary.
+    login(admin, management)
+    login(delegate, management, 'delegate')
     grant_id = str(uuid.uuid4())
     status, delegated_actor = delegate.call('GET','/api/v1/identity-host/tenants/' + management + '/context')
     require(status == 200, 'delegate context unavailable')
@@ -91,7 +96,7 @@ def exercise(admin, normal, delegate, config, management, business, password, sq
     delegated_key = str(uuid.uuid4())
     delegated_body = dict(request,login='delegated-admin')
     status, delegated_receipt = call('POST',path,delegated_body,delegated_key,delegate)
-    require(status == 200, 'explicit administrator provisioning delegation failed')
+    require(status == 200, 'explicit administrator provisioning delegation failed: ' + str((status, delegated_receipt)))
     write(admin,grant_id,delegation['revision'],None)
     require(call('POST',path,delegated_body,delegated_key,delegate)[0] == 403, 'revoked source grant retained replay authority')
     require(call('POST',path,delegated_body,delegated_key) == (200,delegated_receipt), 'new authorized operator cannot query original replay')
