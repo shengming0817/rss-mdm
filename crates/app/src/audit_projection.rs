@@ -26,6 +26,8 @@ pub(crate) struct Worker {
     pub(crate) health: Arc<Readiness>,
     capacity: NonZeroUsize,
     wake: Arc<Notify>,
+    #[cfg(feature = "integration")]
+    recovery_fault: std::sync::atomic::AtomicBool,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Audit)
@@ -119,6 +121,8 @@ impl Worker {
             health: Arc::default(),
             capacity,
             wake,
+            #[cfg(feature = "integration")]
+            recovery_fault: std::sync::atomic::AtomicBool::new(false),
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -132,6 +136,19 @@ impl Worker {
                 ShutdownError::new(error)
             })
         })
+    }
+    async fn resolve_pending(
+        &self,
+        identity: &PgProjectionRecovery,
+    ) -> Result<bool, AuditProjectionError> {
+        #[cfg(feature = "integration")]
+        if self
+            .recovery_fault
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err(AuditProjectionError::Unavailable);
+        }
+        self.delivery.resolve(identity, operation()).await
     }
     async fn idle_delay(&self, delay: Duration) -> Result<Duration, AuditProjectionError> {
         let wakeup = self.delivery.next_wakeup(operation()).await?;
@@ -194,7 +211,7 @@ impl Worker {
             let recover = ready
                 .into_iter()
                 .map(|mut item| async move {
-                    let result = self.delivery.resolve(&item.identity, operation()).await;
+                    let result = self.resolve_pending(&item.identity).await;
                     if result.as_ref().is_err_and(|error| error.is_retryable()) {
                         item.failures = item.failures.saturating_add(1);
                         item.error = result.as_ref().err().copied();
@@ -304,6 +321,7 @@ impl Schedule {
         if progressed > 0 {
             if !claim_failed {
                 self.failures = 0;
+                self.after = crate::lifecycle::RuntimeTimer.now();
             }
 
             health.progress(progressed, retried);

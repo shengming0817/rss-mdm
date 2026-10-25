@@ -82,9 +82,17 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
         let second_id = enqueue(&fixture.audit, tenant, "worker-sibling").await?;
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, released) = tokio::sync::oneshot::channel();
+        worker.recovery_fault.store(true, std::sync::atomic::Ordering::Release);
+        let second_fault = worker.clone();
         worker.delivery.inject_next_projection_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-            async move { let _ = entered.send(()); let _ = released.await; },
+            async move {
+                second_fault.delivery.inject_next_projection_fault(
+                    rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+                    async {},
+                ).expect("second effect fault");
+                let _ = entered.send(()); let _ = released.await;
+            },
         )?;
         let mut launch = startup.commit();
         launch.stage_task_with_token(listener.clone().registration().critical());
@@ -110,12 +118,22 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
             concurrent?;
             wait_delivered(&mut observer, tenant, &first_id).await?;
             wait_delivered(&mut observer, tenant, &second_id).await?;
-            #[cfg(feature = "integration")]
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let observed = worker.health.projection.lock().expect("projection health").clone();
-                    if observed.is_some_and(|v| v["uncertain_total"].as_u64().unwrap_or(0) > 0 && v["resolved_total"].as_u64().unwrap_or(0) > 0) { break; }
-                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    if observed.is_some_and(|v| v["uncertain_total"] == 2 && v["resolved_total"] == 1 && v["pending_recovery"] == 1) { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await?;
+            // Only the failed recovery occupies capacity. A new event can finish before it retries.
+            let new_id = enqueue(&fixture.audit, tenant, "worker-after-recovery-failure").await?;
+            wait_delivered(&mut observer, tenant, &new_id).await?;
+            ensure!(worker.health.projection.lock().expect("projection health").as_ref().is_some_and(|v| v["pending_recovery"] == 1), "new delivery waited for the unrelated recovery retry");
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let observed = worker.health.projection.lock().expect("projection health").clone();
+                    if observed.is_some_and(|v| v["resolved_total"] == 2 && v["pending_recovery"] == 0) { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await?;
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
