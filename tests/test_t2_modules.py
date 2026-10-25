@@ -335,7 +335,7 @@ class ModuleImpactTests(unittest.TestCase):
                          {'publication.winget','publication.brew','publication.withdrawal','publication.recovery'})
         self.assertEqual(self.selected('crates/software-service/src/publication/references.rs'),
                          {'publication.mapping','planning.resource_archive'})
-        self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http','agent.configurations'})
+        self.assertEqual(self.selected('crates/management-http/src/software_catalog.rs'), {'software.http','agent.configurations','authorization.programmatic'})
         self.assertEqual(self.selected('crates/software-service/src/management/catalog.rs'), {'software.http'})
         self.assertEqual(self.selected('crates/content-service/src/software.rs'), {'software.http','agent.configurations'})
 
@@ -390,7 +390,7 @@ class DirectProofs(unittest.TestCase):
 
     def test_business_changes_still_select_direct_http_and_storage_proofs(self):
         for path, expected in {
-            'crates/management-http/src/device_access.rs': {'device-access.http'},
+            'crates/management-http/src/device_access.rs': {'device-access.http','authorization.programmatic'},
             'crates/management-http/src/recovery_credentials.rs': {'recovery-credentials.http'},
             'crates/authorization-service/src/api_key.rs': {'authorization.programmatic'},
             'crates/resource-postgres/src/lib.rs': {'resource.persistence', 'resource.recovery'},

@@ -2052,6 +2052,7 @@ for module_id, selector, fixtures, db_mode in (
     ('agent.current_user', 'agent::t2::current_user::current_user_read_skips_audit_even_with_business_contention', ('identity','agent_pki'), 'fresh'),
     ('agent.current_user', 'agent::t2::current_user::slow_login_preflight_preserves_source_settlement', ('identity','agent_pki'), 'fresh'),
     ('device-access.http', 'agent::t2::device_access::queries::binding_directory_uses_checked_queries_and_signed_continuations', ('identity','agent_pki'), 'reuse'),
+    ('device-access.http', 'agent::t2::device_access::filevault::cms_upload_has_independent_authorization_and_exact_audit_replay', ('identity','agent_pki'), 'reuse'),
     ('authorization.programmatic', 'authorization::t2::programmatic::all_critical_action_denials_keep_actor_target_and_request_identity', ('identity','agent_pki'), 'reuse'),
 ):
     module=MODULES[module_id]

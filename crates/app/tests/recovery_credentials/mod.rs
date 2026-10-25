@@ -268,6 +268,7 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
         BTreeMap::new(),
         None,
         None,
+        vec![31; 32],
         &mut resources,
     )
     .await;
@@ -534,6 +535,7 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
         BTreeMap::new(),
         None,
         None,
+        vec![31; 32],
         &mut resources,
     )
     .await;
@@ -599,6 +601,7 @@ async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> 
         BTreeMap::new(),
         None,
         None,
+        vec![31; 32],
         &mut resources,
     )
     .await;

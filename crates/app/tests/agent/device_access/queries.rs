@@ -20,7 +20,7 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
     resources.finish(async {
  let registration = f.register_profile(json!(["inventory.collect.v1"])).await?;
  let device=execution::case_device_id();
- f.grants.extend(identity::device_grants(None, &["account_read"])?);
+ f.grants.extend(identity::device_grants(None, &["account_write"])?);
  identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
  let id=Uuid::new_v4();
  let path=format!("/api/v1/devices/{device}/device-access");

@@ -310,7 +310,8 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
     Ok(())
 }
 
-#[tokio::test]
+// Synchronous SQL fault controls must not starve the worker holding a database lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "make t2 MODULE=diagnostics.http: independent runner connection failure and recovery"]
 async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<()> {
     use rss_mdm_management_http::runtime_diagnostics::Source;
@@ -387,7 +388,9 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ensure!(failed["queues"].as_array().unwrap().iter().all(|q|q["count"].is_number()));
         pg(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))?;
         signals.automation().notify_one();
-        tokio::time::timeout(Duration::from_secs(12), async {
+        // Terminating the pool can also lose a Finish acknowledgement. Recovery must
+        // cover the 30s attempt lease, 6s work budget and 5s recovery scan interval.
+        tokio::time::timeout(Duration::from_secs(45), async {
             loop {
                 let recovered = component(&fixture.query().await?,"automation");
                 if recovered["health"] == "healthy" {

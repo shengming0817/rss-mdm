@@ -33,6 +33,7 @@ impl Fixture {
                     BTreeMap::new(),
                     None,
                     None,
+                    vec![31; 32],
                     resources,
                 )
                 .await?;

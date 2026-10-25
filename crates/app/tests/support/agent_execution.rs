@@ -294,6 +294,7 @@ impl Fixture {
                         .as_ref()
                         .map(crate::recovery_credentials::Config::open)
                         .transpose()?,
+                    cursor_key.clone(),
                     resources,
                 )
                 .await?;

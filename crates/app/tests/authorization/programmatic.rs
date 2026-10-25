@@ -789,6 +789,7 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
                 BTreeMap::new(),
                 None,
                 None,
+                vec![31; 32],
                 resources,
             )
             .await?;
@@ -905,14 +906,18 @@ async fn all_critical_action_denials_keep_actor_target_and_request_identity() ->
             let fact=facts[0];
             ensure!(fact.source()=="mdm.request" && fact.actor()==Some(actor.as_str()) && fact.status()==403 && fact.result()=="denied"
                 && fact.action()==*action && fact.target()==target && fact.operation()==Some(operation.as_str()), "{path}: wrong denied fact");
+            // No handler runs here: each route must already carry its audit necessity.
+            let (status, request)=audit_request(&router,None,Method::POST,path,Some(input.to_string())).await?;
+            ensure!(status==StatusCode::UNAUTHORIZED,"{path}: authentication rejection {status}");
+            ensure!(audit_count(|r|r.source()=="mdm.request" && r.request()==Some(request.as_str())
+                && r.actor().is_none() && r.operation().is_none() && r.status()==401 && r.result()=="denied" && r.action()==*action).await?==1,
+                "{path}: missing ingress fact before the handler");
         }
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registration_operations WHERE tenant_id='{}' AND operation_id='{offboarding}'",case_tenant()))?.trim()=="0");
-        // Both JSON extraction and authentication can return before any handler audit upgrade.
-        for (identity, body, expected) in [(Some(&user), Some("{".to_owned()), StatusCode::BAD_REQUEST), (None, Some(cases[2].1.to_string()), StatusCode::UNAUTHORIZED)] {
-            let (status, request)=audit_request(&router,identity,Method::POST,&cases[2].0,body).await?;
-            ensure!(status==expected,"early rejection {status}");
-            ensure!(audit_count(|r|r.source()=="mdm.request" && r.request()==Some(request.as_str()) && r.status()==expected.as_u16()).await?==1);
-        }
+        let (status, request)=audit_request(&router,Some(&user),Method::POST,&cases[2].0,Some("{".to_owned())).await?;
+        ensure!(status==StatusCode::BAD_REQUEST,"JSON rejection {status}");
+        ensure!(audit_count(|r|r.source()=="mdm.request" && r.request()==Some(request.as_str())
+            && r.actor()==Some(actor.as_str()) && r.status()==400 && r.result()=="failed").await?==1);
         let ordinary=format!("/api/v1/webhooks/deliveries/{delivery}");
         let (status, request)=audit_request(&router,Some(&user),Method::GET,&ordinary,None).await?;
         ensure!(status==StatusCode::FORBIDDEN);
@@ -937,11 +942,11 @@ async fn audit_request(
     let mut request = Request::builder()
         .method(method)
         .uri(path)
-        .header("host", "mdm.example.test");
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1");
     if let Some(browser) = browser {
         request = request
-            .header("origin", "https://mdm.example.test")
-            .header("x-identity-request", "1")
             .header("x-csrf-token", browser.csrf.as_ref().unwrap())
             .header(
                 "cookie",

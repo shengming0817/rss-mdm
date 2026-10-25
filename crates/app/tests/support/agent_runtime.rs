@@ -9,6 +9,10 @@ pub(crate) struct Execution {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
 }
 impl Execution {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit prepared capabilities keep fixture owners and database roles separate"
+    )]
     pub(crate) async fn open(
         authority: &mut authority::Authority,
         config: &Config,
@@ -19,13 +23,13 @@ impl Execution {
         >,
         signer: Option<Arc<rss_mdm_execution_service::task_signing::Signer>>,
         recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
+        cursor: Vec<u8>,
         resources: &mut Resources,
     ) -> Result<Self> {
         let tenant = authority.identity.tenant;
         let runtime =
             crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
         resources.resource(SourceResource(runtime.clone()));
-        let cursor = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
         let (service, inputs, queries) = crate::execution_assembly::assemble(
             config,
             config.native_protector()?,

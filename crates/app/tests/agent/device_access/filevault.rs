@@ -11,13 +11,14 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         symm::Cipher,
         x509::X509,
     };
-    let mut f = fixture().await?;
+    let mut f = crate::test_support::current_user::Fixture::new().await?;
     let requests = crate::test_support::runtime::NativeRequests::new();
     f.resources.resource(requests.clone());
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let registration=f.register_profile(json!(["inventory.collect.v1"])).await?;
-        let protection=f.execution.recovery_credentials().context("recovery fixture")?;
+        let config:Config=serde_json::from_value(f.authority.base.clone())?;
+        let protection=config.recovery_credentials.as_ref().context("recovery fixture")?.open()?;
         let custody=Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(f.authority.pool.clone(),f.authority.audit.clone(),protection.clone()));
         let runtime=rss_mdm_agent_channel::boundary::wrap(
             rss_mdm_agent_channel::filevault::routes(f.enrollment.clone(),Some(custody.clone())),
