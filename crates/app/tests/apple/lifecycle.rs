@@ -6,7 +6,6 @@ pub(super) struct Peer {
     pub client: reqwest::Client,
     pub origin: String,
     pub topic: String,
-    pub oracle: oracle::Oracle,
     pub pending_replies: tokio::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
     pub installed_trust: tokio::sync::Mutex<Option<plist::Dictionary>>,
 }
@@ -17,14 +16,11 @@ impl Peer {
             .client
             .put(format!("{}{path}", self.origin))
             .header("content-type", "application/xml")
-            .body(request.clone())
+            .body(request)
             .send()
             .await?;
         let status = response.status();
         let bytes = response.bytes().await?.to_vec();
-        if status == StatusCode::OK {
-            self.oracle.compare(path, &request, &bytes).await?;
-        }
         Ok((status, bytes))
     }
     pub async fn token(&self) -> Result<()> {

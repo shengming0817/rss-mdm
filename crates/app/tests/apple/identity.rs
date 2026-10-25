@@ -124,7 +124,6 @@ impl Fixture {
             client,
             pending_replies: Default::default(),
             installed_trust: Default::default(),
-            oracle: oracle::Oracle::new(&der)?,
             origin: apple.config.management.origin.clone(),
             topic: apple.channel.apns_topic().to_owned(),
         };

@@ -214,7 +214,6 @@ impl Fixture {
             topic: old.topic.clone(),
             pending_replies: Default::default(),
             installed_trust: Default::default(),
-            oracle: oracle::Oracle::new(&der)?,
         };
         if expected_account.is_none() {
             let wrong = peer

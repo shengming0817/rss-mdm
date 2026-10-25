@@ -39,7 +39,7 @@ Jamf Pro 用于对标 Apple 管理产品的使用方式：原生配置描述文�
 | 资产与扩展属性 | 输入型/脚本型 EA，可用于组和变量。[E03](../reference/external-sources.md#e03)、[E04](../reference/external-sources.md#e04) | 业务资产模型和自定义字段由上层建设。[E05](../reference/external-sources.md#e05) | 查询与 custom host vitals 分工明确。[E08](../reference/external-sources.md#e08)、[E10](../reference/external-sources.md#e10) |
 | 软件运维 | 策略可分发软件，支持触发频率与范围。[E01](../reference/external-sources.md#e01) | 不含 VPP 与应用生命周期产品。[E05](../reference/external-sources.md#e05) | 自定义包、维护目录和 App Store/VPP；部署指南标记 Premium。[E07](../reference/external-sources.md#e07) |
 | 自动化 | Scope/触发器模型。[E01](../reference/external-sources.md#e01) | Webhook 与原始命令作为组合接口。[E06](../reference/external-sources.md#e06) | 策略结果触发修复或软件；不等于原生配置策略。[E09](../reference/external-sources.md#e09) |
-| 对本产品的用途 | 借鉴管理对象和流程，不照搬全部产品线。 | 默认复用方向；产品补齐缺失控制面。 | 借鉴跨平台采集与统一体验，不默认嵌入整个平台。 |
+| 对本产品的用途 | 借鉴管理对象和流程，不照搬全部产品线。 | 协议设计与源码参考；产品持有 Rust 通道与控制面。 | 借鉴跨平台采集与统一体验，不默认嵌入整个平台。 |
 
 ## 00.3　关键取舍
 
@@ -47,7 +47,7 @@ Jamf Pro 用于对标 Apple 管理产品的使用方式：原生配置描述文�
 
 默认单一写入路径，可以使用另一通道只读核实。双通道超时切换、未知状态、旧命令晚执行必须进入明确恢复流程；不能用双发命令制造“高可靠”的假象。
 
-优先复用 NanoMDM、osquery、WinGet 和 Homebrew 的协议/执行机制。RSS 只提供已接纳的通用库；策略语义、软件仓库、macOS 协议、字段字典、设备身份、控制台和 T3 仍由 MDM 产品拥有。[范围规则](../rules/project-scope.md)
+Apple 通道由产品使用 Rust 实现，NanoMDM 保留为协议设计与源码参考；采集与软件执行复用 osquery、WinGet 和 Homebrew。RSS 只提供已接纳的通用库；策略语义、软件仓库、macOS 协议、字段字典、设备身份、控制台和 T3 仍由 MDM 产品拥有。[范围规则](../rules/project-scope.md)
 
 # 01　产品定位与业务边界
 
@@ -717,9 +717,7 @@ macOS 是正式产品目标。现有归档仅有 PlatformMacOS 预留值与 mock
 
 ## 关键规则与边界
 
-默认建议采用 Rust 产品控制面 + NanoMDM 薄通道适配器，复用成熟协议处理；不把 Jamf/Fleet 整个平台嵌为第二控制面。NanoMDM 本身不提供完整注册、SCEP、ADE API 或 VPP 产品；其 DDM 转发接口也不等于声明、激活与状态仓库。缺失的业务由产品组合承担。[E05](../reference/external-sources.md#e05)[E06](../reference/external-sources.md#e06)
-
-“基于 Rust 重写”在此约束自有业务控制面与自研 Agent 的演进，不自动要求外部依赖全部 Rust 化。若后续确定全链路纯 Rust，须独立评估 Apple 协议替代方案；本文不承诺已经存在等价可替换实现。默认复用选择为设计建议，不是已经部署的事实。
+Rust 产品控制面与 Apple 通道由 rss-mdm 持有，注册、SCEP 接入、ADE、DDM 与命令状态由产品 owner 负责。NanoMDM 仅保留为协议设计与源码参考。[E05](../reference/external-sources.md#e05)[E06](../reference/external-sources.md#e06)
 
 首批正式支持企业自有 Mac 的设备管理；BYOD/复杂多用户与全 Apple 移动平台未纳入首批。不能同时让两个原生 MDM 产品争夺同一配置 owner；与既有 Jamf/Fleet 共存先限定为 Agent-only 或经批准的管理迁移，不能把双 Agent 共存说成双原生 MDM 可写。
 
@@ -1078,7 +1076,7 @@ R0/R1 不提前强制建设所有 R3 T3；但发布范围内任何危险动作�
 
 统一执行层中的业务意图、能力规则、通道选择与资源 owner 归 MDM；可独立复用的持久执行/消息恢复仅通过 RSS 已接纳 API 消费。字段字典、采集模板、WinGet/Brew 源与应用模型、macOS 认证/协议和产品 Agent 均归产品。
 
-产品需求不直接要求新增 RSS 通用平台或插件系统。后续确有第二独立消费者、唯一职责和可独立发布边界时再单独做 RSS 准入评审。NanoMDM、osquery 和包管理器以受控外部依赖形式组合，不把其内部数据库当跨域公共接口。[范围规则](../rules/project-scope.md)
+产品需求不直接要求新增 RSS 通用平台或插件系统。后续确有第二独立消费者、唯一职责和可独立发布边界时再单独做 RSS 准入评审。osquery 和包管理器以受控外部依赖形式组合，不把其内部数据库当跨域公共接口。[范围规则](../rules/project-scope.md)
 
 ---
 
@@ -1096,7 +1094,7 @@ R0/R1 不提前强制建设所有 R3 T3；但发布范围内任何危险动作�
 | DEC-13 macOS 地位 | 从远期提升为正式目标，新增实际协议/Agent/安全/软件/更新需求；平台枚举不计完成。 |
 | DEC-14 统一接口边界 | 业务契约跨 OS 共用，适配器/平台模板保留差异，Native MDM 不改成自研 Agent 协议。 |
 | DEC-15 软件源优先级 | WinGet 与 Brew 私有源为正式二级包，不是无限延期候选。 |
-| DEC-16 复用方向 | 默认推荐 NanoMDM 协议组件、osquery、WinGet/Brew；不上线第二个 Jamf/Fleet 全量控制面。属于技术方向建议。 |
+| DEC-16 复用方向 | Apple 使用产品 Rust 通道；NanoMDM 仅作协议与源码参考。采集与软件执行复用 osquery、WinGet/Brew，不上线第二个 Jamf/Fleet 全量控制面。 |
 
 ## 仍需在对应版本冻结的参数
 

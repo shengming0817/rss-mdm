@@ -407,11 +407,15 @@ class CiImpactContract(unittest.TestCase):
 
     def test_deleted_test_can_exit_without_old_name_registration(self):
         self.repo._write('crates/leaf/tests/behavior.rs', '')
-        self.repo.commit('test carrier')
-        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
-        self.repo.delete('crates/leaf/tests/behavior.rs')
+        self.repo._write('hack/obsolete_fixture.py', '')
+        self.repo._write('fixtures/obsolete-tools.json', '{}')
         p = self.repo.root / 'hack/t2_registry.py'
-        p.write_text(p.read_text() + "\ndel MODULES['leaf']\n")
+        p.write_text(p.read_text() + "\nfrom dataclasses import replace\nMODULES['leaf'] = replace(MODULES['leaf'], production_inputs=(*MODULES['leaf'].production_inputs, 'hack/obsolete_fixture.py'))\nTOOL_INPUTS['fixtures/obsolete-tools.json'] = ('test_registry',)\n")
+        self.repo.commit('test carrier and fixture inputs')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        for path in ('crates/leaf/tests/behavior.rs', 'hack/obsolete_fixture.py', 'fixtures/obsolete-tools.json'):
+            self.repo.delete(path)
+        p.write_text(p.read_text() + "\ndel MODULES['leaf']\ndel TOOL_INPUTS['fixtures/obsolete-tools.json']\n")
         decision = self.repo.select()[1]
         self.assertEqual(decision['status'], 'selected')
         self.assertEqual(decision['t2']['modules'], [])

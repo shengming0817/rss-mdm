@@ -1,7 +1,0 @@
-{
-  "nanomdm": {
-    "revision": "b2fd8e1655633d1721b1fbebd7301e5d14c46bc0",
-    "sourceArchiveSha256": "dc395c989c7200ed582fa9dc871c54443bd2c9e8e00b271958559e4d64c4c0ee",
-    "purpose": "isolated T2 protocol oracle only; never production identity or storage"
-  }
-}

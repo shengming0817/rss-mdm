@@ -71,7 +71,7 @@ impl Fixture {
             Ok(lifecycle::Peer {
                 client: reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(15)).identity(device.identity(&der)?)
                     .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(root.join("ca.crt"))?)?).build()?,
-                origin: origin.clone(), topic: apple.channel.apns_topic().into(), pending_replies: Default::default(), installed_trust: Default::default(), oracle: oracle::Oracle::new(&der)?,
+                origin: origin.clone(), topic: apple.channel.apns_topic().into(), pending_replies: Default::default(), installed_trust: Default::default(),
             })
         }).await?;
         let mut browser = Authority::prepared_browser("admin")?;

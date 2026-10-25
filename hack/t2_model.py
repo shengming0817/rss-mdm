@@ -89,8 +89,6 @@ class Module:
             result.add('brew')
         if 'git' in self.fixtures:
             result.add('/usr/bin/git')
-        if set(self.fixtures) & {'scep', 'oracle'}:
-            result.add('go')
         return tuple(sorted(result))
 
     def includes(self, test):

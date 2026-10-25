@@ -1,6 +1,4 @@
-use super::{
-    Browser, Fixture, Method, StatusCode, case_tenant, lifecycle, oracle, protocol, scep_client,
-};
+use super::{Browser, Fixture, Method, StatusCode, case_tenant, lifecycle, protocol, scep_client};
 use anyhow::{Result, ensure};
 use serde_json::json;
 use sqlx::Connection;
@@ -159,10 +157,9 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
         ),
         ("Topic", apple.channel.apns_topic().to_owned().into()),
     ]))?;
-    let oracle = oracle::Oracle::new(&der)?;
     let response = client
         .put(format!("{}/checkin", apple.config.management.origin))
-        .body(body.clone())
+        .body(body)
         .send()
         .await?;
     ensure!(
@@ -170,12 +167,10 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
         "native Authenticate {}",
         response.status()
     );
-    oracle.compare("/checkin", &body, &[]).await?;
     let peer = lifecycle::Peer {
         pending_replies: Default::default(),
         installed_trust: Default::default(),
         client,
-        oracle,
         origin: apple.config.management.origin.clone(),
         topic: apple.channel.apns_topic().to_owned(),
     };
