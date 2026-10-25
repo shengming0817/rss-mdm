@@ -29,7 +29,12 @@ fn execution_time_is_independent_of_receipt_and_cancellation() {
     assert!(run.trusts_result(61));
     assert!(run.trusts_result(62));
     assert!(run.trusts_result(63));
-    assert!(!run.trusts_result(100));
+    assert!(!run.trusts_result(1));
+    run.expire(100);
+    assert_eq!(run.execution, Execution::Unknown);
+    assert!(run.trusts_result(101));
+    assert!(run.start(attempt, 101).is_err());
+    assert!(run.result(Uuid::new_v4(), true).is_err());
     run.cancel();
     assert!(run.trusts_result(3));
     run.cancelled(attempt).unwrap();
