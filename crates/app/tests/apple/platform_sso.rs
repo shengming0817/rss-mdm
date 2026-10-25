@@ -575,31 +575,6 @@ async fn applied_binding(id: Uuid) -> Result<()> {
     let mut b = storage::locked_in(&mut tx, Uuid::parse_str(case_tenant())?, id).await?;
     let source:Option<(Uuid,i64)>=sqlx::query_as("SELECT id,version FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND binding=$2 AND kind='user' AND NOT revoked")
         .bind(case_tenant()).bind(id).fetch_optional(&mut *tx).await?;
-    if let Some((source_id, source_version)) = source {
-        let document = serde_json::to_value(&b)?;
-        let valid: bool =
-            sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
-                .bind(source_id)
-                .bind(source_version)
-                .bind(&document)
-                .fetch_one(&mut *tx)
-                .await?;
-        ensure!(
-            valid,
-            "current PSSO registration must qualify before Applied"
-        );
-        let old: bool =
-            sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
-                .bind(source_id)
-                .bind(source_version + 1)
-                .bind(&document)
-                .fetch_one(&mut *tx)
-                .await?;
-        ensure!(
-            !old,
-            "different source generation cannot complete configuration"
-        );
-    }
     // The task/result protocol has its own P1 proof. This test consumes its legal Applied fact.
     b.state = access::State::Active;
     b.applied_revision = Some(b.revision);
@@ -625,6 +600,92 @@ async fn applied_binding(id: Uuid) -> Result<()> {
     });
     storage::save_in(&mut tx, &b, b.revision).await?;
     tx.commit().await?;
+    c.close().await?;
+    Ok(())
+}
+// Password completion must pass the real mTLS task endpoint and Apple owner verifier.
+async fn password_applied_binding(
+    f: &Fixture,
+    context: &Value,
+    account: Uuid,
+    registered: &Value,
+) -> Result<()> {
+    let request = |path: String, body: Value| async move {
+        crate::test_support::agent::agent_call(
+            &f.router,
+            Method::POST,
+            &path,
+            Some(agent_label()),
+            Some(body),
+        )
+        .await
+    };
+    let task = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (status, body) = request("/api/v1/agent/runtime/tasks/claim".into(), json!({"wireVersion":1,"executionContext":context,"environment":{"edition":null,"tools":{},"nativeEngines":{}},"profiles":[],"operationId":Uuid::new_v4()})).await?;
+            ensure!(status == StatusCode::OK, "Password task claim: {status} {body}");
+            if !body["task"].is_null() { return Ok::<Value, anyhow::Error>(body["task"].clone()); }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }).await??;
+    let spec = &task["payload"]["task"];
+    ensure!(
+        task["payload"]["kind"] == "device_access",
+        "Password task: {task}"
+    );
+    let path = format!(
+        "/api/v1/agent/runtime/tasks/{}/events",
+        spec["taskId"].as_str().context("task id")?
+    );
+    let event = |value: Value, operation: Uuid| {
+        request(
+            path.clone(),
+            json!({"wireVersion":1,"executionContext":context,"operationId":operation,"attemptId":spec["attemptId"],"event":value}),
+        )
+    };
+    ensure!(event(json!({"kind":"received"}), Uuid::new_v4()).await?.0 == StatusCode::OK);
+    let started = event(json!({"kind":"start"}), Uuid::new_v4()).await?;
+    ensure!(
+        started.0 == StatusCode::OK && !started.1["permit"].is_null(),
+        "start permit: {started:?}"
+    );
+    let result = json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"platformSso":{"configuration":"present","deviceRegistered":"present","userRegistered":"present","userSourceId":registered["sourceId"],"userSourceVersion":registered["sourceVersion"]},"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+    for (field, value) in [
+        ("userSourceId", json!(Uuid::new_v4())),
+        (
+            "userSourceVersion",
+            json!(
+                registered["sourceVersion"]
+                    .as_i64()
+                    .context("source version")?
+                    + 1
+            ),
+        ),
+    ] {
+        let mut wrong = result.clone();
+        wrong["effect"]["mac"]["platformSso"][field] = value;
+        let rejected = event(wrong, Uuid::new_v4()).await?;
+        ensure!(
+            rejected.0 == StatusCode::CONFLICT,
+            "untrusted source accepted: {rejected:?}"
+        );
+    }
+    let operation = Uuid::new_v4();
+    let accepted = event(result.clone(), operation).await?;
+    ensure!(
+        accepted.0 == StatusCode::OK,
+        "Password Applied: {accepted:?}"
+    );
+    ensure!(
+        event(result, operation).await? == accepted,
+        "lost ACK must replay original result"
+    );
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let applied: bool = sqlx::query_scalar("SELECT applied_revision=revision AND state='active' FROM mdm_access.device_access_bindings WHERE tenant_id=$1::uuid AND id=$2")
+        .bind(case_tenant()).bind(serde_json::from_value::<Uuid>(spec["bindingId"].clone())?).fetch_one(&mut c).await?;
+    ensure!(applied, "task result must persist Applied");
     c.close().await?;
     Ok(())
 }
@@ -772,7 +833,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let pending_response=token(&f,&pending).await?;
         ensure!(pending_response.0==if mode {StatusCode::OK}else{StatusCode::BAD_REQUEST},"Password bootstrap may synchronize a pending binding; key login requires applied binding");
         if mode {let pending_tokens=decrypt(&encryption,&pending_response.1)?;ensure!(browser_exchange(&f,binding,&user,&registered,pending_tokens["access_token"].as_str().context("pending token")?).await?.0==StatusCode::UNAUTHORIZED,"password verification does not prove local synchronization");}
-        applied_binding(binding).await?;
+        if mode { password_applied_binding(&f, &context, account, &registered).await?; } else { applied_binding(binding).await?; }
         if let Some(provider)=&password {password::capacity(&f,&device,&encryption,&registered["sourceId"]).await?;password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
         let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         let response = if mode {

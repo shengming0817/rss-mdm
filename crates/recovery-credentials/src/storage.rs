@@ -137,6 +137,18 @@ pub async fn reserve_in(
     if let Some(version) = sqlx::query_scalar("SELECT version FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND operation=$3").bind(tenant).bind(id).bind(operation).fetch_optional(&mut *c).await? {
         return Ok(Coordinates { tenant, material:id, binding:binding.clone(), version });
     }
+    if matches!(binding.subject, Subject::Filevault { .. }) {
+        let versions: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_one(&mut *c)
+        .await?;
+        if versions >= 4096 {
+            return Err(Error::Conflict);
+        }
+    }
     let revision: i64 = row.try_get("revision")?;
     if revision != expected_revision {
         return Err(Error::Conflict);

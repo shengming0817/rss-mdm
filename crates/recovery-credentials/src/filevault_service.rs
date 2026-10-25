@@ -242,7 +242,8 @@ impl FilevaultService {
                     if row.try_get::<String,_>("purpose")?!="link" || row.try_get::<Vec<u8>,_>("digest")?!=digest {return Err(Error::Conflict);}
                     return serde_json::from_value(row.try_get("receipt")?).map(|value|(value,true)).map_err(|_|Error::Integrity);
                 }
-                owner::merge(c,&ctx.0.protection,left,right).await?;
+                let rss_mdm_inventory_service::objects::ObjectRef::Association(association)=object.object else {return Err(Error::Forbidden);};
+                owner::merge(c,&ctx.0.protection,left,right,association,object.association_version.ok_or(Error::Forbidden)?).await?;
                 let result=owner::configuration(c,left,&ctx.0.protection).await?;
                 sqlx::query("INSERT INTO mdm_recovery.filevault_receipts(tenant_id,registration,generation,operation,purpose,digest,receipt) VALUES($1,$2,$3,$4,'link',$5,$6)")
                     .bind(t).bind(left.registration).bind(left.generation).bind(ctx.3.operation_id).bind(digest)
@@ -253,5 +254,48 @@ impl FilevaultService {
             ctx.1.check_live()?;ctx.4.mark_commit_started();Ok::<_,Error>(value)
         })).await;
         crate::service::finish(result, audit)
+    }
+}
+
+#[derive(Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FilevaultSelection {
+    pub registration: Option<Uuid>,
+    pub generation: Option<i64>,
+}
+impl FilevaultService {
+    /// Management readers use their own resource authority, never a device credential or cached revision.
+    pub async fn management_configuration(
+        &self,
+        p: &AuthorizedPrincipal,
+        device: &str,
+        selection: &FilevaultSelection,
+    ) -> Result<w::Configuration, Error> {
+        use sqlx::Row;
+        if selection.registration.is_some() != selection.generation.is_some() {
+            return Err(Error::Malformed);
+        }
+        p.require(Permission::SecurityOperate, Some(device))?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(p.tenant_id())
+            .execute(&mut *tx)
+            .await?;
+        crate::service::authorize(&mut tx, p, device, Permission::SecurityOperate).await?;
+        let rows=sqlx::query("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active' AND purpose='primary' AND channel IN('agent','mdm') AND ($3::uuid IS NULL OR id=$3) AND ($4::bigint IS NULL OR generation=$4) ORDER BY id LIMIT 2")
+            .bind(p.tenant_id()).bind(device).bind(selection.registration).bind(selection.generation).fetch_all(&mut *tx).await?;
+        if rows.len() != 1 {
+            return Err(Error::Conflict);
+        }
+        let source = Source {
+            tenant: Uuid::parse_str(p.tenant_id()).map_err(|_| Error::Malformed)?,
+            device: device.into(),
+            registration: rows[0].try_get("id")?,
+            generation: rows[0].try_get("generation")?,
+        };
+        let value = owner::configuration(&mut tx, &source, &self.protection).await?;
+        tx.rollback().await?;
+        p.check_live()?;
+        Ok(value)
     }
 }

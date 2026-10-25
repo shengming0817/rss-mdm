@@ -51,6 +51,18 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         let conflict=agent_call(&f.router,Method::POST,uri,Some(execution::case_credential()),Some(changed)).await?;
         ensure!(conflict.0==StatusCode::CONFLICT);
         ensure!(!first.1.to_string().contains("ABCD-EFGH"));
+        let managed=format!("/api/v1/devices/{}/recovery-credentials/filevault/configuration",execution::case_device_id());
+        let mut fresh_manager=Browser::default();
+        ensure!(fresh_manager.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);
+        let read=fresh_manager.call(&f.router,Method::GET,&managed,None).await?;
+        ensure!(read.0==StatusCode::OK && read.1["enabled"]==true);
+        let disable=json!({"operationId":Uuid::new_v4(),"registration":registration["registrationId"],"generation":registration["generation"],"expectedRevision":0,"enabled":false,"recipientId":protection.active_recipient().id()});
+        ensure!(fresh_manager.call(&f.router,Method::POST,&managed,Some(disable.clone())).await?.0==StatusCode::CONFLICT);
+        let current=fresh_manager.call(&f.router,Method::GET,&managed,None).await?;
+        let mut disable=disable;disable["expectedRevision"]=current.1["revision"].clone();
+        let changed=fresh_manager.call(&f.router,Method::POST,&managed,Some(disable)).await?;
+        ensure!(changed.0==StatusCode::OK && changed.1["enabled"]==false);
+
         Ok(())
     }).await
 }

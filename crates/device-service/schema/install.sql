@@ -197,3 +197,16 @@ REVOKE ALL ON mdm_devices.retirement_policies FROM PUBLIC;
 GRANT SELECT,INSERT ON mdm_devices.retirement_policies TO mdm_access,mdm_flow_runtime;
 GRANT SELECT ON mdm_devices.retirement_policies TO mdm_command_runtime;
 COMMIT;
+
+-- A source-sharing grant depends on this exact confirmed association, not peer liveness.
+-- This lets one transport retire without destroying the surviving transport's custody.
+CREATE FUNCTION mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_registration uuid,p_generation bigint)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT EXISTS(SELECT FROM mdm_devices.associations a JOIN mdm_devices.members m
+  ON(m.tenant_id,m.association_id)=(a.tenant_id,a.id)
+  WHERE a.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND a.id=p_id AND a.version=p_version AND a.state='confirmed' AND NOT m.released
+   AND m.registration_id=p_registration AND m.generation=p_generation)
+$$;
+REVOKE ALL ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid,bigint) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.association_grant_current(uuid,bigint,uuid,bigint) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;

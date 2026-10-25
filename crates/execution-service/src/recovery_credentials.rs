@@ -360,8 +360,14 @@ async fn prepare(
             material,
             recipient: selected,
         } => {
-            let coordinates =
-                vault::coordinates_in(c, tenant, device, material.id, material.version).await?;
+            let coordinates = credentials::filevault::material_coordinates(
+                c,
+                tenant,
+                filevault.as_ref().ok_or(E::Conflict)?,
+                material.id,
+                material.version,
+            )
+            .await?;
             if filevault.as_ref() != Some(&coordinates.binding) {
                 return Err(E::Conflict);
             }

@@ -82,7 +82,9 @@
       "updates": [
         "custody",
         "epoch",
-        "active"
+        "active",
+        "association",
+        "association_version"
       ],
       "delete_policy": null
     },

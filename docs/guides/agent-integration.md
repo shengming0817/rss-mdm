@@ -308,11 +308,11 @@ RP 自己建立应用会话，每次使用前调用 GET `/relying-parties/{rp}/s
 ### 独立 FileVault CMS 托管
 
 Agent runtime 的 `GET /filevault/configuration` 返回当前设备的采集授权与公开收件证书；默认关闭。
-管理者通过设备恢复凭据的 `filevault/configuration` 操作显式授权，提供当前注册代际、配置 revision、收件证书指纹及幂等 operation。
+管理者通过设备恢复凭据的 `GET filevault/configuration` 读取当前配置，再以 `POST` 显式授权，提供当前注册代际、配置 revision、收件证书指纹及幂等 operation；并发修改冲突后重新读取。多个有效来源时必须指定注册及代际。
 端上系统服务只读 Apple 生成的 `/var/db/FileVaultPRK.dat`，通过 `POST /filevault/escrows` 上传原始 CMS；
 `GET /filevault/operations/{id}` 恢复未知提交结果。此路径不依赖普通任务或 MDM 注册，不接收员工 bearer、任意文件路径或目标 URL。
 文件缺失或证书不匹配必须等待合法平台材料，采集不能自动安装 profile、生成/轮换 PRK 或改变账号密码。
 
 FileVault 托管身份独立于采集通道；MDM 与 Agent 可以分别使用。同一设备已验证关联后，具有两侧安全操作权限的管理者
-可使用 `filevault/link` 明确关联来源。待决轮换和收件人冲突会阻止归并；不按序列号或相同密文自动归并。
+可使用 `filevault/link` 明确关联来源，以请求目标设备的 custody 为保留归属。共享来源绑定此次设备关联及版本；关联撤销后立即失去共享访问与新上传权限。单通道退役保留仍有效来源的托管能力。待决轮换和收件人冲突会阻止归并；不按序列号或相同密文自动归并。
 托管回执仅证明材料已受保护保存，不能证明它是当前可用于恢复解锁的密钥。普通诊断不返回 PRK 或 CMS。

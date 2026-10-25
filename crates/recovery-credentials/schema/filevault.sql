@@ -12,6 +12,10 @@ CREATE TABLE mdm_recovery.filevault_custodies (
 CREATE TABLE mdm_recovery.filevault_sources (
  tenant_id uuid NOT NULL, registration uuid NOT NULL, generation bigint NOT NULL,
  custody uuid NOT NULL, epoch bigint NOT NULL, active boolean NOT NULL DEFAULT true,
+ association uuid, association_version bigint,
+ CHECK((association IS NULL)=(association_version IS NULL)),
+ CHECK(association_version IS NULL OR association_version>0),
+ FOREIGN KEY(tenant_id,association) REFERENCES mdm_devices.associations(tenant_id,id),
  PRIMARY KEY(tenant_id,registration,generation),
  FOREIGN KEY(tenant_id,registration,generation) REFERENCES mdm_access.registrations(tenant_id,id,generation),
  FOREIGN KEY(tenant_id,custody,epoch) REFERENCES mdm_recovery.filevault_custodies(tenant_id,id,epoch)
@@ -34,7 +38,7 @@ CREATE POLICY tenant ON mdm_recovery.filevault_sources USING(tenant_id=nullif(cu
 CREATE POLICY tenant ON mdm_recovery.filevault_receipts USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 GRANT SELECT,INSERT ON mdm_recovery.filevault_custodies,mdm_recovery.filevault_sources,mdm_recovery.filevault_receipts TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(active,revision,enabled,recipient) ON mdm_recovery.filevault_custodies TO mdm_access,mdm_command_runtime;
-GRANT UPDATE(custody,epoch,active) ON mdm_recovery.filevault_sources TO mdm_access,mdm_command_runtime;
+GRANT UPDATE(custody,epoch,active,association,association_version) ON mdm_recovery.filevault_sources TO mdm_access,mdm_command_runtime;
 GRANT SELECT ON mdm_recovery.filevault_custodies,mdm_recovery.filevault_sources TO mdm_identity_runtime;
 COMMIT;
 -- Resolve an authorized display/disclosure device through live ingress membership, not origin metadata.
@@ -46,7 +50,8 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
   JOIN mdm_access.registrations r ON(r.tenant_id,r.id,r.generation)=(s.tenant_id,s.registration,s.generation)
   WHERE f.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
    AND f.id::text=subject->>'custody' AND f.epoch::text=subject->>'epoch'
-   AND f.active AND s.active AND r.state='active' AND r.device=$2)
+   AND f.active AND s.active AND r.state='active' AND r.device=$2
+   AND (s.association IS NULL OR mdm_devices.association_grant_current(s.association,s.association_version,s.registration,s.generation)))
 $$;
 REVOKE ALL ON FUNCTION mdm_recovery.filevault_accessible(jsonb,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_recovery.filevault_accessible(jsonb,text) TO mdm_access,mdm_command_runtime,mdm_identity_runtime;

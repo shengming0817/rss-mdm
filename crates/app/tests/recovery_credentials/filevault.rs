@@ -81,6 +81,8 @@ async fn agent_cms_custody_is_independent_and_shared_after_explicit_link() -> Re
         ensure!(!owner::configuration(&mut tx,&a,&protection).await?.enabled);
         let configure=owner::Configure{operation_id:Uuid::new_v4(),registration,generation:1,expected_revision:0,enabled:true,recipient_id:protection.active_recipient().id().into()};
         let config=owner::configure(&mut tx,&a,&configure,&protection).await?;
+        let replacement=super::filevault::protection()?;
+        ensure!(owner::configure(&mut tx,&a,&configure,&replacement).await?==config,"committed configuration must replay without its former active recipient");
         let request=upload(&protection,&config,"ABCD-EFGH-IJKL-MNOP-QRST-UVWX")?;
         let first=owner::receive(&mut tx,&a,&request,&protection).await?;
         ensure!(first.matches(&request));tx.commit().await?;
@@ -101,9 +103,33 @@ async fn agent_cms_custody_is_independent_and_shared_after_explicit_link() -> Re
         let bconfig=owner::configure(&mut tx,&b,&owner::Configure{operation_id:Uuid::new_v4(),registration:mreg,generation:1,expected_revision:0,enabled:true,recipient_id:protection.active_recipient().id().into()},&protection).await?;
         let breq=upload(&protection,&bconfig,"ABCD-EFGH-IJKL-MNOP-QRST-UVWX")?;
         owner::receive(&mut tx,&b,&breq,&protection).await?;
-        owner::merge(&mut tx,&protection,&a,&b).await?;
+        let association=Uuid::new_v4();
+        sqlx::query("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES($1,$2,1,'confirmed','test proof','{}','test administrator',1)")
+            .bind(tenant).bind(association).execute(&mut *tx).await?;
+        for (source,channel) in [(&a,"agent"),(&b,"mdm")] {
+            sqlx::query("INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) VALUES($1,$2,$3,$4,$5,$6)")
+                .bind(tenant).bind(association).bind(&source.device).bind(channel).bind(source.registration).bind(source.generation).execute(&mut *tx).await?;
+        }
+        owner::merge(&mut tx,&protection,&a,&b,association,1).await?;
         let ac=owner::configuration(&mut tx,&a,&protection).await?;let bc=owner::configuration(&mut tx,&b,&protection).await?;
         ensure!(ac.custody_id==bc.custody_id);
+        let shared=owner::source_binding(&mut tx,&b,false).await?.context("shared custody")?;
+        ensure!(shared.device==a.device);
+        let resolved=owner::material_coordinates(&mut tx,tenant,&shared,first.material,first.version).await?;
+        ensure!(resolved.material==first.material,"MDM reconcile must resolve Agent-origin material through custody");
+        sqlx::query("SAVEPOINT relation_lifetime").execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_devices.associations SET state='revoked',version=version+1,revoked_at=1,revoked_by='test',reason='wrong association' WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant).bind(association).execute(&mut *tx).await?;
+        ensure!(!owner::configuration(&mut tx,&b,&protection).await?.enabled,"revoked association cannot keep a sharing grant");
+        ensure!(owner::configuration(&mut tx,&a,&protection).await?.enabled,"independent owner remains usable");
+        let accessible:bool=sqlx::query_scalar("SELECT mdm_recovery.filevault_accessible($1,$2)")
+            .bind(serde_json::to_value(&shared.subject)?).bind(&b.device).fetch_one(&mut *tx).await?;
+        ensure!(!accessible,"metadata/disclosure cannot use a revoked sharing grant");
+        sqlx::query("ROLLBACK TO SAVEPOINT relation_lifetime").execute(&mut *tx).await?;
+        owner::retire_source(&mut tx,case_tenant(),registration).await?;
+        ensure!(owner::configuration(&mut tx,&b,&protection).await?.enabled,"primary ingress retirement preserves the authorized survivor");
+        sqlx::query("ROLLBACK TO SAVEPOINT relation_lifetime").execute(&mut *tx).await?;
+
         let copies:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_recovery.entries e JOIN mdm_recovery.versions v ON(v.tenant_id,v.entry)=(e.tenant_id,e.id) WHERE e.tenant_id=$1 AND e.subject->>'kind'='filevault' AND NOT e.retired AND v.sealed IS NOT NULL")
             .bind(tenant).fetch_one(&mut *tx).await?;ensure!(copies==1);
         owner::retire_source(&mut tx,case_tenant(),mreg).await?;
@@ -115,5 +141,34 @@ async fn agent_cms_custody_is_independent_and_shared_after_explicit_link() -> Re
         let mut forged=fresh.clone();forged.operation_id=Uuid::new_v4();forged.custody_epoch+=1;
         ensure!(owner::receive(&mut tx,&a,&forged,&protection).await.is_err());tx.rollback().await?;
         Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=recovery-credentials.http: reserve capacity before native rotation, receive final reserved key at the boundary"]
+async fn reserved_native_prk_remains_receivable_at_capacity() -> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let protection=protection()?;let tenant=Uuid::parse_str(case_tenant())?;
+        let device=case::name("filevault-capacity");let (registration,_)=inventory::seed_source(device,"mdm","mdm.apple","fixture")?;
+        let source=owner::Source{tenant,device:device.into(),registration,generation:1};
+        let mut tx=begin(&authority.pool).await?;
+        let binding=owner::source_binding(&mut tx,&source,true).await?.context("custody")?;
+        let first_op=Uuid::new_v4();let first=storage::reserve_in(&mut tx,tenant,&binding,first_op,0).await?;
+        sqlx::query("UPDATE mdm_recovery.versions SET pending=false WHERE tenant_id=$1 AND entry=$2").bind(tenant).bind(first.material).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_recovery.versions(tenant_id,entry,version,operation,validity,created_at,pending) SELECT $1,$2,n,gen_random_uuid(),'unverified',1,false FROM generate_series(2,4095) n")
+            .bind(tenant).bind(first.material).execute(&mut *tx).await?;
+        sqlx::query("UPDATE mdm_recovery.entries SET revision=4095 WHERE tenant_id=$1 AND id=$2").bind(tenant).bind(first.material).execute(&mut *tx).await?;
+        let operation=Uuid::new_v4();let reserved=storage::reserve_in(&mut tx,tenant,&binding,operation,4095).await?;
+        ensure!(reserved.version==4096);
+        let config=owner::configuration(&mut tx,&source,&protection).await?;
+        let input=upload(&protection,&config,"ABCD-EFGH-IJKL-MNOP-QRST-UVWX")?;
+        let cms=STANDARD.decode(&input.cms)?;
+        let accepted=owner::receive_reserved_cms(&mut tx,&protection,&reserved,operation,protection.active_recipient().id(),&cms).await?;
+        ensure!(accepted.version==4096);
+        ensure!(storage::reserve_in(&mut tx,tenant,&binding,operation,4095).await?.version==4096);
+        ensure!(storage::reserve_in(&mut tx,tenant,&binding,Uuid::new_v4(),4096).await.is_err());
+        tx.commit().await?;Ok(())
     }).await
 }

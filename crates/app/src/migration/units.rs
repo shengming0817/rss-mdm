@@ -181,16 +181,16 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             rss_mdm_timeline_service::INSTALL_SQL,
         ),
         (
+            "device-associations-v1",
+            rss_mdm_device_service::INSTALL_SQL,
+        ),
+        (
             "recovery-credentials-schema-v1",
             rss_mdm_recovery_credentials::INSTALL_SQL,
         ),
         (
             "certificate-archive-schema-v1",
             rss_mdm_certificate_archive_service::INSTALL_SQL,
-        ),
-        (
-            "device-associations-v1",
-            rss_mdm_device_service::INSTALL_SQL,
         ),
         ("device-pki-v1", rss_mdm_pki_service::INSTALL_SQL),
         (
