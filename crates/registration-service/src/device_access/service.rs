@@ -402,7 +402,7 @@ impl Service {
                             if intent.account().is_some_and(|account| !selected.configuration.admits(account))
                                 || (intent.platform() == TaskPlatform::Macos && selected.configuration.mac.is_none())
                                 || (matches!(intent, AccountIntent::Create { platform: TaskPlatform::Windows, .. })
-                                    && !selected.configuration.windows_accounts.contains(&rss_mdm_agent_wire::runtime::AccessWindowsKind::Local))
+                                    && !selected.configuration.windows.accounts().contains(&rss_mdm_agent_wire::runtime::AccessWindowsKind::Local))
                             { return Err(Error::Forbidden); }
                             if intent.platform() == TaskPlatform::Macos {
                                 // A System PSSO profile has one Policy owner for every user on the device.
@@ -427,6 +427,7 @@ impl Service {
                             }) {
                                 return Err(Error::Conflict);
                             }
+                            if old.as_ref().is_some_and(|b| std::mem::discriminant(&b.configuration.windows) != std::mem::discriminant(&selected.configuration.windows)) { return Err(Error::Conflict); }
                             let rebound = old.as_ref().is_some_and(|b| b.person != *person || b.state == State::Revoked);
                             let generation = old.as_ref().map_or(Some(1), |b|
                                 if rebound { b.generation.checked_add(1) } else { Some(b.generation) }).ok_or(Error::Capacity)?;

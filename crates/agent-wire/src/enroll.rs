@@ -11,7 +11,7 @@ use uuid::Uuid;
 pub const API_VERSION: u8 = 1;
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_FINGERPRINT: &str =
-    "cef4f4e11a98534aafe44e606ed27dcc6ccc289635293fe16ec0f06ab823ba66";
+    "324f03fd3aa5bed85af2a4ef0cdd03366a4e4022103dd292d616403888a4ba77";
 /// Canonical enrollment schema manifest.
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/enroll/manifest.json");
 /// A bounded runtime profile, frozen when a grant is consumed.

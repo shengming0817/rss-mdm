@@ -391,6 +391,25 @@ pub struct Plan {
     pub delivery: Uuid,
     pub binding: access::Binding,
 }
+/// Capability eligibility is shared by preview, Offer and Start/recovery admission.
+pub(crate) fn capable(
+    binding: &crate::channels::AgentBinding,
+    configuration: &wire::AccessWindowsConfiguration,
+) -> bool {
+    binding
+        .capabilities
+        .contains(&wire::Capability::DeviceAccessV1)
+        && matches!(
+            (binding.platform.as_str(), binding.architecture.as_str()),
+            ("windows", "x86_64") | ("macos", "aarch64")
+        )
+        && (binding.platform != "windows"
+            || (!matches!(configuration, wire::AccessWindowsConfiguration::Disabled)
+                && (!matches!(configuration, wire::AccessWindowsConfiguration::Whfb)
+                    || binding
+                        .capabilities
+                        .contains(&wire::Capability::DeviceAccessWhfbV1))))
+}
 impl Plan {
     pub async fn allowed_in(
         &self,
@@ -401,6 +420,15 @@ impl Plan {
         if self.binding.device != target.device
             || self.binding.registration != target.registration
             || self.binding.registration_generation != target.generation
+        {
+            return Ok(false);
+        }
+        let native =
+            crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
+                .await?;
+        if !native
+            .as_ref()
+            .is_some_and(|b| capable(b, &self.binding.configuration.windows))
         {
             return Ok(false);
         }
@@ -649,7 +677,21 @@ pub(crate) async fn reconcile_in(
                     if b.state != access::State::Revoked {
                         match policy_on(source, scope, c, tenant, &b.device, b.policy).await {
                             Ok(p) => {
-                                if p.version != b.policy_version
+                                if std::mem::discriminant(&p.configuration.windows)
+                                    != std::mem::discriminant(&b.configuration.windows)
+                                {
+                                    b.generation =
+                                        b.generation.checked_add(1).ok_or_else(|| {
+                                            sqlx::Error::Protocol(
+                                                "access generation exhausted".into(),
+                                            )
+                                        })?;
+                                    b.revision = b.revision.checked_add(1).ok_or_else(|| {
+                                        sqlx::Error::Protocol("access revision exhausted".into())
+                                    })?;
+                                    b.state = access::State::Revoked;
+                                    b.configuration.enabled = false;
+                                } else if p.version != b.policy_version
                                     || p.configuration != b.configuration
                                 {
                                     b.revision = b.revision.checked_add(1).ok_or_else(|| {
@@ -786,6 +828,14 @@ pub async fn finish_in(
         || value.binding_generation != plan.binding.generation
         || value.revision != plan.binding.revision
         || value.definition_digest != plan.binding.definition_digest().map_err(Error::from)?
+    {
+        return Err(Error::Conflict.into());
+    }
+    value
+        .validate_for(plan.binding.intent.platform())
+        .map_err(|_| Error::Malformed)?;
+    if matches!(value.effect, wire::AccessEffect::WhfbRetired { .. })
+        && plan.binding.state != access::State::Revoked
     {
         return Err(Error::Conflict.into());
     }

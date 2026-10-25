@@ -88,7 +88,7 @@ impl ResourcePreparation<'_> {
 pub enum PublicationInput<'a> {
     DeviceAccess {
         mac: &'a Option<rss_mdm_agent_wire::platform_sso::LoginConfiguration>,
-        windows_accounts: &'a Vec<rss_mdm_agent_wire::runtime::AccessWindowsKind>,
+        windows: &'a rss_mdm_agent_wire::runtime::AccessWindowsConfiguration,
         self_enrollment: bool,
         role: Option<rss_mdm_policy::AccessRole>,
     },
@@ -181,12 +181,12 @@ impl<'a> TryFrom<&'a Action> for PublicationInput<'a> {
         Ok(match action {
             Action::DeviceAccess {
                 mac,
-                windows_accounts,
+                windows,
                 self_enrollment,
                 role,
             } => Self::DeviceAccess {
                 mac,
-                windows_accounts,
+                windows,
                 self_enrollment: *self_enrollment,
                 role: *role,
             },

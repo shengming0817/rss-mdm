@@ -222,10 +222,10 @@ pub async fn result_in(
             windows,
             ..
         } => {
-            if windows
-                .as_ref()
-                .is_some_and(|facts| facts.factor_generation != b.factor_generation)
-            {
+            if windows.as_ref().is_some_and(|facts| {
+                facts.factor_generation() != b.factor_generation
+                    || !facts.matches(&b.configuration.windows)
+            }) {
                 return Err(Error::Conflict);
             }
             let required = b
@@ -248,8 +248,33 @@ pub async fn result_in(
                 b.state = State::Active;
             }
         }
+        AccessEffect::WhfbRetired {
+            account,
+            disposition,
+            facts,
+        } => {
+            if b.state != State::Revoked
+                || b.account.as_ref() != Some(account)
+                || *disposition != b.account_disposition
+                || facts.factor_generation != b.factor_generation
+                || !matches!(
+                    b.configuration.windows,
+                    rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb
+                )
+            {
+                return Err(Error::Conflict);
+            }
+            b.applied_windows = Some(rss_mdm_agent_wire::runtime::AccessWindowsFacts::Whfb(
+                facts.clone(),
+            ));
+        }
         AccessEffect::Unbound { disposition }
-            if b.state != State::Revoked || *disposition != b.account_disposition =>
+            if b.state != State::Revoked
+                || *disposition != b.account_disposition
+                || matches!(
+                    b.configuration.windows,
+                    rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb
+                ) =>
         {
             return Err(Error::Conflict);
         }

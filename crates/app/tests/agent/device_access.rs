@@ -183,6 +183,14 @@ async fn setup_profile(f: &mut Fixture, retiring: bool) -> Result<(Uuid, Value)>
     setup_platform(f, retiring, false).await
 }
 async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Result<(Uuid, Value)> {
+    setup_mechanism(f, retiring, windows, false).await
+}
+async fn setup_mechanism(
+    f: &mut Fixture,
+    retiring: bool,
+    windows: bool,
+    hello: bool,
+) -> Result<(Uuid, Value)> {
     let capabilities = if retiring {
         json!([
             "inventory.collect.v1",
@@ -192,7 +200,10 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
     } else {
         json!(["inventory.collect.v1", "device_access.v1"])
     };
-    let registration = if windows {
+    let registration = if hello {
+        seed_service(&f.enrollment,execution::case_credential(),execution::case_device_id(),
+            json!({"capabilities":["inventory.collect.v1","device_access.v1","device_access.whfb.v1"],"platform":"windows","architecture":"x86_64","executionContext":hello_context()})).await?
+    } else if windows {
         seed_service(&f.enrollment,execution::case_credential(),execution::case_device_id(),
             json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64",
                 "executionContext":windows_context()})).await?
@@ -226,7 +237,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
     )
     .await?;
     let policy = Uuid::new_v4();
-    execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;
+    execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windows":if hello { json!({"kind":"whfb"}) } else { json!({"kind":"rss_factor","accounts":["local"]}) },"selfEnrollment":true,"role":null}}}})).await?;
     Ok((policy, registration))
 }
 async fn event(
@@ -699,9 +710,9 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         pending_binding(&directory(&f,true, "").await?,id,&account)?;
         let result = wire::AccessResult { binding_id:id,binding_generation:task.binding_generation,revision:task.revision,definition_digest:task.definition_digest,
             effect:wire::AccessEffect::Applied { account:account.clone(),role:wire::AccessRole::Standard,mac:None,
-                windows:Some(wire::AccessWindowsFacts { factor_generation:task.factor_generation,recovery:receipt.clone() }) } };
+                windows:Some(wire::AccessWindowsFacts::RssFactor(wire::AccessRssFacts { factor_generation:task.factor_generation,recovery:receipt.clone() })) } };
         let mut wrong = result.clone();
-        if let wire::AccessEffect::Applied { windows:Some(facts),.. } = &mut wrong.effect { facts.recovery.version += 1; }
+        if let wire::AccessEffect::Applied { windows:Some(wire::AccessWindowsFacts::RssFactor(facts)),.. } = &mut wrong.effect { facts.recovery.version += 1; }
         ensure!(!event(&f,&offered,&c,&registration,serde_json::to_value(wire::TaskEvent::DeviceAccessResult(wrong))?).await?.0.is_success());
         if withdraw {
             let path = format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
@@ -1063,4 +1074,14 @@ async fn concurrent_access_calls(
     root.close().await?;
     observer.close().await?;
     Ok((a, b))
+}
+
+#[path = "device_access/hello.rs"]
+mod hello;
+fn hello_context() -> Value {
+    let mut value = windows_context();
+    value["interactiveUser"]["identity"] = json!("S-1-12-1-1-2-3-4");
+    value["interactiveUser"]["windowsAuthority"] =
+        json!({"kind":"entra","tenantId":Uuid::from_u128(40),"objectId":Uuid::from_u128(41)});
+    value
 }
