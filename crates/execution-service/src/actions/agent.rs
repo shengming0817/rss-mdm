@@ -121,10 +121,10 @@ impl ExecutionService {
             for id in ids {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
-                if !crate::self_service::advance_waiting_in(service,tx,&mut run,&plan,now).await? { continue; }
                 run.state.expire(now,plan.timeout_seconds());
                 let capable=match &plan { db::ScheduledPolicy::DeviceAccess(v) => crate::device_access::capable(&binding, &v.binding.configuration.windows), db::ScheduledPolicy::Retirement(_) => binding.capabilities.contains(&wire::Capability::DeviceUnmanageV1), db::ScheduledPolicy::Credential(v) => crate::credential_tasks::capable(&binding,v.frozen.input.architecture), db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
-                let allowed=capable && plan.authorized_run_in(service,tx,&run,now).await?;
+                let waiting_ready = if run.state.execution == Execution::NotStarted && run.state.cancellation == Cancellation::None && now < run.deadline { crate::self_service::advance_waiting_in(service,tx,&mut run,&plan,now).await? } else { true };
+                let allowed=capable && waiting_ready && plan.authorized_run_in(service,tx,&run,now).await?;
                 if plan.withdrawn_in(service,tx,&run.target,now).await?{run.state.cancel();}
                 super::recovery::audit_recovery(service,tx,&run,&previous).await?;
                 if run.state.cancellation==Cancellation::None && run.available_at<=now && allowed {

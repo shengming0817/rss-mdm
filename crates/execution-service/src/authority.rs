@@ -114,10 +114,8 @@ impl ExecutionAuthority {
                 {
                     return Ok(false);
                 }
-                crate::agent_install::dispatch_ready_on(
-                    source, c, tenant, *version, device, *operation,
-                )
-                .await
+                crate::agent_install::dispatch_ready_on(c, tenant, *version, device, *operation)
+                    .await
             }
             Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
             Self::Policy {

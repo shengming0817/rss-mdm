@@ -98,7 +98,7 @@ fn effective_risk(policy: &rss_mdm_policy::Policy) -> u8 {
         .map_or(2, |r| r.value())
 }
 struct Prepared {
-    task: wire::SelfServiceTask,
+    task: Option<wire::SelfServiceTask>,
     parameters: std::collections::BTreeMap<String, Value>,
     slot: InvocationSlot,
     effect: Option<Value>,
@@ -149,7 +149,7 @@ async fn prepare_in(
                 parameter_schema: script.frozen.definition.spec().parameters.clone(),
             };
             Ok(Some(Prepared {
-                task,
+                task: Some(task),
                 parameters,
                 slot,
                 effect: None,
@@ -162,18 +162,6 @@ async fn prepare_in(
             if input.is_some_and(|input| !input.is_empty()) {
                 return Err(Error::Malformed.into());
             }
-            let Some(slot) = crate::actions::software::slot_in(
-                service,
-                tx,
-                software,
-                target,
-                Some(request),
-                now,
-            )
-            .await?
-            else {
-                return Ok(None);
-            };
             let binding = crate::channels::agent_binding_in(
                 tx,
                 service.agent_store.clone(),
@@ -184,18 +172,65 @@ async fn prepare_in(
             let (platform, architecture) = db::agent_profile_in(service, tx, target.registration)
                 .await?
                 .ok_or(Error::Forbidden)?;
-            let steps = software
-                .assignment
-                .prepared_in(
-                    &service.admission(),
-                    tx,
-                    platform,
-                    architecture,
-                    &binding.execution_context,
-                )
-                .await?
-                .ok_or(Error::Forbidden)?;
-            let root = steps.last().ok_or(Error::Malformed)?;
+            if input.is_some()
+                && !software
+                    .assignment
+                    .supported_in(&service.admission(), tx, &binding)
+                    .await?
+            {
+                if software
+                    .assignment
+                    .admitted_in(&service.admission(), tx, platform, architecture)
+                    .await?
+                    .is_none()
+                {
+                    return Err(Error::Forbidden.into());
+                }
+                let occurrence = format!("self-service:{request}");
+                if !production::occurrence_available_in(tx, software.id, target, &occurrence, now)
+                    .await?
+                {
+                    return Ok(None);
+                }
+                let schedule = &software.assignment.frozen.schedule;
+                let Some(window) = schedule.occurrence(now, target.device.as_bytes())? else {
+                    return Ok(None);
+                };
+                let available = window.available_at.max(now);
+                let deadline = available
+                    .checked_add(i64::from(software.assignment.frozen.run_lifetime_seconds))
+                    .ok_or(Error::Malformed)?
+                    .min(schedule.ends_at())
+                    .min(window.window_end.unwrap_or(i64::MAX));
+                if deadline <= available {
+                    return Ok(None);
+                }
+                return Ok(Some(Prepared {
+                    task: None,
+                    parameters: Default::default(),
+                    slot: InvocationSlot {
+                        occurrence,
+                        available,
+                        deadline,
+                    },
+                    effect: None,
+                    execution_target: None,
+                }));
+            }
+            let Some(slot) = crate::actions::software::slot_in(
+                service,
+                tx,
+                software,
+                target,
+                Some(request),
+                now,
+                None,
+            )
+            .await?
+            else {
+                return Ok(None);
+            };
+            let root = slot.steps.last().ok_or(Error::Malformed)?;
             let task = wire::SelfServiceTask::Software {
                 resource: wire::TaskResource {
                     id: software.assignment.frozen.resource.clone(),
@@ -212,7 +247,7 @@ async fn prepare_in(
                 target: root.target.clone(),
             };
             Ok(Some(Prepared {
-                task,
+                task: Some(task),
                 parameters: Default::default(),
                 slot: InvocationSlot {
                     occurrence: slot.occurrence,
@@ -262,14 +297,14 @@ async fn prepare_in(
                 .await?
                 .ok_or(Error::Forbidden)?;
             Ok(Some(Prepared {
-                task: wire::SelfServiceTask::Enrollment {
+                task: Some(wire::SelfServiceTask::Enrollment {
                     organization: enrollment.frozen.organization,
                     entry: enrollment
                         .frozen
                         .entries
                         .for_platform(platform)
                         .ok_or(Error::Unsupported)?,
-                },
+                }),
                 parameters: Default::default(),
                 slot: InvocationSlot {
                     occurrence,
@@ -638,57 +673,109 @@ pub(crate) async fn advance_waiting_in(
     let Some(invocation) = &run.invocation else {
         return Ok(true);
     };
-    let Some(scope) = invocation.pending_scope else {
-        return Ok(true);
-    };
-    if !matches!(
-        crate::sources::storage::admission_in(
-            &service.source,
-            tx,
-            scope,
-            crate::source_authority::Channel::Agent,
-            &run.target.device
-        )
-        .await?,
-        crate::source_authority::ScopeAdmission::Eligible { .. }
-    ) {
-        return Ok(false);
-    }
-    if let (db::ScheduledPolicy::Software(v), Some(rollout)) = (plan, &invocation.pending_rollout) {
-        let assignment = v.assignment.pending_admission(scope, rollout.clone());
-        if assignment
-            .entry_in(&service.source, tx, &run.target.device, now)
-            .await?
-            .is_none()
-        {
+    if let Some(scope) = invocation.pending_scope {
+        if !matches!(
+            crate::sources::storage::admission_in(
+                &service.source,
+                tx,
+                scope,
+                crate::source_authority::Channel::Agent,
+                &run.target.device
+            )
+            .await?,
+            crate::source_authority::ScopeAdmission::Eligible { .. }
+        ) {
             return Ok(false);
         }
-    }
-    let source = service.source.clone();
-    let tenant = tx.tenant_id();
-    let device = run.target.device.clone();
-    let evidence = tx
-        .with_connection(move |c| {
-            Box::pin(async move {
-                Ok(source
-                    .evidence_on(
-                        c,
-                        tenant,
-                        scope,
-                        crate::source_authority::Channel::Agent,
-                        &device,
-                    )
-                    .await)
+        if let (db::ScheduledPolicy::Software(v), Some(rollout)) =
+            (plan, &invocation.pending_rollout)
+        {
+            let assignment = v.assignment.pending_admission(scope, rollout.clone());
+            if assignment
+                .entry_in(&service.source, tx, &run.target.device, now)
+                .await?
+                .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        let source = service.source.clone();
+        let tenant = tx.tenant_id();
+        let device = run.target.device.clone();
+        let evidence = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    Ok(source
+                        .evidence_on(
+                            c,
+                            tenant,
+                            scope,
+                            crate::source_authority::Channel::Agent,
+                            &device,
+                        )
+                        .await)
+                })
             })
-        })
-        .await??;
-    if evidence.is_empty() {
-        return Ok(false);
+            .await??;
+        if evidence.is_empty() {
+            return Ok(false);
+        }
+        run.source_objects = evidence;
+        let invocation = run.invocation.as_mut().ok_or(Error::Malformed)?;
+        invocation.pending_scope = None;
+        invocation.pending_rollout = None;
     }
-    run.source_objects = evidence;
-    let invocation = run.invocation.as_mut().ok_or(Error::Malformed)?;
-    invocation.pending_scope = None;
-    invocation.pending_rollout = None;
+    if let db::ScheduledPolicy::Software(software) = plan {
+        let id = run.id;
+        let tenant = tx.tenant_id().to_string();
+        let (missing, created): (bool, i64) = tx.with_connection(move |c| Box::pin(async move { sqlx::query_as("SELECT software_effect IS NULL,created_at FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).fetch_one(c).await })).await?;
+        if missing {
+            let Some(binding) = crate::channels::agent_binding_in(
+                tx,
+                service.agent_store.clone(),
+                run.target.registration,
+            )
+            .await?
+            else {
+                return Ok(false);
+            };
+            if !software
+                .assignment
+                .supported_in(&service.admission(), tx, &binding)
+                .await?
+            {
+                return Ok(false);
+            }
+            let wire::TaskAuthorization::SelfService { request_id, .. } = &run
+                .invocation
+                .as_ref()
+                .ok_or(Error::Malformed)?
+                .authorization
+            else {
+                return Err(Error::Malformed.into());
+            };
+            let Some(slot) = crate::actions::software::slot_in(
+                service,
+                tx,
+                software,
+                &run.target,
+                Some(*request_id),
+                created,
+                Some(run.id),
+            )
+            .await?
+            else {
+                return Ok(false);
+            };
+            let root = slot.steps.last().ok_or(Error::Malformed)?;
+            run.invocation
+                .as_mut()
+                .ok_or(Error::Malformed)?
+                .execution_target = Some(root.target.clone());
+            crate::actions::software::persist_effect_in(tx, run.id, &slot.effect).await?;
+        }
+    }
+    let invocation = run.invocation.as_ref().ok_or(Error::Malformed)?;
     let document = json(invocation)?;
     let evidence = json(&run.source_objects)?;
     let id = run.id;

@@ -3,6 +3,7 @@ use crate::test_support::agent_execution::{
     Fixture, case_credential, case_device_id, claim_request, post, resource, upload,
 };
 use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
+use base64::Engine;
 use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};
@@ -187,7 +188,6 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let (status,configuration)=agent_call(&f.router,Method::GET,&config_path,Some(case_credential()),None).await?;
         ensure!(status==StatusCode::OK,"configuration: {status} {configuration}");
         let signed:wire::SignedTelemetryConfiguration=serde_json::from_value(configuration)?;
-        use base64::Engine;
         use ring::signature::KeyPair;
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration.clone();
@@ -242,6 +242,9 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             let quality=pg(&format!("SELECT quality::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?;
             ensure!(!quality.contains("vendor_extra"),"unknown field entered quality: {quality}");
         }
+        let mut tampered=body.clone();let tampered_id=Uuid::new_v4();tampered["batchId"]=json!(tampered_id);tampered["configuration"]["configuration"]["expiresAt"]=json!(configuration.expires_at+1);
+        ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(tampered)).await?.0==StatusCode::FORBIDDEN);
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{tampered_id}'",case_tenant()))?.trim()=="0");
         let mut conflict=body.clone();conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
         let mut observation_conflict=body.clone();observation_conflict["batchId"]=json!(Uuid::new_v4());
@@ -553,11 +556,22 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             let (status,current)=f.author.call(&router,Method::GET,&format!("/api/v1/policies/{owner}"),None).await?;ensure!(status==StatusCode::OK);
             let updated=post(&mut f.author,&router,&format!("/api/v1/policies/{owner}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":current["revision"],"input":{"action":"put","enabled":true,"definition":replacement}})).await?;
             ensure!(updated["versionId"]!=body["configuration"]["configuration"]["policyVersion"]);
+            let before_current=current_field(&mut f.author,&router).await?;
             let mut old=body.clone();let old_batch=Uuid::new_v4();old["batchId"]=json!(old_batch);
+            let mut original:wire::SignedTelemetryConfiguration=serde_json::from_value(old["configuration"].clone())?;
+            let received=f.planning.clock.unix_seconds()?;
+            original.configuration.issued_at=received-400;original.configuration.expires_at=received-100;
+            original.signature=base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(f.key.sign(&original.configuration.signing_bytes(&original.key_id)?).as_ref());
+            let observed_at=(received-200)*1_000_000;
+            old["configuration"]=json!(original);old["observations"][0]["id"]=json!(Uuid::new_v4());old["observations"][0]["sequence"]=json!(3);old["observations"][0]["observedAt"]=json!(observed_at);old["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
             let (status,result)=agent_call(&router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(case_credential()),Some(old)).await?;
             ensure!(status==StatusCode::ACCEPTED,"old issued profile: {status} {result}");
             published(&router,&format!("/api/v1/agent/runtime/telemetry/batches/{old_batch}")).await?;
             ensure!(pg(&format!("SELECT current_assets FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{old_batch}'",case_tenant()))?.trim()=="f","old profile became current projection");
+            let mut historical=query.clone();historical["startMicros"]=json!(observed_at);historical["endMicros"]=json!(observed_at+1);historical["after"]=Value::Null;
+            let retained=post(&mut f.author,&router,"/api/v1/telemetry/history",historical).await?;
+            ensure!(retained["rows"].as_array().is_some_and(|r|r.len()==1),"new historical observation missing: {retained}");
+            ensure!(current_field(&mut f.author,&router).await?==before_current,"old issued profile overwrote current projection");
             if let Some(evidence)=&gap_evidence { gaps::withdrawn(&mut f,&router,evidence,&body["configuration"]["configuration"]["policy"]).await?; }
             let registration=pg(&format!("SELECT registration::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["batchId"].as_str().unwrap()))?;
             let registration:Uuid=registration.trim().parse()?;

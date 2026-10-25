@@ -1094,7 +1094,7 @@ T1_INPUTS = (
     'crates/brew-source/tests/templates.rs', 'crates/winget-source/tests/protocol.rs',
     'crates/winget-source/tests/publication_schema.rs', 'crates/winget-source/tests/version.rs',
     'crates/app/tests/apple/health_unit.rs',
-    'crates/app/tests/planning/automation/scopes_unit.rs',
+    'crates/flow-service/tests/planning/automation/scopes_unit.rs',
     'crates/app/tests/publication.rs',
 )
 

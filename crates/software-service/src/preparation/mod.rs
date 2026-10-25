@@ -117,7 +117,7 @@ impl Preparation {
         }
         Ok(selected)
     }
-    /// Missing, withdrawn or superseded lifecycle is local execution ineligibility.
+    /// Missing or explicitly withdrawn selected material is local execution ineligibility.
     pub async fn recheck_in(
         &self,
         tx: &mut PgTransaction<'_>,

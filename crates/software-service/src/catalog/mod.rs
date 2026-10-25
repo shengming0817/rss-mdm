@@ -276,7 +276,7 @@ impl Reader {
             json!({"resource":resource,"version":label,"resourceDigest":version.digest().bytes(),"lifecycle":lifecycle}),
         )
     }
-    /// An existing plan must match its original lifecycle binding, never silently adopt a newer generation.
+    /// Recheck the selected immutable variant and its explicit withdrawal state.
     pub async fn recheck_admitted_in(
         &self,
         tx: &mut PgTransaction<'_>,
