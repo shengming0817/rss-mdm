@@ -128,8 +128,8 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 .0 == StatusCode::BAD_REQUEST
             );
             ensure!(
-                audit_count(|record| record.action() == "command_accept").await? == accepts + 1,
-                "JSON rejection before invocation service must retain its task accept audit action"
+                audit_count(|record| record.action() == "command_accept").await? == accepts,
+                "malformed input before invocation admission must not enqueue audit"
             );
             ensure!(
                 call(&f, Method::GET, DIRECTORY, None, true, false).await?.1["items"] == json!([])

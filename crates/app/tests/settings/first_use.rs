@@ -237,8 +237,8 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                         == "smtp"
                         && !s["evidence"].as_array().unwrap().is_empty()));
                 ensure!(
-                    audit_count(|r| r.action() == "first_use_read").await? == before + 1,
-                    "owner observations changed the enclosing Audit action"
+                    audit_count(|r| r.action() == "first_use_read").await? == before,
+                    "ordinary progress observations must not enqueue audit"
                 );
                 // A valid peer-tenant credential cannot be used against this host.
                 let peer = identity::credential_for(case::peer(), "admin")?;

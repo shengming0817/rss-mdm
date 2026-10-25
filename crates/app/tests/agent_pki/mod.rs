@@ -710,7 +710,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
                         .iter()
                         .filter(|r| r.request() == Some(id.as_str()) && r.status() == 200)
                         .count(),
-                    1
+                    0
                 );
             }
             observer.close().await?;

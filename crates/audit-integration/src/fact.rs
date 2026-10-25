@@ -44,6 +44,12 @@ pub enum InvalidFact {
     Contract,
 }
 impl Fact {
+    /// Canonical current product fact identity, shared by its real consumers.
+    pub fn schema_digest() -> Result<SchemaDigest, InvalidFact> {
+        SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(SOURCE_SCHEMA)))
+            .map_err(|_| InvalidFact::Contract)
+    }
+
     pub fn business(
         context: &RequestAudit,
         key: &str,
@@ -130,8 +136,7 @@ impl Fact {
             SourceContract::new(
                 ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact::Contract)?,
                 ContractVersion::from_major(1).map_err(|_| InvalidFact::Contract)?,
-                SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(SOURCE_SCHEMA)))
-                    .map_err(|_| InvalidFact::Contract)?,
+                Self::schema_digest()?,
             ),
         );
         let identity = RecordIdentity::new(

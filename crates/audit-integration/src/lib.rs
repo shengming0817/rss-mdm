@@ -16,7 +16,9 @@ pub use fact::{Fact, InvalidFact};
 mod backlog;
 pub use backlog::BacklogSnapshot;
 mod projection;
-pub use projection::{AuditProjection, AuditProjectionError, AuditProjectionReport};
+pub use projection::{
+    AuditProjection, AuditProjectionError, AuditProjectionEvent, AuditProjectionReport,
+};
 mod queue;
 pub use queue::BacklogLimits;
 mod read_store;

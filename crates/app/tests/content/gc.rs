@@ -245,7 +245,7 @@ async fn gc_reference_race(
     let crossed_barrier = writer.is_finished();
     // Release GC before reporting any observation failure.
     resume.notify_one();
-    waiting??;
+    waiting.map_err(|e| anyhow::anyhow!("resource insertion did not wait on artifact lock; writer_finished={crossed_barrier}: {e}"))??;
     ensure!(
         !crossed_barrier,
         "Resource crossed the held deletion barrier"

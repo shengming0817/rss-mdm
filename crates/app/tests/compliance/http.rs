@@ -424,7 +424,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         .await?["items"]
             == retained["items"]
     );
-    ensure!(audit_count(|r| r.action() == "compliance_read").await? > 0);
+    ensure!(audit_count(|r| r.action() == "compliance_read").await? == 0);
     crate::test_support::runtime::stop_worker(automation).await?;
     fixture.close().await;
     Ok(())

@@ -377,7 +377,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 if component(&fixture.query().await?, "automation")["bridge"]["successful"] == true {break Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await??;
+        }).await.context("initial bridge observation timed out")??;
         pg(&format!("ALTER ROLE {role} CONNECTION LIMIT 0; SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='{role}'"))?;
         signals.automation().notify_one();
         let failed = tokio::time::timeout(Duration::from_secs(12), async {
@@ -386,7 +386,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 if component["health"] == "degraded" {break Ok::<_,anyhow::Error>(component);}
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await??;
+        }).await.context("runner failure observation timed out")??;
         ensure!(failed["task"] == "running" && failed["bridge"]["successful"] == true);
         ensure!(failed["runner"]["scan"]["successful"] == false && failed["runner"]["scan"]["observedAt"].is_number());
         let (status, value) = browser.call(&router, Method::GET, PATH, None).await?;
@@ -407,7 +407,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await??;
+        }).await.context("runner recovery observation timed out")??;
         pg("REVOKE INSERT ON mdm_assets.asset_query_results FROM mdm_flow_runtime")?;
         let job = crate::planning::test_support::query_job(&fixture.flow.planning, 1).await;
         signals.automation().notify_one();
@@ -420,7 +420,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await??;
+        }).await.context("apply failure observation timed out")??;
         ensure!(failed_attempt["task"] == "running" && failed_attempt["health"] == "degraded");
         ensure!(failed_attempt["runner"]["scan"]["successful"] == true);
         ensure!(failed_attempt["runner"]["latestFailure"]["stage"] == "apply");
@@ -437,7 +437,7 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await??;
+        }).await.context("apply recovery observation timed out")??;
         Ok::<_,anyhow::Error>(())
     }.await;
     pg("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")?;

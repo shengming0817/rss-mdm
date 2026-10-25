@@ -4,7 +4,7 @@ use rss_mdm_audit_integration::{AuditIntent, AuditStore, Fact, RequestAudit};
 use rss_request_context::TenantId;
 use sqlx::{Connection, PgConnection};
 
-async fn enqueue(store: &AuditStore, tenant: TenantId, key: &str) -> Result<()> {
+async fn enqueue(store: &AuditStore, tenant: TenantId, key: &str) -> Result<String> {
     let audit = RequestAudit::new(
         tenant.to_string(),
         "worker_evidence",
@@ -12,6 +12,7 @@ async fn enqueue(store: &AuditStore, tenant: TenantId, key: &str) -> Result<()> 
     );
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Device, key);
     let fact = Fact::business(&audit, key, key.as_bytes(), 200, "success", None)?;
+    let event_id = fact.identity().event_id().as_str().to_owned();
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(ACTION_BUDGET);
     let result = store
         .write(
@@ -34,7 +35,7 @@ async fn enqueue(store: &AuditStore, tenant: TenantId, key: &str) -> Result<()> 
         committed,
         "fixture source must commit before testing projection"
     );
-    Ok(())
+    Ok(event_id)
 }
 async fn delivered(observer: &mut PgConnection, tenant: TenantId, key: &str) -> Result<bool> {
     Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_audit.receipts r JOIN rss_transactional_messaging.outbox o ON (o.tenant_id,o.message_id)=(r.tenant_id,r.message_id) JOIN rss_transactional_messaging.inbox i ON (i.tenant_id,i.message_id)=(r.tenant_id,r.message_id) AND i.consumer_group='mdm.audit.v1' JOIN rss_audit.records a ON (a.tenant_id,a.source_id,a.event_id)=(r.tenant_id,r.source_id,r.event_id) WHERE r.tenant_id=$1::uuid AND r.event_id=$2 AND r.projected_at IS NOT NULL AND o.status='published' AND i.disposition='succeeded')")
@@ -75,8 +76,10 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
         // Preparation only: the assertions below are exclusively driven by the production worker.
         crate::audit_test_support::projection::drain(tenant, config.audit.integrity()?).await?;
         crate::audit_test_support::projection::drain(management, config.audit.integrity()?).await?;
-        enqueue(&fixture.audit, tenant, "worker-unknown").await?;
-        enqueue(&management_store, management, "worker-sibling").await?;
+        // Provider claims one tenant batch at a time. Use two independent resource partitions
+        // within that batch, then separately verify the next tenant is served.
+        let first_id = enqueue(&fixture.audit, tenant, "worker-unknown").await?;
+        let second_id = enqueue(&fixture.audit, tenant, "worker-sibling").await?;
         let (entered, started) = tokio::sync::oneshot::channel();
         let (release, released) = tokio::sync::oneshot::channel();
         worker.delivery.inject_next_projection_fault(
@@ -94,8 +97,8 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
                 tokio::time::timeout(ACTION_BUDGET, started).await??;
                 tokio::time::timeout(ACTION_BUDGET / 2, async {
                     loop {
-                        let first = delivered(&mut observer, tenant, "worker-unknown").await?;
-                        let second = delivered(&mut observer, management, "worker-sibling").await?;
+                        let first = delivered(&mut observer, tenant, &first_id).await?;
+                        let second = delivered(&mut observer, tenant, &second_id).await?;
                         if first || second { ensure!(first != second, "paused effect unexpectedly completed"); break; }
                         tokio::time::sleep(Duration::from_millis(25)).await;
                     }
@@ -105,8 +108,8 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
             }.await;
             let _ = release.send(());
             concurrent?;
-            wait_delivered(&mut observer, tenant, "worker-unknown").await?;
-            wait_delivered(&mut observer, management, "worker-sibling").await?;
+            wait_delivered(&mut observer, tenant, &first_id).await?;
+            wait_delivered(&mut observer, tenant, &second_id).await?;
             #[cfg(feature = "integration")]
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
@@ -115,9 +118,11 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
                     tokio::time::sleep(Duration::from_millis(25)).await;
                 }
             }).await?;
-            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id='worker-unknown'")
-                .bind(tenant.to_string()).fetch_one(&mut observer).await?;
+            let count: i64 = sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
+                .bind(tenant.to_string()).bind(&first_id).fetch_one(&mut observer).await?;
             ensure!(count == 1, "unknown outcome must not duplicate the effect");
+            let management_id = enqueue(&management_store, management, "worker-next-tenant").await?;
+            wait_delivered(&mut observer, management, &management_id).await?;
             Ok::<_, anyhow::Error>(())
         }.await;
         let shutdown = owner.shutdown().join().await?;

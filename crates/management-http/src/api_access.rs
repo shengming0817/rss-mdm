@@ -250,7 +250,18 @@ pub async fn admit_bearer(
     request: Request,
     next: Next,
 ) -> Response {
+    let audit = request
+        .extensions()
+        .get::<rss_mdm_audit_integration::RequestAudit>()
+        .cloned();
     let reject = |error: Error| {
+        // This owner distinguishes a tenant/network boundary violation from ordinary
+        // authentication noise. The Identity SDK still owns settled authentication events.
+        if matches!(error, Error::Forbidden)
+            && let Some(audit) = &audit
+        {
+            audit.intent(rss_mdm_audit_integration::AuditIntent::Security);
+        }
         let mut response = error.into_response();
         response.extensions_mut().insert(AdmissionRejected);
         response

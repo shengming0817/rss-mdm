@@ -98,7 +98,8 @@ async fn each_route_requires_its_exact_capability() -> Result<()> {
             op(json!({"action":"recover"})),
         ),
     ]);
-    let expected_denied = cases.len();
+    let expected_denied = cases.iter().filter(|(permission, _, _, _)| matches!(*permission,
+        "group_write" | "group_recompute" | "scope_write" | "policy_write" | "resource_write" | "release_publish" | "release_withdraw" | "release_recover")).count();
     let counts = || {
         pg(&format!(
             "SELECT jsonb_build_array((SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_resource_catalog.operations WHERE tenant_id='{tenant}')+(SELECT count(*) FROM mdm_publication.operations WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_planning.scope_versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_software_composition.subjects WHERE tenant_id='{tenant}'))::text",

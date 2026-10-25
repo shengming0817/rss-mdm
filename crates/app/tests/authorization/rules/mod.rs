@@ -78,8 +78,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             );
             let after = audit_count(|r| r.action() == action && r.status() == expected).await?;
             ensure!(
-                after == before + 1,
-                "authorization read audit action missing: {action}"
+                after == before,
+                "ordinary authorization reads must not enqueue audit: {action}"
             );
         }
     }

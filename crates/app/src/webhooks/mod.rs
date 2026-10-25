@@ -157,11 +157,7 @@ impl Backend {
                 } else {
                     "webhook_write"
                 },
-                if matches!(command, Command::Redrive { .. }) {
-                    rss_mdm_audit_integration::AuditIntent::Management
-                } else {
-                    rss_mdm_audit_integration::AuditIntent::Management
-                },
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
         } else {
             audit.set_action(

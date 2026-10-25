@@ -7,11 +7,11 @@ use uuid::Uuid;
 pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
     let source = event.identity().source();
     let contract = source.contract();
-    let digest=format!("sha256:{:x}",Sha256::digest(b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details"));
+    let digest = rss_mdm_audit_integration::Fact::schema_digest().map_err(|_| Error::Integrity)?;
     let supported = matches!(source.source_id().as_str(), "mdm.business" | "mdm.request")
         && contract.id().as_str() == "mdm.audit.fact"
         && contract.version().major() == 1
-        && contract.schema_digest().as_str() == digest;
+        && contract.schema_digest().as_str() == digest.as_str();
     let payload: Value = if supported {
         serde_json::from_slice(event.context().payload().as_bytes())
             .map_err(|_| Error::Integrity)?

@@ -176,7 +176,15 @@ pub struct AuditProjectionReport {
     pub projected: usize,
     pub deferred: usize,
     pub recoveries: Vec<PgProjectionRecovery>,
+    pub events: Vec<AuditProjectionEvent>,
     pub failure: Option<AuditProjectionError>,
+}
+/// Independent result retained even when another event failed in the same batch.
+pub struct AuditProjectionEvent {
+    pub tenant: TenantId,
+    pub message: rss_transactional_messaging::message::MessageId,
+    /// True means terminal delivery; false means another durable claim owns further progress.
+    pub result: Result<bool, AuditProjectionError>,
 }
 pub struct AuditProjection<K> {
     projection: PgLocalProjection<Effect, K>,
@@ -284,8 +292,8 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
                 self.terminal(value.into_parts().1.disposition())?;
                 Ok(true)
             },
-            |_| Ok(false),
-            |_| Ok(false),
+            |class| Err(class_error(class)),
+            |class| Err(class_error(class)),
             || Err(AuditProjectionError::RollbackFailed),
             || Err(AuditProjectionError::CommitUnknown),
             || Err(AuditProjectionError::Fenced),
@@ -319,6 +327,9 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
             })?;
         let mut failure = None;
         for item in batch {
+            let tenant = item.tenant_id();
+            let message = item.message_id().clone();
+            let before = report.projected;
             let result = match item.into_outcome() {
                 Ok(PgProjectionOutcome::InProgress) => {
                     report.deferred += 1;
@@ -331,6 +342,11 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
                 }
                 Err(error) => Err(AuditProjectionError::pg(error)),
             };
+            report.events.push(AuditProjectionEvent {
+                tenant,
+                message,
+                result: result.map(|()| report.projected > before),
+            });
             // Every sibling may carry an uncertain transaction identity. Never short-circuit.
             if let Err(error) = result
                 && failure.is_none_or(|previous: AuditProjectionError| previous.is_retryable())
@@ -360,6 +376,15 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
             }
             None => Ok(false),
         }
+    }
+}
+fn class_error(
+    class: rss_transactional_messaging::transaction::FailureClass,
+) -> AuditProjectionError {
+    use rss_transactional_messaging::transaction::FailureClass;
+    match class {
+        FailureClass::Permanent => AuditProjectionError::Permanent,
+        FailureClass::Transient | FailureClass::Infrastructure => AuditProjectionError::Unavailable,
     }
 }
 fn remaining(cutoff: Deadline) -> OperationDeadline {

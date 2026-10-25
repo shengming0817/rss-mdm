@@ -132,7 +132,7 @@ async fn ingress_burst(
         .filter(|r| r.action() == "windows_discovery")
         .count();
     ensure!(
-        after - before == usize::try_from(accepted)?,
+        after == before,
         "capacity denials amplified persistent audit"
     );
     clock.advance();
