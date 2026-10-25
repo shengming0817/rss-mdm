@@ -72,7 +72,10 @@ pub fn routes() -> Router<Arc<Compliance>> {
         )
         .route(
             "/compliance-rules/{id}/recompute",
-            post(recompute).owned(&contracts::COMPLIANCE_RULES, &[RouteOperation::Action]),
+            post(recompute).owned(
+                &contracts::COMPLIANCE_RULES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/compliance-rules/{id}/tasks/{task}",

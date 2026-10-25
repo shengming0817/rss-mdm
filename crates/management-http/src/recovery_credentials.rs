@@ -116,11 +116,17 @@ pub fn filevault_routes(
             get(read_filevault_configuration)
                 .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action])
                 .post(configure_filevault)
-                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+                .owned(
+                    &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
         )
         .route(
             "/devices/{device}/recovery-credentials/filevault/link",
-            post(link_filevault).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+            post(link_filevault).owned(
+                &contracts::RECOVERY_CREDENTIALS,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
         )
         .with_state(service)
 }
@@ -135,6 +141,12 @@ async fn configure_filevault(
     >,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
     let Json(input) = input.map_err(|_| Error::Malformed)?;
+    audit.operation(
+        input.operation_id,
+        "filevault_collection_configure",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     s.configure(&auth.proof, &device, &input, &audit)
         .await
         .map(Json)
@@ -152,6 +164,12 @@ async fn link_filevault(
     >,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
     let Json(input) = input.map_err(|_| Error::Malformed)?;
+    audit.operation(
+        input.operation_id,
+        "filevault_custody_link",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     s.link(&auth.proof, &device, &input, &audit)
         .await
         .map(Json)

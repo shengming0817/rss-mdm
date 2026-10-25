@@ -66,7 +66,10 @@ pub struct Services {
 pub fn device_action_routes() -> Router {
     Router::new().route(
         "/devices/{id}/actions",
-        post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+        post(action).owned(
+            &contracts::DEVICES,
+            &[RouteOperation::Action, RouteOperation::Create],
+        ),
     )
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {

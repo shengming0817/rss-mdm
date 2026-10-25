@@ -20,7 +20,10 @@ pub fn routes() -> Router<App> {
         get(responsibility)
             .owned(&contracts::DEVICES, &[RouteOperation::Action])
             .put(assign)
-            .owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            .owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
     )
 }
 async fn responsibility(

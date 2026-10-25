@@ -359,7 +359,7 @@ pub(crate) async fn router(
         );
     let browser = fixture.authorization().merge(fixture.enrollment()).nest(
         "/api/v1",
-        rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())).into_axum(),
+        rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())),
     );
     Ok((
         crate::test_support::runtime::native_router(fixture.router_with_public(browser, public)?),

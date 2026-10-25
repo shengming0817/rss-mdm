@@ -54,10 +54,10 @@ async fn seed(
 fn route(
     authority: &authority::Authority,
     keys: Arc<KeyRing>,
-    admission: Arc<rss_mdm_execution_service::ExecutionService>,
+    admission: Arc<dyn rss_mdm_registration_service::device_access::Admission>,
 ) -> Result<Router> {
     authority.router(
-        Router::new()
+        rss_mdm_http_contract::Router::new()
             .nest(
                 "/api/v1",
                 rss_mdm_management_http::recovery_credentials::routes(
@@ -69,8 +69,7 @@ fn route(
                         admission,
                     ))),
                     rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
-                )
-                .into_axum(),
+                ),
             )
             .merge(authority.authorization()),
     )
@@ -260,15 +259,29 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
 #[ignore = "make t2 MODULE=recovery-credentials.http"]
 async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
-    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
-    authority
-        .resources
-        .extend(std::mem::take(&mut fixture.resources));
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let opened = crate::test_support::agent_runtime::Execution::open(
+        &mut authority,
+        &config,
+        None,
+        BTreeMap::new(),
+        None,
+        None,
+        vec![31; 32],
+        &mut resources,
+    )
+    .await;
+    let execution = match opened {
+        Ok(value) => value.service,
+        Err(error) => return resources.finish(async { Err(error) }).await,
+    };
+    authority.resources = resources;
     let resources = std::mem::take(&mut authority.resources);
     resources
         .finish(async {
             let ring = keys("first", true);
-            let router = route(&authority, ring.clone(), fixture.execution.clone())?;
+            let router = route(&authority, ring.clone(), execution.clone())?;
             let device = case::name("recovery-device");
             let secret = "recovery-http-canary-2789";
             let coordinates = seed(&authority.pool, &ring, device, secret).await?;
@@ -513,14 +526,28 @@ async fn unescrowed_agent_mutation_protects_retired_material_from_expiry() -> Re
 async fn disclosure_and_revocation_wait_for_publication_before_authorization() -> Result<()> {
     use sqlx::Connection;
     let mut authority = authority::Authority::open().await?;
-    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
-    authority
-        .resources
-        .extend(std::mem::take(&mut fixture.resources));
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let opened = crate::test_support::agent_runtime::Execution::open(
+        &mut authority,
+        &config,
+        None,
+        BTreeMap::new(),
+        None,
+        None,
+        vec![31; 32],
+        &mut resources,
+    )
+    .await;
+    let execution = match opened {
+        Ok(value) => value.service,
+        Err(error) => return resources.finish(async { Err(error) }).await,
+    };
+    authority.resources = resources;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         let ring = keys("first", true);
-        let router = route(&authority, ring.clone(), fixture.execution.clone())?;
+        let router = route(&authority, ring.clone(), execution.clone())?;
         let device = case::name("recovery-lock-order");
         let secret = "recovery-lock-order-canary";
         let coordinates = seed(&authority.pool, &ring, device, secret).await?;
@@ -565,14 +592,28 @@ async fn disclosure_and_revocation_wait_for_publication_before_authorization() -
 #[ignore = "MODULE=recovery-credentials.http: metadata query, composite cursor, device and revision binding"]
 async fn metadata_directory_projects_pages_and_invalidates_changed_sources() -> Result<()> {
     let mut authority = authority::Authority::open().await?;
-    let mut fixture = crate::test_support::agent_execution::Fixture::new().await?;
-    authority
-        .resources
-        .extend(std::mem::take(&mut fixture.resources));
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let opened = crate::test_support::agent_runtime::Execution::open(
+        &mut authority,
+        &config,
+        None,
+        BTreeMap::new(),
+        None,
+        None,
+        vec![31; 32],
+        &mut resources,
+    )
+    .await;
+    let execution = match opened {
+        Ok(value) => value.service,
+        Err(error) => return resources.finish(async { Err(error) }).await,
+    };
+    authority.resources = resources;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async{
  let ring=keys("first",true);
- let router=route(&authority,ring.clone(),fixture.execution.clone())?;
+ let router=route(&authority,ring.clone(),execution.clone())?;
  let device=case::name("query-recovery");
  let secret="recovery-directory-private-value";
  let first=seed(&authority.pool,&ring,device,secret).await?;

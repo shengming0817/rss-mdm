@@ -1,7 +1,7 @@
 use super::*;
 use axum::http::{Request, StatusCode, header};
 use rss_mdm_management_http::Failure;
-use rss_mdm_management_http::boundary::{Envelope, admit as envelope};
+use rss_mdm_management_http::boundary::{Envelope, wrap};
 #[tokio::test]
 #[ignore = "make t2 MODULE=api.diagnostics: admission and real management Audit failure"]
 async fn management_audit_failure_logs_preserve_action_and_redaction() {
@@ -16,42 +16,38 @@ async fn management_audit_failure_logs_preserve_action_and_redaction() {
         let admission = Arc::new(tokio::sync::Semaphore::new(0));
         let entered = Arc::new(AtomicUsize::new(0));
         let handler = entered.clone();
-        let router = Router::new()
-            .route(
-                "/api/v1/devices/{id}/inventory",
-                get(
-                    move |axum::Extension(audit): axum::Extension<
-                        rss_mdm_audit_integration::RequestAudit,
-                    >| {
-                        let handler = handler.clone();
-                        async move {
-                            audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-                                rss_mdm_audit_integration::SensitiveAction::InventoryBulkExport,
-                            ));
-                            handler.fetch_add(1, Ordering::SeqCst);
-                            Json(json!({"sensitive":"inventory-result"}))
-                        }
-                    },
-                )
-                .owned(
-                    &contracts::PROTOCOL_MANAGEMENT_HTTP,
-                    &[RouteOperation::Action],
-                ),
+        let router = Router::new().route(
+            "/api/v1/devices/{id}/inventory",
+            get(
+                move |axum::Extension(audit): axum::Extension<
+                    rss_mdm_audit_integration::RequestAudit,
+                >| {
+                    let handler = handler.clone();
+                    async move {
+                        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+                            rss_mdm_audit_integration::SensitiveAction::InventoryBulkExport,
+                        ));
+                        handler.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"sensitive":"inventory-result"}))
+                    }
+                },
             )
-            .layer(middleware::from_fn_with_state(
-                (
-                    Envelope {
-                        admission: admission.clone(),
-                        host: "mdm.example.test".into(),
-                        clock: monotonic(),
-                        audit_store,
-                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
-                        tenant: crate::test_support::case::tenant().into(),
-                    },
-                    Arc::new(Vec::new()),
-                ),
-                envelope,
-            ));
+            .owned(
+                &contracts::PROTOCOL_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
+        );
+        let router = wrap(
+            router,
+            Envelope {
+                admission: admission.clone(),
+                host: "mdm.example.test".into(),
+                clock: monotonic(),
+                audit_store,
+                requests: Arc::new(tokio::sync::Semaphore::new(4)),
+                tenant: crate::test_support::case::tenant().into(),
+            },
+        );
         let request = || {
             Request::builder()
                 .uri("/api/v1/devices/sensitive-target/inventory")

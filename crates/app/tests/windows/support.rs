@@ -496,9 +496,9 @@ impl Host {
         identity.enterprise_platform.bind(execution.service.clone())?;
         let authentication = rss_mdm_management_http::authentication_routes(rss_mdm_http_contract::Router::from_identity_router(identity.routes()),
             rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum();
-        let mut browser = authority.protect(Router::new().nest("/api/v1", routes.into_axum()).merge(authority.authorization())
-            .merge(rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()).into_axum())
-            .merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::Value::Null).into_axum()))?.merge(authentication);
+        let mut browser = authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(authority.authorization())
+            .merge(rss_mdm_windows_channel::wns_materials::routes(windows_state.clone()))
+            .merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::Value::Null)))?.merge(authentication);
         browser = browser.merge(rss_mdm_windows_channel::entra::browser_routes(windows_state.clone(), rss_mdm_windows_channel::boundary::Envelope {
             admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string(),
         }).into_axum());

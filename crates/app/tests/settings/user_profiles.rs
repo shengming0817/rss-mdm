@@ -33,9 +33,9 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 instance: f.identity.instance,
                 audit: f.audit.clone(),
             });
-            let router = f.router(Router::new().nest(
+            let router = f.router(rss_mdm_http_contract::Router::new().nest(
                 "/api/v1",
-                rss_mdm_management_http::user_profiles::routes(backend).into_axum(),
+                rss_mdm_management_http::user_profiles::routes(backend),
             ))?;
             let mut admin = f.browser("admin")?;
             let local = format!(

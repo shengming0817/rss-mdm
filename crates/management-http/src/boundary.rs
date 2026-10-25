@@ -42,7 +42,7 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         _ => None,
     }
 }
-pub async fn admit(
+async fn admit(
     State((envelope, endpoints)): State<(Envelope, Arc<Vec<rss_mdm_http_contract::Endpoint>>)>,
     mut request: Request,
     next: Next,
@@ -240,13 +240,6 @@ fn request_intent(
             I::Sensitive(S::CredentialReveal)
         }
         "/api/v1/certificate-archive/export" => I::Sensitive(S::CertificatePrivateExport),
-        "/api/v1/certificate-archive/vault/unlock"
-        | "/api/v1/api-keys/{id}/rotate"
-        | "/api/v1/software/content/cleanup"
-        | "/api/v1/pki/rotations"
-        | "/api/v1/pki/signing/recover"
-        | "/api/v1/pki/crls"
-        | "/api/v1/pki/{purpose}/rotations" => I::Management,
         "/api/v1/audit-events" => I::Sensitive(S::AuditHistoryRead),
         "/api/v1/resources/{id}/versions/{version}/script" => I::Sensitive(S::ScriptContentRead),
         _ if endpoint
@@ -321,6 +314,20 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/devices/{id}/collections/{run}"
         | "/api/v1/devices/{id}/collections/{run}/fields/{field}/items" => "collection_read",
         "/api/v1/devices/{id}/actions" => "device_action",
+        "/api/v1/devices/{device}/device-access/operations/{id}/offboarding/identity"
+        | "/api/v1/devices/{device}/device-access/operations/{id}/offboarding/idp" => {
+            "device_access_external_phase"
+        }
+        "/api/v1/webhooks/subscriptions/{id}/test" | "/api/v1/webhooks/deliveries/{id}/replay" => {
+            "webhook_write"
+        }
+        "/api/v1/webhooks/deliveries/{id}/redrive" => "webhook_redrive",
+        "/api/v1/agent-packages/save" => "software_installer_save",
+        "/api/v1/devices/{device}/recovery-credentials/operations" => "command_accept",
+        "/api/v1/devices/{device}/recovery-credentials/filevault/configuration" => {
+            "filevault_collection_configure"
+        }
+        "/api/v1/devices/{device}/recovery-credentials/filevault/link" => "filevault_custody_link",
         _ => "protected_request",
     }
 }
@@ -341,6 +348,68 @@ mod tests {
             };
             assert_eq!(request_intent(&endpoint), expected, "{}", endpoint.path);
         }
+    }
+    fn assert_intents<S: Clone + Send + Sync + 'static>(
+        router: Router<S>,
+        expected: &[(&str, &str, rss_mdm_audit_integration::AuditIntent)],
+    ) {
+        let mounted = Router::new().nest("/api/v1", router);
+        for (path, method, intent) in expected {
+            let endpoint = mounted
+                .endpoints()
+                .iter()
+                .find(|e| e.path == *path && e.method == *method)
+                .expect("real mounted endpoint");
+            assert_eq!(request_intent(endpoint), *intent, "{method} {path}");
+        }
+    }
+    #[test]
+    fn action_mutations_and_preparation_queries_have_distinct_ingress_intents() {
+        use rss_mdm_audit_integration::AuditIntent::{Management, Routine, Sensitive};
+        assert_intents(
+            crate::software_catalog::routes(),
+            &[
+                ("/api/v1/agent-packages/save", "POST", Management),
+                ("/api/v1/agent-packages/uploads", "POST", Management),
+                ("/api/v1/agent-packages/uploads/{id}", "POST", Routine),
+                ("/api/v1/agent-packages/operations/{id}", "GET", Routine),
+                (
+                    "/api/v1/software/resources/{id}/versions/{version}/content",
+                    "GET",
+                    Routine,
+                ),
+            ],
+        );
+        assert_intents(
+            crate::content::http::routes(),
+            &[
+                ("/api/v1/resources/{id}/content", "POST", Management),
+                (
+                    "/api/v1/resources/{id}/uploads/{upload}",
+                    "POST",
+                    Management,
+                ),
+                (
+                    "/api/v1/resources/{id}/uploads/{upload}",
+                    "PATCH",
+                    Management,
+                ),
+                ("/api/v1/resources/{id}/uploads/{upload}", "GET", Routine),
+                (
+                    "/api/v1/resources/{id}/versions/{version}/script",
+                    "GET",
+                    Sensitive(rss_mdm_audit_integration::SensitiveAction::ScriptContentRead),
+                ),
+            ],
+        );
+        assert_intents(
+            crate::telemetry::routes(None),
+            &[
+                ("/api/v1/telemetry/maintenance", "POST", Management),
+                ("/api/v1/telemetry/history", "POST", Routine),
+                ("/api/v1/telemetry/aggregate", "POST", Routine),
+            ],
+        );
     }
     #[test]
     fn route_templates_select_audit_actions() {

@@ -519,16 +519,14 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         client.tenant,
         &[31; 32],
     )?);
-    client.router = client.router.clone().merge(
-        host.protect(
-            axum::Router::new().nest(
+    client.router =
+        client
+            .router
+            .clone()
+            .merge(host.protect(rss_mdm_http_contract::Router::new().nest(
                 "/api/v1",
-                rss_mdm_management_http::timeline::routes()
-                    .with_state(timeline)
-                    .into_axum(),
-            ),
-        )?,
-    );
+                rss_mdm_management_http::timeline::routes().with_state(timeline),
+            ))?);
     let devices = crate::device::DeviceService::new(
         host.registration.clone(),
         client.tenant.to_string(),

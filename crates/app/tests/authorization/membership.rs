@@ -31,13 +31,11 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
         .await?,
     );
     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-    let routes = Router::new().nest(
+    let routes = rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
-        rss_mdm_management_http::planning::http::routes()
-            .with_state(Arc::new(
-                rss_mdm_management_http::planning::http::HttpState { planning, groups },
-            ))
-            .into_axum(),
+        rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+            rss_mdm_management_http::planning::http::HttpState { planning, groups },
+        )),
     );
     let router = authority.router(authority.authorization().merge(routes))?;
     let mut admin = authority.browser("admin")?;

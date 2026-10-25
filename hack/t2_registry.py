@@ -245,10 +245,10 @@ for name, entry, fixtures in (
 ):
     MODULES[name] = replace(MODULES['deployment.management-tenant'], id=name, python=('tenant_http', entry), fixtures=fixtures)
 
-add('recovery-credentials.http',fixtures=('identity','agent_pki','task_signing'),selectors=('recovery_credentials_tests::',),
+add('recovery-credentials.http',fixtures=('identity',),selectors=('recovery_credentials_tests::',),
     sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs','crates/agent-channel/src/filevault.rs','crates/agent-wire/src/filevault.rs'),
     tests=('crates/app/tests/recovery_credentials/mod.rs','crates/app/tests/recovery_credentials/filevault.rs'),support=())
-MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],scope='tenant',db_mode='fresh', fixtures=(*MODULES['recovery-credentials.http'].fixtures, 'content'))
+MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],scope='tenant',db_mode='fresh')
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
     tests=('crates/app/tests/certificate_archive/mod.rs',),support=())
@@ -1763,11 +1763,11 @@ for relative, consumers in APP_HELPER_CONSUMERS.items():
         MODULES[name] = replace(module, support_inputs=inputs)
 
 # Enterprise current-user binding has its own HTTP/Identity/PG seam; OS collection is unrelated.
-add('agent.current_user', selectors=('agent::t2::current_user::',), fixtures=('identity','agent_pki','task_signing'),
+add('agent.current_user', selectors=('agent::t2::current_user::',), fixtures=('identity','agent_pki'),
     sources=('crates/registration-service/src/agent/current_user.rs','crates/registration-service/src/device/registration_user.rs','crates/agent-channel/src/tasks.rs','crates/agent-wire/src/current_user.rs','crates/agent-wire/schema/runtime/current-user-v1.schema.json','crates/agent-wire/schema/runtime/current-user-change-v1.schema.json','crates/registration-service/schema/install.sql','crates/device-service/src/presentation.rs','crates/device-service/src/views.rs','crates/management-http/src/device_views.rs','crates/registration-service/src/device/directory.rs','crates/authorization-service/src/session.rs','crates/registration-service/src/device/management.rs','crates/registration-service/src/device/store.rs'),
     tests=('crates/app/tests/agent/current_user.rs',),
     support=('crates/app/tests/agent/mod.rs',), actors=(('tenant','admin'),('tenant','other')))
-MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='tenant', fixtures=(*MODULES['agent.current_user'].fixtures, 'content'))
+MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='tenant')
 consume(('crates/registration-service/src/device/registration_user.rs','crates/management-http/src/enrollment/registration_user.rs'), 'enrollment.quotas device.views')
 consume(('crates/registration-service/src/agent/current_user.rs',), 'device.views')
 
@@ -1816,7 +1816,7 @@ consume(('hack/ingress_network.py',), 'gateway.network')
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','local_worker'),
     sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/agent-channel/src/filevault.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs','crates/app/tests/agent/device_access/*.rs'),support=(),actors=(('tenant','admin'),('tenant','other')))
-MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant', fixtures=(*MODULES['device-access.http'].fixtures, 'content'))
+MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant')
 for selector in (
     'agent::t2::device_access::first_binding_requires_current_device_and_human_then_stays_admin_only',
     'agent::t2::device_access::step_up_is_atomic_with_receipts_and_concurrent_duplicates',
@@ -2046,3 +2046,24 @@ consume(('crates/certificate-archive-service/src/directory.rs',), 'certificate-a
 consume(('crates/apple-channel/src/management_query.rs',), 'apple.account_enrollment apple.ade settings.recent_auth')
 consume(('crates/app/src/tenant_directory.rs',), 'installation.tenants deployment.management-tenant settings.recent_auth')
 consume(('crates/content-service/src/connections/authority.rs',), 'content.storage settings.recent_auth')
+
+# #3005: exact capability preparation and table-wide fault observation domains.
+for module_id, selector, fixtures, db_mode in (
+    ('agent.current_user', 'agent::t2::current_user::current_user_read_skips_audit_even_with_business_contention', ('identity','agent_pki'), 'fresh'),
+    ('agent.current_user', 'agent::t2::current_user::slow_login_preflight_preserves_source_settlement', ('identity','agent_pki'), 'fresh'),
+    ('device-access.http', 'agent::t2::device_access::queries::binding_directory_uses_checked_queries_and_signed_continuations', ('identity','agent_pki'), 'reuse'),
+    ('device-access.http', 'agent::t2::device_access::filevault::cms_upload_has_independent_authorization_and_exact_audit_replay', ('identity','agent_pki'), 'reuse'),
+    ('authorization.programmatic', 'authorization::t2::programmatic::all_critical_action_denials_keep_actor_target_and_request_identity', ('identity','agent_pki'), 'reuse'),
+):
+    module=MODULES[module_id]
+    MODULES[module_id]=replace(module, policies=(*[p for p in module.policies if p.selector!=selector],
+        CasePolicy(selector, db_mode, 'tenant', fixtures=fixtures)))
+for path, owner in (
+    ('crates/app/tests/support/agent_runtime.rs', 'execution.agent.delivery'),
+    ('crates/app/tests/support/current_user.rs', 'agent.current_user'),
+):
+    module=MODULES[owner]
+    MODULES[owner]=replace(module,support_inputs=(*module.support_inputs,path))
+consume(('crates/management-http/src/boundary.rs','crates/management-http/src/webhooks.rs',
+         'crates/management-http/src/device_access.rs','crates/management-http/src/software_catalog.rs',
+         'crates/management-http/src/execution/http.rs'), 'authorization.programmatic')

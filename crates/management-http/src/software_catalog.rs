@@ -32,7 +32,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/agent-packages/uploads",
-            post(begin_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+            post(begin_agent_upload).owned(
+                &contracts::AGENT_PACKAGES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/agent-packages/uploads/{id}",
@@ -43,7 +46,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/agent-packages/save",
-            post(save_agent_upload).owned(&contracts::AGENT_PACKAGES, &[RouteOperation::Action]),
+            post(save_agent_upload).owned(
+                &contracts::AGENT_PACKAGES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/agent-packages/operations/{id}",
@@ -302,6 +308,12 @@ async fn save_agent_upload(
     >,
 ) -> Result<Json<Value>, Error> {
     let Json(input) = body.map_err(Error::from)?;
+    audit.operation(
+        input.operation_id,
+        "software_installer_save",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target(&input.package_id.to_string());
     rss_mdm_software_service::management::installers::save(&app, &auth.proof, &audit, &input)
         .await
         .map(Json)

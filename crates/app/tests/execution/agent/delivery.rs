@@ -30,15 +30,13 @@ async fn mount_assets(
         &key,
         Arc::new(crate::automation::inventory_tasks::InventoryTasks),
     ));
-    let routes = rss_mdm_management_http::assets::routes()
-        .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-            assets,
-        }))
-        .into_axum();
-    f.router = f
-        .router
-        .clone()
-        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    let routes = rss_mdm_management_http::assets::routes().with_state(Arc::new(
+        rss_mdm_management_http::assets::http::HttpState { assets },
+    ));
+    f.router = f.router.clone().merge(
+        f.authority
+            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+    );
     Ok(())
 }
 
@@ -1361,7 +1359,7 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let audit = Arc::new(f.authority.audit.on_runtime(f.plan_runtime.clone(), f.planning.tenant, &budget.control()).await?);
     let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(), audit, f.plan_runtime.clone(), f.planning.tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
-    f.router = f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })).into_axum()))?);
+    f.router = f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets }))))?);
 
     let mut datasets = Vec::new();
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {

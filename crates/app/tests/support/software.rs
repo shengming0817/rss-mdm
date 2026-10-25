@@ -139,12 +139,12 @@ impl Fixture {
             },
         });
         let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
-        let router = authority.router(Router::new().nest("/api/v1",
+        let router = authority.router(rss_mdm_http_contract::Router::new().nest("/api/v1",
             rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
-            )).into_axum()
-            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()).into_axum())
-            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum()),
+            ))
+            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()))
+            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access)),
         ).merge(authority.authorization()))?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;

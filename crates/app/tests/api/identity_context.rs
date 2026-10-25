@@ -13,12 +13,9 @@ pub(crate) async fn host_context_matrix(
         TENANT = case_tenant()
     );
     let mut authority = authority::Authority::from_config(base.clone()).await?;
-    let router = authority.router(
-        rss_mdm_management_http::identity_context_routes(Arc::new(
-            crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
-        ))
-        .into_axum(),
-    )?;
+    let router = authority.router(rss_mdm_management_http::identity_context_routes(Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
+    )))?;
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
     let rule_id = uuid::Uuid::new_v4();

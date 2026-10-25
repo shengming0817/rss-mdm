@@ -101,7 +101,10 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/subscriptions/{id}/test",
-            post(test).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::Action]),
+            post(test).owned(
+                &contracts::WEBHOOK_SUBSCRIPTIONS,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/webhooks/deliveries",
@@ -115,11 +118,17 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/deliveries/{id}/replay",
-            post(replay).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Action]),
+            post(replay).owned(
+                &contracts::WEBHOOK_DELIVERIES,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/webhooks/deliveries/{id}/redrive",
-            post(redrive).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::Action]),
+            post(redrive).owned(
+                &contracts::WEBHOOK_DELIVERIES,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .with_state(source)
 }
@@ -142,6 +151,41 @@ struct Redrive {
     expected_version: u64,
 }
 async fn call(s: Arc<dyn Source>, a: RequestAuth, audit: RequestAudit, c: Command) -> Response {
+    match &c {
+        Command::Test {
+            subscription,
+            operation,
+            ..
+        } => {
+            audit.operation(
+                *operation,
+                "webhook_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+            audit.target(&subscription.to_string());
+        }
+        Command::Replay {
+            delivery,
+            operation,
+        }
+        | Command::Redrive {
+            delivery,
+            operation,
+            ..
+        } => {
+            audit.operation(
+                *operation,
+                if matches!(&c, Command::Redrive { .. }) {
+                    "webhook_redrive"
+                } else {
+                    "webhook_write"
+                },
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+            audit.target(&delivery.to_string());
+        }
+        _ => {}
+    }
     s.execute(a.proof, audit, c).await.map(Json)
 }
 fn idempotency(headers: &axum::http::HeaderMap) -> Result<Uuid, Error> {

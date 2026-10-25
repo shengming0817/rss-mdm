@@ -747,17 +747,15 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         vec![service.trust().trust.clone()],
         fixture_providers()?,
     ));
-    let browser = authority.router(
-        axum::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::pki::routes()
-                .with_state(Arc::new(rss_mdm_management_http::pki::HttpState {
-                    registry,
-                    clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
-                }))
-                .into_axum(),
-        ),
-    )?;
+    let browser = authority.router(rss_mdm_http_contract::Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::pki::routes().with_state(Arc::new(
+            rss_mdm_management_http::pki::HttpState {
+                registry,
+                clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
+            },
+        )),
+    ))?;
     let devices = crate::device::DeviceService::new(
         authority.registration.clone(),
         case_a().into(),
@@ -1937,17 +1935,15 @@ async fn management() -> anyhow::Result<(
         fixture_providers()?,
     ));
     registry.admit(authority.identity.tenant, now()).await?;
-    let router = authority.router(
-        axum::Router::new().nest(
-            "/api/v1",
-            rss_mdm_management_http::pki::routes()
-                .with_state(Arc::new(rss_mdm_management_http::pki::HttpState {
-                    registry: registry.clone(),
-                    clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
-                }))
-                .into_axum(),
-        ),
-    )?;
+    let router = authority.router(rss_mdm_http_contract::Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::pki::routes().with_state(Arc::new(
+            rss_mdm_management_http::pki::HttpState {
+                registry: registry.clone(),
+                clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
+            },
+        )),
+    ))?;
     Ok((authority, registry, router))
 }
 
@@ -2410,15 +2406,12 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
             let resources = std::mem::take(&mut authority.resources);
             resources
                 .finish(async {
-                    use crate::test_support::{Method, Router, StatusCode, http::Browser};
+                    use crate::test_support::{Method, StatusCode, http::Browser};
                     let mut browser: Browser = authority.browser("admin")?;
-                    let router = authority.router(
-                        Router::new().nest(
-                            "/api/v1",
-                            rss_mdm_management_http::agent_enrollment::routes(Some(s.clone()))
-                                .into_axum(),
-                        ),
-                    )?;
+                    let router = authority.router(rss_mdm_http_contract::Router::new().nest(
+                        "/api/v1",
+                        rss_mdm_management_http::agent_enrollment::routes(Some(s.clone())),
+                    ))?;
                     let path = format!(
                         "/api/v1/agent-issuances/{}/recovery-operations/{}",
                         candidate.issuance_id, input.operation_id

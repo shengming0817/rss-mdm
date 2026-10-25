@@ -32,14 +32,13 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         &key,
         Arc::new(crate::automation::inventory_tasks::InventoryTasks),
     ));
-    let routes = Router::new().nest(
+    let routes = rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
         rss_mdm_management_http::assets::routes()
             .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
                 assets,
             }))
-            .merge(rss_mdm_management_http::device_action_routes())
-            .into_axum(),
+            .merge(rss_mdm_management_http::device_action_routes()),
     );
     let router = authority.router(authority.authorization().merge(routes))?;
     let mut admin = authority.browser("admin")?;
@@ -187,7 +186,7 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             == StatusCode::CONFLICT
     );
     let reopened = authority::Authority::open().await?;
-    let restarted = reopened.router(Router::new().nest("/api/v1", rss_mdm_management_http::device_action_routes().into_axum()))?;
+    let restarted = reopened.router(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::device_action_routes()))?;
     let app_resources = reopened.resources;
     app_resources.finish(async {
     ensure!(

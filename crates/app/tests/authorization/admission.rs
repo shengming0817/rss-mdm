@@ -11,7 +11,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     let router = authority.router(
         authority
             .authorization()
-            .merge(rss_mdm_management_http::identity_context_routes(policy).into_axum()),
+            .merge(rss_mdm_management_http::identity_context_routes(policy)),
     )?;
     let mut admin = authority.browser("admin")?;
     let mut member = authority.browser("other")?;
@@ -164,7 +164,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
             let router = authority.router(authority.authorization().nest("/api/v1",
-                rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum()))?;
+                rss_mdm_management_http::compliance::http::routes().with_state(compliance)))?;
             let mut browser = authority.browser("admin")?;
             identity::seed_grants(case_tenant(), &prepared_subject(&browser)?, vec![crate::authorization::Grant { operation: crate::authorization::Permission::ComplianceRuleRead, scope: crate::authorization::Scope::Tenant }]).await?;
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);

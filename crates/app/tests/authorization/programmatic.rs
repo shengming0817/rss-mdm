@@ -21,10 +21,10 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
         audit: authority.audit.clone(),
     });
     let requests = Arc::new(tokio::sync::Semaphore::new(32));
-    let network = Router::new()
+    let network = rss_mdm_http_contract::Router::new()
         .nest(
             "/api/v1/tenant-administration",
-            api_access::network_routes(management.clone()).into_axum(),
+            api_access::network_routes(management.clone()),
         )
         .route_layer(middleware::from_fn_with_state(
             Arc::new(http::AuthenticationState {
@@ -33,24 +33,22 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
                 requests: requests.clone(),
             }),
             http::protect_management,
-        ))
-        .layer(middleware::from_fn_with_state(
-            (
-                boundary::Envelope {
-                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                    host: "mdm.example.test".into(),
-                    clock: monotonic(),
-                    audit_store: authority.audit.clone(),
-                    requests,
-                    tenant: authority.identity.management_tenant.to_string(),
-                },
-                Arc::new(Vec::new()),
-            ),
-            boundary::admit,
-        ))
-        .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
+        ));
+    let network = boundary::wrap(
+        network,
+        boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: monotonic(),
+            audit_store: authority.audit.clone(),
+            requests,
+            tenant: authority.identity.management_tenant.to_string(),
+        },
+    )
+    .into_axum()
+    .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+        "127.0.0.1".parse()?,
+    )));
     let bearer = authority
         .identity
         .bearer_routes()
@@ -76,7 +74,10 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
     )
     .into_axum();
     let router = authority
-        .protect(Router::new().nest("/api/v1", api_access::key_routes(management).into_axum()))?
+        .protect(
+            rss_mdm_http_contract::Router::new()
+                .nest("/api/v1", api_access::key_routes(management)),
+        )?
         .merge(network)
         .merge(authentication)
         .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -203,18 +204,12 @@ async fn programmatic_keys_tokens_and_online_network_policy() -> Result<()> {
         &key,
         Arc::new(crate::automation::inventory_tasks::InventoryTasks),
     ));
-    router = router.merge(
-        authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::assets::routes()
-                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                        assets,
-                    }))
-                    .into_axum(),
-            ),
-        )?,
-    );
+    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::assets::routes().with_state(Arc::new(
+            rss_mdm_management_http::assets::http::HttpState { assets },
+        )),
+    ))?);
     router = router.merge(authority.protect(authority.enrollment())?);
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -336,18 +331,12 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         &key,
         Arc::new(crate::automation::inventory_tasks::InventoryTasks),
     ));
-    router = router.merge(
-        authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::assets::routes()
-                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                        assets,
-                    }))
-                    .into_axum(),
-            ),
-        )?,
-    );
+    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::assets::routes().with_state(Arc::new(
+            rss_mdm_management_http::assets::http::HttpState { assets },
+        )),
+    ))?);
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
         pg(&format!("INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}')", case_tenant(), case::name("device-1")))?;
@@ -458,8 +447,8 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         .merge(rss_mdm_management_http::timeline::routes().with_state(timeline));
     router = router.merge(
         authority.protect(
-            Router::new()
-                .nest("/api/v1", routes.into_axum())
+            rss_mdm_http_contract::Router::new()
+                .nest("/api/v1", routes)
                 .merge(authority.enrollment()),
         )?,
     );
@@ -511,15 +500,11 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         identity: sessions,
         requests: Arc::new(tokio::sync::Semaphore::new(32)),
     });
-    router = router.merge(
-        authority.protect(
-            rss_mdm_apple_channel::management_routes(apple)
-                .into_axum()
-                .layer(axum::middleware::from_fn(
-                    crate::api::apple_management_settlement,
-                )),
-        )?,
-    );
+    router = router.merge(authority.protect(
+        rss_mdm_apple_channel::management_routes(apple).layer(axum::middleware::from_fn(
+            crate::api::apple_management_settlement,
+        )),
+    )?);
 
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -616,16 +601,10 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         clock: Arc::new(crate::clock::ContentClock(clock.clone())),
         catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
     });
-    router = router.merge(
-        authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::content::http::routes()
-                    .with_state(content_access)
-                    .into_axum(),
-            ),
-        )?,
-    );
+    router = router.merge(authority.protect(rss_mdm_http_contract::Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::content::http::routes().with_state(content_access),
+    ))?);
 
     let resources = std::mem::take(&mut authority.resources);
     resources.finish(async {
@@ -791,4 +770,203 @@ async fn critical_action_denials_are_durable() -> Result<()> {
             Ok(())
         })
         .await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=authorization.programmatic: real mounted critical actions retain denied facts before business authorization"]
+async fn all_critical_action_denials_keep_actor_target_and_request_identity() -> Result<()> {
+    use crate::test_support::agent_runtime;
+    let (resources, (mut authority, routes)) = Resources::build(|resources| {
+        Box::pin(async move {
+            let mut authority = authority::Authority::open().await?;
+            resources.extend(std::mem::take(&mut authority.resources));
+            let config: Config = serde_json::from_value(authority.base.clone())?;
+            let tenant = authority.identity.tenant;
+            let execution = agent_runtime::Execution::open(
+                &mut authority,
+                &config,
+                None,
+                BTreeMap::new(),
+                None,
+                None,
+                vec![31; 32],
+                resources,
+            )
+            .await?;
+            let enrollment =
+                agent_runtime::enrollment(&mut authority, &config, execution.service.clone())
+                    .await?;
+            let runtime = crate::planning::test_support::runtime(tenant).await;
+            resources.resource(SourceResource(runtime.clone()));
+            let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+                rss_transactional_messaging::fence::StorageIdentity::new(
+                    config.flow.storage.target,
+                    config.flow.storage.lineage,
+                )?,
+                vec![(
+                    tenant,
+                    rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+                )],
+            )?;
+            let backend = crate::webhooks::Backend::open(
+                config.webhooks.clone(),
+                execution.runtime.clone(),
+                tenant,
+                authority.audit.clone(),
+                Arc::new(crate::clock::SystemClock),
+                config.native_protector()?,
+                binding,
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+            )
+            .await?;
+            resources.resource(crate::webhooks::Resource(backend.clone()));
+            let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
+                runtime: runtime.clone(),
+                tenant,
+                audit: authority.audit.clone(),
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+                catalog: rss_mdm_software_service::catalog::Catalog::new(
+                    runtime.clone(),
+                    tenant,
+                    authority.audit.clone(),
+                ),
+                resources: Arc::new(
+                    rss_mdm_resource_postgres::ResourceStore::new(
+                        runtime,
+                        tenant,
+                        crate::identity::deadline(),
+                    )
+                    .await?,
+                ),
+                clock: Arc::new(crate::clock::ContentClock(Arc::new(
+                    crate::clock::SystemClock,
+                ))),
+                content: None,
+                imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                    sources: BTreeMap::new(),
+                    transfer_seconds: 0,
+                },
+            });
+            let routes = rss_mdm_management_http::device_access::routes(
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+                authority.authorization.clone(),
+                None,
+                Some(enrollment),
+                execution.service.clone(),
+                authority.identity.browser(),
+            )
+            .merge(
+                rss_mdm_management_http::execution::http::routes(
+                    execution.queries,
+                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+                )
+                .with_state(Arc::new(
+                    rss_mdm_management_http::execution::http::HttpState {
+                        execution: execution.service,
+                        apple: false,
+                        windows: false,
+                    },
+                )),
+            )
+            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software))
+            .merge(rss_mdm_management_http::webhooks::routes(backend));
+            Ok((
+                authority,
+                rss_mdm_http_contract::Router::new().nest("/api/v1", routes),
+            ))
+        })
+    })
+    .await?;
+    resources.finish(async {
+        let user = authority.browser("other")?;
+        let actor = prepared_subject(&user)?;
+        identity::seed_grants(case_tenant(), &actor, vec![]).await?;
+        let router = authority.protect(routes.clone())?;
+        let device = case::name("critical-action-device");
+        let offboarding = Uuid::new_v4();
+        let subscription = Uuid::new_v4();
+        let delivery = Uuid::new_v4();
+        let package = Uuid::new_v4();
+        let cases = [
+            (format!("/api/v1/devices/{device}/device-access/operations/{offboarding}/offboarding/identity"), json!({"kind":"execute"}), "device_access_external_phase", device.to_owned(), offboarding),
+            (format!("/api/v1/devices/{device}/device-access/operations/{offboarding}/offboarding/idp"), json!({"kind":"reconcile","target":Uuid::new_v4()}), "device_access_external_phase", device.to_owned(), offboarding),
+            (format!("/api/v1/webhooks/subscriptions/{subscription}/test"), json!({"operationId":Uuid::new_v4(),"deviceId":device}), "webhook_write", subscription.to_string(), Uuid::nil()),
+            (format!("/api/v1/webhooks/deliveries/{delivery}/replay"), json!({"operationId":Uuid::new_v4()}), "webhook_write", delivery.to_string(), Uuid::nil()),
+            (format!("/api/v1/webhooks/deliveries/{delivery}/redrive"), json!({"operationId":Uuid::new_v4(),"expectedVersion":1}), "webhook_redrive", delivery.to_string(), Uuid::nil()),
+            ("/api/v1/agent-packages/save".into(), json!({"operationId":Uuid::new_v4(),"packageId":package,"version":"1","target":{"platform":"macos","architecture":"aarch64"}}), "software_installer_save", package.to_string(), Uuid::nil()),
+            (format!("/api/v1/devices/{device}/recovery-credentials/operations"), json!({"operationId":Uuid::new_v4(),"registration":Uuid::new_v4(),"generation":1,"deadline":4102444800_i64,"action":{"kind":"configure_filevault"}}), "command_accept", device.to_owned(), Uuid::nil()),
+        ];
+        for (path, input, action, target, path_operation) in &cases {
+            let operation = if path_operation.is_nil() { input["operationId"].as_str().unwrap().to_owned() } else { path_operation.to_string() };
+            let (status, request) = audit_request(&router, Some(&user), Method::POST, path, Some(input.to_string())).await?;
+            ensure!(status==StatusCode::FORBIDDEN, "{path}: {status}");
+            let records = crate::audit_test_support::audit_records().await?;
+            let facts: Vec<_> = records.iter().filter(|r| r.request()==Some(request.as_str())).collect();
+            ensure!(facts.len()==1, "{path}: expected one settled request fact, got {}", facts.len());
+            let fact=facts[0];
+            ensure!(fact.source()=="mdm.request" && fact.actor()==Some(actor.as_str()) && fact.status()==403 && fact.result()=="denied"
+                && fact.action()==*action && fact.target()==target && fact.operation()==Some(operation.as_str()), "{path}: wrong denied fact");
+            // No handler runs here: each route must already carry its audit necessity.
+            let (status, request)=audit_request(&router,None,Method::POST,path,Some(input.to_string())).await?;
+            ensure!(status==StatusCode::UNAUTHORIZED,"{path}: authentication rejection {status}");
+            ensure!(audit_count(|r|r.source()=="mdm.request" && r.request()==Some(request.as_str())
+                && r.actor().is_none() && r.operation().is_none() && r.status()==401 && r.result()=="denied" && r.action()==*action).await?==1,
+                "{path}: missing ingress fact before the handler");
+        }
+        ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registration_operations WHERE tenant_id='{}' AND operation_id='{offboarding}'",case_tenant()))?.trim()=="0");
+        let (status, request)=audit_request(&router,Some(&user),Method::POST,&cases[2].0,Some("{".to_owned())).await?;
+        ensure!(status==StatusCode::BAD_REQUEST,"JSON rejection {status}");
+        ensure!(audit_count(|r|r.source()=="mdm.request" && r.request()==Some(request.as_str())
+            && r.actor()==Some(actor.as_str()) && r.status()==400 && r.result()=="failed").await?==1);
+        let ordinary=format!("/api/v1/webhooks/deliveries/{delivery}");
+        let (status, request)=audit_request(&router,Some(&user),Method::GET,&ordinary,None).await?;
+        ensure!(status==StatusCode::FORBIDDEN);
+        ensure!(audit_count(|r|r.request()==Some(request.as_str())).await?==0);
+        let (pool, failed_runtime, failed_store)=crate::audit_test_support::request_store().await?;
+        failed_runtime.close().await;pool.close().await;
+        authority.audit=failed_store;
+        let failed=authority.protect(routes)?;
+        ensure!(audit_request(&failed,Some(&user),Method::POST,&cases[2].0,Some(cases[2].1.to_string())).await?.0==StatusCode::SERVICE_UNAVAILABLE);
+        ensure!(audit_request(&failed,Some(&user),Method::GET,&ordinary,None).await?.0==StatusCode::FORBIDDEN);
+        Ok(())
+    }).await
+}
+
+async fn audit_request(
+    router: &Router,
+    browser: Option<&Browser>,
+    method: Method,
+    path: &str,
+    body: Option<String>,
+) -> Result<(StatusCode, String)> {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "mdm.example.test")
+        .header("origin", "https://mdm.example.test")
+        .header("x-identity-request", "1");
+    if let Some(browser) = browser {
+        request = request
+            .header("x-csrf-token", browser.csrf.as_ref().unwrap())
+            .header(
+                "cookie",
+                browser
+                    .cookies
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+    }
+    if body.is_some() {
+        request = request.header("content-type", "application/json");
+    }
+    let response = router
+        .clone()
+        .oneshot(request.body(Body::from(body.unwrap_or_default()))?)
+        .await?;
+    let status = response.status();
+    let id = response.headers()["x-request-id"].to_str()?.to_owned();
+    response.into_body().collect().await?;
+    Ok((status, id))
 }

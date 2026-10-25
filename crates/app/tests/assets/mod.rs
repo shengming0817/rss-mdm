@@ -92,14 +92,14 @@ impl AssetHttp {
             &key,
             Arc::new(crate::automation::inventory_tasks::InventoryTasks),
         ));
-        let routes = Router::new()
+        let routes = rss_mdm_http_contract::Router::new()
             .nest(
                 "/api/v1",
-                rss_mdm_management_http::assets::routes()
-                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                rss_mdm_management_http::assets::routes().with_state(Arc::new(
+                    rss_mdm_management_http::assets::http::HttpState {
                         assets: assets.clone(),
-                    }))
-                    .into_axum(),
+                    },
+                )),
             )
             .merge(authority.authorization());
         let router = authority.router(routes)?;
@@ -144,19 +144,16 @@ impl Fixture {
         let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
         let automation =
             crate::planning::test_support::RunningAutomation::start(planning.clone()).await;
-        let routes = Router::new().nest(
+        let routes = rss_mdm_http_contract::Router::new().nest(
             "/api/v1",
             rss_mdm_management_http::assets::routes()
                 .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
                     assets: automation.assets.clone(),
                 }))
-                .into_axum()
                 .merge(
-                    rss_mdm_management_http::planning::http::routes()
-                        .with_state(Arc::new(
-                            rss_mdm_management_http::planning::http::HttpState { planning, groups },
-                        ))
-                        .into_axum(),
+                    rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+                        rss_mdm_management_http::planning::http::HttpState { planning, groups },
+                    )),
                 ),
         );
         let router = authority.router(routes.merge(authority.authorization()))?;

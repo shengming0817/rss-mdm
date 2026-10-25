@@ -59,18 +59,15 @@ async fn policy(
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -195,18 +192,15 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn explicit_rerun_deduplicates() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -274,18 +268,15 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_scan_reaches_late_match() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -353,18 +344,15 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let (id, _bytes, _definition) = fixture.resource().await?;
@@ -503,18 +491,15 @@ fn script_effects() -> Result<String> {
 async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -617,7 +602,7 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
     let mut unsigned = Fixture::from_config(without_signing).await?;
-    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None).into_axum()))?);
+    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None)))?);
     let resources = std::mem::take(&mut unsigned.resources);
     resources.finish(async {
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
@@ -635,18 +620,12 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
 async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<()> {
     use crate::test_support::software_execution::{Platform, context};
     let mut f = Fixture::new().await?;
-    f.router = f.router.clone().merge(
-        f.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    f.queries.clone(),
-                    None,
-                )
-                .into_axum(),
-            ),
-        )?,
-    );
+    f.router = f.router.clone().merge(f.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(f.queries.clone(), None),
+        ),
+    )?);
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     f.register().await?;
@@ -749,18 +728,15 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
 async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
-    fixture.router = fixture.router.clone().merge(
-        fixture.authority.protect(
-            Router::new().nest(
-                "/api/v1",
-                rss_mdm_management_http::planning::policies::http::previews(
-                    fixture.queries.clone(),
-                    None,
-                )
-                .into_axum(),
+    fixture.router = fixture.router.clone().merge(fixture.authority.protect(
+        rss_mdm_http_contract::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::planning::policies::http::previews(
+                fixture.queries.clone(),
+                None,
             ),
-        )?,
-    );
+        ),
+    )?);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture

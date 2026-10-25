@@ -99,21 +99,21 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
             "/agent-requests/{id}/authorize",
             post(authorize).owned(
                 &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action],
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
         .route(
             "/agent-requests/{id}/reenroll/{device}",
             post(reenroll).owned(
                 &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action],
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
         .route(
             "/agent-requests/{id}/cancel",
             post(revoke).owned(
                 &contracts::AGENT_REQUEST_COMMANDS,
-                &[RouteOperation::Action],
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
         .route(
@@ -133,14 +133,14 @@ pub fn routes(app: Option<Arc<Service>>) -> Router {
             "/agent-registrations/{id}/recovery",
             post(recovery).owned(
                 &contracts::AGENT_REGISTRATION_RECOVERY,
-                &[RouteOperation::Action],
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
         .route(
             "/agent-issuances/{id}/recover",
             post(recover_issuance).owned(
                 &contracts::AGENT_ISSUANCE_RECOVERY,
-                &[RouteOperation::Action],
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
             ),
         )
         .route(
