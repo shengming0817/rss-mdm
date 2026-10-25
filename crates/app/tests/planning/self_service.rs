@@ -747,8 +747,8 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         .filter(|g| g.operation != Permission::InventoryRead)
         .cloned()
         .collect();
-    for grants in [no_read] {
-        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
+    {
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, no_read).await?;
         let denied = call(&f, Method::GET, &path, None, true, true).await?;
         ensure!(
             denied.0 == StatusCode::OK

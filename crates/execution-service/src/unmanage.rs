@@ -948,7 +948,7 @@ async fn cleanup_candidates(
 ) -> Result<Vec<sqlx::postgres::PgRow>> {
     let t = tx.tenant_id().to_string();
     let rows=tx.with_connection(move|c|Box::pin(async move{
-            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
+            sqlx::query("SELECT DISTINCT ON(software_effect->'resource',software_effect->'target') id,policy_version,software_effect,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND registration=$2 AND software_effect IS NOT NULL AND result->>'effect' IN('verified','failed') ORDER BY software_effect->'resource',software_effect->'target',(result->>'effectObservedAt')::bigint DESC NULLS LAST,(result->>'effectReceivedAt')::bigint DESC NULLS LAST,created_at DESC,id DESC LIMIT 129")
                 .bind(t).bind(registration).fetch_all(c).await
         })).await?;
     Ok(rows)

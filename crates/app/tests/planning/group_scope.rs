@@ -1869,8 +1869,8 @@ async fn definition_validation_resumes_without_partial_publication() {
         .local_tx_with_context(
             service.tenant,
             deadline(),
-            (service.as_ref(), task),
-            |(service, task), tx| {
+            (service.as_ref(), task, denied_group),
+            |(service, task, denied_group), tx| {
                 Box::pin(async move {
                     service
                         .audit_store
@@ -1879,8 +1879,8 @@ async fn definition_validation_resumes_without_partial_publication() {
                         .map_err(rss_transactional_messaging_postgres::PgError::from)?;
                     let partition = rss_mdm_audit_integration::source_partition(
                         tx.tenant_id(),
-                        "mdm",
-                        "request",
+                        "group",
+                        &denied_group.to_string(),
                     )?;
                     tx.prepare_outbox_partitions(&[partition]).await?;
                     crate::automation::jobs::finish_job_in(

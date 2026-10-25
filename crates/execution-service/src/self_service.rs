@@ -528,8 +528,7 @@ impl ExecutionService {
                     let can_read = match proof {
                         Some(proof) => {
                             let auth = crate::action_admission::current(tx, proof).await?;
-                            let basic = auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok();
-                            basic
+                            auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok()
                         }
                         None => false,
                     };

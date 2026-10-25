@@ -888,8 +888,8 @@ async fn native_inventory_case(
             )
             .await?;
             ensure!(
-                denied.0 == StatusCode::OK,
-                "accepted native Start after author edit: {denied:?}"
+                denied.0 == if macos {StatusCode::FORBIDDEN} else {StatusCode::OK},
+                "native Start must distinguish changed execution context from author grant edits: {denied:?}"
             );
             break;
         }
@@ -1022,11 +1022,19 @@ async fn native_inventory_case(
                 },
             );
         }
-        let result = w::NativeCollectionResult {
+        let mut result = w::NativeCollectionResult {
             plan_digest: spec.plan_digest,
             collected_at: now,
             queries,
         };
+        if stage == 0 && !all_failed {
+            let started = now - i64::from(spec.plan.spec().budget.timeout_seconds) - 1;
+            pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({started}::bigint)) WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.task_id))?;
+            result.collected_at=now-1;
+            for query in result.queries.values_mut() { query.collected_at=now-1; }
+            f.execution.recover_action_fixture(policy).await?;
+            ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t");
+        }
         let body = serde_json::to_vec(&result)?;
         let manifest = w::OutputManifest::new(body.len() as u32, Sha256::digest(&body).into())?;
         let terminal = serde_json::to_value(w::TaskEvent::ChunkedCollectionResult {
@@ -1055,19 +1063,6 @@ async fn native_inventory_case(
             }
             terminal
         } else { serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))? };
-        if stage == 0 && !all_failed {
-            pg(&format!("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?;
-            f.command_runtime.local_tx(f.authority.identity.tenant, crate::identity::deadline(), |tx| Box::pin(async move {
-                let tenant=tx.tenant_id().to_string();
-                tx.with_connection(move |c| Box::pin(async move {
-                    let mut facts=Vec::new();
-                    crate::collection::store::expire_timed(c,&mut facts,&tenant).await
-                        .map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
-                    Ok(())
-                })).await
-            })).await.fold(|_|(),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|_|panic!("commit unknown"),|_|panic!("rollback unknown"),|e|panic!("{e:?}"));
-            ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t");
-        }
         let operation = Uuid::new_v4();
         let input = event(operation, terminal);
         let accepted = agent_call(

@@ -489,7 +489,19 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let rerun=json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}});
         post(&mut f.author,&f.router,&format!("{path}/reruns"),rerun.clone()).await?;
         post(&mut f.author,&f.router,&format!("{path}/reruns"),rerun).await?;
-        let task=claim(&f.router).await?;
+        // Observe the real claim/retirement overlap: neither transaction may wait on the other.
+        let watch=tokio::spawn(async {
+            use sqlx::Connection;
+            let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres").unwrap()).await.unwrap();
+            for _ in 0..20 {
+                let cycle:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity a JOIN pg_stat_activity b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database() AND a.pid=ANY(pg_blocking_pids(b.pid)))").fetch_one(&mut c).await.unwrap();
+                assert!(!cycle,"claim and retirement formed a database lock cycle");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let claimed=claim(&f.router).await;
+        watch.await?;
+        let task=claimed?;
         ensure!(task["payload"]["kind"]=="unmanage","{task}");
         let retirement=task["payload"]["task"]["retirementId"].as_str().context("retirement ID")?;
         ensure!(pg(&format!("SELECT retirement FROM mdm_access.devices WHERE tenant_id='{}' AND id='{}'",case_tenant(),case_device_id()))?.trim()==retirement);

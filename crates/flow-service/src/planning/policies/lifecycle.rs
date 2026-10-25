@@ -73,6 +73,29 @@ impl super::super::Planning {
         let more = objects.len() > 64;
         objects.truncate(64);
         let next = objects.last().map(|o| o.cursor.clone());
+        // The planning transaction already holds the directory revision. Device ingress
+        // takes endpoint fences first, so never wait here while retaining that revision.
+        let devices: Vec<_> = objects
+            .iter()
+            .flat_map(|o| o.object.members.iter().map(|m| m.device.clone()))
+            .collect();
+        let locked = tx
+            .with_connection(move |c| {
+                Box::pin(async move {
+                    rss_mdm_registration_service::lifecycle::try_lock_devices_in(
+                        c,
+                        &tenant.to_string(),
+                        &devices,
+                    )
+                    .await
+                    .map_err(|e| sqlx::Error::Protocol(e.to_string()))
+                })
+            })
+            .await?;
+        if !locked {
+            return Err(Error::Unavailable(crate::Failure::PlanningStorage).into());
+        }
+
         let mut partitions = vec![terminal_partition];
         for item in &objects {
             partitions.push(

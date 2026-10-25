@@ -189,7 +189,7 @@ pub async fn slot_in(
                              WHERE software_effect->'generation'=$2::jsonb->'generation'
                                AND result->>'effect' IN ('verified','failed')
                                AND jsonb_typeof(result->'effectObservedAt')='number'
-                             ORDER BY (result->>'effectObservedAt')::bigint DESC LIMIT 1),false),
+                             ORDER BY (result->>'effectObservedAt')::bigint DESC,(result->>'effectReceivedAt')::bigint DESC NULLS LAST LIMIT 1),false),
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND result->>'effect'='failed'),
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6)
             FROM effects
@@ -319,4 +319,19 @@ pub async fn persist_effect_in(
         Ok(())
     })).await?;
     Ok(())
+}
+
+/// Receipt ordering disambiguates observations whose device clock has only second precision.
+pub(crate) async fn effect_received_at(tx: &mut PgTransaction<'_>) -> Result<i64> {
+    Ok(tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint",
+                )
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?)
 }

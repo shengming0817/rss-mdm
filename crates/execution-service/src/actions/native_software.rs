@@ -232,7 +232,7 @@ pub async fn advance_run(
                     }
                     run.state.result(run.id, true)?;
                     run.result = Some(
-                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now}),
+                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now.checked_mul(1_000_000).ok_or(Error::Malformed)?,"effectReceivedAt":super::software::effect_received_at(tx).await?}),
                     );
                     return Ok(());
                 }

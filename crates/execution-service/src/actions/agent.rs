@@ -116,7 +116,9 @@ impl ExecutionService {
                 }
             }
             if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,audit).await?; }
-            let ids=super::poll::offer_candidates(tx,p.registration(),now).await?;
+            // A relay may accept another run while this Read Committed transaction is open.
+            // Offer only the captured candidates whose audit partitions were prepared above.
+            let ids=existing;
             let mut offer=None;
             for id in ids {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
@@ -322,7 +324,8 @@ impl ExecutionService {
                     software_audit=Some(json!({"taskId":id,"attemptId":input.attempt_id(),"previousEffect":previous_effect,
                         "effect":effect,"definitionDigest":result.definition_digest,"steps":result.steps}));
                     let observed_at=observed_at.map(|at| at.checked_mul(1_000_000).ok_or(Error::Malformed)).transpose()?;
-                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect,"effectObservedAt":observed_at,"receivedAt":now}));
+                    let received_at=super::software::effect_received_at(tx).await?;
+                    run.result=Some(json!({"intent":result.intent,"definitionDigest":result.definition_digest,"evidence":evidence,"effect":effect,"effectObservedAt":observed_at,"effectReceivedAt":received_at,"receivedAt":now}));
                 },
             }
             db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;

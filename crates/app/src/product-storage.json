@@ -24,7 +24,7 @@
   "mdm_access.devices": "539d4738a216b30249b0cf2e8c8c7a7470d4dddcd2b41709125700612e348d00",
   "mdm_access.enrollment_certificates": "a5f07d09fc67a0d6d99c3af53b00730ffb545299ad8c9195de7b1bd8129cb68f",
   "mdm_access.enrollment_intents": "81f1719c6ddc81c73b7e559ee193e016fa4d407f56d069a66386e5528dabd2b9",
-  "mdm_access.immutable_collection()": "b5e482684dade98b46eb1e7dc5a96b88ad8a10f43a34b0a6e238f1b68d912a1c",
+  "mdm_access.immutable_collection()": "da2de3d854b380db98b47c013cd90aa4af5ab26628a390d6d074dcb8cc9a1527",
   "mdm_access.management_messages": "9fdcc8c1b2b3ab892f41da34222bd9fae1d95e0f8428a887f7b8fb491f08bb27",
   "mdm_access.management_sessions": "3ce8ff4a42351798cf5933a1ec2e3ea96cd844711f21573a83b1bd556bca6804",
   "mdm_access.operation_authority_valid(authority jsonb, requested text, as_of bigint)": "14584ecc734265241370a83ef66dda4275d11630b24bb247bb7b5a985666d416",
