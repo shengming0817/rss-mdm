@@ -109,7 +109,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         .with_state(Arc::new(
             rss_mdm_content_service::connections::authority::Authority {
                 tenant,
-                protection,
+                protection: protection.clone(),
                 audit: fixture.audit.clone(),
             },
         )),
@@ -153,7 +153,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
             let entry = catalog.1["items"].as_array().unwrap().iter().find(|e| e["id"] == id).expect("required settings entry");
             ensure!(entry["actions"].as_array().unwrap().iter().any(|a| a["name"] == "configure"), "fresh configure action missing: {id}");
         }
-        verify_material_history(&router,&mut browser).await?;
+        verify_material_history(&router,&mut browser,&protection).await?;
         identity::age_prepared_admin_session()?;
         let after=browser.call(&router,Method::GET,&session_path,None).await?;
         ensure!(after.0==StatusCode::OK && after.1["session"]["issuedAt"]==before.1["session"]["issuedAt"]);
@@ -190,27 +190,137 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
     }).await
 }
 
-/// History metadata is seeded directly; only the 65th Apple key exercises creation.
-/// Unselected archived rows are never used as runtime credentials.
-async fn verify_material_history(router: &Router, browser: &mut Browser) -> Result<()> {
-    use crate::test_support::process::pg;
+/// Prepare legal encrypted history through the existing persistence owners, without provider calls.
+async fn verify_material_history(
+    router: &Router,
+    browser: &mut Browser,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    use rss_mdm_native_protection::ProtectionContext;
+    use sqlx::{Connection, Row};
     let tenant = case_tenant();
-    pg(&format!(
-        r#"
-INSERT INTO mdm_mail.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_mail.heads.revision,65);
-INSERT INTO mdm_mail.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,profile,sender,recipient,credentials)
-SELECT '{tenant}',n,gen_random_uuid(),'history',decode(repeat('00',32),'hex'),'history','a@example.test','b@example.test',decode('00','hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
-INSERT INTO mdm_content_connections.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_content_connections.heads.revision,65);
-INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint)
-SELECT '{tenant}',n,gen_random_uuid(),'history',true,decode('00','hex'),'history',decode(repeat('00',32),'hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
-INSERT INTO mdm_wns.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_wns.heads.revision,65);
-INSERT INTO mdm_wns.versions(tenant_id,revision,operation_id,actor,fingerprint_key,fingerprint,pfn,sid_digest,configuration,material)
-SELECT '{tenant}',n,gen_random_uuid(),'history','history',decode(repeat('00',32),'hex'),'history',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),decode('00','hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
-INSERT INTO mdm_apple_runtime.heads(tenant_id,purpose,revision) VALUES('{tenant}','apns',64) ON CONFLICT(tenant_id,purpose) DO UPDATE SET revision=greatest(mdm_apple_runtime.heads.revision,64);
-INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr)
-SELECT '{tenant}','apns',n,gen_random_uuid(),repeat('0',64),decode('00','hex'),'history metadata' FROM generate_series(1,64)n ON CONFLICT DO NOTHING;
-"#
-    ))?;
+    let tenant_id = rss_request_context::TenantId::parse(tenant)?;
+    let mut connection = sqlx::PgConnection::connect_with(
+        &std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
+    )
+    .await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let mail: i64 = sqlx::query_scalar(
+        "SELECT coalesce((SELECT revision FROM mdm_mail.heads WHERE tenant_id=$1::uuid),0)",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    for revision in mail..65 {
+        rss_mdm_mail_service::store::prepare(
+            &mut tx,
+            tenant,
+            uuid::Uuid::new_v4(),
+            "history",
+            &rss_mdm_mail_service::store::Request {
+                expected_revision: revision,
+                profile: "history".into(),
+                sender: "a@example.test".into(),
+                recipient: "b@example.test".into(),
+                username: "history".to_owned().into(),
+                password: "history-password".to_owned().into(),
+            },
+            protection,
+        )
+        .await?;
+    }
+    let storage:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_content_connections.heads WHERE tenant_id=$1::uuid),0)").bind(tenant).fetch_one(&mut *tx).await?;
+    for revision in storage..65 {
+        rss_mdm_content_service::connections::prepare(
+            &mut tx,
+            tenant_id,
+            uuid::Uuid::new_v4(),
+            &rss_mdm_content_service::connections::Request {
+                expected_revision: revision,
+                profile: "history".into(),
+                source: rss_mdm_content_service::connections::Source::Generate,
+            },
+            "history",
+            protection,
+        )
+        .await?;
+    }
+    let wns: i64 = sqlx::query_scalar(
+        "SELECT coalesce((SELECT revision FROM mdm_wns.heads WHERE tenant_id=$1::uuid),0)",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    for revision in wns..65 {
+        rss_mdm_windows_channel::wns_materials::prepare(
+            &mut tx,
+            tenant,
+            uuid::Uuid::new_v4(),
+            "history",
+            &rss_mdm_windows_channel::wns_materials::Request {
+                expected_revision: revision,
+                package_family_name: "history".into(),
+                sid: "history-sid".to_owned().into(),
+                client_secret: "history-secret".to_owned().into(),
+            },
+            protection,
+        )
+        .await?;
+    }
+    let apple:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1::uuid AND purpose='apns'),0)").bind(tenant).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let seed = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/apple/materials/apns/keys",
+            Some(json!({"expectedRevision":apple,"source":{"kind":"generate"}})),
+        )
+        .await?;
+    ensure!(
+        seed.0.is_success(),
+        "legal Apple seed: {} {}",
+        seed.0,
+        seed.1
+    );
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let row=sqlx::query("SELECT revision,key_id,private_key,public_digest,csr FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='apns' ORDER BY revision DESC LIMIT 1").bind(tenant).fetch_one(&mut *tx).await?;
+    let revision: i64 = row.try_get("revision")?;
+    let key_id: uuid::Uuid = row.try_get("key_id")?;
+    let aad = ProtectionContext::new(
+        tenant_id,
+        &format!("apns:{revision}:{key_id}"),
+        "apple.runtime.private-key",
+        1,
+    )?
+    .derive();
+    let private = protection.open_bytes(&row.try_get::<Vec<u8>, _>("private_key")?, &aad)?;
+    for revision in revision + 1..=64 {
+        let key_id = uuid::Uuid::new_v4();
+        let aad = ProtectionContext::new(
+            tenant_id,
+            &format!("apns:{revision}:{key_id}"),
+            "apple.runtime.private-key",
+            1,
+        )?
+        .derive();
+        let encrypted = protection.seal_bytes(private.expose(), &aad)?;
+        sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,private_key,public_digest,csr) VALUES($1::uuid,'apns',$2,$3,$4,$5,$6)").bind(tenant).bind(revision).bind(key_id).bind(encrypted).bind(row.try_get::<String,_>("public_digest")?).bind(row.try_get::<String,_>("csr")?).execute(&mut *tx).await?;
+    }
+    sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=64 WHERE tenant_id=$1::uuid AND purpose='apns'").bind(tenant).execute(&mut *tx).await?;
+    tx.commit().await?;
     browser.operation = Some(uuid::Uuid::new_v4());
     let created = browser
         .call(

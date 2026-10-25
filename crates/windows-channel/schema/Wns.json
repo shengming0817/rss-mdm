@@ -54,6 +54,26 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "properties": {
+      "applied": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Receipt"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "current": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Receipt"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "desiredRevision": {
         "format": "int64",
         "type": [
@@ -61,20 +81,28 @@
           "null"
         ]
       },
+      "latest": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Receipt"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "revision": {
         "format": "int64",
         "type": "integer"
       },
-      "versions": {
-        "items": {
-          "$ref": "#/$defs/Receipt"
-        },
-        "type": "array"
+      "versionCount": {
+        "format": "int64",
+        "type": "integer"
       }
     },
     "required": [
       "revision",
-      "versions"
+      "versionCount"
     ],
     "title": "Directory",
     "type": "object"
