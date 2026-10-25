@@ -141,6 +141,12 @@ async fn configure_filevault(
     >,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
     let Json(input) = input.map_err(|_| Error::Malformed)?;
+    audit.operation(
+        input.operation_id,
+        "filevault_collection_configure",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     s.configure(&auth.proof, &device, &input, &audit)
         .await
         .map(Json)
@@ -158,6 +164,12 @@ async fn link_filevault(
     >,
 ) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
     let Json(input) = input.map_err(|_| Error::Malformed)?;
+    audit.operation(
+        input.operation_id,
+        "filevault_custody_link",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     s.link(&auth.proof, &device, &input, &audit)
         .await
         .map(Json)

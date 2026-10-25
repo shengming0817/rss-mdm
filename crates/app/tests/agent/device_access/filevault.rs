@@ -32,16 +32,49 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false,"initial configuration: {initial:?}");
         let missing=agent_call(&f.router,Method::GET,path,None,None).await?;ensure!(!missing.0.is_success());
         let managed=format!("/api/v1/devices/{}/recovery-credentials/filevault/configuration",execution::case_device_id());
-        let denied_before=crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403).await?;
-        ensure!(f.author.call(&f.router,Method::GET,&managed,None).await?.0==StatusCode::FORBIDDEN);
-        ensure!(crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403).await?==denied_before,
+        let actor=prepared_subject(&f.author)?;
+        let request=|method:Method,path:&str,input:Option<Value>| -> Result<Request<Body>> {
+            let mut request=Request::builder().method(method).uri(path).header("host","mdm.example.test")
+                .header("origin","https://mdm.example.test").header("x-identity-request","1")
+                .header("x-csrf-token",f.author.csrf.as_ref().context("csrf")?)
+                .header("cookie",f.author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "));
+            if input.is_some() {request=request.header("content-type","application/json");}
+            Ok(request.body(Body::from(input.map(|v|v.to_string()).unwrap_or_default()))?)
+        };
+        let response=f.router.clone().oneshot(request(Method::GET,&managed,None)?).await?;
+        ensure!(response.status()==StatusCode::FORBIDDEN);
+        let request_id=response.headers()["x-request-id"].to_str()?.to_owned();response.into_body().collect().await?;
+        ensure!(crate::audit_test_support::audit_count(|r|r.request()==Some(request_id.as_str())).await?==0,
             "ordinary FileVault configuration read acquired management audit");
-        let denied=f.author.call(&f.router,Method::POST,&managed,Some(json!({"operationId":Uuid::new_v4(),
-            "registration":registration["registrationId"],"generation":registration["generation"],"expectedRevision":0,
-            "enabled":true,"recipientId":protection.active_recipient().id()}))).await?;
-        ensure!(denied.0==StatusCode::FORBIDDEN,"FileVault mutation denial {denied:?}");
-        ensure!(crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403 && r.result()=="denied").await?==denied_before+1,
-            "FileVault mutation lost ingress audit");
+        for (path,action,input) in [
+            (managed.clone(),"filevault_collection_configure",json!({"operationId":Uuid::new_v4(),
+                "registration":registration["registrationId"],"generation":registration["generation"],"expectedRevision":0,
+                "enabled":true,"recipientId":protection.active_recipient().id()})),
+            (format!("/api/v1/devices/{}/recovery-credentials/filevault/link",execution::case_device_id()),
+                "filevault_custody_link",json!({"operationId":Uuid::new_v4(),"otherDevice":case::name("filevault-other-device")})),
+        ] {
+            let response=f.router.clone().oneshot(request(Method::POST,&path,Some(input.clone()))?).await?;
+            ensure!(response.status()==StatusCode::FORBIDDEN,"FileVault {action} denial: {}",response.status());
+            let request_id=response.headers()["x-request-id"].to_str()?.to_owned();response.into_body().collect().await?;
+            let records=crate::audit_test_support::audit_records().await?;
+            let facts:Vec<_>=records.iter().filter(|r|r.request()==Some(request_id.as_str())).collect();
+            ensure!(facts.len()==1,"FileVault {action}: expected one request fact");
+            let fact=facts[0];
+            ensure!(fact.source()=="mdm.request" && fact.actor()==Some(actor.as_str()) && fact.action()==action
+                && fact.target()==execution::case_device_id() && fact.operation()==input["operationId"].as_str()
+                && fact.status()==403 && fact.result()=="denied","FileVault {action}: incomplete denied fact");
+            let anonymous=Request::builder().method(Method::POST).uri(&path).header("host","mdm.example.test")
+                .header("origin","https://mdm.example.test").header("x-identity-request","1")
+                .header("content-type","application/json").body(Body::from(input.to_string()))?;
+            let response=f.router.clone().oneshot(anonymous).await?;
+            ensure!(response.status()==StatusCode::UNAUTHORIZED);
+            let request_id=response.headers()["x-request-id"].to_str()?.to_owned();response.into_body().collect().await?;
+            ensure!(crate::audit_test_support::audit_count(|r|r.request()==Some(request_id.as_str()) && r.source()=="mdm.request"
+                && r.action()==action && r.actor().is_none() && r.operation().is_none() && r.status()==401 && r.result()=="denied").await?==1,
+                "FileVault {action}: missing ingress identity before handler");
+        }
+        ensure!(agent_call(&f.router,Method::GET,path,Some(execution::case_credential()),None).await?.1==initial.1,
+            "denied FileVault writes changed custody configuration");
         f.grants.extend(crate::test_support::identity::device_grants(None,&["security_operate"])?);
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         ensure!(f.author.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);

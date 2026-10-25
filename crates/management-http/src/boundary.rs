@@ -324,6 +324,10 @@ fn route_action(route: &str) -> &'static str {
         "/api/v1/webhooks/deliveries/{id}/redrive" => "webhook_redrive",
         "/api/v1/agent-packages/save" => "software_installer_save",
         "/api/v1/devices/{device}/recovery-credentials/operations" => "command_accept",
+        "/api/v1/devices/{device}/recovery-credentials/filevault/configuration" => {
+            "filevault_collection_configure"
+        }
+        "/api/v1/devices/{device}/recovery-credentials/filevault/link" => "filevault_custody_link",
         _ => "protected_request",
     }
 }
