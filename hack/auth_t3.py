@@ -143,9 +143,9 @@ def run(candidate, tools_image, output):
             mismatch=installation_mismatch(primary)
             with Candidate(candidate,network=primary.network,host='mdm-other.example.test',
                            instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output,require_ui=True) as other:
-                # Browser uses stream 443; host smoke retains the mapped stream listener.
+                # Browser uses TLS 443; host smoke retains the mapped TLS listener.
                 for stack in [primary,other]:
-                    conf=(stack.root/'nginx.conf').read_text().replace('listen 8443;', 'listen 443;\n        listen 8443;')
+                    conf=(stack.root/'nginx.conf').read_text().replace('listen 8443 ssl;', 'listen 443 ssl;\n        listen 8443 ssl;').replace('listen 8443 ssl default_server;', 'listen 443 ssl default_server; listen 8443 ssl default_server;')
                     (stack.root/'nginx.conf').write_text(conf)
                     (stack.root/'container/gateway/nginx.conf').write_text(conf)
                     stack.copy_runtime()
