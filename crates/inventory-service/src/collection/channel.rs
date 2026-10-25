@@ -132,11 +132,18 @@ pub async fn finish_in(
     sqlx::query("UPDATE mdm_access.collection_runs SET attempts=$3,result='snapshot',reason='complete',batch=$4,digest=$5,sealed_at=$6,delivery_pending=true,evidence=$7::jsonb WHERE tenant_id=$1::uuid AND id=$2")
         .bind(p.tenant().to_string()).bind(id).bind(serde_json::to_string(&attempt).map_err(|_|Error::Malformed)?).bind(batch.encode()).bind(&digest).bind(at).bind(serde_json::to_string(&evidence).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
     crate::wake::notify(c).await.map_err(db)?;
-    let audit =
-        rss_mdm_audit_integration::RequestAudit::new(p.tenant().to_string(), "collection_finish");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        p.tenant().to_string(),
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_device(p.registration());
     audit.registration(p.registration());
-    audit.operation(id, "collection_finish");
+    audit.operation(
+        id,
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target_device(p.device());
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
@@ -169,8 +176,16 @@ pub async fn abandon_in(
     let Some(registration) = registration else {
         return Ok(None);
     };
-    let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
-    audit.operation(id, "collection_finish");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        tenant.into(),
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.operation(
+        id,
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("service:collection-finalizer");
     audit.registration(registration);
     let details = serde_json::json!({"collectionResult":"failed","reason":reason,"sealedAt":at});

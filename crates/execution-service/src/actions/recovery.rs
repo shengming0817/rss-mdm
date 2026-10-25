@@ -125,9 +125,14 @@ pub async fn audit_recovery(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             tx.tenant_id().to_string(),
             "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.identify_service("command-recovery");
-        audit.operation(run.id, "command_reconcile");
+        audit.operation(
+            run.id,
+            "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         run.source.audit(&audit);
         audit.target_device(&run.target.device);
         audit.registration(run.target.registration);
@@ -160,8 +165,13 @@ impl ExecutionService {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),
             "command_dispatch",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
-        audit.operation(id, "command_dispatch");
+        audit.operation(
+            id,
+            "command_dispatch",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target(&id.to_string());
         audit.identify_service("command-dispatch");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
@@ -194,6 +204,7 @@ impl ExecutionService {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),
             "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         let result = crate::transaction::run(
             &self.audit_store,
@@ -207,6 +218,7 @@ impl ExecutionService {
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
                         tx.tenant_id().to_string(),
                         "management_write",
+                        rss_mdm_audit_integration::AuditIntent::Management,
                     );
                     let prepared =
                         crate::recovery::prepare(service, tx, &format!("policy.{id}"), &audit)

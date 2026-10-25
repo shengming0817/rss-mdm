@@ -19,27 +19,37 @@ async fn management_audit_failure_logs_preserve_action_and_redaction() {
         let router = Router::new()
             .route(
                 "/api/v1/devices/{id}/inventory",
-                get(move || {
-                    let handler = handler.clone();
-                    async move {
-                        handler.fetch_add(1, Ordering::SeqCst);
-                        Json(json!({"sensitive":"inventory-result"}))
-                    }
-                })
+                get(
+                    move |axum::Extension(audit): axum::Extension<
+                        rss_mdm_audit_integration::RequestAudit,
+                    >| {
+                        let handler = handler.clone();
+                        async move {
+                            audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+                                rss_mdm_audit_integration::SensitiveAction::InventoryBulkExport,
+                            ));
+                            handler.fetch_add(1, Ordering::SeqCst);
+                            Json(json!({"sensitive":"inventory-result"}))
+                        }
+                    },
+                )
                 .owned(
                     &contracts::PROTOCOL_MANAGEMENT_HTTP,
                     &[RouteOperation::Action],
                 ),
             )
             .layer(middleware::from_fn_with_state(
-                Envelope {
-                    admission: admission.clone(),
-                    host: "mdm.example.test".into(),
-                    clock: monotonic(),
-                    audit_store,
-                    requests: Arc::new(tokio::sync::Semaphore::new(4)),
-                    tenant: crate::test_support::case::tenant().into(),
-                },
+                (
+                    Envelope {
+                        admission: admission.clone(),
+                        host: "mdm.example.test".into(),
+                        clock: monotonic(),
+                        audit_store,
+                        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+                        tenant: crate::test_support::case::tenant().into(),
+                    },
+                    Arc::new(Vec::new()),
+                ),
                 envelope,
             ));
         let request = || {
@@ -308,8 +318,12 @@ async fn failed_device_settlement(protocol: DeviceProtocol) -> anyhow::Result<()
                 move |axum::Extension(audit): axum::Extension<RequestAudit>| {
                     let original = original.clone();
                     async move {
-                        audit.operation(operation, "protected_request");
-                        audit.require_request_settlement();
+                        audit.operation(
+                            operation,
+                            "protected_request",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
+                        audit.require_final_request();
                         match outcome {
                             W::Committed => {
                                 audit.mark_commit_started();

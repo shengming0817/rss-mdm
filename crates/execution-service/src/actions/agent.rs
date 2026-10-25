@@ -153,7 +153,7 @@ impl ExecutionService {
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 db::receipt(tx,&actor,input.operation_id(),hash,&response,None).await?;
                 service.audit_store.append_in(tx,&fact,false).await?;
-            }else{audit.require_request_settlement();}
+            }
             Ok(response)
         })).await
     }
@@ -366,7 +366,7 @@ impl ExecutionService {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
-        audit.require_request_settlement();
+        audit.require_final_request();
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,id,attempt,key,audit),|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,key,audit)=*ctx;crate::transaction::lock_authority(service,tx).await?;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;
             let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;

@@ -47,8 +47,11 @@ pub async fn read_source<C: ManagementContentPort>(
     revision: String,
 ) -> Result<Value, Error> {
     auth.require(Permission::SoftwareRead, None)?;
-    audit.set_action("management_read");
-    audit.require_request_settlement();
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    audit.require_final_request();
     audit.target(&id);
     transaction::inspect(
         &app.runtime,
@@ -84,9 +87,16 @@ pub async fn write_source<C: ManagementContentPort>(
         SourceChange::Disable => Permission::SoftwareWithdraw,
     };
     auth.require(permission, None)?;
-    audit.set_action("management_write");
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&id);
-    audit.operation(op.operation_id, "management_write");
+    audit.operation(
+        op.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     transaction::run(
         &app.audit,
         &app.runtime,
@@ -114,8 +124,11 @@ pub async fn read_version<C: ManagementContentPort>(
     version: String,
 ) -> Result<Value, Error> {
     auth.require(Permission::SoftwareRead, None)?;
-    audit.set_action("management_read");
-    audit.require_request_settlement();
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    audit.require_final_request();
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     transaction::inspect(
         &app.runtime,
@@ -161,10 +174,17 @@ pub async fn write_version<C: ManagementContentPort>(
         VersionChange::Withdraw => Permission::SoftwareWithdraw,
     };
     auth.require(permission, None)?;
-    audit.set_action("management_write");
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
-    audit.operation(op.operation_id, "management_write");
-    audit.require_request_settlement();
+    audit.operation(
+        op.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let verified = if matches!(op.input, VersionChange::Enable) {
         let resource = transaction::inspect(
             &app.runtime,
@@ -265,8 +285,11 @@ pub async fn download<C: ManagementContentPort>(
     selection: Selection,
 ) -> Result<C::Download, Error> {
     auth.require(Permission::SoftwareRead, None)?;
-    audit.require_request_settlement();
-    audit.set_action("management_read");
+    audit.require_final_request();
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
     let frozen = transaction::inspect(
         &app.runtime,
@@ -344,13 +367,20 @@ pub async fn import<C: ManagementContentPort>(
     use sha2::{Digest, Sha256};
     auth.require(Permission::SoftwareWrite, None)?;
     auth.require(Permission::ResourceWrite, None)?;
-    audit.set_action("management_write");
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.resource_target(
         rss_mdm_audit_integration::TargetKind::Resource,
         &op.input.resource,
     );
-    audit.operation(op.operation_id, "management_write");
-    audit.require_request_settlement();
+    audit.operation(
+        op.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let source = transaction::inspect(
         &app.runtime,
         app.tenant,

@@ -57,7 +57,10 @@ impl Source for Backend {
                 return Err(Error::Forbidden);
             }
             p.bind_audit(&audit)?;
-            audit.set_action("user_profile_read");
+            audit.set_action(
+                "user_profile_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            );
             match command {
                 Command::Definitions(raw) => {
                     p.require(Permission::UserAttributeDefinitionsRead, None)?;
@@ -78,8 +81,12 @@ impl Source for Backend {
                 Command::Definition(id) => store::one(&self.audit, &p, &audit, id, false).await,
                 Command::Operation(id) => store::one(&self.audit, &p, &audit, id, true).await,
                 Command::Change(id, input) => {
-                    audit.operation(input.operation_id, "user_attribute_definition_change");
-                    audit.require_request_settlement();
+                    audit.operation(
+                        input.operation_id,
+                        "user_attribute_definition_change",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
+                    audit.require_final_request();
                     store::change(&self.audit, &p, &audit, id, &input).await
                 }
                 Command::Me(query) => self.profile(&p, &audit, None, query).await,

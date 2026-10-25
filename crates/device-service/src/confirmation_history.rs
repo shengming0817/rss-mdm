@@ -58,13 +58,18 @@ impl Associations {
                             audits.push(RequestAudit::new(
                                 service.tenant.to_string(),
                                 "device_association_confirm",
+                                rss_mdm_audit_integration::AuditIntent::Management,
                             ));
                             let audit = audits.last().ok_or(Error::Malformed)?;
                             request.operation_id = Uuid::new_v4();
                             validate_confirm(request)?;
                             proof.bind_audit(audit)?;
                             let change = Change::Confirm(request);
-                            audit.operation(change.operation(), change.action());
+                            audit.operation(
+                                change.operation(),
+                                change.action(),
+                                rss_mdm_audit_integration::AuditIntent::Management,
+                            );
                             let digest = Sha256::digest(
                                 serde_json::to_vec(&change).map_err(|_| Error::Malformed)?,
                             );

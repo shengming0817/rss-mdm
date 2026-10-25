@@ -35,7 +35,7 @@ async fn read(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<Directory>, Error> {
-    audit.set_action("smtp_read");
+    audit.set_action("smtp_read", rss_mdm_audit_integration::AuditIntent::Routine);
     Ok(Json(service.read(&auth.proof, &audit).await?))
 }
 async fn operation(
@@ -44,7 +44,7 @@ async fn operation(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Receipt>, Error> {
-    audit.set_action("smtp_read");
+    audit.set_action("smtp_read", rss_mdm_audit_integration::AuditIntent::Routine);
     Ok(Json(service.operation(&auth.proof, &audit, id).await?))
 }
 async fn create(

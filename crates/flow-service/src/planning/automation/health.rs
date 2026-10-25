@@ -58,7 +58,11 @@ impl Planning {
                 .bind(tenant).fetch_optional(c).await
         })).await?;
         if let Some(generation) = generation {
-            let audit = RequestAudit::new(self.tenant.to_string(), "automation_failed");
+            let audit = RequestAudit::new(
+                self.tenant.to_string(),
+                "automation_failed",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             audit.identify_service("service:asset-automation");
             audit.target("asset_ingress");
             let fact = rss_mdm_audit_integration::Fact::business(

@@ -1142,6 +1142,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
                 "management_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
             );
             proof.bind_audit(&audit)?;
             let result = groups
@@ -1424,7 +1425,7 @@ async fn resource_query_executes_filter_sort_projection_and_bound_continuations(
                 Arc::new(crate::clock::SystemClock)).await?;
             change_management_grants(&subject,json!([])).await?;
             ensure!(browser.call(&router,Method::GET,&uri(&filter,sort,fields,"2",Some(&token)),None).await?.0==StatusCode::FORBIDDEN,"cursor granted authority");
-            let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"management_read");
+            let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"management_read", rss_mdm_audit_integration::AuditIntent::Routine);
             stale.bind_audit(&audit)?;
             let result=catalog.directory(&stale,&rss_mdm_resource::directory::Query::parse("limit=1")?,&audit).await;
             audit.finalize(None);

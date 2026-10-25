@@ -66,9 +66,17 @@ impl Fixture {
         observed: i64,
     ) -> Result<Vec<String>> {
         use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
-        let audit = RequestAudit::new(proof.tenant_id().into(), "command_reconcile");
+        let audit = RequestAudit::new(
+            proof.tenant_id().into(),
+            "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         proof.bind_audit(&audit)?;
-        audit.operation(operation, "command_reconcile");
+        audit.operation(
+            operation,
+            "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let mut records = Vec::new();
         let mut ids = Vec::new();
         for index in indices {

@@ -27,8 +27,16 @@ pub async fn initialize(config: Initialize) -> Result<Receipt, Error> {
     let clock = crate::lifecycle::RuntimeTimer;
     let deadline =
         Deadline::from_timeout(&clock, Duration::from_secs(30)).expect("bounded command budget");
-    let audit = RequestAudit::new(config.user.tenant_id.clone(), "authorization_initialize");
-    audit.operation(config.operation_id, "authorization_initialize");
+    let audit = RequestAudit::new(
+        config.user.tenant_id.clone(),
+        "authorization_initialize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.operation(
+        config.operation_id,
+        "authorization_initialize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let mut owned = Resources {
         runtime: None,
         source_runtime: None,
@@ -214,8 +222,11 @@ use rss_mdm_audit_integration::{FailureReason, RequestAudit};
 mod tests {
     #[tokio::test]
     async fn pending_initialization_projects_request_deadline() {
-        let audit =
-            super::RequestAudit::new(uuid::Uuid::new_v4().to_string(), "authorization_initialize");
+        let audit = super::RequestAudit::new(
+            uuid::Uuid::new_v4().to_string(),
+            "authorization_initialize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let deadline = rss_request_context::Deadline::from_timeout(
             &crate::lifecycle::RuntimeTimer,
             std::time::Duration::ZERO,

@@ -221,19 +221,21 @@ impl Service {
                             })
                             .await?;
                         let snapshot = a.snapshot();
-                        let op = snapshot.operation_id.ok_or(Error::Malformed)?;
-                        let fact = Fact::business(
-                            a,
-                            &format!("agent-enroll:{}:{op}", snapshot.action),
-                            change.digest.as_bytes(),
-                            200,
-                            "success",
-                            None,
-                        )?;
-                        store
-                            .append(tx, &fact, change.replay)
-                            .await
-                            .map_err(Error::from)?;
+                        if snapshot.intent != rss_mdm_audit_integration::AuditIntent::Routine {
+                            let op = snapshot.operation_id.ok_or(Error::Malformed)?;
+                            let fact = Fact::business(
+                                a,
+                                &format!("agent-enroll:{}:{op}", snapshot.action),
+                                change.digest.as_bytes(),
+                                200,
+                                "success",
+                                None,
+                            )?;
+                            store
+                                .append(tx, &fact, change.replay)
+                                .await
+                                .map_err(Error::from)?;
+                        }
                         if change.replay {
                             a.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,

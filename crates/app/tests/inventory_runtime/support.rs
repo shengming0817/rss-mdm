@@ -41,7 +41,11 @@ pub(crate) async fn report_statuses(
     statuses: [u16; 2],
 ) -> Result<Run> {
     let principal = service.management_principal(credential).await?;
-    let audit = RequestAudit::new(principal.tenant().to_string(), "windows_management");
+    let audit = RequestAudit::new(
+        principal.tenant().to_string(),
+        "windows_management",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.registration(principal.registration());
     audit.identify_device(principal.registration());
     audit.target(principal.device());
@@ -71,8 +75,12 @@ pub(crate) async fn report_statuses(
                     for fact in &facts {
                         store.append(tx, fact, false).await?;
                     }
-                    audit.operation(id, "windows_management");
-                    audit.require_request_settlement();
+                    audit.operation(
+                        id,
+                        "windows_management",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
+                    audit.require_final_request();
                     audit.mark_commit_started();
                     Ok::<_, anyhow::Error>((scope, id))
                 })

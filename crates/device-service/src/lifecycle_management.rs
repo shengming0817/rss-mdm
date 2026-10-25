@@ -138,7 +138,11 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         p.bind_audit(audit)?;
-        audit.operation(change.operation(), change.name());
+        audit.operation(
+            change.operation(),
+            change.name(),
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest =
             Sha256::digest(serde_json::to_vec(&change).map_err(|_| Error::Malformed)?).to_vec();
         let budget = AuditBudget::new(std::time::Duration::from_secs(8));

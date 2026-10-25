@@ -263,6 +263,10 @@ for part in ('receipts', 'integrity', 'recovery', 'budget'):
         sources=('crates/audit-integration/src/*', 'crates/audit-integration/src/budget.rs'),
         tests=(f'crates/app/tests/audit/{part}.rs',),
         support=('crates/app/tests/audit/mod.rs',))
+add('audit.worker', selectors=('audit_projection::tests::',), fixtures=('identity',),
+    sources=('crates/app/src/audit_projection.rs', 'crates/app/src/worker_wake.rs'),
+    tests=('crates/app/tests/audit/worker.rs',), support=('crates/app/tests/audit/mod.rs',))
+MODULES['audit.worker'] = replace(MODULES['audit.worker'], db_mode='fresh', scope='pair')
 MODULES['audit.recovery'] = replace(MODULES['audit.recovery'], children=('audit_integration_tests::test_support::',))
 app_family('identity', fixtures=())
 MODULES['identity.sso'] = replace(MODULES['identity.sso'], fixtures=('identity', 'idp'))

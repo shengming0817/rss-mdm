@@ -11,7 +11,11 @@ async fn exercise(pool: &PgPool) -> Result<()> {
     let mode = Integrity::Plain;
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let store = new_store(pool.clone(), mode, tenant).await?;
-    let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "audit_recovery_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     request.set_principal("fixture-principal", crate::test_support::INSTANCE);
     let fact = Fact::business(
         &request,
@@ -132,7 +136,11 @@ async fn retirement_batch(pool: &PgPool) -> Result<()> {
     let cancel = tokio_util::sync::CancellationToken::new();
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
-    let request = RequestAudit::new(tenant.to_string(), "collection_finish");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     request.identify_service("service:collection-finalizer");
     let facts = (0..2)
         .map(|index| {
@@ -208,7 +216,11 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
     )
     .await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
-    let request = RequestAudit::new(tenant.to_string(), "capacity_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "capacity_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let normal = Fact::business(&request, "normal", b"normal", 200, "success", None)?;
     let denied = Fact::business(&request, "denied", b"denied", 403, "denied", None)?;
     let excess = Fact::business(&request, "excess", b"excess", 403, "denied", None)?;
@@ -285,7 +297,11 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
     ensure!(full.events == 1 && full.source_bytes == before.source_bytes);
     ensure!(full.reserved_events == 1 && full.reserved_source_bytes > 0 && full.reserve_exhausted);
     // A saturated business source cannot consume request-completion capacity.
-    let failed_request = RequestAudit::new(tenant.to_string(), "exhausted_business_reserve");
+    let failed_request = RequestAudit::new(
+        tenant.to_string(),
+        "exhausted_business_reserve",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     ensure!(
         rss_mdm_audit_integration::completion::complete(
             &store,
@@ -305,7 +321,11 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
     ensure!(persisted.iter().any(|fact| fact["source"] == "mdm.request"
         && fact["request"] == failed_request.request_id().to_string()
         && fact["outcome"] == "failed"));
-    let another = RequestAudit::new(tenant.to_string(), "capacity_read");
+    let another = RequestAudit::new(
+        tenant.to_string(),
+        "capacity_read",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     ensure!(matches!(
         store
             .settle_request(&another, 200, "success", &budget.source_control())
@@ -358,5 +378,39 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
     );
     request.finalize(None);
     pool.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=audit.receipts: ordinary reads bypass unavailable audit; disclosures remain closed"]
+async fn ordinary_and_sensitive_reads_have_distinct_failure_policies() -> Result<()> {
+    use rss_mdm_audit_integration::{AuditIntent as I, SensitiveAction as S, completion};
+    let (pool, runtime, store) = crate::audit_test_support::request_store().await?;
+    let tenant = TenantId::parse(crate::test_support::case::tenant())?;
+    let before = bytes(&pool, tenant).await?.len();
+    let ordinary = RequestAudit::new(tenant.to_string(), "ordinary_read", I::Routine);
+    ensure!(
+        completion::complete(&store, &ordinary, 200, None)
+            .await
+            .is_none()
+    );
+    ensure!(bytes(&pool, tenant).await?.len() == before);
+    runtime.close().await;
+    pool.close().await;
+    let ordinary = RequestAudit::new(tenant.to_string(), "ordinary_read", I::Routine);
+    ensure!(
+        completion::complete(&store, &ordinary, 200, None)
+            .await
+            .is_none()
+    );
+    let sensitive = RequestAudit::new(
+        tenant.to_string(),
+        "private_export",
+        I::Sensitive(S::CertificatePrivateExport),
+    );
+    ensure!(matches!(
+        completion::complete(&store, &sensitive, 200, None).await,
+        Some(completion::Replacement::Audit(_))
+    ));
     Ok(())
 }

@@ -36,7 +36,11 @@ impl ExecutionService {
         if !discovered {
             return Ok(None);
         }
-        let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "apple_push",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("apple-push");
         let result = crate::transaction::run(
             &self.audit_store,
@@ -156,7 +160,11 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                         audit.registration(registration);
-                        audit.operation(id, "apple_push");
+                        audit.operation(
+                            id,
+                            "apple_push",
+                            rss_mdm_audit_integration::AuditIntent::Management,
+                        );
                         audit.target(&registration.to_string());
                         let revision = row.revision;
                         let fingerprint = checked_input(serde_json::to_vec(&(
@@ -201,9 +209,17 @@ impl ExecutionService {
         status: Option<u16>,
         outcome: PushOutcome,
     ) -> std::result::Result<(), Error> {
-        let audit = RequestAudit::new(self.tenant.to_string(), "apple_push");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "apple_push",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.registration(wake.registration);
-        audit.operation(wake.id, "apple_push");
+        audit.operation(
+            wake.id,
+            "apple_push",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target(&wake.registration.to_string());
         audit.identify_service("apple-push");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
@@ -218,11 +234,11 @@ impl ExecutionService {
             match changed {
                 Some(0|1)=>{service.audit_store.append_in(tx,&fact,changed==Some(0)).await?;},
                 Some(_)=>return Err(Error::Conflict.into()),
-                None=>{audit.require_request_settlement();},
+                None=>{audit.require_final_request();},
             }
             Ok(())
         })).await;
-        if result.is_ok() && audit.snapshot().settle_request {
+        if result.is_ok() && audit.snapshot().final_request {
             let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
                 std::time::Duration::from_secs(2),
             );

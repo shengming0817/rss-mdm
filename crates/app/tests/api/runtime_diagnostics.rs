@@ -54,7 +54,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                             && r.status() == 200
                             && r.actor() == Some(subject.as_str()))
                         .await?
-                            == before + 1
+                            == before
                     );
                     change_management_grants(&subject, json!([])).await?;
                     ensure!(
@@ -790,7 +790,11 @@ async fn management_audit_capacity_is_visible_without_cross_tenant_counts() -> R
     let source = Arc::get_mut(&mut fixture.source).expect("unshared diagnostics fixture");
     source.audit_store = store.clone();
     source.management_tenant = management;
-    let request = RequestAudit::new(management.to_string(), "capacity_test");
+    let request = RequestAudit::new(
+        management.to_string(),
+        "capacity_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(
         &request,
         "management-capacity",

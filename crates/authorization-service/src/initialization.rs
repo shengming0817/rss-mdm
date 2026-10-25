@@ -109,8 +109,12 @@ pub async fn complete_verified_administrator(
     }
     user.validate(&user.tenant_id, &user.instance_id)?;
     audit.set_principal(&user.principal_id, &user.instance_id);
-    audit.operation(operation, "authorization_transfer");
-    audit.require_request_settlement();
+    audit.operation(
+        operation,
+        "authorization_transfer",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let bytes =
         serde_json::to_vec(&("administrator-transfer", &user)).map_err(|_| Error::Malformed)?;
     let fact = rss_mdm_audit_integration::Fact::business(

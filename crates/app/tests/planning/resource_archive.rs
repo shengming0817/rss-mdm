@@ -47,6 +47,7 @@ async fn execute(
     let audit = crate::planning::test_support::RequestAudit::new(
         service.tenant.to_string(),
         "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", crate::test_support::INSTANCE);
     let catalog = crate::flow::catalog(

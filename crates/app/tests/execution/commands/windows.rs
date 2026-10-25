@@ -220,7 +220,11 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("mixed continuation"))?;
     let continuation = format!("{selected}&cursor={cursor}");
-    let audit = RequestAudit::new(case_tenant().into(), "management_read");
+    let audit = RequestAudit::new(
+        case_tenant().into(),
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     client.execution.recover_operation(id, &audit).await?;
     audit.finalize(None);
     ensure!(

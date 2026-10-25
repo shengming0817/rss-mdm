@@ -24,9 +24,12 @@ impl Groups {
         proof.require_all_devices(Permission::InventoryRead)?;
         let authority = proof.authorization()?.query_binding(proof)?;
         audit.target_device(device);
-        audit.set_action("management_read");
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,device,query,audit,authority),|ctx,tx|Box::pin(async move {
-            let (s,p,device,q,audit,authority)=ctx;
+            let (s,p,device,q,_audit,authority)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let current=tx.with_connection(move|c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
@@ -65,7 +68,7 @@ impl Groups {
                 let after=checked_input(Uuid::parse_str(items.last().and_then(|i|i["id"].as_str()).ok_or(Error::Conflict)?))?;
                 Some(checked_input(codec.encode(&binding,&after))?.as_str().to_owned())
             } else {None};
-            p.check_live()?;audit.require_request_settlement();
+            p.check_live()?;
             Ok(serde_json::json!({"items":items,"nextCursor":next,"associationCurrent":resolved.current}))
         }),TransactionOwner::Assets).await
     }

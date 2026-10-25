@@ -75,7 +75,11 @@ async fn change(
     >,
 ) -> std::result::Result<Json<Value>, Error> {
     let Json(input) = input.map_err(Error::from)?;
-    audit.operation(input.operation_id, "management_write");
+    audit.operation(
+        input.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.resource_target(
         rss_mdm_audit_integration::TargetKind::Policy,
         &id.to_string(),
@@ -122,7 +126,11 @@ async fn rerun(
     >,
 ) -> std::result::Result<Json<Value>, Error> {
     let Json(input) = input.map_err(Error::from)?;
-    audit.operation(input.operation_id, "management_write");
+    audit.operation(
+        input.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.resource_target(
         rss_mdm_audit_integration::TargetKind::Policy,
         &id.to_string(),
@@ -172,7 +180,11 @@ async fn delete(
     body: Result<Json<Delete>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Value>, Error> {
     let Json(body) = body.map_err(Error::from)?;
-    audit.operation(body.operation_id, "management_write");
+    audit.operation(
+        body.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.resource_target(
         rss_mdm_audit_integration::TargetKind::Policy,
         &id.to_string(),

@@ -239,7 +239,11 @@ impl Service {
                 serde_json::to_vec(&(input, target_fingerprint)).map_err(|_| Error::Malformed)?
             )
         );
-        audit.operation(input.operation_id, "enterprise_configuration");
+        audit.operation(
+            input.operation_id,
+            "enterprise_configuration",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         if let Some(value) = self
             .enterprise_replay(actor, input.operation_id, &digest)
             .await?

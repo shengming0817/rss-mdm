@@ -72,7 +72,11 @@ impl ExecutionService {
         }
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("agent-install-policy");
-        fact_audit.operation(input.operation_id, "command_accept");
+        fact_audit.operation(
+            input.operation_id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         fact_audit.target_device(device);
         let result = self
             .queue_authorized_in(
@@ -284,9 +288,13 @@ impl ExecutionService {
         id: Uuid,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
-        audit.require_request_settlement();
+        audit.require_final_request();
         audit.identify_service("native-package-download");
-        audit.operation(id, "agent_content");
+        audit.operation(
+            id,
+            "agent_content",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         crate::transaction::inspect(&self.runtime, self.tenant, (self, id), |ctx, tx| {
             Box::pin(async move {
                 let (s, id) = *ctx;

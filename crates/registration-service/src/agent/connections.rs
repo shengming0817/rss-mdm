@@ -368,7 +368,11 @@ impl Service {
         if input.operation_id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        audit.operation(input.operation_id, "agent_connections_save");
+        audit.operation(
+            input.operation_id,
+            "agent_connections_save",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(&("save", input))?;
         self.write(audit,(self,p,input,audit,d),|ctx,c|Box::pin(async move {
             let (service,p,input,audit,d)=ctx;
@@ -403,7 +407,11 @@ impl Service {
         if input.operation_id.is_nil() {
             return Err(Error::Malformed.into());
         }
-        audit.operation(input.operation_id, "agent_connections_publish");
+        audit.operation(
+            input.operation_id,
+            "agent_connections_publish",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(&("publish", input))?;
         self.write(audit,(self,p,input,audit,d),|ctx,c|Box::pin(async move{
             let(service,p,input,audit,d)=ctx;
@@ -488,7 +496,11 @@ impl Service {
         let p = self.authenticate(peer).await?;
         audit.identify_device(p.registration());
         audit.target(p.device());
-        audit.operation(input.operation_id, "agent_connections_ack");
+        audit.operation(
+            input.operation_id,
+            "agent_connections_ack",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(&(p.registration(), p.generation(), input))?;
         self.write(audit,(self,p,input,d),|ctx,c|Box::pin(async move{
             let(service,p,input,d)=ctx;
@@ -525,7 +537,11 @@ impl Service {
         let principal = self.authenticate(peer).await?;
         audit.identify_device(principal.registration());
         audit.target(principal.device());
-        audit.operation(input.operation_id, "agent_connections_failure");
+        audit.operation(
+            input.operation_id,
+            "agent_connections_failure",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let fingerprint = digest(&(principal.registration(), principal.generation(), input))?;
         self.write(audit,(self,principal,input,origin,fingerprint),|ctx,c|Box::pin(async move{
             let(service,p,input,origin,digest)=ctx;

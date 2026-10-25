@@ -195,7 +195,11 @@ async fn claim(
     crate::bounded(async {
         let input = body(input)?;
         let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        audit.operation(input.operation_id(), "command_read");
+        audit.operation(
+            input.operation_id(),
+            "command_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         Ok(Json(
             app.execution
                 .claim_action(&principal, &input, &audit)
@@ -216,7 +220,11 @@ async fn event(
     crate::bounded(async {
         let input = body(input)?;
         let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        audit.operation(input.operation_id(), "command_accept");
+        audit.operation(
+            input.operation_id(),
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         Ok(Json(
             app.execution
                 .action_event(&principal, id, &input, &audit)
@@ -242,7 +250,11 @@ async fn download(
 ) -> Result<Response, crate::AgentError> {
     crate::bounded(async {
         let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        audit.operation(id, "command_read");
+        audit.operation(
+            id,
+            "command_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         let content = app
             .execution
             .action_content(
@@ -398,7 +410,11 @@ async fn native_enrollment(
     crate::bounded(async {
         let input = body(input)?;
         let principal = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
-        audit.operation(input.operation_id, "agent_native_enrollment");
+        audit.operation(
+            input.operation_id,
+            "agent_native_enrollment",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         Ok(Json(
             app.execution
                 .native_enrollment(&principal, id, &input, &audit)

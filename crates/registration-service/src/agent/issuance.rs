@@ -28,8 +28,12 @@ impl Service {
         let spki = hex(verified.spki());
         let csr = STANDARD.decode(&input.csr).map_err(|_| Error::Malformed)?;
         // Authorization and candidate writes are phases; the HTTP result still needs settlement.
-        a.require_request_settlement();
-        a.operation(input.operation_id, "agent_certificate_authorize");
+        a.require_final_request();
+        a.operation(
+            input.operation_id,
+            "agent_certificate_authorize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let claim = self
             .write(a, (self, input, a, request_digest, spki, csr), |ctx, c| {
                 Box::pin(async move {
@@ -227,7 +231,11 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
         id: Uuid,
         a: &RequestAudit,
     ) -> Result<(), Error> {
-        a.operation(input.operation_id, "agent_certificate_unknown");
+        a.operation(
+            input.operation_id,
+            "agent_certificate_unknown",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a, (self, id), |ctx, c| {
             Box::pin(async move {
                 let (service, id) = ctx;
@@ -261,7 +269,11 @@ state='signing'
         a: &RequestAudit,
         principal: Option<&AuthorizedPrincipal>,
     ) -> Result<wire::Candidate, Error> {
-        a.operation(operation, "agent_certificate_result");
+        a.operation(
+            operation,
+            "agent_certificate_result",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest = if principal.is_some() {
             digest(&("agent_issuance_recovery", id, &certificate.chain))?
         } else {

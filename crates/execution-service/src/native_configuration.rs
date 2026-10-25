@@ -720,7 +720,11 @@ impl ExecutionService {
         )?;
         let fact_audit = audit.transaction_copy();
         fact_audit.identify_service("configuration-policy");
-        fact_audit.operation(input.operation_id, "command_accept");
+        fact_audit.operation(
+            input.operation_id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         fact_audit.target_device(device);
         let result = self
             .queue_authorized_in(tx, device, input, authority, fingerprint, &fact_audit)

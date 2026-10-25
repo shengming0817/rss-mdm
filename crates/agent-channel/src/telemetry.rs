@@ -89,7 +89,10 @@ async fn upload(
     json_content_type(&headers)?;
     let service = service(&app)?;
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_upload");
+    audit.set_action(
+        "agent_telemetry_upload",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -116,7 +119,10 @@ async fn gap_upload(
     json_content_type(&headers)?;
     let service = service(&app)?;
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_gap_upload");
+    audit.set_action(
+        "agent_telemetry_gap_upload",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -145,7 +151,10 @@ async fn gap_receipt(
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryGapReceipt>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_gap_status");
+    audit.set_action(
+        "agent_telemetry_gap_status",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -167,7 +176,10 @@ async fn receipt(
     Path(id): Path<Uuid>,
 ) -> Result<Json<wire::TelemetryReceipt>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_status");
+    audit.set_action(
+        "agent_telemetry_status",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -189,7 +201,10 @@ async fn configuration(
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::SignedTelemetryConfiguration>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_configuration");
+    audit.set_action(
+        "agent_telemetry_configuration",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -211,7 +226,10 @@ async fn current(
     Path((id, observation)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<wire::TelemetryCurrentStatus>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_current_status");
+    audit.set_action(
+        "agent_telemetry_current_status",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -279,7 +297,10 @@ async fn material(
     Path((policy, version)): Path<(Uuid, Uuid)>,
 ) -> Result<axum::response::Response, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_material");
+    audit.set_action(
+        "agent_telemetry_material",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -303,7 +324,10 @@ async fn directory(
     headers: HeaderMap,
 ) -> Result<Json<wire::TelemetryDirectory>, AgentError> {
     let principal = authenticate(&app.enrollment, &headers, peer.as_ref().map(|p| &p.0)).await?;
-    audit.set_action("agent_telemetry_directory");
+    audit.set_action(
+        "agent_telemetry_directory",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());

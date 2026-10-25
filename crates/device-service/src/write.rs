@@ -65,7 +65,11 @@ impl Associations {
             return Err(Error::Forbidden);
         }
         proof.bind_audit(audit)?;
-        audit.operation(change.operation(), change.action());
+        audit.operation(
+            change.operation(),
+            change.action(),
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest: Vec<u8> =
             Sha256::digest(serde_json::to_vec(&change).map_err(|_| Error::Malformed)?).to_vec();
         let budget = AuditBudget::new(Duration::from_secs(8));

@@ -80,6 +80,8 @@ pub struct Component {
     pub dispatch: Option<Dispatch>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub audit_backlog: Option<rss_mdm_audit_integration::BacklogSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_progress: Option<serde_json::Value>,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -264,7 +266,10 @@ async fn read(
     Extension(audit): Extension<RequestAudit>,
     Extension(deadline): Extension<RequestDeadline>,
 ) -> Result<Json<Snapshot>, Error> {
-    audit.set_action("runtime_diagnostics_read");
+    audit.set_action(
+        "runtime_diagnostics_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target("runtime");
     auth.proof
         .manage(rss_mdm_authorization_service::Permission::RuntimeDiagnosticsRead)?;

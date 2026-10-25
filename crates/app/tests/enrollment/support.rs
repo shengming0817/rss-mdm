@@ -8,10 +8,18 @@ pub(crate) fn audit(
     device: &str,
     action: &'static str,
 ) -> RequestAudit {
-    let a = RequestAudit::new(proof.tenant_id().into(), action);
+    let a = RequestAudit::new(
+        proof.tenant_id().into(),
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     proof.bind_audit(&a).unwrap();
     a.target(device);
-    a.operation(key, action);
+    a.operation(
+        key,
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     a
 }
 pub(crate) async fn create(

@@ -112,7 +112,11 @@ mod storage {
         service: &assets::AssetService,
         command: &assets::Command,
     ) -> Result<Value, rss_mdm_inventory_service::Error> {
-        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        let audit = RequestAudit::new(
+            tenant().to_string(),
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", crate::test_support::INSTANCE);
         let result = service.execute(command, &audit, &|| Ok(())).await;
         audit.finalize(None);
@@ -245,7 +249,11 @@ mod storage {
             },
         };
         let audit = || {
-            let audit = RequestAudit::new(tenant.to_string(), "management_write");
+            let audit = RequestAudit::new(
+                tenant.to_string(),
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             audit.set_principal("operator", crate::test_support::INSTANCE);
             audit
         };

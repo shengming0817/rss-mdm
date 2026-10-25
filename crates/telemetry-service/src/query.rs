@@ -174,7 +174,7 @@ impl Service {
                             })
                         })
                         .await?;
-                    audit.require_request_settlement();
+
                     Ok(result)
                 })
             })

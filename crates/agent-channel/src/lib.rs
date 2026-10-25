@@ -188,7 +188,10 @@ async fn report_inner(
         principal.epoch(),
     )
     .map_err(Error::from)?;
-    audit.set_action("agent_report");
+    audit.set_action(
+        "agent_report",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());
@@ -266,7 +269,10 @@ async fn status_inner(
         principal.epoch(),
     )
     .map_err(Error::from)?;
-    audit.set_action("agent_report_read");
+    audit.set_action(
+        "agent_report_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.identify_device(principal.registration());
     audit.registration(principal.registration());
     audit.target_device(principal.device());

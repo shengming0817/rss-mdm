@@ -387,7 +387,11 @@ impl crate::Associations {
     ) -> Result<usize> {
         use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
         let budget = AuditBudget::new(std::time::Duration::from_secs(8));
-        let audit = RequestAudit::new(self.tenant.to_string(), "device_retirement_revoked");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "device_retirement_revoked",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("device-lifecycle");
         let attempt=self.audit.write(self.tenant,&budget.source_control(),(self,participant,&audit),|(service,participant,audit),tx|Box::pin(async move {
             let service=*service;let participant=*participant;let audit=*audit;

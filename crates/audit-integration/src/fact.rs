@@ -5,7 +5,7 @@ use rss_request_context::{RequestId, TenantId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details";
+pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details,sensitiveAction";
 
 /// Source-owned fact. A stable key identifies the operation and phase, never its outcome.
 pub struct Fact {
@@ -109,6 +109,7 @@ impl Fact {
             "plan": snapshot.plan,
             "writeOutcome": request.map(|_| snapshot.write_outcome),
             "details": null,
+            "sensitiveAction": match snapshot.intent { crate::AuditIntent::Sensitive(action) => Some(action.as_str()), _ => None },
         }))
         .map_err(|_| InvalidFact::Payload)?;
         let facts = serde_json::to_vec(&(

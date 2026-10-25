@@ -117,14 +117,25 @@ async fn run(
             &scope.to_string(),
         ),
     }
-    audit.set_action(if matches!(command, Command::Scope { .. }) {
-        "management_write"
-    } else {
-        "management_read"
-    });
+    audit.set_action(
+        if matches!(command, Command::Scope { .. }) {
+            "management_write"
+        } else {
+            "management_read"
+        },
+        if matches!(command, Command::Scope { .. }) {
+            rss_mdm_audit_integration::AuditIntent::Management
+        } else {
+            rss_mdm_audit_integration::AuditIntent::Routine
+        },
+    );
     let (operation, _) = storage::identity(&command, audit).map_err(|_| Error::Malformed)?;
     if let Some(id) = operation {
-        audit.operation(id, audit.snapshot().action);
+        audit.operation(
+            id,
+            audit.snapshot().action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
     }
     let authorize = || {
         auth.proof.manage(permission)?;
@@ -179,7 +190,10 @@ async fn group_directory(
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_inventory_service::groups::directory::parse(raw.as_deref().unwrap_or_default())
         .map_err(|_| Error::Malformed)?;
     Ok(Json(s.groups.directory(&auth.proof, &q, &audit).await?))
@@ -190,7 +204,10 @@ async fn scope_directory(
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_flow_service::planning::directory::parse(raw.as_deref().unwrap_or_default())
         .map_err(|_| Error::Malformed)?;
     Ok(Json(
@@ -389,14 +406,22 @@ async fn run_group(
                 rss_mdm_audit_integration::TargetKind::Group,
                 &id.to_string(),
             );
-            audit.operation(change.operation_id, "management_write");
+            audit.operation(
+                change.operation_id,
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
         }
         GroupCommand::GroupPreview { id, operation, .. } => {
             audit.resource_target(
                 rss_mdm_audit_integration::TargetKind::Group,
                 &id.to_string(),
             );
-            audit.operation(*operation, "management_read");
+            audit.operation(
+                *operation,
+                "management_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            );
         }
         GroupCommand::TaskRead { target, .. } => {
             audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, target)
@@ -410,11 +435,18 @@ async fn run_group(
             &group.to_string(),
         ),
     }
-    audit.set_action(if matches!(command, GroupCommand::Group { .. }) {
-        "management_write"
-    } else {
-        "management_read"
-    });
+    audit.set_action(
+        if matches!(command, GroupCommand::Group { .. }) {
+            "management_write"
+        } else {
+            "management_read"
+        },
+        if matches!(command, GroupCommand::Group { .. }) {
+            rss_mdm_audit_integration::AuditIntent::Management
+        } else {
+            rss_mdm_audit_integration::AuditIntent::Routine
+        },
+    );
     let authorize = || {
         auth.proof.manage(permission)?;
         if let GroupCommand::Group { change, .. } = &command
@@ -469,7 +501,10 @@ async fn group_references(
         axum::extract::rejection::QueryRejection,
     >,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let Query(q) = query.map_err(|_| Error::Malformed)?;
     Ok(Json(
         s.groups

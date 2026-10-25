@@ -4,6 +4,7 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
     let audit = RequestAudit::new(
         "11111111-1111-4111-8111-111111111111".into(),
         "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.set_principal("operator", "mdm");
     let id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();

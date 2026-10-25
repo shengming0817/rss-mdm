@@ -147,7 +147,11 @@ impl Management {
         }
         input.policy.validate()?;
         p.bind_audit(a)?;
-        a.operation(input.operation_id, "windows_entra_policy");
+        a.operation(
+            input.operation_id,
+            "windows_entra_policy",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest = crate::enrollment::digest(input);
         let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
         let result=self.audit.write(self.tenant,

@@ -241,7 +241,10 @@ impl AuditStore {
         let partitions = facts
             .iter()
             .map(|fact| fact.frozen.partition())
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         tx.inner
             .prepare_outbox_partitions(&partitions)
             .await

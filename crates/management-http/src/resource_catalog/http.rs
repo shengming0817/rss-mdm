@@ -42,7 +42,10 @@ async fn blueprints(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     Ok(Json(s.catalog.blueprints(&auth.proof, &audit).await?))
 }
 async fn directory(
@@ -51,7 +54,10 @@ async fn directory(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<rss_mdm_query::Page<serde_json::Map<String, Value>>>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_resource::directory::Query::parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
     Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
@@ -69,13 +75,24 @@ async fn run(
         Permission::ResourceRead
     };
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, &id);
-    audit.set_action(if change.is_some() {
-        "management_write"
-    } else {
-        "management_read"
-    });
+    audit.set_action(
+        if change.is_some() {
+            "management_write"
+        } else {
+            "management_read"
+        },
+        if change.is_some() {
+            rss_mdm_audit_integration::AuditIntent::Management
+        } else {
+            rss_mdm_audit_integration::AuditIntent::Routine
+        },
+    );
     if let Some(op) = &change {
-        audit.operation(op.operation_id, "management_write");
+        audit.operation(
+            op.operation_id,
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
     }
     let command = match change {
         Some(change) => Command::Resource { id, change },
@@ -118,7 +135,7 @@ async fn write(
     // Content settles independently. Copy before the resource transaction commits,
     // so a later content rollback cannot erase the confirmed resource commit.
     let content_audit = blueprint.as_ref().map(|_| {
-        audit.require_request_settlement();
+        audit.require_final_request();
         audit.transaction_copy()
     });
     let result = match run(&app, &auth, &audit, id.clone(), Some(op)).await {

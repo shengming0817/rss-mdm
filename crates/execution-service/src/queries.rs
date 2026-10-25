@@ -125,7 +125,7 @@ impl Queries {
                     } else {
                         None
                     };
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     Ok(records::CommandDetail {
                         operation_id: op.id,
                         command_id: op.id,

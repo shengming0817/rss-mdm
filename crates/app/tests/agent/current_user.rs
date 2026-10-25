@@ -334,8 +334,8 @@ async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Resu
 }
 
 #[tokio::test]
-#[ignore = "MODULE=agent.current_user: presence reads and denials persist independently of business audit locks"]
-async fn current_user_read_persists_without_business_audit_contention() -> Result<()> {
+#[ignore = "MODULE=agent.current_user: ordinary presence reads and unauthenticated denials do not enqueue management audit"]
+async fn current_user_read_skips_audit_even_with_business_contention() -> Result<()> {
     use sqlx::Connection;
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
@@ -360,13 +360,13 @@ async fn current_user_read_persists_without_business_audit_contention() -> Resul
             Ok::<i64, anyhow::Error>(sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND convert_from(source_bytes,'UTF8')::jsonb->>'request'=$2")
                 .bind(case_tenant()).bind(id).fetch_one(&mut c).await?)
         };
-        ensure!(count(id).await? == 1, "ordinary read lost its persistent fact");
+        ensure!(count(id).await? == 0, "ordinary read enqueued a persistent fact");
         let response = f.router.clone().oneshot(Request::get(CURRENT)
             .header("host", "mdm.example.test:9445").body(Body::empty())?).await?;
         ensure!(response.status() == StatusCode::UNAUTHORIZED);
         let id = response.headers()["x-request-id"].to_str()?.to_owned();
         response.into_body().collect().await?;
-        ensure!(count(id).await? == 1, "authentication denial lost its durable fact");
+        ensure!(count(id).await? == 0, "ordinary authentication denial enqueued a persistent fact");
         Ok(())
     }).await
 }

@@ -45,7 +45,11 @@ pub(super) async fn mutate(
     if operation.is_nil() {
         return Err(Error::Malformed);
     }
-    audit.operation(operation, "apple_platform_sso");
+    audit.operation(
+        operation,
+        "apple_platform_sso",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fingerprint =
         crypto::digest(&serde_json::to_string(&action).map_err(|_| Error::Malformed)?);
     let budget =

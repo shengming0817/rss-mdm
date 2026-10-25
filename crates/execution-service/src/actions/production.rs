@@ -393,9 +393,16 @@ pub async fn queue_run_in(
         crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id)
             .await?;
     }
-    let audit =
-        rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");
-    audit.operation(id, "command_accept");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        tx.tenant_id().to_string(),
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.operation(
+        id,
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("execution-admission");
     source.audit(&audit);
     audit.target(&id.to_string());

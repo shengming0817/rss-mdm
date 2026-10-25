@@ -40,14 +40,17 @@ pub async fn sources<C: ManagementContentPort>(
 ) -> Result<Value, Error> {
     q.require_schema(&SOURCES).map_err(query_error)?;
     p.manage(Permission::SoftwareRead)?;
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     transaction::inspect(
         &app.runtime,
         app.tenant,
         (app, p, audit, q),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, p, audit, q) = ctx;
+                let (app, p, _audit, q) = ctx;
                 let current = transaction::current(tx, p).await?;
                 current.require(p, Permission::SoftwareRead, None)?;
                 let binding = q
@@ -79,7 +82,7 @@ pub async fn sources<C: ManagementContentPort>(
                     rows.push(row);
                 }
                 p.check_live()?;
-                audit.require_request_settlement();
+
                 Ok(json!(
                     q.page(rows, &app.cursor, &binding).map_err(query_error)?
                 ))
@@ -106,7 +109,7 @@ pub async fn versions<C: ManagementContentPort>(
         (app, p, audit, id, q),
         |ctx, tx| {
             Box::pin(async move {
-                let (app, p, audit, id, q) = ctx;
+                let (app, p, _audit, id, q) = ctx;
                 let current = transaction::current(tx, p).await?;
                 current.require(p, Permission::SoftwareRead, None)?;
                 let binding = q
@@ -124,7 +127,7 @@ pub async fn versions<C: ManagementContentPort>(
                     .await?
                     .map_err(|_| Error::ResourceMissing)?;
                 p.check_live()?;
-                audit.require_request_settlement();
+
                 Ok(json!(
                     q.page(rows, &app.cursor, &binding).map_err(query_error)?
                 ))

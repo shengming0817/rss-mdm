@@ -7,6 +7,7 @@ use std::sync::{
 #[derive(Default)]
 pub(crate) struct Readiness {
     pub(crate) phase: std::sync::Mutex<AuditPhase>,
+    pub(crate) projection: std::sync::Mutex<Option<serde_json::Value>>,
     retrying: AtomicBool,
     pub(crate) task: OnceLock<TaskStatus>,
 }

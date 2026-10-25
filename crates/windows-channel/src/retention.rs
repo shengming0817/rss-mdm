@@ -19,7 +19,11 @@ pub async fn prune_management(
     if !pending {
         return Ok(0);
     }
-    let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "collection_finish");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        tenant.into(),
+        "collection_finish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("service:management-retention");
     let budget = rss_mdm_audit_integration::budget::AuditBudget::retirement(None);
     let attempt = store

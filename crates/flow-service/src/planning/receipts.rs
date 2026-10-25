@@ -36,7 +36,6 @@ pub async fn audit(
         store.append_in(tx, &fact, replayed).await
     } else {
         {
-            audit.require_request_settlement();
             if admitted {
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Unknown);
             }

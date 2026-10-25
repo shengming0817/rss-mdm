@@ -9,7 +9,11 @@ async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_h
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let store = new_store(pool.clone(), integrity(true)?, tenant).await?;
-    let request = RequestAudit::new(tenant.to_string(), "history_restore_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "history_restore_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let facts = (0u32..65)
         .map(|i| {
             Fact::business(
@@ -227,7 +231,11 @@ async fn storage_integrity_is_enforced() -> Result<()> {
         let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
         let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
         empty_reads_preserve_heads(&pool, &store, tenant, &control).await?;
-        let request = RequestAudit::new(tenant.to_string(), "audit_integrity_test");
+        let request = RequestAudit::new(
+            tenant.to_string(),
+            "audit_integrity_test",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let fact = Fact::business(&request, "integrity", b"initial", 200, "success", None)?;
         let source_budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));

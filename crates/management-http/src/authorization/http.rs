@@ -125,7 +125,11 @@ async fn rule_write(
     body: Result<Json<Change<Rule>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
     let Json(change) = body.map_err(Error::from)?;
-    audit.operation(change.operation_id, "authorization_write");
+    audit.operation(
+        change.operation_id,
+        "authorization_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&id.to_string());
     crate::authorization::store::change_rule(&app.audit_store, &auth.proof, id, change, &audit)
         .await
@@ -140,7 +144,11 @@ async fn group_write(
     body: Result<Json<Change<UserGroup>>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<Receipt>, Error> {
     let Json(change) = body.map_err(Error::from)?;
-    audit.operation(change.operation_id, "authorization_write");
+    audit.operation(
+        change.operation_id,
+        "authorization_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&id.to_string());
     crate::authorization::store::change_group(&app.audit_store, &auth.proof, id, change, &audit)
         .await

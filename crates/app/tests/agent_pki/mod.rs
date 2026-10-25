@@ -128,7 +128,11 @@ async fn service_with_provider(
     })?))
 }
 pub(crate) fn audit() -> RequestAudit {
-    RequestAudit::new(case_a().into(), "agent_request")
+    RequestAudit::new(
+        case_a().into(),
+        "agent_request",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    )
 }
 pub(crate) fn grant() -> anyhow::Result<wire::GrantRequest> {
     Ok(wire::GrantRequest {
@@ -1215,7 +1219,7 @@ async fn rotation_requires_installed_trust_and_published_revocation_before_retir
                 &foreign,
                 Purpose::Agent,
                 &activate,
-                &RequestAudit::new(case_b().into(), "pki_rotation"),
+                &RequestAudit::new(case_b().into(), "pki_rotation", rss_mdm_audit_integration::AuditIntent::Management),
                 now()
             )
             .await,

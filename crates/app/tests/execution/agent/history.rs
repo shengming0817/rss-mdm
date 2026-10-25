@@ -247,7 +247,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         let audit =
-            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
+            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read", rss_mdm_audit_integration::AuditIntent::Routine);
         let denied = f.queries.action_run(&stale, policy, task_id, &audit).await;
         ensure!(
             matches!(

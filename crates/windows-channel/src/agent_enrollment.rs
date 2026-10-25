@@ -79,8 +79,12 @@ pub(crate) async fn try_enrollment(
         )
         .map(Some);
     }
-    audit.require_request_settlement();
-    audit.operation(admission.coordinates().operation, "enrollment_issue");
+    audit.require_final_request();
+    audit.operation(
+        admission.coordinates().operation,
+        "enrollment_issue",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let soap::Body::Issue(input) = &message.body else {
         return Err(Error::Malformed);
     };

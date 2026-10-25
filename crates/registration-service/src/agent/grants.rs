@@ -9,7 +9,11 @@ impl Service {
         version(input.wire_version, input.operation_id)?;
         let bound = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
-        a.operation(input.operation_id, "agent_authorization_request");
+        a.operation(
+            input.operation_id,
+            "agent_authorization_request",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a,(self,input,bound,d),|ctx,c|Box::pin(async move {
             let (service,input,bound,d)=ctx;let tenant=service.tenant.to_string();
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2630))")
@@ -64,7 +68,11 @@ impl Service {
     ) -> Result<wire::GrantReceipt, Failure> {
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
-        a.operation(operation, "agent_grant_authorize");
+        a.operation(
+            operation,
+            "agent_grant_authorize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a, (self, p, id, operation, device, a), |ctx, c| {
             Box::pin(async move {
                 let (service, p, id, operation, device, a) = ctx;
@@ -171,7 +179,11 @@ tenant_id=$1::uuid AND id=$2
     ) -> Result<wire::GrantReceipt, Failure> {
         self.proof(p, a)?;
         version(wire::API_VERSION, operation)?;
-        a.operation(operation, "agent_grant_revoke");
+        a.operation(
+            operation,
+            "agent_grant_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a, (self, p, id, operation, a), |ctx, c| {
             Box::pin(async move {
                 let (service, p, id, operation, a) = ctx;
@@ -271,7 +283,11 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
         self.proof(p, a)?;
         version(input.wire_version, input.operation_id)?;
         let bound = hex(csr(&input.csr)?.spki());
-        a.operation(input.operation_id, "agent_recovery_grant");
+        a.operation(
+            input.operation_id,
+            "agent_recovery_grant",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest = digest(&(registration, input))?;
         self.write(
             a,
@@ -459,7 +475,11 @@ impl Service {
         let d = digest(&(principal.registration(), principal.credential(), input))?;
         a.identify_device(principal.registration());
         a.target(principal.device());
-        a.operation(input.operation_id, "agent_renewal_grant");
+        a.operation(
+            input.operation_id,
+            "agent_renewal_grant",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a, (self, principal, input, bound, d), |ctx, c| {
             Box::pin(async move {
                 let (service, p, input, bound, d) = ctx;

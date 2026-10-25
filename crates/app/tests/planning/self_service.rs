@@ -91,8 +91,8 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
             let reads = audit_count(|record| record.action() == "command_read").await?;
             let directory = call(&f, Method::GET, DIRECTORY, None, true, true).await?;
             ensure!(
-                audit_count(|record| record.action() == "command_read").await? == reads + 1,
-                "directory must retain its task read audit action"
+                audit_count(|record| record.action() == "command_read").await? == reads,
+                "ordinary directory reads must not enqueue management audit"
             );
             ensure!(
                 directory.0 == StatusCode::OK
@@ -111,8 +111,8 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                     == StatusCode::UNAUTHORIZED
             );
             ensure!(
-                audit_count(|record| record.action() == "command_read").await? == reads + 1,
-                "unauthenticated directory rejection must retain its task read audit action"
+                audit_count(|record| record.action() == "command_read").await? == reads,
+                "ordinary unauthenticated directory traffic must not enqueue management audit"
             );
             let accepts = audit_count(|record| record.action() == "command_accept").await?;
             ensure!(

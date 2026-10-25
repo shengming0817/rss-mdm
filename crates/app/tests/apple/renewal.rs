@@ -259,6 +259,7 @@ impl Fixture {
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
                 "apple_management",
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
             let stale = self
                 .commands

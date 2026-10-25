@@ -5,20 +5,26 @@ use crate::{
     audit_health::{AuditPhase, Readiness},
     config::Config,
 };
+use futures::{StreamExt, stream::FuturesUnordered};
 use rss_mdm_audit_integration::{AuditProjection, AuditProjectionError};
 use rss_request_context::Clock;
 use rss_runtime::{
     DynManagedResource, ManagedResource, ManagedTask, ManagedTaskRegistration, ShutdownError,
 };
+use rss_transactional_messaging::policy::RetryPolicy;
 use rss_transactional_messaging::policy::{DeliveryBudget, OperationDeadline};
+use rss_transactional_messaging_postgres::PgProjectionRecovery;
 use rss_transactional_messaging_postgres::PgRuntime;
 use sqlx::PgPool;
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
+use tokio::{sync::Notify, time::Instant};
 use tokio_util::sync::CancellationToken;
 pub(crate) const ROLE: &str = "mdm_audit_worker";
 pub(crate) struct Worker {
     delivery: AuditProjection<rss_mdm_native_protection::Protector>,
     pub(crate) health: Arc<Readiness>,
+    capacity: NonZeroUsize,
+    wake: Arc<Notify>,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Audit)
@@ -26,6 +32,7 @@ fn unavailable() -> Error {
 impl Worker {
     pub(crate) async fn open(
         config: &Config,
+        wake: Arc<Notify>,
         mut acquire: impl FnMut(Box<DynManagedResource<'static>>),
     ) -> Result<Arc<Self>, Error> {
         let database = &config.audit_projection.database;
@@ -55,7 +62,14 @@ impl Worker {
             .map_err(|_| unavailable())?;
         let management =
             crate::identity::management_tenant(&config.identity.database, instance).await?;
-        let runtime = crate::identity::open_consumer_runtime(
+        let capacity = NonZeroUsize::new(config.audit_projection.max_inflight as usize)
+            .ok_or_else(unavailable)?;
+        let connections = config
+            .audit_projection
+            .max_inflight
+            .checked_add(1)
+            .ok_or_else(unavailable)?;
+        let (pg, binding) = crate::identity::runtime_inputs(
             database,
             &config.flow.storage.target,
             &config.flow.storage.lineage,
@@ -66,8 +80,16 @@ impl Worker {
                     rss_mdm_authorization_service::tenancy::MANAGEMENT_EPOCH,
                 ),
             ],
-        )
-        .await?;
+        )?;
+        let runtime = Arc::new(
+            PgRuntime::connect_consumer(
+                pg.with_pool_limits(0, connections),
+                crate::lifecycle::RuntimeTimer,
+                binding,
+            )
+            .await
+            .map_err(|_| unavailable())?,
+        );
         acquire(DynManagedResource::new_box(RuntimeResource(
             runtime.clone(),
         )));
@@ -94,6 +116,8 @@ impl Worker {
         Ok(Arc::new(Self {
             delivery,
             health: Arc::default(),
+            capacity,
+            wake,
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -109,54 +133,199 @@ impl Worker {
         })
     }
     async fn work(&self, stop: &CancellationToken) -> Result<(), AuditProjectionError> {
+        let mut pending: Vec<Pending> = Vec::new();
+        let mut claim_after = Instant::now();
+        let mut failures = 0_u32;
+        let mut last_progress = None;
+        let mut uncertain_total = 0_u64;
+        let mut resolved_total = 0_u64;
+        let mut projected_total = 0_u64;
+        let mut last_diagnostic = Instant::now();
         while !stop.is_cancelled() {
-            // Cancellation ends the next batch; it never abandons the original COMMIT owner.
-            let result = self
-                .delivery
-                .run_once(
-                    NonZeroUsize::new(16).expect("bounded batch"),
-                    OperationDeadline::from_remaining(Duration::from_secs(6)),
-                )
-                .await;
-            let delay = match result {
-                Ok(report) => {
-                    self.health.progress(report.projected, report.deferred);
-                    if report.projected > 0 && report.deferred == 0 {
-                        continue;
+            let started = Instant::now();
+            let free = self.capacity.get().saturating_sub(pending.len());
+            let (ready, waiting): (Vec<_>, Vec<_>) =
+                pending.into_iter().partition(|p| p.after <= started);
+            pending = waiting;
+            let recover = ready
+                .into_iter()
+                .map(|mut item| async move {
+                    let result = self.delivery.resolve(&item.identity, operation()).await;
+                    if result.as_ref().is_err_and(|error| error.is_retryable()) {
+                        item.failures = item.failures.saturating_add(1);
+                        item.after = Instant::now() + retry_delay(item.failures);
                     }
-                    match self
-                        .delivery
-                        .next_wakeup(OperationDeadline::from_remaining(Duration::from_secs(1)))
-                        .await
-                    {
-                        Ok(wakeup) => wakeup
+                    (item, result)
+                })
+                .collect::<FuturesUnordered<_>>()
+                .collect::<Vec<_>>();
+            let claim = async {
+                if started < claim_after {
+                    return None;
+                }
+                let limit = NonZeroUsize::new(free)?;
+                Some(
+                    self.delivery
+                        .project_batch(limit, operation(), ACTION_BUDGET)
+                        .await,
+                )
+            };
+            // Both branches retain their original settlement owners. Cancellation only ends
+            // the next iteration; no select! drops an in-flight COMMIT or sibling identity.
+            let (resolved, batch) = tokio::join!(recover, claim);
+            let mut progressed = 0;
+            let mut deferred = 0;
+            let mut failure = None;
+            let mut claim_failed = false;
+            for (item, result) in resolved {
+                match result {
+                    Ok(true) => {
+                        progressed += 1;
+                        resolved_total += 1;
+                    }
+                    // Release temporary identity; only a new durable claim may execute again.
+                    Ok(false) => deferred += 1,
+                    Err(error) => {
+                        if error.is_retryable() {
+                            pending.push(item);
+                        }
+                        retain_failure(&mut failure, error);
+                    }
+                }
+            }
+            if let Some(batch) = batch {
+                match batch {
+                    Ok(report) => {
+                        progressed += report.projected;
+                        projected_total += report.projected as u64;
+                        uncertain_total += report.recoveries.len() as u64;
+                        deferred += report.deferred;
+                        pending.extend(report.recoveries.into_iter().map(|identity| Pending {
+                            identity,
+                            after: Instant::now(),
+                            failures: 0,
+                        }));
+                        if let Some(error) = report.failure {
+                            claim_failed = error.is_retryable();
+                            retain_failure(&mut failure, error);
+                        }
+                    }
+                    Err(error) => {
+                        claim_failed = error.is_retryable();
+                        retain_failure(&mut failure, error);
+                    }
+                }
+            }
+            if progressed > 0 {
+                failures = 0;
+                last_progress = Some(Instant::now());
+                self.health.progress(progressed, deferred);
+            }
+            *self.health.projection.lock().expect("projection health") = Some(serde_json::json!({
+                "phase":"batch_and_recovery", "elapsed_ms":started.elapsed().as_millis(),
+                "capacity":self.capacity.get(), "pending_recovery":pending.len(),
+                "projected_total":projected_total, "uncertain_total":uncertain_total,
+                "resolved_total":resolved_total, "consecutive_failures":failures,
+                "last_progress_age_ms":last_progress.map(|at: Instant| at.elapsed().as_millis()),
+                "failure":failure.map(AuditProjectionError::as_label),
+            }));
+            if let Some(error) = failure {
+                self.health.transient_failure();
+                if !error.is_retryable() {
+                    return Err(error);
+                }
+            }
+            if claim_failed {
+                failures = failures.saturating_add(1);
+                claim_after = Instant::now() + retry_delay(failures);
+            } else if started >= claim_after {
+                claim_after = Instant::now();
+            }
+            if failure.is_some() || last_diagnostic.elapsed() >= RESCAN {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "event":"mdm_audit_projection_progress", "phase":"batch_and_recovery",
+                        "elapsed_ms":started.elapsed().as_millis(), "projected":progressed,
+                        "deferred":deferred, "pending_recovery":pending.len(),
+                        "capacity":self.capacity.get(), "consecutive_failures":failures,
+                        "retry_ms":claim_after.saturating_duration_since(Instant::now()).as_millis(),
+                        "last_progress_age_ms":last_progress.map(|at| at.elapsed().as_millis()),
+                        "failure":failure.map(AuditProjectionError::as_label),
+                    })
+                );
+                last_diagnostic = Instant::now();
+            }
+            if stop.is_cancelled() {
+                break;
+            }
+            if progressed > 0 && !claim_failed && pending.len() < self.capacity.get() {
+                continue;
+            }
+            let now = Instant::now();
+            let mut delay = if claim_after > now {
+                claim_after - now
+            } else {
+                RESCAN
+            };
+            if claim_after <= now && pending.len() < self.capacity.get() {
+                match self.delivery.next_wakeup(operation()).await {
+                    Ok(wakeup) => {
+                        if let Some(remaining) = wakeup
                             .next_deadline()
                             .and_then(|d| d.remaining(crate::lifecycle::RuntimeTimer.now()))
-                            .unwrap_or(Duration::from_secs(1))
-                            .clamp(Duration::from_millis(100), Duration::from_secs(1)),
-                        Err(error) if error.is_retryable() => {
-                            self.health.transient_failure();
-                            diagnose(error);
-                            Duration::from_secs(1)
+                            .filter(|d| !d.is_zero())
+                        {
+                            delay = delay.min(remaining);
                         }
-                        Err(error) => return Err(error),
+                        if failure.is_none() {
+                            self.health.progress(0, deferred);
+                        }
                     }
+                    Err(error) if error.is_retryable() => {
+                        failures = failures.saturating_add(1);
+                        delay = retry_delay(failures);
+                        claim_after = Instant::now() + delay;
+                        self.health.transient_failure();
+                        diagnose(error);
+                    }
+                    Err(error) => return Err(error),
                 }
-                Err(error) if error.is_retryable() => {
-                    self.health.transient_failure();
-                    diagnose(error);
-                    Duration::from_secs(1)
-                }
-                Err(error) => return Err(error),
-            };
+            }
+            if let Some(at) = pending.iter().map(|p| p.after).min() {
+                delay = delay.min(at.saturating_duration_since(Instant::now()));
+            }
+            // A notification cannot bypass infrastructure backoff. Recovery deadlines remain
+            // independent, and a stored Notify permit survives the scan/wait race.
             tokio::select! { biased;
                 () = stop.cancelled() => {},
+                () = self.wake.notified(), if claim_after <= Instant::now() => {},
                 () = tokio::time::sleep(delay) => {},
             }
         }
         Ok(())
     }
 }
+const ACTION_BUDGET: Duration = Duration::from_secs(6);
+const RESCAN: Duration = Duration::from_secs(30);
+fn operation() -> OperationDeadline {
+    OperationDeadline::from_remaining(ACTION_BUDGET)
+}
+fn retry_delay(failures: u32) -> Duration {
+    RetryPolicy::STANDARD
+        .delay_after(std::num::NonZeroU32::new(failures).unwrap_or(std::num::NonZeroU32::MIN))
+}
+struct Pending {
+    identity: PgProjectionRecovery,
+    after: Instant,
+    failures: u32,
+}
+fn retain_failure(current: &mut Option<AuditProjectionError>, error: AuditProjectionError) {
+    if current.is_none_or(AuditProjectionError::is_retryable) {
+        *current = Some(error);
+    }
+}
+
 fn diagnose(error: AuditProjectionError) {
     eprintln!(
         "{}",
@@ -220,3 +389,7 @@ pub(crate) async fn verify_profile(
         ))
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/audit/worker.rs"]
+mod tests;

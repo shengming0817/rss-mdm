@@ -34,14 +34,17 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
             http::protect_management,
         ))
         .layer(middleware::from_fn_with_state(
-            boundary::Envelope {
-                admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                host: "mdm.example.test".into(),
-                clock: monotonic(),
-                audit_store: authority.audit.clone(),
-                requests,
-                tenant: authority.identity.management_tenant.to_string(),
-            },
+            (
+                boundary::Envelope {
+                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                    host: "mdm.example.test".into(),
+                    clock: monotonic(),
+                    audit_store: authority.audit.clone(),
+                    requests,
+                    tenant: authority.identity.management_tenant.to_string(),
+                },
+                Arc::new(Vec::new()),
+            ),
             boundary::admit,
         ))
         .layer(axum::Extension(rss_identity_http_axum::ClientAddress(

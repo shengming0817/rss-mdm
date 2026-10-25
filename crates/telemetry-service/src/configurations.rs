@@ -141,7 +141,7 @@ impl Service {
         let service = self.clone();
         let proof = proof.clone();
         let device = device.to_owned();
-        let audit = audit.clone();
+        let _audit = audit.clone();
         let failure = Arc::new(Mutex::new(None));
         let rejected = failure.clone();
         self.runtime
@@ -165,7 +165,7 @@ impl Service {
                             })
                         })
                         .await?;
-                    audit.require_request_settlement();
+
                     Ok(page)
                 })
             })

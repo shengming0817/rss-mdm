@@ -188,9 +188,17 @@ impl super::super::Planning {
             rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
                 .await?;
             if !accepted.1 {
-                let audit = RequestAudit::new(tenant.to_string(), "device_retirement_accepted");
+                let audit = RequestAudit::new(
+                    tenant.to_string(),
+                    "device_retirement_accepted",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
                 audit.identify_service("device-lifecycle");
-                audit.operation(accepted.0, "device_retirement_accepted");
+                audit.operation(
+                    accepted.0,
+                    "device_retirement_accepted",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
                 audit.target(&key);
                 let bytes = serde_json::to_vec(&(policy.id, version, &key, accepted.0))
                     .map_err(|_| Error::Malformed)?;
@@ -237,7 +245,11 @@ impl super::super::Planning {
         let mut after = None;
         let mut count = 0;
         loop {
-            let audit = RequestAudit::new(self.tenant.to_string(), "device_retirement_schedule");
+            let audit = RequestAudit::new(
+                self.tenant.to_string(),
+                "device_retirement_schedule",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             audit.identify_service("device-lifecycle");
             let outcome=run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,after),|ctx,tx|Box::pin(async move {
                 let (s,after)=*ctx;

@@ -29,7 +29,8 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
         Some(Error::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
-        Some(Error::Unauthorized | Error::Forbidden) => Some(ResponseFailure::Denied),
+        Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
+        Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
         Some(Error::Unavailable(Failure::RequestDeadline)) => Some(ResponseFailure::Deadline),
         Some(Error::Unavailable(Failure::AuditIntegrity)) => Some(ResponseFailure::AuditIntegrity),
         Some(Error::Unavailable(
@@ -52,7 +53,11 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
+    let audit = RequestAudit::new(
+        envelope.tenant.clone(),
+        route_action(route),
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,

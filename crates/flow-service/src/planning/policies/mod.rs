@@ -203,7 +203,7 @@ impl Policies {
         run(&self.audit_store, &self.runtime, self.tenant, audit, (self, proof, audit), |ctx, tx| Box::pin(async move {
             let (s, p, a) = *ctx;
             crate::action_admission::current(tx, p).await?.require(p, Permission::PolicyRead, None)?;
-            a.require_request_settlement();
+            a.require_final_request();
             Ok(json!({"defaultSoftwareChannel":"agent", "mdmSoftwareDistributionEnabled":s.inputs.software_distribution().mdm_enabled}))
         }), TransactionOwner::Planning).await
     }

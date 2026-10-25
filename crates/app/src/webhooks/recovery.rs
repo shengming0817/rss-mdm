@@ -68,8 +68,12 @@ impl Backend {
         }
         // The authorization intent and RSS recovery settle in separate transactions.
         // Only the recovery attempt owns the request's write outcome.
-        audit.require_request_settlement();
-        audit.operation(operation, "webhook_redrive");
+        audit.require_final_request();
+        audit.operation(
+            operation,
+            "webhook_redrive",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let request = recovery::Mutation::new(
             self.tenant,
             recovery::OperationId::parse(&operation.to_string())

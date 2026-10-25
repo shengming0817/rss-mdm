@@ -295,7 +295,11 @@ async fn management_only_startup_integrity(
     .await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let control = budget.source_control();
-    let request = RequestAudit::new(management.to_string(), "management_startup_integrity");
+    let request = RequestAudit::new(
+        management.to_string(),
+        "management_startup_integrity",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(
         &request,
         "integrity",

@@ -282,8 +282,16 @@ impl ExecutionService {
         id: Uuid,
         fingerprint: Vec<u8>,
     ) -> std::result::Result<(), Error> {
-        let audit = RequestAudit::new(self.tenant.to_string(), "command_dispatch");
-        audit.operation(id, "command_dispatch");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "command_dispatch",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.operation(
+            id,
+            "command_dispatch",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("command-dispatch");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
@@ -554,7 +562,11 @@ pub(crate) async fn apply_prepared(
                     }
                     let fact_audit = audit.transaction_copy();
                     fact_audit.identify_service("command-recovery");
-                    fact_audit.operation(operation.id, "command_reconcile");
+                    fact_audit.operation(
+                        operation.id,
+                        "command_reconcile",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
                     fact_audit.target_device(&operation.device);
                     fact_audit.registration(operation.registration);
                     let details = serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
@@ -590,7 +602,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     > + Send {
         Box::pin(async move {
             control.check()?;
-            let audit = RequestAudit::new(self.tenant.to_string(), "management_read");
+            let audit = RequestAudit::new(
+                self.tenant.to_string(),
+                "management_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            );
             let active=crate::transaction::inspect(&self.runtime,self.tenant,(self,claim.target().entity()),|ctx,tx|Box::pin(async move {
             let (service,entity) = *ctx;
             if let Some(id)=crate::unmanage::operation(entity){return crate::unmanage::active_in(tx,id).await;}
@@ -634,7 +650,11 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
     {
         Box::pin(async move {
             for _ in 0..64 {
-                let audit = RequestAudit::new(self.tenant.to_string(), "management_write");
+                let audit = RequestAudit::new(
+                    self.tenant.to_string(),
+                    "management_write",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                );
                 let error = Mutex::new(None);
                 control.check()?;
                 let attempt = self

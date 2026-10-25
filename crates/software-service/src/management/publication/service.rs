@@ -57,7 +57,10 @@ pub async fn read(
     audit: &RequestAudit,
     id: String,
 ) -> Result<wire::Publication, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target(&id);
     authorize(authorization, proof, Permission::ReleaseRead).await?;
     let view = read_view(directory, id).await?;
@@ -155,13 +158,20 @@ pub async fn write(
         Change::Recover | Change::Retry => Permission::ReleaseRecover,
         Change::Withdraw => Permission::ReleaseWithdraw,
     };
-    audit.set_action("management_write");
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(
         path_id
             .as_deref()
             .unwrap_or(&request.operation_id.to_string()),
     );
-    audit.operation(request.operation_id, "management_write");
+    audit.operation(
+        request.operation_id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     authorize(authorization, proof, permission).await?;
     let (id, target) = match (&request.input, path_id) {
         (Change::Publish { target, .. }, None) if request.expected_revision == 0 => {
@@ -184,7 +194,10 @@ pub async fn write(
     )
     .map_err(|_| Error::Malformed)?;
     let intent_audit = audit.transaction_copy();
-    intent_audit.set_action("software_preflight");
+    intent_audit.set_action(
+        "software_preflight",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     intent_audit.software(rss_mdm_audit_integration::SoftwareFact {
         operation: request.operation_id.to_string(),
         publication: None,
@@ -211,7 +224,7 @@ pub async fn write(
         as_of: at,
     };
     let access = service::ManagementAccess { proof, permission };
-    audit.require_request_settlement();
+    audit.require_final_request();
     audit.mark_commit_started();
     let result: Result<Effect, Error> = async {
         match &request.input {

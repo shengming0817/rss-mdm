@@ -398,6 +398,7 @@ impl RuntimeDiagnostics {
         // Projection lag does not revoke reliable local source admission. Fatal faults stop the managed host.
         audit.readiness = Readiness::NotApplicable;
         audit.task = Some(task(audit_health.task));
+        audit.audit_progress = health.projection.lock().expect("projection health").clone();
         if audit_health.task != Some(rss_runtime::TaskState::Running) {
             audit.reasons.push(Reason::WorkerNotRunning);
         }
@@ -649,6 +650,7 @@ fn component(name: ComponentName, ready: bool) -> Component {
         runner: None,
         dispatch: None,
         audit_backlog: None,
+        audit_progress: None,
     }
 }
 fn task(status: Option<rss_runtime::TaskState>) -> Task {

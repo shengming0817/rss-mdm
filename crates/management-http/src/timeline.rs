@@ -60,12 +60,16 @@ async fn device(
 }
 async fn search(
     State(service): State<Arc<Timeline>>,
+    Extension(audit): Extension<RequestAudit>,
     Extension(auth): Extension<RequestAuth>,
     params: Result<
         Query<rss_mdm_timeline_service::Query>,
         axum::extract::rejection::QueryRejection,
     >,
 ) -> Result<Json<Page>, Error> {
+    audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+        rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
+    ));
     service
         .query(&auth.proof, "audit", &input(params)?)
         .await

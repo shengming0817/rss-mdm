@@ -108,7 +108,10 @@ async fn list(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_view_read");
+    audit.set_action(
+        "device_view_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     Ok(Json(
         s.views(
             &a.proof,
@@ -137,7 +140,10 @@ async fn statistics(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_view_read");
+    audit.set_action(
+        "device_view_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let mut query = rss_mdm_device_service::directory::SCHEMA
         .statistics(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -171,7 +177,10 @@ async fn detail(
     Extension(audit): Extension<RequestAudit>,
     Path((kind, id)): Path<(String, String)>,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_view_read");
+    audit.set_action(
+        "device_view_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let reference = reference(kind, id)?;
     match &reference {
         ViewRef::Endpoint(id) => audit.target_device(id),
@@ -205,7 +214,10 @@ async fn items(
     Path((kind, id, field)): Path<(String, String, String)>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_view_read");
+    audit.set_action(
+        "device_view_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let (q, _) = rss_mdm_device_service::association_directory::SOURCE_ITEMS
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -232,7 +244,10 @@ async fn association(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
-    audit.set_action("device_association_read");
+    audit.set_action(
+        "device_association_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     Ok(Json(s.get(&a.proof, id).await?))
 }
 async fn confirm(
@@ -241,7 +256,10 @@ async fn confirm(
     Extension(audit): Extension<RequestAudit>,
     body: Result<Json<Confirm>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
-    audit.set_action("device_association_confirm");
+    audit.set_action(
+        "device_association_confirm",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     Ok(Json(
         s.confirm(&a.proof, &body.map_err(Error::from)?.0, &audit)
             .await?,
@@ -254,7 +272,10 @@ async fn revoke(
     Path(id): Path<Uuid>,
     body: Result<Json<Revoke>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<rss_mdm_device_service::Association>, Error> {
-    audit.set_action("device_association_revoke");
+    audit.set_action(
+        "device_association_revoke",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     Ok(Json(
         s.revoke(&a.proof, id, &body.map_err(Error::from)?.0, &audit)
             .await?,
@@ -267,7 +288,10 @@ async fn candidates(
     Path(device): Path<String>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<rss_mdm_device_service::CandidatePage>, Error> {
-    audit.set_action("device_association_read");
+    audit.set_action(
+        "device_association_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let (q, context) = rss_mdm_device_service::association_directory::CANDIDATES
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -287,7 +311,10 @@ async fn changes(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_association_read");
+    audit.set_action(
+        "device_association_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     Ok(Json(
         s.changes(
             &a.proof,
@@ -306,7 +333,10 @@ async fn retirement(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<rss_mdm_device_service::lifecycle::Retirement>, Error> {
-    audit.set_action("device_retirement_read");
+    audit.set_action(
+        "device_retirement_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     Ok(Json(s.retirement(&a.proof, id).await?))
 }
 async fn force_retirement(
@@ -351,7 +381,10 @@ async fn association_list(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("device_association_read");
+    audit.set_action(
+        "device_association_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_device_service::association_directory::SCHEMA
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;

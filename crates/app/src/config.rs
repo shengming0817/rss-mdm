@@ -71,12 +71,17 @@ impl AuditRecoveryKeys {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditProjectionConfig {
+    #[serde(default = "audit_capacity")]
+    pub max_inflight: u32,
     pub database: Database,
     pub recovery_keys: AuditRecoveryKeys,
     #[serde(default = "audit_events")]
     pub max_events: u64,
     #[serde(default = "audit_bytes")]
     pub max_bytes: u64,
+}
+fn audit_capacity() -> u32 {
+    9
 }
 fn audit_events() -> u64 {
     100_000
@@ -303,6 +308,11 @@ impl Config {
             return Err(Error::Configuration(ConfigIssue::Audit));
         }
         self.audit_projection.limits()?;
+        if self.audit_projection.max_inflight == 0
+            || self.audit_projection.max_inflight.checked_add(1).is_none()
+        {
+            return Err(Error::Configuration(ConfigIssue::Audit));
+        }
         self.audit_projection.recovery_keys.load()?;
         self.identity.audit_recovery_keys.load()?;
         self.native_protector()?;

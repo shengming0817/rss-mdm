@@ -45,7 +45,7 @@ impl Groups {
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, audit) = *ctx;
+                    let (s, p, q, _audit) = *ctx;
                     let current = query_authority(tx, p).await?;
                     current.require(p, Permission::GroupRead, None)?;
                     current.require_all_devices(p, Permission::InventoryRead)?;
@@ -157,7 +157,7 @@ impl Groups {
                         after = last;
                     }
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     json(
                         &q.query
                             .page(items, &codec, &binding)

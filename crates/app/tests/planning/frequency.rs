@@ -71,6 +71,7 @@ async fn publish_scope_without_assignments(
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             service.tenant.to_string(),
             "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         rss_mdm_flow_service::transaction::run(
             &service.audit_store,

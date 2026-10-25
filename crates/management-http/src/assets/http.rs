@@ -207,11 +207,18 @@ async fn run(
     audit: &RequestAudit,
     command: Command,
 ) -> std::result::Result<HttpResponse, Error> {
-    audit.set_action(if command.operation().is_some() {
-        "management_write"
-    } else {
-        "inventory_read"
-    });
+    audit.set_action(
+        if command.operation().is_some() {
+            "management_write"
+        } else {
+            "inventory_read"
+        },
+        if command.operation().is_some() {
+            rss_mdm_audit_integration::AuditIntent::Management
+        } else {
+            rss_mdm_audit_integration::AuditIntent::Routine
+        },
+    );
     match &command {
         Command::FieldLayoutRead { .. } | Command::FieldLayoutWrite { .. } => {
             audit.target("asset-field-layout")
@@ -236,7 +243,11 @@ async fn run(
         _ => {}
     }
     if let Some(id) = command.operation() {
-        audit.operation(id, audit.snapshot().action);
+        audit.operation(
+            id,
+            audit.snapshot().action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
     }
     authorize(auth, &command)?;
     let value = app
@@ -298,7 +309,10 @@ async fn fields(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> std::result::Result<HttpResponse, Error> {
-    audit.set_action("inventory_read");
+    audit.set_action(
+        "inventory_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_inventory_service::assets::field_directory::SCHEMA
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -310,7 +324,10 @@ async fn field_read(
     Extension(audit): Extension<RequestAudit>,
     Path(key): Path<String>,
 ) -> std::result::Result<HttpResponse, Error> {
-    audit.set_action("inventory_read");
+    audit.set_action(
+        "inventory_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target(&key);
     let key = FieldKey::parse(&key).map_err(|_| Error::Malformed)?;
     Ok(Json(app.assets.field(&auth.proof, key, &audit).await?).into_response())

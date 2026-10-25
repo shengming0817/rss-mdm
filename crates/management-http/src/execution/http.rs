@@ -85,7 +85,10 @@ async fn directory(
     Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
 ) -> std::result::Result<Json<Value>, Error> {
-    audit.set_action("command_read");
+    audit.set_action(
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_execution_service::directory::SCHEMA
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -103,7 +106,10 @@ async fn statistics(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> std::result::Result<Json<Value>, Error> {
-    audit.set_action("command_read");
+    audit.set_action(
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_execution_service::directory::SCHEMA
         .statistics(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -117,7 +123,11 @@ async fn create(
     input: std::result::Result<Json<Input>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.operation(input.operation_id, "command_accept");
+    audit.operation(
+        input.operation_id,
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target_device(&device);
     app.execution
         .create_control(&auth.proof, &device, &input, &audit)
@@ -131,7 +141,11 @@ async fn read(
     Extension(audit): Extension<RequestAudit>,
     Path((device, id)): Path<(String, Uuid)>,
 ) -> std::result::Result<Json<Value>, Error> {
-    audit.operation(id, "command_read");
+    audit.operation(
+        id,
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&device);
     app.read(&auth.proof, &device, id, &audit)
         .await
@@ -146,7 +160,11 @@ async fn cancel(
     input: std::result::Result<Json<Change>, axum::extract::rejection::JsonRejection>,
 ) -> std::result::Result<Json<Value>, Error> {
     let change = input.map_err(Error::from)?.0;
-    audit.operation(change.request_id, "command_cancel");
+    audit.operation(
+        change.request_id,
+        "command_cancel",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target_device(&device);
     app.execution
         .change(&auth.proof, &device, id, &change, None, &audit)
@@ -166,7 +184,11 @@ async fn reauthorize(
         request_id: change.request_id,
         expected_revision: change.expected_revision,
     };
-    audit.operation(change.request_id, "command_reauthorize");
+    audit.operation(
+        change.request_id,
+        "command_reauthorize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target_device(&device);
     app.execution
         .change(&auth.proof, &device, id, &revision, Some(&change), &audit)

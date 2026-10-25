@@ -129,7 +129,8 @@ pub(crate) async fn append(
     tx.with_connection_context(&mut (tenant, source, event, frozen, message_id), |(tenant, source, event, frozen, message), c| Box::pin(async move {
         sqlx::query("INSERT INTO mdm_audit.receipts(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,floor(extract(epoch FROM clock_timestamp()))::bigint)")
             .bind(&*tenant).bind(&*source).bind(&*event).bind(frozen.fingerprint().as_slice())
-            .bind(frozen.bytes()).bind(&*message).bind(reserved).execute(c).await?;
+            .bind(frozen.bytes()).bind(&*message).bind(reserved).execute(&mut *c).await?;
+        sqlx::query("SELECT pg_notify('mdm_audit_' || replace($1,'-',''),'')").bind(&*tenant).execute(c).await?;
         Ok(())
     })).await.map_err(rss_audit_postgres::Error::from)?;
     Ok(())

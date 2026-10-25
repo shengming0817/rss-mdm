@@ -141,8 +141,12 @@ impl Authority {
     ) -> Result<Receipt, Error> {
         self.proof(p, audit, true)?;
         p.session()?;
-        audit.operation(id, "smtp_qualification");
-        audit.require_request_settlement();
+        audit.operation(
+            id,
+            "smtp_qualification",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(8));
         let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,id,input),|ctx,tx|Box::pin(async move {
             let (service,p,audit,id,input)=ctx;

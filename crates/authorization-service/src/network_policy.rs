@@ -155,7 +155,11 @@ pub async fn change_network_policy(
         key: change.operation_id,
         digest: &digest,
     };
-    audit.operation(change.operation_id, "api_network_policy_change");
+    audit.operation(
+        change.operation_id,
+        "api_network_policy_change",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!(

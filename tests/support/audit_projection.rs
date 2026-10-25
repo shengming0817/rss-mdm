@@ -100,11 +100,16 @@ pub async fn drain_in(
                 "audit projection did not catch up"
             );
             let report = projector
-                .run_once(
+                .project_batch(
                     NonZeroUsize::new(64).unwrap(),
                     OperationDeadline::from_cutoff(cutoff, &Timer),
+                    Duration::from_secs(6),
                 )
                 .await?;
+            for identity in &report.recoveries {
+                projector.resolve(identity, OperationDeadline::from_cutoff(cutoff, &Timer)).await?;
+            }
+            if let Some(error) = report.failure { return Err(error.into()); }
             if report.projected == 0 && report.deferred == 0 {
                 // Another installed worker may own a lease: no claimable row is not a drained source.
                 let pending = tokio::time::timeout_at(cutoff.instant().into(), async {
@@ -120,6 +125,10 @@ pub async fn drain_in(
                 }).await??;
                 if !pending { break; }
             }
+            for identity in &report.recoveries {
+                projector.resolve(identity, OperationDeadline::from_cutoff(cutoff, &Timer)).await?;
+            }
+            if let Some(error) = report.failure { return Err(error.into()); }
             if report.projected == 0 || report.deferred > 0 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }

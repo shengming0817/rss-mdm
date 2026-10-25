@@ -253,7 +253,11 @@ impl ExecutionService {
             return Err(Error::Forbidden);
         }
         input.validate().map_err(|_| Error::Malformed)?;
-        audit.operation(input.operation_id, "device_access_recovery_use");
+        audit.operation(
+            input.operation_id,
+            "device_access_recovery_use",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device.device());
         transaction::run(
             &self.audit_store,

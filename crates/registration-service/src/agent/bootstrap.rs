@@ -84,7 +84,11 @@ impl Service {
             .ok_or(Error::Unauthorized)?;
         let challenge = input.scep_challenge.as_ref().ok_or(Error::Unauthorized)?;
         let now = self.clock.unix_seconds()?;
-        audit.operation(csr.attempt(), "agent_bootstrap_sign");
+        audit.operation(
+            csr.attempt(),
+            "agent_bootstrap_sign",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit, (self, &csr, &input, challenge, &active, now), |ctx,c| Box::pin(async move {
             let (s,csr,input,challenge,active,now)=*ctx;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(s.tenant.to_string()).execute(&mut *c).await.map_err(db)?;
@@ -156,7 +160,11 @@ impl Service {
             .not_after
             .to_unix_duration()
             .as_secs() as i64;
-        audit.operation(id, "agent_bootstrap_issued");
+        audit.operation(
+            id,
+            "agent_bootstrap_issued",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit,(self,id,installation,&issuer,&input,&der,&fingerprint,&spki,end), |ctx,c| Box::pin(async move {
             let (s,id,installation,issuer,input,der,fingerprint,spki,end)=*ctx;
             let row=row(c,s.tenant,id).await?;
@@ -204,7 +212,11 @@ impl Service {
             return Err(Error::Forbidden.into());
         }
         let fingerprint = Sha256::digest(bytes).to_vec();
-        audit.operation(input.operation_id, "agent_native_grant");
+        audit.operation(
+            input.operation_id,
+            "agent_native_grant",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit,(self,id,input,&fingerprint),|ctx,c|Box::pin(async move {
             let(s,id,input,fingerprint)=*ctx;
             let row=row(c,s.tenant,id).await?;

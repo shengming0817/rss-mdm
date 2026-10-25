@@ -411,7 +411,7 @@ pub(crate) async fn open_consumer_runtime(
         .map(Arc::new)
         .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
 }
-fn runtime_inputs(
+pub(crate) fn runtime_inputs(
     database: &config::Database,
     target: &[u8; 16],
     lineage: &[u8; 16],

@@ -26,10 +26,18 @@ struct Wake {
     uri: zeroize::Zeroizing<String>,
 }
 fn audit(tenant: &str, id: Uuid, registration: Uuid) -> RequestAudit {
-    let audit = RequestAudit::new(tenant.into(), "windows_push");
+    let audit = RequestAudit::new(
+        tenant.into(),
+        "windows_push",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("windows-push");
     audit.registration(registration);
-    audit.operation(id, "windows_push");
+    audit.operation(
+        id,
+        "windows_push",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&registration.to_string());
     audit
 }

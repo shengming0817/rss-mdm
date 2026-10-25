@@ -352,12 +352,13 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
-                        let audit_projection =
-                            crate::audit_projection::Worker::open(&compiled.config, |resource| {
-                                startup.stage_resource(resource)
-                            })
-                            .await
-                            .map_err(|error| ProcessError::at("startup.audit_projection", error))?;
+                        let audit_projection = crate::audit_projection::Worker::open(
+                            &compiled.config,
+                            notifications.signals.mdm_audit.clone(),
+                            |resource| startup.stage_resource(resource),
+                        )
+                        .await
+                        .map_err(|error| ProcessError::at("startup.audit_projection", error))?;
                         let associations = Arc::new(
                             rss_mdm_device_service::Associations::new(
                                 audit_store.clone(),

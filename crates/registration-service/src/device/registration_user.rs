@@ -56,7 +56,11 @@ impl DeviceService {
                 .map_err(|_| Error::Malformed)?;
         }
         p.bind_audit(audit)?;
-        audit.operation(key, "registration_user_change");
+        audit.operation(
+            key,
+            "registration_user_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device);
         let digest = crate::enrollment::digest(&(
             "registration_user.v1",

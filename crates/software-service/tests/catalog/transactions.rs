@@ -66,7 +66,11 @@ impl Fixture {
         }
     }
     async fn source(&self, operation: &Operation<SourceChange>, rollback: bool) -> Result<Value> {
-        let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
+        let audit = RequestAudit::new(
+            pg::tenant().to_string(),
+            "software_source_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", materials::INSTANCE);
         let result = transaction(
             &self.runtime,
@@ -115,7 +119,11 @@ impl Fixture {
         digest: [u8; 32],
         expected_error: Option<catalog::Error>,
     ) -> Result<Value> {
-        let audit = RequestAudit::new(pg::tenant().to_string(), "software_version_write");
+        let audit = RequestAudit::new(
+            pg::tenant().to_string(),
+            "software_version_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", materials::INSTANCE);
         let content = Content(digest);
         let result = transaction(
@@ -271,7 +279,11 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
     fixture
         .runtime
         .inject_next_transaction_fault(PgTransactionFault::CommitUnknownAfterAck);
-    let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
+    let audit = RequestAudit::new(
+        pg::tenant().to_string(),
+        "software_source_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.set_principal("operator", materials::INSTANCE);
     let unknown = fixture
         .runtime
@@ -601,7 +613,11 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
     };
     let resources =
         resource::ResourceStore::new(fixture.runtime.clone(), pg::tenant(), pg::deadline()).await?;
-    let audit = RequestAudit::new(pg::tenant().to_string(), "software_import");
+    let audit = RequestAudit::new(
+        pg::tenant().to_string(),
+        "software_import",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.set_principal("operator", materials::INSTANCE);
     let run = |prepared| {
         transaction(

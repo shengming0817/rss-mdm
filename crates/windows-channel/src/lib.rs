@@ -588,7 +588,11 @@ async fn enrollment(
             Some("Device") => rss_mdm_windows_mdm::provisioning::EnrollmentType::Device,
             _ => return Err(Error::Malformed),
         };
-        audit.operation(auth.operation, "enrollment_issue");
+        audit.operation(
+            auth.operation,
+            "enrollment_issue",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let intent = crate::issuance::issuance_for_device(
             &app.access,
             app.windows()?,

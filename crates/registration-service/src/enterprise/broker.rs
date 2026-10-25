@@ -223,7 +223,11 @@ impl Service {
         {
             return Err(Error::Malformed);
         }
-        audit.operation(input.operation_id, "enterprise_broker_prepare");
+        audit.operation(
+            input.operation_id,
+            "enterprise_broker_prepare",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit,(self,input,browser,client,admission),|ctx,c|Box::pin(async move{
             let (service,input,browser,client,admission)=ctx;let tenant=tenant(service)?;
             let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_enterprise.brokers WHERE tenant_id=$1 AND id=$2)").bind(tenant).bind(input.operation_id).fetch_one(&mut *c).await.map_err(db)?;
@@ -259,7 +263,11 @@ impl Service {
         admission: &dyn Admission,
         audit: &RequestAudit,
     ) -> Result<wire::Challenge, Error> {
-        audit.operation(id, "enterprise_broker_challenge");
+        audit.operation(
+            id,
+            "enterprise_broker_challenge",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(
             audit,
             (self, id, browser, challenge, admission),
@@ -301,7 +309,11 @@ impl Service {
         admission: &dyn Admission,
         audit: &RequestAudit,
     ) -> Result<Context, Error> {
-        audit.operation(input.operation_id, "enterprise_broker_claim");
+        audit.operation(
+            input.operation_id,
+            "enterprise_broker_claim",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit, (self, input, browser, admission), |ctx, c| {
             Box::pin(async move {
                 let (service, input, browser, admission) = ctx;
@@ -338,7 +350,11 @@ impl Service {
         unknown: bool,
         audit: &RequestAudit,
     ) -> Result<(), Error> {
-        audit.operation(id, "enterprise_broker_failure");
+        audit.operation(
+            id,
+            "enterprise_broker_failure",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit, (self, id, attempt, browser, unknown), |ctx, c| {
             Box::pin(async move {
                 let (service, id, attempt, browser, unknown) = ctx;
@@ -378,7 +394,11 @@ impl Service {
         admission: &dyn Admission,
         audit: &RequestAudit,
     ) -> Result<wire::Status, Error> {
-        audit.operation(id, "enterprise_broker_ready");
+        audit.operation(
+            id,
+            "enterprise_broker_ready",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write_admitted(
             &self.access_audit,
             audit,
@@ -492,7 +512,11 @@ impl Service {
         browser: &Secret,
         audit: &RequestAudit,
     ) -> Result<(), Error> {
-        audit.operation(id, "enterprise_broker_cancel");
+        audit.operation(
+            id,
+            "enterprise_broker_cancel",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(audit, (self, id, browser), |ctx, c| {
             Box::pin(async move {
                 let (service, id, browser) = ctx;
@@ -555,7 +579,11 @@ impl Service {
         if operation.is_nil() {
             return Err(Error::Malformed);
         }
-        audit.operation(operation, "enterprise_broker_consume");
+        audit.operation(
+            operation,
+            "enterprise_broker_consume",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(
             audit,
             (self, client, id, operation, continuation, facts, admission),

@@ -144,7 +144,7 @@ impl Groups {
             &id.to_string(),
         );
         crate::transaction::inspect(&self.runtime, self.tenant,(self,proof,q,audit,flow,cursor),|ctx,tx|Box::pin(async move {
-            let (s,p,q,audit,flow,cursor)=ctx;
+            let (s,p,q,_audit,flow,cursor)=ctx;
             let tenant=p.tenant_id().to_owned();let instance=p.instance_id().to_owned();
             let authority=tx.with_connection(move|c|Box::pin(async move {
                 rss_mdm_authorization_service::lock_on(c,&tenant,&instance).await.map_err(|_|sqlx::Error::Protocol("authorization lock".into()))?;
@@ -172,7 +172,7 @@ impl Groups {
                 let mut bytes=checked_input(serde_json::to_vec(&Cursor {tenant:s.tenant.to_string(),root:id,kind:q.kind,relation:q.relation.clone(),authority:binding,view:page.generation,instance:p.instance_id().into(),principal:p.principal_id().into(),expires_at,after:visible.last().ok_or(Error::Conflict)?.key()}))?;
                 bytes.extend_from_slice(ring::hmac::sign(&s.cursor_key,&bytes).as_ref());Some(URL_SAFE_NO_PAD.encode(bytes))
             }else{None};
-            p.check_live()?;audit.require_request_settlement();
+            p.check_live()?;
             Ok(serde_json::json!({"items":visible,"nextCursor":next,"deletionBlocked":blocked}))
         }),TransactionOwner::Assets).await
     }

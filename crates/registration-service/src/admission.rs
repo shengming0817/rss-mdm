@@ -124,7 +124,11 @@ impl Admission {
             return Err(Error::Malformed);
         }
         p.bind_audit(audit)?;
-        audit.operation(key, "registration_admission_change");
+        audit.operation(
+            key,
+            "registration_admission_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest = crate::enrollment::digest(&(
             "registration.admission.v1",
             channel,

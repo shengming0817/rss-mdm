@@ -36,7 +36,18 @@ pub fn registration(
 pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
     let tenant = app.identity.tenant().to_string();
     let time = now(app)?;
-    let audit = RequestAudit::new(tenant.clone(), "apple_ade_worker");
+    let mut scan = app.access.begin(&tenant).await?;
+    let due: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2))) OR EXISTS(SELECT 1 FROM mdm_apple.ade_servers WHERE tenant_id=$1::uuid AND enabled AND verified AND NOT token_invalid AND token_expires>$2 AND next_sync<=$2)")
+        .bind(&tenant).bind(time).fetch_one(&mut *scan).await.map_err(db)?;
+    scan.rollback().await.map_err(db)?;
+    if !due {
+        return Ok(false);
+    }
+    let audit = RequestAudit::new(
+        tenant.clone(),
+        "apple_ade_worker",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("service:apple-ade");
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
@@ -62,8 +73,12 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
                             audit,
                             &format!("ade:{id}:{phase}:{attempt}"),
                             format!("{id}:{phase}:{attempt}").as_bytes(),
-                            200,
-                            "success",
+                            if phase == "interrupted" { 503 } else { 409 },
+                            if phase == "interrupted" {
+                                "unknown"
+                            } else {
+                                "failed"
+                            },
                             Some(id),
                         )?;
                         app.audit_store
@@ -77,7 +92,14 @@ pub async fn cycle(app: &HttpState) -> Result<bool, Error> {
             },
         )
         .await;
-    let Some(work) = crate::operations::settle(claimed, &audit)? else {
+    let settled = crate::operations::settle(claimed, &audit);
+    audit.finalize(
+        settled
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    let Some(work) = settled? else {
         return Ok(false);
     };
     let mut tx = app.access.begin(&tenant).await?;
@@ -136,7 +158,6 @@ async fn claim_in(
         .await
         .map_err(db)?;
         sqlx::query("UPDATE mdm_apple.ade_servers SET next_sync=$3 WHERE tenant_id=$1::uuid AND organization=$2").bind(tenant).bind(organization).bind(time+1800).execute(&mut *c).await.map_err(db)?;
-        changes.push((id, "schedule", 0));
     }
     let candidate=sqlx::query("SELECT id,organization FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND ($3::uuid IS NULL OR id=$3) AND ((state='pending' AND next_attempt<=$2) OR (state='running' AND lease_until<=$2)) ORDER BY created_at,id LIMIT 1").bind(tenant).bind(time).bind(scheduled_id).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(candidate) = candidate else {
@@ -182,7 +203,7 @@ async fn claim_in(
     }
     let lease = Uuid::new_v4();
     sqlx::query("UPDATE mdm_apple.ade_operations SET state='running',lease=$3,lease_until=$4,attempts=$5 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(lease).bind(time+180).bind(attempt).execute(&mut *c).await.map_err(db)?;
-    changes.push((id, "claim", attempt));
+
     Ok((
         Some(Work {
             id,
@@ -335,9 +356,17 @@ async fn finish(
     work: &Work,
     response: Result<Value, client::RemoteError>,
 ) -> Result<(), Error> {
-    let audit = RequestAudit::new(tenant.into(), "apple_ade_worker");
+    let audit = RequestAudit::new(
+        tenant.into(),
+        "apple_ade_worker",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("service:apple-ade");
-    audit.operation(work.id, "apple_ade_worker");
+    audit.operation(
+        work.id,
+        "apple_ade_worker",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(app,tenant,work,&audit,&response),|ctx,tx|Box::pin(async move{
@@ -345,7 +374,7 @@ async fn finish(
         let committed=tx.with_connection_context(&mut(app,tenant,work,response),|ctx,c|Box::pin(async move{
             let(app,tenant,work,response)=*ctx;management::lock(c,tenant,work.organization).await?;let s=server(c,tenant,work.organization).await?;
             let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.ade_operations WHERE tenant_id=$1::uuid AND id=$2 AND state='running' AND lease=$3 AND lease_until>$4)").bind(tenant).bind(work.id).bind(work.lease).bind(now(app)?).fetch_one(&mut *c).await.map_err(db)?;
-            if !active{return Ok::<_,Error>(false);}
+            if !active{return Ok::<_,Error>(None);}
             let (state,value)=if s.try_get::<i64,_>("revision").map_err(db)?!=work.revision || s.try_get::<i64,_>("token_revision").map_err(db)?!=work.token_revision || !s.try_get::<bool,_>("enabled").map_err(db)?{
                 // The external effect may have happened; a newer authority must not consume it.
                 (if is_write(&work.kind){"unknown"}else{"superseded"},json!({"reason":"authority_changed"}))
@@ -372,12 +401,26 @@ async fn finish(
                 sqlx::query("DELETE FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2").bind(tenant).bind(work.id).execute(&mut *c).await.map_err(db)?;
             }
             let delay=if state=="pending" && work.kind!="sync"{value.get("retryAfterSeconds").and_then(Value::as_i64).unwrap_or(60)}else if response.is_err(){30}else{0};
-            sqlx::query("UPDATE mdm_apple.ade_operations SET state=$4,result=$5,lease=NULL,lease_until=NULL,next_attempt=$6 WHERE tenant_id=$1::uuid AND id=$2 AND lease=$3").bind(tenant).bind(work.id).bind(work.lease).bind(state).bind(value).bind(now(app)?+delay).execute(c).await.map_err(db)?;Ok(true)
+            sqlx::query("UPDATE mdm_apple.ade_operations SET state=$4,result=$5,lease=NULL,lease_until=NULL,next_attempt=$6 WHERE tenant_id=$1::uuid AND id=$2 AND lease=$3").bind(tenant).bind(work.id).bind(work.lease).bind(state).bind(&value).bind(now(app)?+delay).execute(c).await.map_err(db)?;
+            let evidence = match state {
+                "failed" | "superseded" => Some((409, "failed")),
+                "unknown" => Some((503, "unknown")),
+                "succeeded" if work.kind != "sync" || value.get("changed").and_then(Value::as_bool) == Some(true) => Some((200, "success")),
+                _ => None,
+            };
+            Ok(evidence)
         })).await?;
-        if committed{let fact=Fact::business(audit,&format!("ade:{}:finish:{}",work.id,work.attempt),format!("{}:{}",work.id,work.attempt).as_bytes(),200,"success",Some(work.id))?;app.audit_store.append(tx,&fact,false).await.map_err(Error::from)?;}
+        if let Some((status,outcome))=committed{let fact=Fact::business(audit,&format!("ade:{}:finish:{}",work.id,work.attempt),format!("{}:{}",work.id,work.attempt).as_bytes(),status,outcome,Some(work.id))?;app.audit_store.append(tx,&fact,false).await.map_err(Error::from)?;}
         audit.mark_commit_started();Ok(())
     })).await;
-    crate::operations::settle(result, &audit)
+    let settled = crate::operations::settle(result, &audit);
+    audit.finalize(
+        settled
+            .as_ref()
+            .err()
+            .map(|_| rss_mdm_audit_integration::FailureReason::Transaction),
+    );
+    settled
 }
 async fn apply(
     c: &mut sqlx::PgConnection,
@@ -588,7 +631,10 @@ async fn sync_page(
             .bind(tenant).bind(work.id).bind(serial).bind(date).bind(deleted).bind(profile).bind(work.full).execute(&mut *c).await.map_err(db)?;
     }
     sqlx::query("UPDATE mdm_apple.ade_operations SET cursor=$3,cursor_digests=array_append(cursor_digests,$4) WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(work.id).bind(cursor).bind(cursor_digest).execute(&mut *c).await.map_err(db)?;
+    let mut changed = false;
     if !more {
+        changed = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_apple.ade_sync_devices s LEFT JOIN mdm_apple.ade_devices d ON d.tenant_id=s.tenant_id AND d.organization=$3 AND d.serial=s.serial WHERE s.tenant_id=$1::uuid AND s.operation=$2 AND (d.serial IS NULL OR (($4 OR s.operation_date>=d.operation_date) AND (s.deleted IS DISTINCT FROM d.deleted OR s.remote_profile IS DISTINCT FROM d.remote_profile)))) OR ($4 AND EXISTS(SELECT 1 FROM mdm_apple.ade_devices d WHERE d.tenant_id=$1::uuid AND d.organization=$3 AND NOT d.deleted AND NOT EXISTS(SELECT 1 FROM mdm_apple.ade_sync_devices s WHERE s.tenant_id=d.tenant_id AND s.operation=$2 AND s.serial=d.serial)))")
+            .bind(tenant).bind(work.id).bind(work.organization).bind(work.full).fetch_one(&mut *c).await.map_err(db)?;
         // A fenced full snapshot replaces current state; its assignment date is not an event version.
         sqlx::query("INSERT INTO mdm_apple.ade_devices(tenant_id,organization,serial,operation_date,deleted,seen_run,remote_profile,observed_at) SELECT tenant_id,$3,serial,operation_date,deleted,$2,remote_profile,$4 FROM mdm_apple.ade_sync_devices WHERE tenant_id=$1::uuid AND operation=$2 ON CONFLICT(tenant_id,organization,serial) DO UPDATE SET operation_date=excluded.operation_date,deleted=excluded.deleted,remote_profile=excluded.remote_profile,assignment_revision=mdm_apple.ade_devices.assignment_revision+CASE WHEN excluded.deleted IS DISTINCT FROM mdm_apple.ade_devices.deleted OR excluded.remote_profile IS DISTINCT FROM mdm_apple.ade_devices.remote_profile THEN 1 ELSE 0 END,seen_run=excluded.seen_run,observed_at=excluded.observed_at WHERE $5 OR excluded.operation_date>=mdm_apple.ade_devices.operation_date")
             .bind(tenant).bind(work.id).bind(work.organization).bind(now(app)?).bind(work.full).execute(&mut *c).await.map_err(db)?;
@@ -607,7 +653,7 @@ async fn sync_page(
     }
     Ok((
         if more { "pending" } else { "succeeded" },
-        json!({"pageDevices":devices.len(),"moreToFollow":more,"registration":"not_implied"}),
+        json!({"pageDevices":devices.len(),"moreToFollow":more,"changed":changed,"registration":"not_implied"}),
     ))
 }
 async fn assignment(

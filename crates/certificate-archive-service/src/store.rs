@@ -160,7 +160,11 @@ pub(crate) async fn write(
         return Err(Error::Malformed);
     }
     p.bind_audit(audit)?;
-    audit.operation(id, action);
+    audit.operation(
+        id,
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(
         audit,
         &format!(

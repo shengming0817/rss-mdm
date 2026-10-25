@@ -31,7 +31,11 @@ async fn rollout(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, Error> {
-    audit.operation(id, "command_read");
+    audit.operation(
+        id,
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     app.software_rollout(&auth.proof, id, &audit)
         .await
         .map(|v| Json(serde_json::to_value(v).expect("execution facts serialize")))
@@ -45,7 +49,11 @@ async fn runs(
     Path(id): Path<Uuid>,
     Query(page): Query<super::history::Page>,
 ) -> Result<Json<Value>, Error> {
-    audit.operation(id, "command_read");
+    audit.operation(
+        id,
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.plan(id);
     app.action_runs(&auth.proof, id, &page, &audit)
         .await
@@ -58,7 +66,11 @@ async fn run(
     Extension(audit): Extension<RequestAudit>,
     Path((id, task)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, Error> {
-    audit.operation(task, "command_read");
+    audit.operation(
+        task,
+        "command_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.plan(id);
     audit.target(&task.to_string());
     app.action_run(&auth.proof, id, task, &audit)

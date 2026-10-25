@@ -42,7 +42,11 @@ impl ExecutionService {
         let Some(protection) = self.recovery_credentials.as_ref() else {
             return Ok(());
         };
-        let audit = RequestAudit::new(self.tenant.to_string(), "recovery_credential_maintenance");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "recovery_credential_maintenance",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("recovery-credentials");
         let result=transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,protection,&audit),|ctx,tx|Box::pin(async move{
             let (service,protection,audit)=*ctx;

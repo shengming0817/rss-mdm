@@ -192,10 +192,10 @@ async fn layout_cas_receipts_and_audit_are_atomic() -> Result<()> {
     let service = super::storage::independent_assets(runtime.clone(), tenant, &mut resources).await;
     resources.finish(async {
         async fn execute(service: &rss_mdm_inventory_service::assets::AssetService, command: &Command) -> std::result::Result<Value, Error> {
-            let audit = RequestAudit::new(case_tenant().into(), "management_write");
+            let audit = RequestAudit::new(case_tenant().into(), "management_write", rss_mdm_audit_integration::AuditIntent::Management);
             audit.set_principal("layout-operator", crate::test_support::INSTANCE);
             audit.target("asset-field-layout");
-            if let Some(id) = command.operation() { audit.operation(id, "management_write"); }
+            if let Some(id) = command.operation() { audit.operation(id, "management_write", rss_mdm_audit_integration::AuditIntent::Management); }
             let result = service.execute(command, &audit, &|| Ok(())).await;
             audit.finalize(None);
             result

@@ -275,10 +275,13 @@ pub async fn resolve(
     input: &Selection,
     budget: UploadBudget,
 ) -> Result<Binding, Error> {
-    audit.require_request_settlement();
+    audit.require_final_request();
     proof.require(Permission::ResourceWrite, None)?;
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
-    audit.set_action("management_write");
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -304,7 +307,11 @@ pub async fn current(
     upload: Uuid,
     budget: UploadBudget,
 ) -> Result<Upload, Error> {
-    audit.operation(upload, "management_write");
+    audit.operation(
+        upload,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     proof.require(Permission::ResourceWrite, None)?;
     let value = budget
         .work(store(app)?.status(
@@ -359,7 +366,11 @@ pub async fn record(
     source_catalog: Option<&rss_mdm_software_service::catalog::Reader>,
     budget: UploadBudget,
 ) -> Result<(), Error> {
-    audit.operation(upload.id, "management_write");
+    audit.operation(
+        upload.id,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let verified = budget
         .work(store(app)?.pin_ready(&upload.binding.artifact()?, upload.binding.class()))
         .await?;
@@ -383,7 +394,7 @@ pub async fn record(
                     if !upload.complete || !verified.matches(&upload.binding.artifact()?) {
                         return Err(Error::Conflict.into());
                     }
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     proof.check_live()?;
                     Ok(())
                 })
@@ -490,8 +501,11 @@ pub async fn cleanup(
     audit: &RequestAudit,
 ) -> Result<serde_json::Value, Error> {
     proof.require(Permission::ResourceWrite, None)?;
-    audit.require_request_settlement();
-    audit.set_action("management_write");
+    audit.require_final_request();
+    audit.set_action(
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let candidates = store(app)?
         .garbage(app.clock.unix_seconds().ok_or(Error::Clock)?)
         .await?;
@@ -536,7 +550,11 @@ pub async fn mirror(
     let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let operation = input.operation.ok_or(Error::Malformed)?;
-    audit.operation(operation, "management_write");
+    audit.operation(
+        operation,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let binding = resolve(app, proof, audit, id, input, budget).await?;
     let source = binding
         .resource()?
@@ -620,7 +638,10 @@ pub async fn receipt(
     operation: Uuid,
 ) -> Result<serde_json::Value, Error> {
     proof.require(Permission::ResourceRead, None)?;
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     transaction::inspect(
         &app.runtime,
@@ -639,7 +660,7 @@ pub async fn receipt(
                 let value = crate::bindings::read_in(tx, &actor, id, operation)
                     .await?
                     .ok_or(Error::Missing)?;
-                audit.require_request_settlement();
+                audit.require_final_request();
                 Ok(value)
             })
         },
@@ -657,7 +678,11 @@ pub async fn begin_upload(
     input: &Selection,
     budget: UploadBudget,
 ) -> Result<Upload, Error> {
-    audit.operation(upload, "management_write");
+    audit.operation(
+        upload,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let binding = resolve(app, proof, audit, id, input, budget).await?;
     Ok(store(app)?
         .begin(
