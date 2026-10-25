@@ -473,18 +473,17 @@ def _provisioning_pages_and_active_directory(admin, sql):
         'administratorId',NULL,'revision',1,'phase','reserved','blocked',NULL,'origin',NULL,'application',NULL))
         FROM ({ids}) q(id)""")
         seen = set()
-        after = None
+        cursor = None
         while True:
-            query = '/provisionings?limit=1000' + ('&after=' + after if after else '')
+            query = '/provisionings?limit=1000' + ('&cursor=' + cursor if cursor else '')
             status, page = admin.call('GET', BASE + query)
             require(status == 200 and 0 < len(page['items']) <= 1000, 'provisioning page failed at legal capacity')
             current = [item['operationId'] for item in page['items']]
             require(current == sorted(current) and not seen.intersection(current), 'provisioning pagination repeated or reordered rows')
             seen.update(current)
-            after = page['nextAfter']
-            if after is None:
+            cursor = page['nextCursor']
+            if cursor is None:
                 break
-            require(after == current[-1], 'page cursor did not bind last returned operation')
         require(len(seen) == before + 1101, 'provisioning history lost rows')
         status, catalog = admin.call('GET', BASE + '/settings/catalog')
         host = next(item for item in catalog['items'] if item['id'] == 'host-config')

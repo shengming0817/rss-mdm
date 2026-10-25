@@ -191,7 +191,11 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
 }
 
 /// Prepare legal encrypted history through the existing persistence owners, without provider calls.
-async fn verify_material_history(
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "four existing material owners prepare legal encrypted fixtures without provider calls"
+)]
+async fn prepare_material_history(
     router: &Router,
     browser: &mut Browser,
     protection: &rss_mdm_native_protection::Protector,
@@ -307,7 +311,7 @@ async fn verify_material_history(
     )?
     .derive();
     let private = protection.open_bytes(&row.try_get::<Vec<u8>, _>("private_key")?, &aad)?;
-    for revision in revision + 1..=64 {
+    for revision in 1..=64 {
         let key_id = uuid::Uuid::new_v4();
         let aad = ProtectionContext::new(
             tenant_id,
@@ -317,10 +321,19 @@ async fn verify_material_history(
         )?
         .derive();
         let encrypted = protection.seal_bytes(private.expose(), &aad)?;
-        sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,private_key,public_digest,csr) VALUES($1::uuid,'apns',$2,$3,$4,$5,$6)").bind(tenant).bind(revision).bind(key_id).bind(encrypted).bind(row.try_get::<String,_>("public_digest")?).bind(row.try_get::<String,_>("csr")?).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,private_key,public_digest,csr) VALUES($1::uuid,'apns',$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING").bind(tenant).bind(revision).bind(key_id).bind(encrypted).bind(row.try_get::<String,_>("public_digest")?).bind(row.try_get::<String,_>("csr")?).execute(&mut *tx).await?;
     }
     sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=64 WHERE tenant_id=$1::uuid AND purpose='apns'").bind(tenant).execute(&mut *tx).await?;
     tx.commit().await?;
+    Ok(())
+}
+
+async fn verify_material_history(
+    router: &Router,
+    browser: &mut Browser,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    prepare_material_history(router, browser, protection).await?;
     browser.operation = Some(uuid::Uuid::new_v4());
     let created = browser
         .call(
@@ -342,49 +355,54 @@ async fn verify_material_history(
         "/api/v1/windows/wns",
         "/api/v1/apple/materials/apns",
     ] {
-        let current = browser.call(router, Method::GET, path, None).await?;
-        ensure!(
-            current.0 == StatusCode::OK
-                && current.1["versionCount"] == 65
-                && current.1.get("versions").is_none(),
-            "current state at {path}: {} {}",
-            current.0,
-            current.1
-        );
-        let mut cursor = None;
-        let mut revisions = Vec::new();
-        loop {
-            let url = match &cursor {
-                Some(c) => format!("{path}/versions?limit=17&cursor={c}"),
-                None => format!("{path}/versions?limit=17"),
-            };
-            let page = browser.call(router, Method::GET, &url, None).await?;
-            ensure!(
-                page.0 == StatusCode::OK,
-                "history {url}: {} {}",
-                page.0,
-                page.1
-            );
-            let items = page.1["items"].as_array().unwrap();
-            ensure!(items.len() <= 17);
-            for row in items {
-                ensure!(
-                    row.get("privateKey").is_none()
-                        && row.get("credentials").is_none()
-                        && row.get("secret").is_none()
-                );
-                revisions.push(row["revision"].as_i64().unwrap());
-            }
-            cursor = page.1["nextCursor"].as_str().map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-            ensure!(revisions.len() <= 65, "history did not terminate");
-        }
-        ensure!(
-            revisions == (1..=65).rev().collect::<Vec<i64>>(),
-            "incomplete history at {path}"
-        );
+        verify_history_pages(router, browser, path).await?;
     }
+    Ok(())
+}
+
+async fn verify_history_pages(router: &Router, browser: &mut Browser, path: &str) -> Result<()> {
+    let current = browser.call(router, Method::GET, path, None).await?;
+    ensure!(
+        current.0 == StatusCode::OK
+            && current.1["versionCount"] == 65
+            && current.1.get("versions").is_none(),
+        "current state at {path}: {} {}",
+        current.0,
+        current.1
+    );
+    let mut cursor = None;
+    let mut revisions = Vec::new();
+    loop {
+        let url = match &cursor {
+            Some(c) => format!("{path}/versions?limit=17&cursor={c}"),
+            None => format!("{path}/versions?limit=17"),
+        };
+        let page = browser.call(router, Method::GET, &url, None).await?;
+        ensure!(
+            page.0 == StatusCode::OK,
+            "history {url}: {} {}",
+            page.0,
+            page.1
+        );
+        let items = page.1["items"].as_array().unwrap();
+        ensure!(items.len() <= 17);
+        for row in items {
+            ensure!(
+                row.get("privateKey").is_none()
+                    && row.get("credentials").is_none()
+                    && row.get("secret").is_none()
+            );
+            revisions.push(row["revision"].as_i64().unwrap());
+        }
+        cursor = page.1["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+        ensure!(revisions.len() <= 65, "history did not terminate");
+    }
+    ensure!(
+        revisions == (1..=65).rev().collect::<Vec<i64>>(),
+        "incomplete history at {path}"
+    );
     Ok(())
 }

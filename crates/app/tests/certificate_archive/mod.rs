@@ -547,7 +547,7 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     ensure!(versions.len() == 2);
     ensure!(versions.iter().any(|v| v["version"] == 1) && versions.iter().any(|v| v["version"] == 2));
     ensure!(
-        history
+        history["items"]
             .as_array()
             .unwrap()
             .iter()

@@ -259,8 +259,14 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
                 .get("accounts")
                 .is_none()
     );
+    let second_principal = crate::test_support::case::context()
+        .actors()
+        .iter()
+        .find(|a| a.tenant == case_tenant() && a.role == "other")
+        .and_then(|a| a.principal.as_deref())
+        .expect("second prepared account");
     f.browser.operation = Some(Uuid::new_v4());
-    let added=f.browser.call(&f.router,Method::PUT,&format!("{base}/accounts/second@managed.example.test"),Some(json!({"expectedRevision":0,"principalId":crate::test_support::case::admin(),"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
+    let added=f.browser.call(&f.router,Method::PUT,&format!("{base}/accounts/second@managed.example.test"),Some(json!({"expectedRevision":0,"principalId":second_principal,"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
     ensure!(added.0 == StatusCode::OK);
     let first = f
         .browser

@@ -1,4 +1,4 @@
-use crate::{Error, MAX_SUBSCRIPTIONS, PAGE, model::*};
+use crate::{Error, MAX_SUBSCRIPTIONS, model::*};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

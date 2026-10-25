@@ -65,6 +65,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
         Arc::new(crate::clock::SystemClock),
         protection,
         binding,
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .await?;
     fixture

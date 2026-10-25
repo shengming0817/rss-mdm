@@ -452,8 +452,7 @@ impl Archive {
         {
             return Ok(receipt);
         }
-        let history = self.history(p, entry, None).await?;
-        let latest = history.first().ok_or(Error::NotFound)?;
+        let latest = self.entry(p, entry).await?.latest;
         let (previous, bundle) = self
             .read_material(
                 p,
@@ -526,9 +525,12 @@ impl Archive {
         current
             .require(p, P::CertificateArchiveRead, None)
             .map_err(rss_mdm_authorization_service::Error::from)?;
-        let row = sqlx::query(&format!("{}$1::uuid AND e.id=$2", directory::SELECT))
-            .bind(p.tenant_id())
-            .bind(id)
+        let mut sql = sqlx::QueryBuilder::new(directory::SELECT);
+        sql.push_bind(p.tenant_id().to_owned())
+            .push("::uuid AND e.id=")
+            .push_bind(id);
+        let row = sql
+            .build()
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(Error::NotFound)?;

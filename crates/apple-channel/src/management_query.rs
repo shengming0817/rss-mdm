@@ -186,7 +186,27 @@ pub(crate) async fn detail(
     current
         .require(p, Permission::RegistrationConfigurationRead, None)
         .map_err(rss_mdm_authorization_service::Error::from)?;
-    let mut value:Value=if let Some(account)=account{sqlx::query_scalar(&format!("SELECT {ACCOUNT} FROM mdm_apple.account_bindings a WHERE tenant_id=$1::uuid AND organization=$2 AND account=$3")).bind(p.tenant_id()).bind(id).bind(account).fetch_optional(&mut *tx).await}else{sqlx::query_scalar(&format!("SELECT {CONFIG} FROM mdm_apple.account_configuration a WHERE tenant_id=$1::uuid AND id=$2")).bind(p.tenant_id()).bind(id).fetch_optional(&mut *tx).await}.map_err(db)?.ok_or(Error::NotFound)?;
+    let source = if account.is_some() {
+        format!("SELECT {ACCOUNT} FROM mdm_apple.account_bindings a WHERE tenant_id=")
+    } else {
+        format!("SELECT {CONFIG} FROM mdm_apple.account_configuration a WHERE tenant_id=")
+    };
+    let mut sql = sqlx::QueryBuilder::new(source);
+    sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
+    if let Some(account) = account {
+        sql.push(" AND organization=")
+            .push_bind(id)
+            .push(" AND account=")
+            .push_bind(account.to_owned());
+    } else {
+        sql.push(" AND id=").push_bind(id);
+    }
+    let mut value: Value = sql
+        .build_query_scalar()
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db)?
+        .ok_or(Error::NotFound)?;
     if account.is_none() {
         configured(
             app,

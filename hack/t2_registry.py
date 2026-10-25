@@ -1432,8 +1432,9 @@ MODULES[module.id] = replace(module, policies=tuple(
                actors=module.actors, configuration_devices=count, materials=materials)
     for name, (count, materials) in _counts.items()))
 
-# These native protocol cases alone consume a second member actor.
+# These native protocol and account-directory cases consume a second member actor.
 for name, suffix in (
+    ('apple.account_enrollment', 'apple::tests::account_enrollment::account_enrollment_and_reauthentication_keep_one_registration'),
     ('windows.enrollment', 'windows::t2::enrollment::self_enrollment_preserves_server_identity_and_terminal_protocol_id'),
     ('windows.entra', 'windows::t2::entra::management_policy_body_replay_and_audit_faults'),
     ('apple.scep', 'apple::tests::scep::self_enrollment_uses_current_user_and_one_macos_allocation'),

@@ -592,18 +592,6 @@ pub async fn is_selected(c: &mut PgConnection, tenant: &str, revision: i64) -> R
         .bind(tenant).bind(revision).fetch_one(c).await.map_err(db)
 }
 
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-    #[test]
-    fn published_wns_schema_matches_the_runtime_contract() {
-        let actual = serde_json::json!({"Import":schemars::schema_for!(Request),"Revoke":schemars::schema_for!(RevokeRequest),"Operation":schemars::schema_for!(Operation),"Directory":schemars::schema_for!(Directory)});
-        let published: serde_json::Value =
-            serde_json::from_str(include_str!("../schema/Wns.json")).unwrap();
-        assert_eq!(actual, published);
-    }
-}
-
 pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
     id: "wns_versions",
     default_limit: 64,
@@ -673,4 +661,16 @@ async fn history(
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(axum::Json(rss_mdm_query::Page { items, next_cursor }))
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    #[test]
+    fn published_wns_schema_matches_the_runtime_contract() {
+        let actual = serde_json::json!({"Import":schemars::schema_for!(Request),"Revoke":schemars::schema_for!(RevokeRequest),"Operation":schemars::schema_for!(Operation),"Directory":schemars::schema_for!(Directory)});
+        let published: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/Wns.json")).unwrap();
+        assert_eq!(actual, published);
+    }
 }
