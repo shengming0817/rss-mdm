@@ -132,6 +132,11 @@
           "const": "device_access.v1",
           "description": "Typed local-account Device Access operations.",
           "type": "string"
+        },
+        {
+          "const": "device_access.whfb.v1",
+          "description": "Native Windows Hello management, independent of RSS credential-provider availability.",
+          "type": "string"
         }
       ]
     },
@@ -878,7 +883,7 @@
       "items": {
         "$ref": "#/$defs/Capability"
       },
-      "maxItems": 22,
+      "maxItems": 27,
       "minItems": 1,
       "type": "array",
       "uniqueItems": true

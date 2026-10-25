@@ -130,7 +130,9 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 policy_version: Uuid::new_v4(),
                 configuration: AccessConfiguration {
                     mac: Some(Default::default()),
-                    windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                    windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+                        accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                    },
                     self_enrollment: true,
                     enabled: true,
                     role: None,
@@ -139,18 +141,20 @@ async fn rss_login_rotation_is_account_bound_and_keeps_old_material_until_applic
                 applied_revision: Some(1),
                 applied_windows: None,
                 effect: Some(AccessEffect::Applied {
-                    windows: Some(rss_mdm_agent_wire::runtime::AccessWindowsFacts {
-                        factor_generation: 1,
-                        recovery: rss_mdm_agent_wire::runtime::CredentialReceipt {
-                            subject: rss_mdm_agent_wire::runtime::CredentialSubject::RssLogin {
-                                binding: id,
-                                binding_generation: 1,
-                                sid: sid.clone(),
+                    windows: Some(rss_mdm_agent_wire::runtime::AccessWindowsFacts::RssFactor(
+                        rss_mdm_agent_wire::runtime::AccessRssFacts {
+                            factor_generation: 1,
+                            recovery: rss_mdm_agent_wire::runtime::CredentialReceipt {
+                                subject: rss_mdm_agent_wire::runtime::CredentialSubject::RssLogin {
+                                    binding: id,
+                                    binding_generation: 1,
+                                    sid: sid.clone(),
+                                },
+                                material: Uuid::new_v4(),
+                                version: 1,
                             },
-                            material: Uuid::new_v4(),
-                            version: 1,
                         },
-                    }),
+                    )),
                     account,
                     role: AccessRole::Standard,
                     mac: None,

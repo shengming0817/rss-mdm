@@ -124,7 +124,7 @@ pub enum Action {
         /// Shared current wire settings for device-wide Mac login configuration.
         mac: Option<rss_mdm_agent_wire::platform_sso::LoginConfiguration>,
         /// Explicit supported Windows account classes.
-        windows_accounts: Vec<rss_mdm_agent_wire::runtime::AccessWindowsKind>,
+        windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration,
         /// Permit first association to the authenticated current interactive local account.
         self_enrollment: bool,
         /// Explicit role management; absent preserves existing privilege, creates standard users.

@@ -15,6 +15,61 @@
         }
       ]
     },
+    "AccessWindowsConfiguration": {
+      "description": "Current Windows policy, with no implicit fallback between authentication mechanisms.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "This policy does not target Windows.",
+          "properties": {
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Password plus the RSS offline factor.",
+          "properties": {
+            "accounts": {
+              "description": "Explicit admitted account authorities.",
+              "items": {
+                "$ref": "#/$defs/AccessWindowsKind"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "accounts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.",
+          "properties": {
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "AccessWindowsKind": {
       "description": "Windows account classes admitted by the selected policy.",
       "oneOf": [
@@ -72,17 +127,14 @@
               "description": "Permit first association to the authenticated current interactive local account.",
               "type": "boolean"
             },
-            "windowsAccounts": {
-              "description": "Explicit supported Windows account classes.",
-              "items": {
-                "$ref": "#/$defs/AccessWindowsKind"
-              },
-              "type": "array"
+            "windows": {
+              "$ref": "#/$defs/AccessWindowsConfiguration",
+              "description": "Explicit supported Windows account classes."
             }
           },
           "required": [
             "kind",
-            "windowsAccounts",
+            "windows",
             "selfEnrollment"
           ],
           "type": "object"

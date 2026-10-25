@@ -126,10 +126,10 @@ pub(super) async fn ready(f: &mut Fixture) -> Result<Uuid> {
             account,
             role: wire::AccessRole::Standard,
             mac: None,
-            windows: Some(wire::AccessWindowsFacts {
+            windows: Some(wire::AccessWindowsFacts::RssFactor(wire::AccessRssFacts {
                 factor_generation: task.factor_generation,
                 recovery: ack.credentials()[0].clone(),
-            }),
+            })),
         },
     };
     let applied = event(

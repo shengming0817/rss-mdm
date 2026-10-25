@@ -568,13 +568,15 @@ impl crate::agent::Service {
             .map(|b| {
                 Ok(serde_json::json!({
                     "id":b.id,"generation":b.generation,"revision":b.revision,
-                    "digest":b.definition_digest()?,"disposition":b.account_disposition
+                    "digest":b.definition_digest()?,"disposition":b.account_disposition,
+                    "factorGeneration":b.factor_generation,
+                    "hello":b.intent.platform()==rss_mdm_agent_wire::runtime::TaskPlatform::Windows && matches!(b.configuration.windows,rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb)
                 }))
             })
             .collect::<Result<Vec<_>, Error>>()?;
         let mut tx = self.store.begin(actor.tenant_id()).await?;
         super::service::authorize(&mut tx, actor, device, Permission::AccountWrite).await?;
-        let rows=sqlx::query("SELECT (t->>'id')::uuid AS id,coalesce(bool_or(r.document#>>'{effect,state}'='unbound' AND r.document#>'{effect,disposition}'=t->'disposition'),false) AS confirmed,coalesce(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,coalesce(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed FROM jsonb_array_elements($2) t LEFT JOIN mdm_access.device_access_results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision' AND r.document->'definitionDigest'=t->'digest' GROUP BY t")
+        let rows=sqlx::query("SELECT (t->>'id')::uuid AS id,coalesce(bool_or(r.document#>'{effect,disposition}'=t->'disposition' AND CASE WHEN t->>'hello'='true' THEN r.document#>>'{effect,state}'='whfb_retired' AND r.document#>>'{effect,facts,policy}'='absent' AND r.document#>>'{effect,facts,registration}'='absent' AND r.document#>'{effect,facts,factorGeneration}'=t->'factorGeneration' ELSE r.document#>>'{effect,state}'='unbound' END),false) AS confirmed,coalesce(bool_or(r.document#>>'{effect,state}'='unknown'),false) AS unknown,coalesce(bool_or(r.document#>>'{effect,state}'='failed'),false) AS failed FROM jsonb_array_elements($2) t LEFT JOIN mdm_access.device_access_results r ON r.tenant_id=$1::uuid AND r.binding=(t->>'id')::uuid AND r.document->'bindingGeneration'=t->'generation' AND r.document->'revision'=t->'revision' AND r.document->'definitionDigest'=t->'digest' GROUP BY t")
             .bind(actor.tenant_id()).bind(serde_json::Value::Array(targets)).fetch_all(&mut *tx).await.map_err(crate::database::db)?;
         let mut phases = std::collections::BTreeMap::new();
         for row in rows {
