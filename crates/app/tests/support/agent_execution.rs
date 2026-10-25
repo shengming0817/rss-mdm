@@ -193,6 +193,7 @@ impl Fixture {
                     let (service, inputs, queries) = crate::execution_assembly::assemble(
                         &config, protection.clone(), authority.audit.clone(), content.clone(),
                         Default::default(), runtime.clone(), channels, signer, None, sessions,
+                        config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?,
                         rss_device_command_postgres::CommandClock::Postgres,
                     ).await?;
                     Ok::<_, anyhow::Error>((service, queries, inputs))

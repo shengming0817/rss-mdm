@@ -28,6 +28,7 @@ pub(crate) async fn command_service(
         None,
         None,
         sessions,
+        None,
         command_clock,
     )
     .await;

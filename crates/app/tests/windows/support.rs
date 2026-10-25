@@ -114,7 +114,6 @@ pub(crate) struct Host {
     pub(crate) windows_state: Arc<rss_mdm_windows_channel::HttpState>,
     pub(crate) devices: Arc<crate::device::DeviceService>,
     pub(crate) clock: Arc<dyn crate::clock::Clock>,
-    pub(crate) pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub(crate) agent_channel: Option<crate::native::ChannelRouter>,
     pub(crate) agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub(crate) notifications: crate::worker_wake::Listener,

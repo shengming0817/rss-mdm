@@ -137,6 +137,11 @@ pub(crate) async fn open(
             signer,
             bootstrap_urls,
             sessions,
+            config
+                .recovery_credentials
+                .as_ref()
+                .map(crate::recovery_credentials::Config::open)
+                .transpose()?,
             command_clock,
         )
         .await?;
@@ -178,6 +183,7 @@ pub(crate) async fn assemble(
     signer: Option<Arc<rss_mdm_execution_service::task_signing::Signer>>,
     bootstrap: Option<std::collections::BTreeMap<String, String>>,
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     command_clock: rss_device_command_postgres::CommandClock,
 ) -> Result<
     (
@@ -228,7 +234,7 @@ pub(crate) async fn assemble(
         rss_mdm_execution_service::InputDependencies {
             software_distribution: config.software_distribution,
             product_origin: config.product_origin.clone(),
-            recovery_enabled: config.recovery_credentials.is_some(),
+            recovery_enabled: recovery_credentials.is_some(),
             protection: protection.clone(),
             software,
             bootstrap,
@@ -256,11 +262,7 @@ pub(crate) async fn assemble(
     ));
     let service = Arc::new(ExecutionService::new(
         rss_mdm_execution_service::Dependencies {
-            recovery_credentials: config
-                .recovery_credentials
-                .as_ref()
-                .map(crate::recovery_credentials::Config::open)
-                .transpose()?,
+            recovery_credentials,
             sessions,
             source,
             protection: protection.clone(),
