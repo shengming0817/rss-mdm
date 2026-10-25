@@ -1,5 +1,8 @@
 //! MDM facts and request settlement over the public Audit component.
 #![forbid(unsafe_code)]
+mod accepted;
+pub use accepted::{AcceptedRequests, IngressLease};
+
 mod context;
 pub use context::{
     AuthenticationKind, FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact,

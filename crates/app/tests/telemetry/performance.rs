@@ -134,13 +134,7 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
     );
     announce(f, json!({"macos.performance":1})).await?;
     directory(f, &policy, true).await?;
-    let (status, signed) =
-        agent_call(&f.router, Method::GET, &path, Some(case_credential()), None).await?;
-    ensure!(
-        status == StatusCode::OK,
-        "native configuration: {status} {signed}"
-    );
-    let signed: wire::SignedTelemetryConfiguration = serde_json::from_value(signed)?;
+    let signed = native_configuration(f, &path).await?;
     use base64::Engine;
     use ring::signature::KeyPair;
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, f.key.public_key().as_ref())
@@ -931,4 +925,90 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
         "reader revocation invalidated the publisher's other assignments"
     );
     Ok(())
+}
+
+async fn configuration_lock_order(f: &Fixture, path: &str) -> Result<()> {
+    use sqlx::Connection;
+    let options = crate::device::test_support::options("postgres")?;
+    let mut owner = sqlx::PgConnection::connect_with(&options).await?;
+    let mut observer = sqlx::PgConnection::connect_with(&options).await?;
+    let mut reader = sqlx::PgConnection::connect_with(&options).await?;
+    let owner_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut owner)
+        .await?;
+    let reader_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut reader)
+        .await?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let mut tx = owner.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(case_tenant())
+        .execute(&mut *tx)
+        .await?;
+    rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, tenant).await?;
+    let parts = path.rsplit('/').take(2).collect::<Vec<_>>();
+    let version = Uuid::parse_str(parts[0])?;
+    let policy = Uuid::parse_str(parts[1])?;
+    let planning = f.planning.clone();
+    let task = tokio::spawn(async move {
+        let mut tx = reader.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(case_tenant())
+            .execute(&mut *tx)
+            .await?;
+        let result = rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
+            &planning,
+            &mut tx,
+            case_device_id(),
+            policy,
+            version,
+        )
+        .await;
+        tx.rollback().await?;
+        Ok::<_, anyhow::Error>(result?)
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT $1=ANY(pg_blocking_pids($2))")
+                .bind(owner_pid)
+                .bind(reader_pid)
+                .fetch_one(&mut observer)
+                .await?;
+            if blocked {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    // Reader cannot hold authority while waiting for this publisher's watermark.
+    let instance = f.base["identity"]["instance_id"]
+        .as_str()
+        .context("identity instance")?;
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        rss_mdm_authorization_service::store::lock(&mut tx, case_tenant(), instance),
+    )
+    .await??;
+    tx.rollback().await?;
+    let frozen = task.await??;
+    ensure!(
+        !frozen.grants.is_empty(),
+        "lock-order witness did not resolve a real profile"
+    );
+    Ok(())
+}
+
+async fn native_configuration(
+    f: &Fixture,
+    path: &str,
+) -> Result<wire::SignedTelemetryConfiguration> {
+    configuration_lock_order(f, path).await?;
+    let (status, signed) =
+        agent_call(&f.router, Method::GET, path, Some(case_credential()), None).await?;
+    ensure!(
+        status == StatusCode::OK,
+        "native configuration: {status} {signed}"
+    );
+    Ok(serde_json::from_value(signed)?)
 }

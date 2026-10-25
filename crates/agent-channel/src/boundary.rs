@@ -84,8 +84,29 @@ pub async fn admit(
         .get::<axum::extract::MatchedPath>()
         .map(|p| p.as_str())
         .unwrap_or("");
-    let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
+    let action = if (request.method() == axum::http::Method::GET
+        || request.method() == axum::http::Method::HEAD)
+        && matches!(
+            route,
+            "/api/v1/agent/runtime/current-user" | "/current-user"
+        ) {
+        "agent_current_user_read"
+    } else {
+        route_action(route)
+    };
+    let audit = RequestAudit::new(envelope.tenant.clone(), action);
     let id = audit.request_id();
+    let gateway_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.len() == 32 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(str::to_owned);
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"mdm_request_received","request_id":id,"gateway_request_id":gateway_id,
+        "method":request.method().as_str(),"path":request.uri().path()})
+    );
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
@@ -94,7 +115,8 @@ pub async fn admit(
         }
     };
     request.extensions_mut().insert(audit.clone());
-    let mut response = if request.headers().get_all(header::HOST).iter().count() != 1
+    let accepted = envelope.audit_store.accepted_requests();
+    let input = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
             .headers()
@@ -102,38 +124,53 @@ pub async fn admit(
             .and_then(|v| v.to_str().ok())
             .is_none_or(|host| !envelope.host.is_empty() && host != envelope.host)
     {
-        project(Error::Malformed)
+        Err(project(Error::Malformed))
     } else {
-        body(request, next, envelope.requests).await
+        body(request, envelope.requests.clone()).await
     };
-    let failure = classify(response.extensions().get::<Error>());
-    if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
-        &envelope.audit_store,
-        &audit,
-        response.status().as_u16(),
-        failure,
-    )
-    .await
-    {
-        response = project(match replacement {
-            Replacement::CommitUnknown => Error::CommitUnknown,
-            Replacement::RollbackFailed => Error::RollbackFailed,
-            Replacement::Audit(e) => e.into(),
-        });
-    }
+    let ingress_lease = input.as_ref().ok().and_then(|(request, _)| {
+        request
+            .extensions()
+            .get::<rss_mdm_audit_integration::IngressLease>()
+            .cloned()
+    });
+    let work = async move {
+        let _ingress_lease = ingress_lease;
+        let _permit = _permit;
+        let mut response = match input {
+            Ok((request, _permit)) => next.run(request).await,
+            Err(response) => response,
+        };
+        let failure = classify(response.extensions().get::<Error>());
+        if let Some(replacement) = rss_mdm_audit_integration::completion::complete(
+            &envelope.audit_store,
+            &audit,
+            response.status().as_u16(),
+            failure,
+        )
+        .await
+        {
+            response = project(match replacement {
+                Replacement::CommitUnknown => Error::CommitUnknown,
+                Replacement::RollbackFailed => Error::RollbackFailed,
+                Replacement::Audit(e) => e.into(),
+            });
+        }
 
-    let snapshot = audit.snapshot();
-    if let Some(key) = snapshot.operation_id {
-        response.headers_mut().insert(
-            "idempotency-key",
-            HeaderValue::from_str(&key.to_string()).expect("UUID"),
+        let snapshot = audit.snapshot();
+        if let Some(key) = snapshot.operation_id {
+            response.headers_mut().insert(
+                "idempotency-key",
+                HeaderValue::from_str(&key.to_string()).expect("UUID"),
+            );
+        }
+        eprintln!(
+            "{}",
+            serde_json::json!({"event":"mdm_request","request_id":id,"gateway_request_id":gateway_id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
         );
-    }
-    eprintln!(
-        "{}",
-        serde_json::json!({"event":"mdm_request","request_id":id,"operation_id":snapshot.operation_id,"status":response.status().as_u16(),"latency_ms":envelope.clock.now().saturating_duration_since(started).as_millis(),"error":response.extensions().get::<Error>()})
-    );
-    secure(family(response, enrollment), id)
+        secure(family(response, enrollment), id)
+    };
+    accepted.run(work).await.unwrap_or_else(|| limited(id))
 }
 fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response.headers_mut().insert(
@@ -161,13 +198,16 @@ fn limited(id: uuid::Uuid) -> Response {
         .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
     secure(response, id)
 }
-async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore>) -> Response {
+async fn body(
+    request: Request,
+    requests: Arc<tokio::sync::Semaphore>,
+) -> Result<(Request, tokio::sync::OwnedSemaphorePermit), Response> {
     let _permit = match requests.try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
-            return crate::ingress_error(
+            return Err(crate::ingress_error(
                 rss_mdm_agent_wire::runtime::ErrorCode::ServiceUnavailable,
-            );
+            ));
         }
     };
     let route = request
@@ -188,14 +228,14 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
     };
     let (parts, body) = request.into_parts();
     match tokio::time::timeout(Duration::from_secs(8), axum::body::to_bytes(body, limit)).await {
-        Ok(Ok(bytes)) => {
-            next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
-                .await
-        }
-        Ok(Err(_)) => {
-            crate::ingress_error(rss_mdm_agent_wire::runtime::ErrorCode::MalformedRequest)
-        }
-        Err(_) => project(Error::Unavailable(Failure::RequestDeadline)),
+        Ok(Ok(bytes)) => Ok((
+            Request::from_parts(parts, axum::body::Body::from(bytes)),
+            _permit,
+        )),
+        Ok(Err(_)) => Err(crate::ingress_error(
+            rss_mdm_agent_wire::runtime::ErrorCode::MalformedRequest,
+        )),
+        Err(_) => Err(project(Error::Unavailable(Failure::RequestDeadline))),
     }
 }
 fn project(error: Error) -> Response {

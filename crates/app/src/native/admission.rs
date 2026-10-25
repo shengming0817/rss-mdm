@@ -143,10 +143,10 @@ impl Admission {
 }
 pub(crate) async fn admit(
     Extension(gate): Extension<RequestGate>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(_slots) = gate.owner.request(gate.peer) else {
+    let Some(slots) = gate.owner.request(gate.peer) else {
         gate.owner.refused(1);
         return crate::http_host::secure_response(
             (
@@ -157,15 +157,19 @@ pub(crate) async fn admit(
             uuid::Uuid::new_v4(),
         );
     };
-    next.run(request).await
+    let lease = rss_mdm_audit_integration::IngressLease::new(vec![slots.0, slots.1]);
+    request.extensions_mut().insert(lease.clone());
+    let response = next.run(request).await;
+    drop(lease);
+    response
 }
 
 pub(crate) async fn admit_agent(
     Extension(gate): Extension<RequestGate>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    let Some(_peer_slot) = gate.owner.peer_request(gate.peer) else {
+    let Some(peer_slot) = gate.owner.peer_request(gate.peer) else {
         gate.owner.refused(1);
         use axum::http::{HeaderValue, StatusCode, header};
         let body = if request.uri().path().starts_with("/api/v1/agent/enroll/") {
@@ -189,7 +193,11 @@ pub(crate) async fn admit_agent(
             .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
         return response;
     };
-    next.run(request).await
+    let lease = rss_mdm_audit_integration::IngressLease::new(vec![peer_slot]);
+    request.extensions_mut().insert(lease.clone());
+    let response = next.run(request).await;
+    drop(lease);
+    response
 }
 
 #[cfg(test)]

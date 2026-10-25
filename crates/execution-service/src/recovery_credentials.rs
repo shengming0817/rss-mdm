@@ -118,7 +118,8 @@ impl ExecutionService {
                         storage::authorized_native(tx, proof, device, &permissions).await?;
                     storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
                     crate::actions::native_recovery::lock_device(tx, device).await?;
-                    service.audit_store.prepare_in(tx, audit, &[]).await?;
+                    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
+                        .await?;
                     service
                         .reconcile_messaging
                         .wake_in(

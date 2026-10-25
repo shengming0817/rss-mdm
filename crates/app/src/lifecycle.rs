@@ -70,7 +70,7 @@ pub async fn serve(
         .compile()
         .map_err(|e| ProcessError::at("startup.configuration", e))?;
     let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(40)).map_err(|_| {
+        TotalDrainBudget::new(Duration::from_secs(60)).map_err(|_| {
             ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
         })?,
         Arc::new(RuntimeTimer),
@@ -410,6 +410,9 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::webhooks::Resource(app.webhooks.clone()),
                         ));
+                        startup.stage_resource(DynManagedResource::new_box(
+                            AcceptedRequestsResource(audit_store.accepted_requests()),
+                        ));
                         let native_listeners = app
                             .listeners
                             .iter()
@@ -660,6 +663,20 @@ impl ManagedResource for AuditSourceResource {
     }
     async fn shutdown(&self) -> Result<(), ShutdownError> {
         self.0.close().await;
+        Ok(())
+    }
+}
+
+struct AcceptedRequestsResource(Arc<rss_mdm_audit_integration::AcceptedRequests>);
+impl ManagedResource for AcceptedRequestsResource {
+    fn name(&self) -> &str {
+        "native-accepted-requests"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(35)
+    }
+    async fn shutdown(&self) -> Result<(), ShutdownError> {
+        self.0.drain().await;
         Ok(())
     }
 }

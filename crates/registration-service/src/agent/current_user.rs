@@ -182,10 +182,14 @@ impl Service {
             input,
             &reference,
         ));
-        self.write(audit,(device,employee,input,reference,user,digest,sessions),|ctx,c|Box::pin(async move {
-            let (device,employee,input,reference,user,digest,sessions)=ctx;
+        self.write(audit,(device,employee,input,reference,user,digest,sessions,audit.request_id()),|ctx,c|Box::pin(async move {
+            let (device,employee,input,reference,user,digest,sessions,request_id)=ctx;
+            sqlx::query("SELECT set_config('application_name',$1,true)")
+                .bind(format!("mdm-current-user:{request_id}")).execute(&mut *c).await.map_err(db)?;
+            write_stage(*request_id,"channel_revalidation");
             crate::device::store::revalidate_management(c,device).await?;
             // Lock order is shared with ownership edits and first-login initialization.
+            write_stage(*request_id,"registration_user_lock");
             registration_user::lock_on(c,&device.tenant().to_string(),device.device()).await?;
             // Device namespace keeps login/logout replay coherent across user switches.
             let actor=format!("agent-user:{}",device.device());
@@ -199,17 +203,29 @@ impl Service {
             let current=binding_on(c,&device.tenant().to_string(),device.device()).await?;
             if current.revision!=input.expected_revision {return Err(Error::Conflict);}
             if let Some(employee)=employee {employee.check_live()?;}
+            write_stage(*request_id,"identity_session_recheck");
             if let Some(reference)=reference {sessions.recheck(reference).await?;}
             if let Some(user)=user {registration_user::initialize_on(c,device.device(),user).await?;}
             let revision=current.revision+1;
             let now=now(c).await?;
+            write_stage(*request_id,"binding_upsert");
             sqlx::query("INSERT INTO mdm_access.current_users(tenant_id,device,revision,registration,generation,session_reference,confirmed_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,device) DO UPDATE SET revision=EXCLUDED.revision,registration=EXCLUDED.registration,generation=EXCLUDED.generation,session_reference=EXCLUDED.session_reference,confirmed_at=EXCLUDED.confirmed_at")
                 .bind(device.tenant().to_string()).bind(device.device()).bind(revision as i64).bind(device.registration()).bind(device.generation()).bind(reference.as_ref().map(serde_json::to_value).transpose().map_err(|_|Error::Corrupt)?).bind(now).execute(&mut *c).await.map_err(db)?;
             let value=CurrentUser{revision,state:if user.is_some(){CurrentUserState::Active}else{CurrentUserState::Unbound},user:user.as_ref().map(|u|Ok::<_,Error>(SelfServiceUser{tenant_id:Uuid::parse_str(&u.tenant_id).map_err(|_|Error::Corrupt)?,instance_id:Uuid::parse_str(&u.instance_id).map_err(|_|Error::Corrupt)?,principal_id:Uuid::parse_str(&u.principal_id).map_err(|_|Error::Corrupt)?})).transpose()?,confirmed_at:Some(now)};
+            write_stage(*request_id,"operation_receipt");
             sqlx::query("INSERT INTO mdm_access.registration_operations(tenant_id,actor,instance,operation_id,digest,result) VALUES($1::uuid,$2,$3,$4,$5,$6)")
                 .bind(device.tenant().to_string()).bind(actor).bind(device.registration().to_string()).bind(input.operation_id).bind(&*digest).bind(serde_json::to_string(&value).map_err(|_|Error::Corrupt)?).execute(&mut *c).await.map_err(db)?;
+            write_stage(*request_id,"channel_revalidation");
             crate::device::store::revalidate_management(c,device).await?;
+            write_stage(*request_id,"source_callback_complete");
             Ok(Change{value,replay:false,digest:digest.clone()})
         })).await
     }
+}
+
+fn write_stage(request: uuid::Uuid, stage: &'static str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"mdm_current_user_write_stage","request_id":request,"stage":stage})
+    );
 }

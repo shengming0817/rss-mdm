@@ -46,7 +46,7 @@ impl Service {
         self.runtime.local_tx(self.tenant,crate::deadline(),move|tx|Box::pin(async move {
             tx.with_connection(move|c|Box::pin(async move {
                 let result=async {
-                    let frozen=rss_mdm_flow_service::planning::policies::telemetry::resolve_on(&service.planning,c,principal.device(),policy,version).await.map_err(|_|Error::Denied)?;
+                    let frozen=rss_mdm_flow_service::planning::policies::telemetry::resolve_on(&service.planning,c,principal.device(),policy,version).await.map_err(flow_error)?;
                     let configuration=configuration_on(&service,c,&principal,policy,version).await?;
                     service.execution.sign_telemetry_on(c,&principal,configuration).await.map_err(signing_error)?;
                     let rss_mdm_flow_service::planning::policies::telemetry::FrozenCollector::Script {reference,length,digest,..}=frozen.collector else {return Err(Error::Unsupported);};
@@ -119,7 +119,7 @@ async fn configuration_on(
         version,
     )
     .await
-    .map_err(|_| Error::Denied)?;
+    .map_err(flow_error)?;
     capable_on(c, service.tenant, principal.registration(), &frozen).await?;
     let scope = rss_mdm_registration_service::device::store::revalidate_collection_source(
         c,
@@ -127,7 +127,7 @@ async fn configuration_on(
         frozen.source,
     )
     .await
-    .map_err(|_| Error::Denied)?;
+    .map_err(registration_error)?;
     let keys = frozen
         .fields
         .iter()
@@ -325,19 +325,21 @@ async fn directory_on(
     let eligible = crate::configurations::eligible_on(service, c, principal.device()).await?;
     rss_mdm_registration_service::device::store::revalidate_management(c, principal)
         .await
-        .map_err(|_| Error::Denied)?;
+        .map_err(registration_error)?;
     let mut assignments = Vec::new();
     for candidate in eligible {
         let frozen = &candidate.frozen;
-        if rss_mdm_registration_service::device::store::revalidate_collection_source(
+        match rss_mdm_registration_service::device::store::revalidate_collection_source(
             c,
             principal,
             frozen.source,
         )
         .await
-        .is_err()
+        .map_err(registration_error)
         {
-            continue;
+            Ok(_) => {}
+            Err(Error::Denied) => continue,
+            Err(error) => return Err(error),
         }
         let Some(supported) =
             crate::configurations::supported_on(service, c, principal.registration(), frozen)
@@ -361,6 +363,24 @@ fn signing_error(error: rss_mdm_execution_service::Error) -> Error {
         E::Conflict => Error::Conflict,
         E::Unsupported => Error::Unsupported,
         E::Malformed => Error::Invalid,
+        _ => Error::Storage,
+    }
+}
+
+fn flow_error(error: rss_mdm_flow_service::Error) -> Error {
+    use rss_mdm_flow_service::Error as E;
+    match error {
+        E::Forbidden | E::Unauthorized => Error::Denied,
+        E::Conflict => Error::Conflict,
+        E::Unsupported => Error::Unsupported,
+        _ => Error::Storage,
+    }
+}
+fn registration_error(error: rss_mdm_registration_service::Error) -> Error {
+    use rss_mdm_registration_service::Error as E;
+    match error {
+        E::Forbidden | E::Unauthorized | E::Agent(_) => Error::Denied,
+        E::Conflict => Error::Conflict,
         _ => Error::Storage,
     }
 }

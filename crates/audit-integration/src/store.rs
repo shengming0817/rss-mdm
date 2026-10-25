@@ -66,6 +66,7 @@ impl From<Error> for PgError {
 /// Source production and final-history reading use separate admitted capabilities.
 #[derive(Clone)]
 pub struct AuditStore {
+    accepted_requests: Arc<crate::AcceptedRequests>,
     read: AuditReadStore,
     pub(crate) runtime: Arc<PgRuntime>,
     writer: Arc<PgOutboxWriter>,
@@ -90,6 +91,7 @@ impl AuditStore {
     ) -> Result<Self, Error> {
         let read = AuditReadStore::new(pool, integrity, control).await?;
         let store = Self {
+            accepted_requests: Arc::default(),
             read,
             writer: Arc::new(PgOutboxWriter::new(runtime.clone(), FrozenFact::domain()?)),
             runtime,
@@ -106,6 +108,7 @@ impl AuditStore {
         control: &Control<'_, T>,
     ) -> Result<Self, Error> {
         let store = Self {
+            accepted_requests: self.accepted_requests.clone(),
             read: self.read.clone(),
             writer: Arc::new(PgOutboxWriter::new(runtime.clone(), FrozenFact::domain()?)),
             runtime,
@@ -113,6 +116,10 @@ impl AuditStore {
         };
         store.admit(tenant, control).await?;
         Ok(store)
+    }
+    /// Native ingresses borrowing this source share one host-managed handoff owner.
+    pub fn accepted_requests(&self) -> Arc<crate::AcceptedRequests> {
+        self.accepted_requests.clone()
     }
     async fn admit<T: ExecutionTimer>(
         &self,

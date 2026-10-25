@@ -56,7 +56,7 @@ impl ExecutionService {
                     })
                     .await?;
                     actions::native_recovery::lock_device(tx, p.device()).await?;
-                    s.audit_store.prepare_in(tx, a, partitions).await?;
+                    crate::transaction::prepare_audit_in(&s.audit_store, tx, a, partitions).await?;
                     let retirement_request = w.retirement_request(p.purpose());
                     let w = w.clone();
                     let protection = s.protection.clone();

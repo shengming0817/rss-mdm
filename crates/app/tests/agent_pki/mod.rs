@@ -625,6 +625,14 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     })
     .await?;
     assert_eq!(requests.available_permits(), 0);
+    let cancelled = running.pop().expect("four admitted requests");
+    cancelled.abort();
+    assert!(cancelled.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        requests.available_permits(),
+        0,
+        "accepted work released capacity on client cancellation"
+    );
     let response = router
         .clone()
         .oneshot(
@@ -2323,5 +2331,68 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
         serde_json::to_value(result)?,
         serde_json::to_value(&candidate)?
     );
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "make t2 MODULE=agent.pki: client disconnect must not discard an accepted CA result"]
+async fn disconnected_certificate_request_finishes_once_and_replays() -> anyhow::Result<()> {
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    let service = service(deployment()).await?;
+    let p = admin(case_a(), "admin-a").await?;
+    let g = grant()?;
+    let receipt = authorize_request(&service, &p, &g, &audit()).await?;
+    let input = signing(&g, receipt.grant_id)?;
+    let envelope = envelope("mdm.example.test").await?;
+    let accepted = envelope.audit_store.accepted_requests();
+    let router = rss_mdm_agent_channel::enroll::router(service.clone(), envelope).into_axum();
+    let mut owner = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
+    let owner_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut owner)
+        .await?;
+    let mut hold = owner.begin().await?;
+    sqlx::query(
+        "SELECT id FROM mdm_access.agent_grants WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE",
+    )
+    .bind(case_a())
+    .bind(receipt.grant_id)
+    .fetch_one(&mut *hold)
+    .await?;
+    let response = tokio::spawn(
+        router.oneshot(
+            Request::post("/certificates")
+                .header("host", "mdm.example.test")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&input)?))?,
+        ),
+    );
+    // Synchronize on the real backend lock, rather than cancelling before request admission.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(owner_pid)
+            .fetch_one(&mut observer)
+            .await?;
+            if waiting {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    response.abort();
+    assert!(response.await.unwrap_err().is_cancelled());
+    hold.rollback().await?;
+    tokio::time::timeout(Duration::from_secs(25), accepted.drain()).await?;
+    let saved: (String, String, i64) = sqlx::query_as("SELECT i.state,s.state,(SELECT count(*) FROM mdm_pki.signing x WHERE x.tenant_id=i.tenant_id AND x.attempt=i.id) FROM mdm_access.agent_issuances i JOIN mdm_pki.signing s ON(s.tenant_id,s.attempt)=(i.tenant_id,i.id) WHERE i.tenant_id=$1::uuid AND i.grant_id=$2")
+        .bind(case_a()).bind(receipt.grant_id).fetch_one(&mut observer).await?;
+    assert_eq!(saved, ("issued".into(), "issued".into(), 1));
+    let first = service.issue(&input, &audit()).await?;
+    let replay = service.issue(&input, &audit()).await?;
+    assert_eq!(serde_json::to_value(first)?, serde_json::to_value(replay)?);
     Ok(())
 }

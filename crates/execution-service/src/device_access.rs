@@ -266,7 +266,8 @@ impl ExecutionService {
                     let (service, device, input, audit) = *ctx;
                     crate::transaction::lock_authority(service, tx).await?;
                     crate::actions::native_recovery::lock_device(tx, device.device()).await?;
-                    service.audit_store.prepare_in(tx, audit, &[]).await?;
+                    crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
+                        .await?;
                     let p = device.clone();
                     let value = input.clone();
                     let replay = tx

@@ -42,6 +42,20 @@ pub async fn complete(
         return Some(Replacement::Audit(Error::ReserveExhausted));
     }
     let snapshot = audit.snapshot();
+    // This device's public presence projection is an ordinary read. It must not
+    // queue a mutation receipt or wait behind audit quota/partition locks.
+    // Authentication denials and every operation/write settlement remain durable.
+    if snapshot.action == "agent_current_user_read"
+        && snapshot.operation_id.is_none()
+        && snapshot.write_outcome == WriteOutcome::CommitNotStarted
+        && !snapshot.settle_request
+        && status != 401
+        && status != 403
+        && failure != Some(ResponseFailure::Denied)
+    {
+        audit.finalize(None);
+        return None;
+    }
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
         protected_result(failure, snapshot.write_outcome)
     } else {
