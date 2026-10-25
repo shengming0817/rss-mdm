@@ -61,6 +61,7 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
         certificate_thumbprint: "2222222222222222222222222222222222222222",
         certificate_subject: "CN=device,O=RSS",
         management_url: "https://mdm.example.test/ManagementServer/MDM.svc",
+        renewal_discovery_url: "https://mdm.example.test/EnrollmentServer/Discovery.svc",
         provider_id: "RSS-MDM",
         username: "protocol-account",
         client_password: Secret("device-secret"),
@@ -73,6 +74,42 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
     assert!(full.contains("name=\"ROLE\" value=\"32\""));
     assert!(full.contains("name=\"EntDMID\" value=\"enterprise-device-id\""));
     assert!(full.contains("type=\"My\"><characteristic type=\"User\""));
+    // Parse the actual hierarchy: WSTEP is beside User/System, not beneath it.
+    let mut reader = quick_xml::Reader::from_str(&full);
+    let mut path = Vec::new();
+    let mut found = false;
+    loop {
+        match reader.read_event().unwrap() {
+            quick_xml::events::Event::Start(node) => {
+                let attributes: std::collections::BTreeMap<_, _> = node
+                    .attributes()
+                    .map(|value| {
+                        let value = value.unwrap();
+                        (
+                            value.key.as_ref().to_owned(),
+                            value
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .unwrap()
+                                .into_owned(),
+                        )
+                    })
+                    .collect();
+                if node.name().as_ref() == "characteristic" {
+                    path.push(attributes["type"].clone());
+                } else if attributes.get("name").map(String::as_str) == Some("ServerURL") {
+                    assert_eq!(path, ["CertificateStore", "My", "WSTEP", "Renew"]);
+                    assert_eq!(attributes["value"], p.renewal_discovery_url);
+                    found = true;
+                }
+            }
+            quick_xml::events::Event::End(node) if node.name().as_ref() == "characteristic" => {
+                path.pop();
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+    assert!(found);
     p.enrollment_type = EnrollmentType::Device;
     let device =
         String::from_utf8(provisioning::encode(&p, &CodecLimits::default()).unwrap()).unwrap();
@@ -86,7 +123,7 @@ fn provisioning_selects_enrollment_store_and_escapes_the_subject() {
 fn current_windows_discovery_and_optional_context_remain_standard_inputs() {
     use rss_mdm_windows_mdm::soap::{self, Body, Operation};
     let limits = CodecLimits::default();
-    for version in ["4.0", "5.0", "6.0", "7.0"] {
+    for version in ["4.0", "5.0", "6.0", "7.0", "8.0", "9.0"] {
         let xml = String::from_utf8(include_bytes!("fixtures/discovery-request.xml").to_vec())
             .unwrap()
             .replace(
@@ -95,6 +132,26 @@ fn current_windows_discovery_and_optional_context_remain_standard_inputs() {
             );
         assert!(soap::decode(xml.as_bytes(), Operation::Discover, &limits).is_ok());
     }
+    let native = soap::decode(
+        include_bytes!("fixtures/discovery-native-windows11.xml"),
+        Operation::Discover,
+        &limits,
+    )
+    .unwrap();
+    let Body::Discover(input) = &native.body else {
+        panic!()
+    };
+    assert_eq!(input.request_version, "9.0");
+    assert_eq!(input.application_version, "10.0.26300.9711");
+    assert_eq!(
+        soap::decode(
+            &soap::encode(&native, &limits).unwrap(),
+            Operation::Discover,
+            &limits
+        )
+        .unwrap(),
+        native
+    );
     let mut issue = soap::decode(
         include_bytes!("fixtures/issue-request.xml"),
         Operation::Issue,

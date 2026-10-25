@@ -97,6 +97,41 @@
       "sha256": "3c0e23f6c17f98ca0f708e68052a78fe9648d99f7c4cd1f4f949f72470f06e62",
       "bytes": 46708,
       "retrieved_utc": "2026-09-09T01:19:25.524651+00:00"
+    },
+    {
+      "title": "MS-MDE2 DiscoveryRequest versions 1.0 through 9.0",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/36e33def-59ab-484f-b0bc-701496346925",
+      "sha256": "e0d91ade16ec0a97b2ee1b1783aecf850a33514e2bf6af0ec773e78c2b34f86a",
+      "bytes": 39270,
+      "retrieved_utc": "2026-10-24T12:08:00.110748+00:00"
+    },
+    {
+      "title": "Microsoft On-premises authentication device enrollment (complete samples)",
+      "url": "https://learn.microsoft.com/en-us/windows/client-management/on-premise-authentication-device-enrollment",
+      "sha256": "90ee8840502636e2d29226f2b5603eb33b98583cbc284c32e311cb0b957ee65c",
+      "bytes": 76315,
+      "retrieved_utc": "2026-10-24T15:11:21.058979+00:00"
+    },
+    {
+      "title": "MS-MDE2 enrollment fault QName table",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-mde2/0a78f419-5fd7-4ddb-bc76-1c0f7e11da23",
+      "sha256": "e8e59449cccf8ec3fa441324f9b38d3f6806d225e35ba6c5e682feef1dabd5e3",
+      "bytes": 44215,
+      "retrieved_utc": "2026-10-24T16:18:00.313631+00:00"
+    },
+    {
+      "title": "MS-XCEP Client extension point",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-xcep/41121794-cb9c-44dc-9238-d3ea3ada06e6",
+      "sha256": "c7ee289523e86299250c37c1d01407bd6cfb0e3cc929a3f7914c54d0ba1ec92b",
+      "bytes": 38095,
+      "retrieved_utc": "2026-10-24T16:18:01.530796+00:00"
+    },
+    {
+      "title": "MS-WSTEP extensible request content and extra context",
+      "url": "https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-wstep/fe35b17e-df6e-4add-8699-61885bf7f8cc",
+      "sha256": "fcf2b9c043ab2fe0c23e4e29e431f33f506c4b7d5182cdee86f5b5a8b7ffe87e",
+      "bytes": 41449,
+      "retrieved_utc": "2026-10-24T16:40:30.526625+00:00"
     }
   ],
   "archive": {
@@ -106,11 +141,11 @@
   "fixtures": {
     "discovery-request.xml": "a8c0a91a9b0dccfc4e3adb292ced60acb57260795cddf850bb0e59417efeb8c2",
     "discovery-response.xml": "5a058202233a6b0040c6c1db8fbb1846b667c84e84511d0c8a7d03ec02793543",
-    "fault-authentication.xml": "d1cf98023b3acb2e4c7516c4482be95202f063201b8695494b9c0405110d4a81",
-    "fault-authorization.xml": "f0691302a62c902d6a4db6cd3662290e646a8219cc8ebea1df62ec9bde712bab",
-    "fault-certificate-request.xml": "01075fc9838848345d02e9b001185b01c100dd1291053f78727bf42ffe4abd61",
-    "fault-enrollment-server.xml": "13d1b2b2c1afbcd7b212e4dfe171f11e563f2dd464c0413661d317c7391ebda6",
-    "fault-message-format.xml": "624c782882c757ac715b4d10df5e7bf0727c4ef3d35dddbad87a5a4afccc846f",
+    "fault-authentication.xml": "4b59a9758aef61665498707c7d152e430b5291084fba4b53dbb19195c8e50238",
+    "fault-authorization.xml": "aaad05e5682be8404589692c3f77da28799f470ec7ebe582a75c690dd4d731cc",
+    "fault-certificate-request.xml": "c5c63d8cd53439b23a8fe47b01f1ad65bde4c108b4e0739c5343a61c3db06e48",
+    "fault-enrollment-server.xml": "e44ea79ebf3db40d413a5e4c57af7cc2996b562f7216f6288dfb4dafac9df026",
+    "fault-message-format.xml": "eb0507da712cb6edbd68cb66664232e61d511793773a15cc6dd10494d17c1527",
     "get.xml": "cabd4704c319b191fa6967326388998e8f1a1de285dc3b8a8c92e706b1262512",
     "initialization.xml": "30194ee975c2700b82b1427f754be4da8a38a6cb311604279ec657005180ef44",
     "issue-request.xml": "925624a907c1b3dfee3f2a4fee4665683b4222fdb10f3fd34bd02e45b7980533",
@@ -119,7 +154,36 @@
     "policy-response.xml": "1d89319fb118a062e77facb4a5dc56ea7b28c6001899faf8ac351d3af7647a9b",
     "results.xml": "ee0a113d248e51bcacef3b4dab050ef11e60657ae46b5df879d8095d56f326b2",
     "status-details.xml": "2e025e65a5d3b988d95b5e359ead470d4c95be4614f3899db21e33dd65e19e19",
-    "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15"
+    "initialization-login-status.xml": "8464249f4165518c9bb5bb45924b80d243a2a560cd0dbf4df46041d5d886cf15",
+    "discovery-native-windows11.xml": "33997f567930ba594cdca8dd5bd8d7fdfb8fd893fafb82bfc553507d879cfd11",
+    "policy-official-on-premise.xml": "fb7aa03cdc3bb1adac895d100b83d7074418523aaf5bcd5f8c41e27ee1679ae7",
+    "issue-official-on-premise.xml": "12447991922199dc604a57baba86ba8cde607925e32a727e1bc46240fde2f0c8",
+    "policy-native-windows11.xml": "f3cd21c360c13f680ceec4da7815044307ed2de01dd79e1aca2b8f21c5b8aa25"
   },
-  "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal."
+  "profile_revision": "2350: SHA-256 hash OID group=1; Status supports Windows and OMA reference order and Chal.",
+  "native_capture": {
+    "file": "discovery-native-windows11.xml",
+    "origin": "Windows 11 Pro ARM64 10.0.26300.9711 MDMRegistration.dll DiscoverManagementServiceEx",
+    "captured_utc": "2026-10-24",
+    "sanitized": [
+      "MessageID",
+      "To",
+      "EmailAddress"
+    ]
+  },
+  "native_policy_capture": {
+    "file": "policy-native-windows11.xml",
+    "origin": "Windows 11 Pro ARM64 10.0.26300.9711 native enrollment UI",
+    "captured_utc": "2026-10-24T15:55:06.455838+00:00",
+    "sanitized": [
+      "MessageID",
+      "To",
+      "Username",
+      "Password"
+    ],
+    "preserved": [
+      "TPMManufacturer",
+      "TPMFirmwareVersion"
+    ]
+  }
 }

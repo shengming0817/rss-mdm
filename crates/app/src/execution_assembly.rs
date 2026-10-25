@@ -277,6 +277,13 @@ pub(crate) async fn assemble(
             outbox,
             store,
             reconcile,
+            reconcile_messaging: rss_reconcile_postgres::PgMessagingStore::new(
+                runtime.clone(),
+                tenant,
+                deadline(),
+            )
+            .await
+            .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?,
             tenant,
             instance: config.identity.instance_id.clone(),
             content: content.clone(),

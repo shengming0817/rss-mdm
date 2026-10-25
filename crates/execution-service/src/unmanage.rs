@@ -80,13 +80,18 @@ impl RetirementPlan {
     }
 }
 
-pub async fn wake_in(tx: &mut PgTransaction<'_>, operation: Uuid) -> Result<()> {
+pub async fn wake_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    operation: Uuid,
+) -> Result<()> {
     let target = rss_reconcile::Target::new(
         crate::recovery_scope(tx.tenant_id()),
         format!("retirement:{operation}"),
     )
     .map_err(|_| Error::Malformed)?;
-    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+    reconcile
+        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     Ok(())
@@ -103,7 +108,11 @@ pub async fn active_in(tx: &mut PgTransaction<'_>, operation: Uuid) -> Result<bo
             .bind(tenant).bind(operation).fetch_one(c).await
     })).await?)
 }
-pub async fn wake_device_in(tx: &mut PgTransaction<'_>, device: &str) -> Result<()> {
+pub async fn wake_device_in(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    device: &str,
+) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
     let device = device.to_owned();
     let id: Option<Uuid> = tx
@@ -121,7 +130,7 @@ pub async fn wake_device_in(tx: &mut PgTransaction<'_>, device: &str) -> Result<
         })
         .await?;
     if let Some(id) = id {
-        wake_in(tx, id).await?;
+        wake_in(reconcile, tx, id).await?;
     }
     Ok(())
 }

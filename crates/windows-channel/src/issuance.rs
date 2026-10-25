@@ -533,6 +533,8 @@ pub(crate) fn provision_request(
             certificate_thumbprint: &thumbprint(certificate),
             certificate_subject: &subject,
             management_url: &w.management_url(rss_mdm_registration_service::Purpose::Primary),
+            renewal_discovery_url: &w
+                .renewal_discovery_url(rss_mdm_registration_service::Purpose::Primary),
             provider_id: &w.provider_id,
             username: &intent.registration.to_string(),
             client_password: rss_mdm_windows_mdm::Secret(&secrets.client_password),

@@ -527,7 +527,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
-    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
     let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
     let routes = routes.merge(rss_mdm_management_http::workspace_routes().into_axum());
     let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
@@ -822,7 +822,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
-    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
     let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
     let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
 
@@ -1119,6 +1119,7 @@ async fn reverse_memberships_revalidate_authority_after_request_snapshot() -> Re
                 crate::planning::test_support::planning(crate::planning::test_support::tenant())
                     .await;
             let groups = rss_mdm_inventory_service::groups::Groups {
+                reconcile_messaging: planning.reconcile_messaging.clone(),
                 objects: planning.objects.clone(),
                 tenant: planning.tenant,
                 groups: planning.groups.clone(),
@@ -1204,7 +1205,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
         protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
         policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
     }));
-    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
     let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
     let routes = routes.merge(rss_mdm_management_http::compliance::http::routes().with_state(crate::planning::test_support::compliance(&planning).await).into_axum());
     let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;

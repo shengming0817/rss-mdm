@@ -201,7 +201,14 @@ async fn dispatch(State(state): State<Dispatch>, mut request: Request) -> Respon
             .await
             .unwrap_or_else(|never| match never {});
     }
-    let selected = kind(request.uri().path());
+    let mut selected = kind(request.uri().path());
+    if selected == Some(ChannelKind::WindowsEnrollment)
+        && state.routes.iter().any(|(kind, route)| {
+            *kind == ChannelKind::WindowsManagement && route.origins.contains(&origin)
+        })
+    {
+        selected = Some(ChannelKind::WindowsManagement);
+    }
     let router = if let Some(selected) = selected {
         let Some((_, route)) = state.routes.iter().find(|(k, r)| {
             *k == selected && (*k == ChannelKind::Agent || r.origins.contains(&origin))

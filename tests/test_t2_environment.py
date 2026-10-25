@@ -25,7 +25,7 @@ class EnvironmentTests(unittest.TestCase):
             def host(identity, console, origins):
                 directory=root/identity;directory.mkdir(exist_ok=True)
                 (directory/'deployment.json').write_text(json.dumps(dict(hostId=identity,backend='127.0.0.1:8081',
-                    consoleOrigin=console,origins=origins,scep=[],
+                    consoleOrigin=console,origins=[dict(origin=value,clientCertificate=True) for value in origins],scep=[],
                     certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')))
             def mappings():
                 return {int(v.split(':')[-2]):int(v.split(':')[-1]) for v in renderer.render(root)}
@@ -49,6 +49,22 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(expanded[8443],443)
             (root/'nginx.conf').unlink();(root/'gateway-ports.compose.yaml').unlink()
             self.assertEqual(mappings(),expanded)
+
+    def test_gateway_requires_explicit_tls_policy(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('gateway_renderer',Path(__file__).resolve().parents[1]/'deployment/render_gateway.py')
+        renderer=importlib.util.module_from_spec(spec);spec.loader.exec_module(renderer)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);identity='33333333333343338333333333333333'
+            directory=root/identity;directory.mkdir()
+            facts=dict(hostId=identity,backend='127.0.0.1:8081',consoleOrigin='https://mdm.example.test',
+                origins=[dict(origin='https://mdm.example.test',clientCertificate=False),
+                         dict(origin='https://device.example.test',clientCertificate=True)],scep=[],
+                certificate=f'/run/gateway/{identity}/tls.crt',privateKey=f'/run/gateway/{identity}/tls.key')
+            path=directory/'deployment.json';path.write_text(json.dumps(facts));renderer.render(root)
+            for invalid in ['optional',None,1]:
+                facts['origins'][0]['clientCertificate']=invalid;path.write_text(json.dumps(facts))
+                with self.assertRaisesRegex(ValueError,'TLS policy'):renderer.render(root)
 
     def test_postgres_endpoint_belongs_to_one_successful_lifecycle(self):
         from contextlib import ExitStack

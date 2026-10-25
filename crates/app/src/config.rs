@@ -382,6 +382,7 @@ impl Config {
         if let Some(apple) = &self.native_protocols.apple {
             apple.validate(self.listen)?;
         }
+        crate::native::origins::public(&self)?;
         if let crate::agent_pki::Config::StepCa { endpoint, .. } = &self.agent_pki {
             rss_mdm_agent_wire::connections::validate_origin(&endpoint.origin)
                 .map_err(|_| Error::Configuration(ConfigIssue::AgentPki))?;

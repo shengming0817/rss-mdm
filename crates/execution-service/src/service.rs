@@ -57,10 +57,11 @@ impl ExecutionService {
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         actions::native_recovery::lock_device(tx, device).await?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
-        rss_reconcile_postgres::messaging::wake_in(tx, &target(self.tenant, device), (), |_, _| {
-            Box::pin(async { Ok(()) })
-        })
-        .await?;
+        self.reconcile_messaging
+            .wake_in(tx, &target(self.tenant, device), (), |_, _| {
+                Box::pin(async { Ok(()) })
+            })
+            .await?;
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);

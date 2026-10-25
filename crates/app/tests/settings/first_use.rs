@@ -26,7 +26,7 @@ async fn put(browser: &mut Browser, router: &Router, path: &str, body: Value) ->
 fn progress_router(
     f: &authority::Authority,
     directory: crate::settings::Directory,
-    channels: Arc<crate::registration_channels::Channels>,
+    channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
 ) -> Result<Router> {
     let source = Arc::new(crate::first_use::FirstUse {
         directory: Arc::new(directory),
@@ -356,7 +356,21 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
 // Settings owns the product-wide readiness projection.
 pub(crate) async fn published_agent_package_readiness(base: &Value) -> Result<()> {
     use anyhow::Context;
-    let (router, resources) = app(base).await?;
+    let mut fixture = authority::Authority::from_config(base.clone()).await?;
+    let directory = crate::test_support::settings::directory(&mut fixture).await?;
+    let config: Config = serde_json::from_value(base.clone())?;
+    let channels = Arc::new(crate::registration_channels::Channels {
+        preparation: Arc::new(crate::channel_status::Channels::new(&config)),
+        windows: None,
+        apple: None,
+        agent: None,
+        pki: directory.pki.clone(),
+        clock: directory.clock.clone(),
+    });
+    let first_use = progress_router(&fixture, directory.clone(), channels)?;
+    // Reuse the same Authority while exercising both independent owner routers.
+    let router = crate::test_support::settings::catalog(&fixture, directory)?;
+    let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let mut user = authority::Authority::prepared_browser("admin")?;
     let settings = user
@@ -376,16 +390,16 @@ pub(crate) async fn published_agent_package_readiness(base: &Value) -> Result<()
         "single package projection {capability:?}"
     );
     let path = "/api/v1/settings/first-use";
-    let initial = user.call(&router, Method::GET, path, None).await?;
+    let initial = user.call(&first_use, Method::GET, path, None).await?;
     ensure!(initial.0 == StatusCode::OK);
     let previous = user.operation.replace(Uuid::new_v4());
-    let selected = user.call(&router, Method::PUT, path, Some(json!({"expectedRevision":initial.1["saved"]["revision"],"intent":{"channels":["agent"],"capabilities":{"agent_package":{"kind":"configure"}},"completionRequested":false}}))).await?;
+    let selected = user.call(&first_use, Method::PUT, path, Some(json!({"expectedRevision":initial.1["saved"]["revision"],"intent":{"channels":["agent"],"capabilities":{"agent_package":{"kind":"configure"}},"completionRequested":false}}))).await?;
     user.operation = previous;
     ensure!(
         selected.0 == StatusCode::OK,
         "first use selection {selected:?}"
     );
-    let progress = user.call(&router, Method::GET, path, None).await?;
+    let progress = user.call(&first_use, Method::GET, path, None).await?;
     ensure!(progress.0 == StatusCode::OK);
     let step = progress.1["steps"]
         .as_array()

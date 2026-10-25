@@ -1,5 +1,6 @@
 //! Windows enrollment and management protocol boundary.
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
+mod certificate_enrollment;
 mod database;
 pub mod enrollment_store;
 pub mod entra;
@@ -71,6 +72,7 @@ pub fn protocol_identity(
     poll.validate().map_err(|_| Error::Malformed)?;
     Ok(enrollment::digest(&(
         "mdm.windows.profile.v1",
+        "separate-bootstrap-and-certificate-enrollment",
         poll,
         enrollment_origin,
         management_origin,
@@ -175,6 +177,18 @@ impl Windows {
             })
             .collect()
     }
+    /// Certificate-authenticated discovery advertised by CertificateStore WSTEP renewal.
+    pub fn renewal_discovery_url(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
+        let prefix = if purpose == rss_mdm_registration_service::Purpose::WindowsDeclared {
+            "Linked"
+        } else {
+            ""
+        };
+        format!(
+            "{}/EnrollmentServer/{prefix}Discovery.svc",
+            self.management_origin
+        )
+    }
     pub fn management_url(&self, purpose: rss_mdm_registration_service::Purpose) -> String {
         self.management_urls(purpose)[0].clone()
     }
@@ -201,7 +215,8 @@ pub fn routers(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
-        )
+        );
+    let management = certificate_enrollment::router()
         .route(
             "/EnrollmentConfiguration",
             post(linked::discover).owned(
@@ -222,8 +237,7 @@ pub fn routers(
                 &contracts::PROTOCOL_WINDOWS_CHANNEL,
                 &[RouteOperation::Action],
             ),
-        );
-    let management = Router::new()
+        )
         .route(
             "/ManagementServer/MDM.svc",
             post(management::manage).owned(
@@ -283,6 +297,15 @@ fn decode(
     origin: Result<&str, Error>,
     path: &str,
 ) -> Result<soap::Message, Error> {
+    decode_at(bytes, headers, op, origin?, path)
+}
+fn decode_at(
+    bytes: &[u8],
+    headers: &HeaderMap,
+    op: Operation,
+    origin: &str,
+    path: &str,
+) -> Result<soap::Message, Error> {
     if headers.get_all("content-type").iter().count() != 1
         || !headers
             .get("content-type")
@@ -296,7 +319,7 @@ fn decode(
         return Err(Error::Malformed);
     }
     let message = soap::decode(bytes, op, &CodecLimits::default()).map_err(|_| Error::Malformed)?;
-    if message.header.to.as_deref() != Some(format!("{}{path}", origin?).as_str()) {
+    if message.header.to.as_deref() != Some(format!("{origin}{path}").as_str()) {
         return Err(Error::Malformed);
     }
     Ok(message)
@@ -411,16 +434,15 @@ async fn policy(
     Extension(audit): Extension<RequestAudit>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, false, None).await
+    enrollment(app, headers, audit, bytes, false).await
 }
 async fn issue(
     State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
     Extension(audit): Extension<RequestAudit>,
-    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     bytes: Bytes,
 ) -> Response {
-    enrollment(app, headers, audit, bytes, true, peer.map(|Extension(p)| p)).await
+    enrollment(app, headers, audit, bytes, true).await
 }
 async fn enrollment(
     app: Arc<HttpState>,
@@ -428,7 +450,6 @@ async fn enrollment(
     audit: RequestAudit,
     bytes: Bytes,
     issuing: bool,
-    peer: Option<rss_mdm_certificate::ClientCertificateEvidence>,
 ) -> Response {
     let (op, path) = if issuing {
         (Operation::Issue, "/EnrollmentServer/Enrollment.svc")
@@ -452,38 +473,14 @@ async fn enrollment(
                 .unix_seconds()
                 .ok_or(Error::Unavailable(Failure::Clock))?,
         )?;
-        if let Body::Issue(soap::Issue {
-            request: soap::CertificateRequest::RenewalPkcs7(cms),
-            context,
-            request_id,
-            ..
-        }) = &message.body
-        {
-            let _permit = app
-                .requests
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| Error::Unavailable(Failure::Capacity))?;
-            let provisioning = renewal::issue(
-                &app,
-                peer.as_ref().ok_or(Error::Unauthorized)?,
-                &cms.0,
-                &audit,
-                rss_mdm_registration_service::Purpose::Primary,
-            )
-            .await?;
-            return response(
-                Some(&message),
-                Body::IssueResponse(soap::IssueResponse {
-                    context: context.clone(),
-                    provisioning: Secret(provisioning),
-                    request_id: request_id.clone(),
-                    disposition: None,
-                }),
-                app.clock
-                    .unix_seconds()
-                    .ok_or(Error::Unavailable(Failure::Clock))?,
-            );
+        if matches!(
+            &message.body,
+            Body::Issue(soap::Issue {
+                request: soap::CertificateRequest::RenewalPkcs7(_),
+                ..
+            })
+        ) {
+            return Err(Error::Forbidden);
         }
         let security = message
             .header

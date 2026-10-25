@@ -547,8 +547,13 @@ pub(crate) async fn apply_prepared(
                 let command = service.required_command(tx, &operation).await?;
                 if command.version() != version {
                     if command.status().is_terminal() {
-                        crate::wake::wake_native_in(service.source.clone(), tx, &operation.device)
-                            .await?;
+                        crate::wake::wake_native_in(
+                            &service.reconcile_messaging,
+                            service.source.clone(),
+                            tx,
+                            &operation.device,
+                        )
+                        .await?;
                     }
                     let fact_audit = audit.transaction_copy();
                     fact_audit.identify_service("command-recovery");
@@ -653,11 +658,9 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                         Ok(prepared) => prepared,
                                         Err(error) => return Err(rejection(error, context.3)),
                                     };
-                                rss_reconcile_postgres::messaging::protect_in(
-                                    tx,
-                                    claim,
-                                    (context, Some(prepared)),
-                                    |ctx, tx| {
+                                service
+                                    .reconcile_messaging
+                                    .protect_in(tx, claim, (context, Some(prepared)), |ctx, tx| {
                                         Box::pin(async move {
                                             let ((service, _, audit, failure), prepared) = ctx;
                                             match apply_prepared(
@@ -675,9 +678,8 @@ impl Reconciler<rss_reconcile_postgres::PgClaim> for ExecutionService {
                                                 Err(e) => Err(rejection(e, failure)),
                                             }
                                         })
-                                    },
-                                )
-                                .await
+                                    })
+                                    .await
                             })
                         },
                     )

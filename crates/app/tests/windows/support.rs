@@ -447,7 +447,7 @@ impl Host {
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(), plan_audit.clone(), plan_runtime.clone(), tenant,
             Arc::new(crate::clock::InventoryClock(clock.clone())), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
         let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), plan_audit.clone(), tenant,
+        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
             Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));
         let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(pool.clone(), command_audit.clone(), tenant, &key)?);
         timeline.initialize().await?;
@@ -673,7 +673,7 @@ impl Host {
     }
     pub(crate) async fn self_peer(&self) -> anyhow::Result<Peer> {
         self.peer_with_authority(
-            rss_mdm_registration_service::enrollment::WindowsProfile::Device,
+            rss_mdm_registration_service::enrollment::WindowsProfile::Full,
             true,
             PeerPreparation::EnrollmentProtocol,
             crate::test_support::case::name("tls-device"),
@@ -933,8 +933,20 @@ impl Host {
             "{}/EnrollmentServer/Enrollment.svc",
             app.windows.as_ref().config.enrollment.origin
         );
-        let issue = self.issue_request(profile, receipt.enrollment_id, &plain, &path)?;
-        let wire = soap::encode(&issue, &CodecLimits::default())?;
+        let mut issue = self.issue_request(profile, receipt.enrollment_id, &plain, &path)?;
+        if self_service && let Body::Issue(body) = &mut issue.body {
+            // Descriptive context cannot select the authoritative tenant.
+            body.additional_context
+                .0
+                .push(("TenantID".into(), Uuid::nil().to_string()));
+        }
+        let mut wire = soap::encode(&issue, &CodecLimits::default())?;
+        if self_service {
+            wire = String::from_utf8(wire)?.replace(
+                "</t:RequestSecurityToken>",
+                "<v:Hint xmlns:v=\"urn:example:vendor\">ignored</v:Hint></t:RequestSecurityToken>",
+            ).into_bytes();
+        }
         let (intent, cert, provisioning) = if let Some(seeded) = seeded {
             seeded
         } else {

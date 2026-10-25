@@ -100,10 +100,9 @@ impl ExecutionService {
         self.queue_bootstrap_in(tx, device, operation_id, audit)
             .await?;
         let target = service::target(tx.tenant_id(), device);
-        rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| {
-            Box::pin(async { Ok(()) })
-        })
-        .await?;
+        self.reconcile_messaging
+            .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+            .await?;
         Ok(())
     }
     async fn agent_install_candidate_in(

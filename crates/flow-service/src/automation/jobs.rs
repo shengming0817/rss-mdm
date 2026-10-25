@@ -8,6 +8,7 @@ pub fn job_target(tenant: TenantId, id: Uuid) -> rss_reconcile::Target {
     .expect("UUID entity")
 }
 pub async fn forward_jobs(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     runtime: &PgRuntime,
     tenant: TenantId,
     audit_store: &rss_mdm_audit_integration::AuditStore,
@@ -29,10 +30,10 @@ pub async fn forward_jobs(
         runtime.local_tx_with_context(
     tenant,
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(control.remaining()),
-    (audit_store, job_target(tenant,id).clone(), ()),
-    |(service, target, context), tx| Box::pin(async move {
+    (audit_store, reconcile, job_target(tenant,id).clone(), ()),
+    |(service, reconcile, target, context), tx| Box::pin(async move {
         service.bind_in(tx).await.map_err(PgError::from)?;
-        rss_reconcile_postgres::messaging::wake_in(tx, target, context, |_,tx|Box::pin(async move {
+        reconcile.wake_in(tx, target, context, |_,tx|Box::pin(async move {
                 let tenant=tx.tenant_id().to_string();
                 tx.with_connection(move |c|Box::pin(async move {
                     let changed = sqlx::query("UPDATE mdm_automation.automation_jobs SET forwarded=true WHERE tenant_id=$1::uuid AND id=$2::uuid AND NOT forwarded")

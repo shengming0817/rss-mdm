@@ -183,7 +183,6 @@ impl Authority {
                 }),
                 crate::authorization::http::protect,
             ))
-            .layer(axum::extract::DefaultBodyLimit::max(16384))
             .layer(middleware::from_fn_with_state(
                 rss_mdm_management_http::boundary::Envelope {
                     admission: Arc::new(tokio::sync::Semaphore::new(32)),

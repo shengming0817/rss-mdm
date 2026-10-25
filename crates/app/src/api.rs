@@ -927,6 +927,7 @@ pub(crate) fn from_state(
             policies: Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
                 &state.flow.cursor_key,
                 state.flow.runtime.clone(),
+                state.flow.planning.reconcile_messaging.clone(),
                 state.flow.audit_store.clone(),
                 state.identity.tenant,
                 state.flow.policy_store.clone(),

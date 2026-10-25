@@ -32,6 +32,38 @@ pub struct Expected {
     response_message_id: u32,
     messages: Vec<SentMessage>,
 }
+/// Encode a new server message only when its possible receipts fit local limits.
+/// Get items can each produce both a Status and a Results command. Other operations
+/// can report per-item statuses; compound commands also have their own status.
+/// This is outbound admission, not a protocol command-count maximum or a restriction
+/// on rebuilding the correlation snapshot of a previously committed message.
+pub fn encode_outbound(message: &Message, limits: &CodecLimits) -> Result<Vec<u8>> {
+    let mut commands = 1usize; // The client's SyncHdr status.
+    let mut items = 0usize;
+    for command in flattened(&message.commands, limits)? {
+        let (receipt_commands, receipt_items) = match command {
+            Command::Get { items, .. } => {
+                let receipts = items.len().checked_mul(2).ok_or(E::LimitExceeded)?;
+                (receipts, receipts)
+            }
+            Command::Add { items, .. }
+            | Command::Replace { items, .. }
+            | Command::Delete { items, .. }
+            | Command::Exec { items, .. } => (items.len().max(1), items.len()),
+            Command::Atomic { .. } | Command::Sequence { .. } => (1, 0),
+            Command::Alert { .. } => (2, 0),
+            Command::Status(_) => (0, 0),
+            _ => return Err(E::Unsupported),
+        };
+        commands = commands
+            .checked_add(receipt_commands)
+            .ok_or(E::LimitExceeded)?;
+        items = items.checked_add(receipt_items).ok_or(E::LimitExceeded)?;
+        bound(commands, limits.commands)?;
+        bound(items, limits.items)?;
+    }
+    encode(message, limits)
+}
 /// Encode a server Get/Status message and derive its immutable correlation snapshot.
 /// No token is returned on profile or output-budget failure.
 pub fn encode_request(message: &Message, l: &CodecLimits) -> Result<(Vec<u8>, SentMessage)> {

@@ -133,19 +133,29 @@ def render(root, publish_address='0.0.0.0'):
             raise ValueError('literal isolated backend address required')
         if host['certificate'] != f"/run/gateway/{host['hostId']}/tls.crt" or host['privateKey'] != f"/run/gateway/{host['hostId']}/tls.key":
             raise ValueError('gateway material belongs to another host')
-        if not host['origins'] or len(host['origins']) > 32 or len(set(host['origins'])) != len(host['origins']) or host['consoleOrigin'] not in host['origins']:
+        if not host['origins'] or len(host['origins']) > 32:
             raise ValueError('invalid public origins')
-        for value in host['origins']:
-            origin(value)
+        names = set()
+        for endpoint in host['origins']:
+            if (not isinstance(endpoint, dict) or set(endpoint) != {'origin', 'clientCertificate'}
+                    or type(endpoint['clientCertificate']) is not bool
+                    or endpoint['origin'] in names):
+                raise ValueError('explicit unique origin TLS policy required')
+            origin(endpoint['origin'])
+            names.add(endpoint['origin'])
+        if host['consoleOrigin'] not in names:
+            raise ValueError('console origin missing')
         hosts.append(host)
     if not hosts or len(hosts) > 1024:
         raise ValueError('bounded exported gateway hosts required')
-    ports = sorted({origin(value)[1] for host in hosts for value in host['origins']})
+    ports = sorted({origin(endpoint['origin'])[1] for host in hosts for endpoint in host['origins']})
     internal = {public: internal_port(public) for public in ports}
     pairs = set()
     blocks = [f'    server {{ listen {port} ssl default_server; ssl_reject_handshake on; }}\n' for port in internal.values()]
     for host in hosts:
-        for value in host['origins']:
+        for endpoint in host['origins']:
+            value = endpoint['origin']
+            client_auth = 'optional_no_ca' if endpoint['clientCertificate'] else 'off'
             hostname, port, authority = origin(value)
             if (hostname, port) in pairs:
                 raise ValueError('public hostname/port has multiple owners')
@@ -157,7 +167,7 @@ def render(root, publish_address='0.0.0.0'):
         ssl_certificate {host['certificate']};
         ssl_certificate_key {host['privateKey']};
         ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_verify_client optional_no_ca;
+        ssl_verify_client {client_auth};
         ssl_verify_depth 3;
         ssl_session_cache off;
         ssl_session_tickets off;

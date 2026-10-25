@@ -82,6 +82,20 @@ fn typed_rsql_and_structured_conditions_have_one_canonical_definition() {
             None,
         ),
         (
+            "device.software.windows.system.is_provisioned_native=containsany=(2)",
+            "device.software.windows.system.is_provisioned_native",
+            Operator::ContainsAny,
+            None,
+            Some(vec![Scalar::Integer(2)]),
+        ),
+        (
+            "device.software.windows.system.is_provisioned=containsany=(false)",
+            "device.software.windows.system.is_provisioned",
+            Operator::ContainsAny,
+            None,
+            Some(vec![Scalar::Boolean(false)]),
+        ),
+        (
             "device.software.installations.name=containsany=('A','B')",
             "device.software.installations.name",
             Operator::ContainsAny,
@@ -114,6 +128,8 @@ fn typed_rsql_and_structured_conditions_have_one_canonical_definition() {
         );
     }
     for text in [
+        "device.software.windows.system.is_provisioned_native=containsany=(true)",
+        "device.software.windows.system.is_provisioned=containsany=(2)",
         "custom.office_floor==wat",
         "device.name=icontains=x",
         "custom.office_floor=isnull=false",

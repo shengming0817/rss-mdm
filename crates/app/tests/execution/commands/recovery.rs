@@ -155,17 +155,20 @@ impl Client {
             "expiry or unknown effect lost {:?}",
             read
         );
-        // Empty discovery defers structural checks. Make an actual operation due
-        // before corrupting the catalog, so the worker must reject its claim.
+        // Bind the wake to the restarted runtime before corrupting the catalog.
+        // Make an actual operation due so the worker must reject its claim.
+        let reconcile = rss_reconcile_postgres::PgMessagingStore::new(
+            restarted_runtime.clone(), self.tenant, deadline(),
+        ).await?;
         let target = rss_mdm_execution_service::target(self.tenant, case_device());
         restarted_runtime
             .local_tx_with_context(
                 self.tenant,
                 deadline(),
-                target,
-                |target, tx| {
+                (reconcile, target),
+                |(reconcile, target), tx| {
                     Box::pin(async move {
-                        rss_reconcile_postgres::messaging::wake_in(tx, target, (), |_, _| {
+                        reconcile.wake_in(tx, target, (), |_, _| {
                             Box::pin(async { Ok(()) })
                         })
                         .await

@@ -4,7 +4,7 @@
 积压期间保留进行中的策略扫描，并合并为一个最新待处理签入，不补跑全部历史签入。
 重启从已提交进度继续；当前回执和实际投递仍即时校验授权与注册世代。
 
-产品直接终止注册 HTTPS 与管理 mTLS，不接受转发头作为设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。
+部署网关终止注册 HTTPS 与管理 mTLS，后端只接受受信网关覆盖的 TLS 证据并独立验证设备身份。先按 [注册指南](device-enrollment.md) 创建 mdm.windows 授权并分发口令。Discovery、Policy、Enrollment.svc 与 MDM.svc 使用配置的精确 origin，Host/To 必须一致；设备须预先信任服务 TLS 根。首注 enrollment origin 不请求客户端证书；management、Agent 和 Apple 的证书入口必须使用其它 origin，可共用主机名并分离端口。配置拒绝这两类入口重叠。
 
 ## 证书与会话
 
@@ -15,6 +15,8 @@ Windows UsernameToken 只接受 `<enrollmentId>@<注册 origin 的主机名>` �
 管理会话同时校验证书链、用途、当前凭据映射与 SyncML 认证。采用 APPSRV BASIC / CLIENT DIGEST；会话绑定注册世代、证书与消息关联，精确重传返回原响应，异内容冲突。被替代会话不能继续推进。撤销后，每次请求立即通过当前凭据映射拒绝，包括保留连接上的后续请求。缺少、回滚或过期的签名 CRL 同样拒绝认证。Full 用户任务的 `NativeTarget.User.userId` 必须等于当前注册的 `userContextId`，创建、投递和回执都重新核对。会话初始 LoginStatus.User 只表示该已认证会话的用户可用；None、Others 或缺失时用户任务等待，设备任务仍可执行。续期保持注册与用户上下文，重新注册生成新的上下文，旧标识不能沿用。
 
 会话以加密的原始请求和实际响应记录为唯一关联来源，重启后按 MsgID 连续重建；没有另存的关联缓存。当前预算为最多 128 条消息、每条 XML 512 KiB、编码对象 16 MiB、解码对象 12 MiB；响应还受设备声明的 MaxMsgSize / MaxObjSize 限制。非 Final 包仅积累回执，完整 Final 与当前授权共同决定成功结算。
+
+命令数和 XML 结构预算属于本地资源防护，不代表 Windows 协议上限。Windows 忽略 SyncHdr/Meta，因此服务端不依赖该字段约束客户端回复；下发前同时为 Get 的 Status 与 Results、逐项回执和组合命令回执预留接收容量，超出时保留未发步骤到后续消息。成功 Results 不再额外回复 Status 200，遵循 OMA DM Representation Protocol §6.5.1。
 
 Get Results 的 MoreData / Size 在连续消息中重组，最后一片通过大小、引用与授权核对后才形成值。单 Item Add/Replace 可按实际 XML 字节分片；每片范围留在原 attempt，213 只允许继续传输，最后一片的成功回执才代表对象交付。Atomic/Sequence 保持整体，不跨包拆分。中断、大小冲突及预算耗尽关闭传输并保留未知结果；Abort 和非 Final 预算耗尽将未完成采集分别以 aborted / message_budget 失败结束，不投递成功快照，沿既有恢复 owner 处理，不盲目重发有副作用的命令。
 
@@ -40,13 +42,13 @@ WNS 可选。配置 `push.package_family_name`、`sid` 和受保护的 `client_s
 
 ## 续期与原生注销
 
-续期在 Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
+首次 provisioning 的 CertificateStore/My/WSTEP/Renew/ServerURL 指向 management origin 的 Discovery.svc；它要求当前证书并返回 Certificate 策略。续期在该 origin 的 Policy.svc / Enrollment.svc 上使用原 TLS 叶证书、签名 CMS PKCS#7 与新 CSR。首注入口拒绝续期，证书入口拒绝主登记的初始 PKCS#10。只接受当前证书对应的当前注册及允许的续期窗口；响应可沿原材料精确恢复。签发新证书后旧凭据仍有效，直到新证书首次通过管理 mTLS 证明持有，才在事务内激活新凭据、替代旧凭据。续期不创建新设备、注册或协议账户。
 
 原生 `com.microsoft:mdm.unenrollment.userrequest` 在原事务内退休注册、凭据、执行参与方、采集、push 与活动会话，并保存独立加密回执。并发或丢失响应重试得到相同字节；回执不依赖临时会话保留。退休证书只能恢复这份精确历史请求的回执，不能构造 active principal 或继续接收新工作。服务器退休不能证明终端已清理管理账户，审计中的设备清理状态保持 unverified。
 
-普通 Full 用户注册不依赖组织联合身份。WinDC 子登记走证书式协议：`/EnrollmentConfiguration?api-version=1.0` 只接受 `enrollmentType="User"`，返回 Certificate 策略与独立 LinkedPolicy.svc / LinkedEnrollment.svc。发现字段不建立组织身份；未支持的 Federated/Entra JWT 流程拒绝。
+普通 Full 用户注册不依赖组织联合身份。WinDC 子登记走证书式协议：management origin 的 `/EnrollmentConfiguration?api-version=1.0` 只接受 `enrollmentType="User"`，返回 Certificate 策略与独立 LinkedPolicy.svc / LinkedEnrollment.svc。发现字段不建立组织身份；未支持的 Federated/Entra JWT 流程拒绝。
 
-XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书在自己的登记入口续期，父子证书不能跨管理入口使用。
+XCEP 仅返回策略，导出的 BST 不授予登记权限。LinkedEnrollment.svc 校验原始 XML 的父证书签名、时间戳、当前父凭据及新 CSR 私钥证明，签发独立子证书。子登记与父登记共享设备身份，使用独立 provider、证书、世代、命令编号和 `/ManagementServer/Declared.svc` 会话；首次真正认证签入后才能接受任务。子登记不建立 Inventory 报告源。父证书正常续期保留子登记；父重新登记、撤销或被替换会连带退役子登记。子证书通过 management origin 的 LinkedDiscovery.svc 发现自己的登记入口续期，父子证书不能跨管理入口使用。
 
 WinDC 子登记缺失或尚未首次认证时，Declared 配置策略保留等待状态和既有资源占用，并返回 `windows_declared_enrollment_not_ready` 诊断。先完成子登记及 Declared 首次认证签入；首次认证会唤醒等待配置。普通主登记和 ConfigRefresh 独立可用。
 
@@ -135,7 +137,7 @@ Windows 标准蓝图版本为 `2`，通过普通 Resource 实例化并绑定 `na
 
 每个包最多输出 1 MiB、300 秒；另受会话 128 条消息、32768 命令和协商消息大小限制。无法在预算内完成时保持失败/部分质量。软件、网络、注册字段含敏感资产信息，沿用 Inventory 授权和来源隔离。原始完整 URI 同时绑定设备注册与 run；当前 provider 外的注册对象不可通过标量绕过读取。
 
-`device.software.windows.win32/store/non_store/system` 分开保存，不写入 Agent 的 `device.software.installations`。Win32 的 `Source` 为发现来源，不能据此推断 machine/user 安装范围，因此 `installation_scope=unknown`。包应用保留 `is_provisioned`、`package_status` 以及 CSP `Users` 原文 `registered_users_native`，不把用户注册数据提升为独立 User 范围，也不推断安装者。完整空清单只替换该原生字段。
+`device.software.windows.win32/store/non_store/system` 分开保存，不写入 Agent 的 `device.software.installations`。Win32 的 `Source` 为发现来源，不能据此推断 machine/user 安装范围，因此 `installation_scope=unknown`。包应用保留整数原值 `is_provisioned_native`；仅原值 0/1 派生可选布尔 `is_provisioned`。Windows 实机对 System 应用返回的 2 保留为原始观察值，布尔字段缺省，不推断为 true/false，也不丢弃整条应用。System 分类由 CSP 命名空间决定。新采集包业务版本为 2，已有字段目录通过正常字段版本写入扩展后，再发布并绑定新版资源。包应用还保留 `package_status` 以及 CSP `Users` 原文 `registered_users_native`，不把用户注册数据提升为独立 User 范围，也不推断安装者。完整空清单只替换该原生字段。
 
 安全字段保留原生语义：Firewall 0 表示 enabled；Antivirus SignatureStatus 0 表示过期或缺失；DeviceGuard 的 0 表示运行，不能按普通布尔值转换。BitLocker 字段是 `DeviceEncryptionStatus` 合规错误位数组，0 为空错误集，不代表每个卷已经加密；未知位拒绝。TotalRAM 按文档的可用 MB 转为 `available_memory_bytes`，不冒充物理内存容量。Update 清单只读 UpdateID、RevisionNumber 及原生状态，没有 KB 补丁推断、扫描触发、批准或安装动作，不采集恢复密钥。
 

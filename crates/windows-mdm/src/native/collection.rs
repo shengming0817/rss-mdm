@@ -30,6 +30,35 @@ pub enum Inventory {
     PendingRebootUpdates,
 }
 impl Inventory {
+    fn settings_child(self, depth: usize, child: &str) -> bool {
+        // Full enrollment exposes fixed settings across Device/User and signing
+        // origins. Build the closed set from Microsoft's existing CSP schema.
+        static SETTINGS: std::sync::LazyLock<BTreeSet<&'static str>> =
+            std::sync::LazyLock::new(|| {
+                super::generated::NODES
+                    .iter()
+                    .filter_map(
+                        |node| match node.path.split('/').collect::<Vec<_>>().as_slice() {
+                            [
+                                ".",
+                                "Device" | "User",
+                                "Vendor",
+                                "MSFT",
+                                "EnterpriseModernAppManagement",
+                                "AppManagement",
+                                "AppStore" | "nonStore" | "System",
+                                "*",
+                                name,
+                            ] if *name != "*" => Some(*name),
+                            _ => None,
+                        },
+                    )
+                    .collect()
+            });
+        depth == 1
+            && matches!(self, Self::Store | Self::NonStore | Self::System)
+            && SETTINGS.contains(child)
+    }
     /// Exact device namespace root.
     pub fn root(self) -> &'static str {
         match self {
@@ -371,7 +400,7 @@ impl State {
                             self.failed.insert(step.field.clone(), 500);
                             break;
                         };
-                        if !node.ends_with("/*") {
+                        if !node.ends_with("/*") || inventory.settings_child(*depth, child) {
                             continue;
                         }
                         if added.len() + step_count + inventory.columns().len()
@@ -500,6 +529,17 @@ impl State {
                     serde_json::Value::Array(
                         rows.into_iter()
                             .map(|(id, mut row)| {
+                                // The CSP declares an integer; Windows also returns 2.
+                                // Preserve the raw leaf, deriving only documented 0/1.
+                                match row.get("IsProvisioned").and_then(|v| v.as_str()) {
+                                    Some("0") => {
+                                        row.insert("IsProvisionedBoolean".into(), false.into());
+                                    }
+                                    Some("1") => {
+                                        row.insert("IsProvisionedBoolean".into(), true.into());
+                                    }
+                                    _ => (),
+                                }
                                 row.insert("id".into(), id.into());
                                 row.insert("origin".into(), inventory.root().into());
                                 row.insert("collection_scope".into(), "device".into());

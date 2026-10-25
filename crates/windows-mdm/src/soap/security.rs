@@ -76,8 +76,14 @@ pub(super) fn read(p: &mut Input<'_>) -> Result<Security> {
             let id = id(p, SECURITY, "UsernameToken")?;
             let user = p.scalar(SECURITY, "Username", p.limits.field_bytes, false)?;
             let s = p.start(SECURITY, "Password")?;
-            s.attrs(&[("", "Type")])?;
-            if s.attr("", "Type") != Some(PASSWORD) {
+            s.attrs(&[("", "Type"), (SECURITY, "Type")])?;
+            // Windows' OnPremise examples qualify Type with the WS-Security namespace.
+            let password_type = match (s.attr("", "Type"), s.attr(SECURITY, "Type")) {
+                (Some(value), None) | (None, Some(value)) => value,
+                (Some(_), Some(_)) => return Err(E::Duplicate),
+                (None, None) => return Err(E::Structure),
+            };
+            if password_type != PASSWORD {
                 return Err(E::Unsupported);
             }
             let password = p.content(SECURITY, "Password", p.limits.field_bytes, true)?;

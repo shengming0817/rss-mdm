@@ -206,7 +206,7 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         Architecture, Platform,
         schedule::{Misfire, Schedule, Trigger},
     };
-    let blueprint = blueprints::get("windows.software.store", "1").unwrap();
+    let blueprint = blueprints::get("windows.software.store", "2").unwrap();
     let blueprints::Definition::NativeCollection { template } = &blueprint.definition else {
         panic!("native pack");
     };

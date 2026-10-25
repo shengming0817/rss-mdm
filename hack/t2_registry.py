@@ -1356,7 +1356,7 @@ consume(('crates/management-http/src/software_publication/http.rs',),
 
 consume(('crates/windows-mdm/src/native/collection.rs', 'crates/windows-mdm/schema/collection/*', 'crates/native-schema/src/windows/collection.rs'), 'windows.management')
 consume(('crates/resource/src/blueprints/windows.rs',), 'planning.http windows.management')
-consume(('crates/inventory/src/builtin/windows.rs',), 'windows.management inventory.runtime assets.http')
+consume(('crates/inventory/src/builtin/windows.rs',), 'windows.management inventory.runtime assets.http assets.queries')
 T1_INPUTS += ('crates/execution-service/tests/native_collection_unit.rs', 'fixtures/windows-collection/*')
 consume(('crates/native-schema/src/windows.rs', 'crates/native-schema/src/windows/generate.rs'), 'windows.management')
 
@@ -1917,6 +1917,8 @@ if __name__ == '__main__':
     parser.parse_args()
     print(json.dumps(sorted(MODULES)))
 
+# Certificate-based enrollment is carried by management TLS, separately from bootstrap.
+consume(('crates/windows-channel/src/certificate_enrollment.rs',), 'windows.enrollment windows.issuance windows.declared')
 consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/schema/enterprise.sql','crates/registration-service/src/enterprise/platform.rs'),'apple.platform_sso')
 # QUERY-05: page bounds, source evidence batching and continuation owners.
 consume(('crates/device-service/src/directory*', 'crates/device-service/src/association_directory.rs'), 'device.views device.associations agent.current_user')

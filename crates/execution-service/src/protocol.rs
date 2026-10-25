@@ -82,7 +82,7 @@ impl ExecutionService {
                         })
                         .await??;
                     if authenticated {
-                        actions::native_recovery::record(tx, p).await?;
+                        actions::native_recovery::record(&s.reconcile_messaging, tx, p).await?;
                         s.queue_windows_retirement_in(tx, p, retirement_request, a)
                             .await?;
                     }
@@ -291,7 +291,8 @@ fn retain_received_acks(
     use rss_mdm_windows_mdm::syncml::{Command, CommandName};
     response.commands.retain(|command| match command {
         Command::Status(status) => match status.command {
-            CommandName::SyncHdr | CommandName::Alert => true,
+            // DevInfo Replace has already been received even if its package continues.
+            CommandName::SyncHdr | CommandName::Alert | CommandName::Replace => true,
             CommandName::Results => input.commands.iter().any(|command| matches!(command, Command::Results(r) if r.id == status.command_ref))
                 && !controls.iter().any(|command| matches!(command, Command::Status(s) if s.command == CommandName::Results && s.command_ref == status.command_ref)),
             _ => false,
@@ -390,7 +391,7 @@ async fn settle_one(
             return Err(Error::Conflict.into());
         }
     }
-    crate::wake::wake_native_in(s.source.clone(), tx, &op.device).await?;
+    crate::wake::wake_native_in(&s.reconcile_messaging, s.source.clone(), tx, &op.device).await?;
     Ok(())
 }
 pub async fn observation(
@@ -668,7 +669,13 @@ pub(super) async fn settle_dispatch_failures(
         )?
         .with_details(json!({"operation":id,"failure":op.dispatch_failure}))?;
         service.audit_store.append_in(tx, &fact, false).await?;
-        crate::wake::wake_native_in(service.source.clone(), tx, &op.device).await?;
+        crate::wake::wake_native_in(
+            &service.reconcile_messaging,
+            service.source.clone(),
+            tx,
+            &op.device,
+        )
+        .await?;
     }
     Ok(())
 }

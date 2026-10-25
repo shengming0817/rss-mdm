@@ -9,6 +9,10 @@ from ci_impact import select_inputs, SelectionError
 
 
 class ModuleImpactTests(unittest.TestCase):
+    def test_native_windows_record_fields_select_their_query_consumer(self):
+        self.assertEqual(set(select_inputs(['crates/inventory/src/builtin/windows.rs']).modules),
+                         {'windows.management', 'inventory.runtime', 'assets.http', 'assets.queries'})
+
     def test_action_dispatch_schema_selects_its_actual_consumers(self):
         selected = set(select_inputs(['crates/execution-service/src/actions/dispatch-v1.json']).modules)
         self.assertEqual(selected, {'planning.onboarding', 'execution.agent.delivery', 'device-access.http'})

@@ -104,7 +104,7 @@ impl Automation {
             let bridge=async {
                 loop {
                     if cancel.is_cancelled() {return Ok(());}
-                    let result=async {let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+lifecycle+jobs as u64)}.await;
+                    let result=async {let assets=self.service.forward_asset_changes().await?;let lifecycle=self.service.forward_lifecycle_schedules().await?;let jobs=jobs::forward_jobs(&self.service.reconcile_messaging, &self.service.runtime,self.service.tenant,&self.service.audit_store).await?;Ok::<_,Error>(assets+lifecycle+jobs as u64)}.await;
                     self.service.record_bridge(match &result {
                         Ok(_) => None,
                         Err(Error::CommitUnknown | Error::RollbackFailed) => Some(crate::planning::automation::AutomationFailure::SettlementUnknown),
@@ -245,79 +245,85 @@ impl PlanningWork {
     {
         Box::pin(async move {
             let failure = Mutex::new(None);
-            let attempt = self
-                .service
-                .runtime
-                .local_tx_with_context(
-                    self.service.tenant,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        control.remaining(),
-                    ),
-                    (
-                        &self.service,
-                        claim,
-                        (&self.service, claim.target().entity(), &failure, inventory),
-                    ),
-                    |(service, claim, context), tx| {
-                        Box::pin(async move {
-                            service
-                                .audit_store
-                                .bind_in(tx)
-                                .await
-                                .map_err(PgError::from)?;
-                            let tenant = tx.tenant_id();
-                            tx.with_connection(move |c| {
-                                Box::pin(async move {
-                                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                                })
-                            })
-                            .await?;
-                            crate::transaction::lock(tx)
-                                .await
-                                .map_err(|e| fault(e, context.2))?;
-                            let prepared: Result<_> = async {
-                                if context.1 == "changes" {
-                                    return Ok(None);
-                                }
-                                let id = Uuid::parse_str(
-                                    context.1.strip_prefix("job:").ok_or(Error::Malformed)?,
-                                )
-                                .map_err(|_| Error::Malformed)?;
-                                let (job, done, _, cursor, _) =
-                                    crate::automation::jobs::read_in(tx, id).await?;
-                                let assignment = if done {
-                                    None
-                                } else if let JobInput::PolicyReconcile { policy } = &job {
-                                    Some(
-                                        service
-                                            .prepare_assignment_in(tx, *policy, cursor.clone())
-                                            .await?,
-                                    )
-                                } else {
-                                    let mut partitions = vec![
-                                        job.audit_partition(tx.tenant_id()).map_err(Error::from)?,
-                                    ];
-                                    if let JobInput::Group { group, .. } = &job {
-                                        partitions
-                                            .push(service.groups.partition(&group.to_string())?);
-                                    }
-                                    tx.prepare_outbox_partitions(&partitions).await?;
-                                    None
-                                };
-                                Ok(Some((id, job, done, cursor, assignment)))
-                            }
-                            .await;
-                            let prepared = prepared.map_err(|e| fault(e, context.2))?;
-                            rss_reconcile_postgres::messaging::protect_in(
-                                tx,
-                                claim,
-                                (context, prepared),
-                                |(ctx, prepared), tx| {
-                                    let prepared = prepared.take();
+            let attempt =
+                self.service
+                    .runtime
+                    .local_tx_with_context(
+                        self.service.tenant,
+                        rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                            control.remaining(),
+                        ),
+                        (
+                            &self.service,
+                            claim,
+                            (&self.service, claim.target().entity(), &failure, inventory),
+                        ),
+                        |(service, claim, context), tx| {
+                            Box::pin(async move {
+                                service
+                                    .audit_store
+                                    .bind_in(tx)
+                                    .await
+                                    .map_err(PgError::from)?;
+                                let tenant = tx.tenant_id();
+                                tx.with_connection(move |c| {
                                     Box::pin(async move {
-                                        let result: Result<()> = async {
-                                            if ctx.1 == "changes" {
-                                                ctx.0
+                                        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                                            .await
+                                    })
+                                })
+                                .await?;
+                                crate::transaction::lock(tx)
+                                    .await
+                                    .map_err(|e| fault(e, context.2))?;
+                                let prepared: Result<_> = async {
+                                    if context.1 == "changes" {
+                                        return Ok(None);
+                                    }
+                                    let id = Uuid::parse_str(
+                                        context.1.strip_prefix("job:").ok_or(Error::Malformed)?,
+                                    )
+                                    .map_err(|_| Error::Malformed)?;
+                                    let (job, done, _, cursor, _) =
+                                        crate::automation::jobs::read_in(tx, id).await?;
+                                    let assignment = if done {
+                                        None
+                                    } else if let JobInput::PolicyReconcile { policy } = &job {
+                                        Some(
+                                            service
+                                                .prepare_assignment_in(tx, *policy, cursor.clone())
+                                                .await?,
+                                        )
+                                    } else {
+                                        let mut partitions = vec![
+                                            job.audit_partition(tx.tenant_id())
+                                                .map_err(Error::from)?,
+                                        ];
+                                        if let JobInput::Group { group, .. } = &job {
+                                            partitions.push(
+                                                service.groups.partition(&group.to_string())?,
+                                            );
+                                        }
+                                        tx.prepare_outbox_partitions(&partitions).await?;
+                                        None
+                                    };
+                                    Ok(Some((id, job, done, cursor, assignment)))
+                                }
+                                .await;
+                                let prepared = prepared.map_err(|e| fault(e, context.2))?;
+                                service
+                                    .reconcile_messaging
+                                    .protect_in(
+                                        tx,
+                                        claim,
+                                        (context, prepared),
+                                        |(ctx, prepared), tx| {
+                                            let prepared = prepared.take();
+                                            Box::pin(async move {
+                                                let result: Result<()> =
+                                                    async {
+                                                        if ctx.1 == "changes" {
+                                                            ctx.0
                                                     .dispatch_assets_in(
                                                         tx,
                                                         ctx.3
@@ -327,14 +333,17 @@ impl PlanningWork {
                                                             .1,
                                                     )
                                                     .await?;
-                                                return ctx.0.clear_ingress_failure_in(tx).await;
-                                            }
-                                            let (id, job, done, cursor, assignment) =
-                                                prepared.ok_or(Error::Malformed)?;
-                                            if done {
-                                                return Ok(());
-                                            }
-                                            match job {
+                                                            return ctx
+                                                                .0
+                                                                .clear_ingress_failure_in(tx)
+                                                                .await;
+                                                        }
+                                                        let (id, job, done, cursor, assignment) =
+                                                            prepared.ok_or(Error::Malformed)?;
+                                                        if done {
+                                                            return Ok(());
+                                                        }
+                                                        match job {
                                                 JobInput::Compliance { ref input } => ctx
                                                     .3
                                                     .ok_or(Error::Unavailable(
@@ -382,17 +391,17 @@ impl PlanningWork {
                                                         .await
                                                 }
                                             }
-                                        }
-                                        .await;
-                                        result.map_err(|e| fault(e, ctx.2))
-                                    })
-                                },
-                            )
-                            .await
-                        })
-                    },
-                )
-                .await;
+                                                    }
+                                                    .await;
+                                                result.map_err(|e| fault(e, ctx.2))
+                                            })
+                                        },
+                                    )
+                                    .await
+                            })
+                        },
+                    )
+                    .await;
             // Only a confirmed rollback may be followed by a durable terminal
             // rejection. Unknown settlement is retried under the original identity.
             let rejection = attempt
@@ -472,11 +481,9 @@ impl PlanningWork {
                                 partitions.push(service.groups.partition(&group.to_string())?);
                             }
                             tx.prepare_outbox_partitions(&partitions).await?;
-                            rss_reconcile_postgres::messaging::protect_in(
-                                tx,
-                                claim,
-                                context,
-                                |service, tx| {
+                            service
+                                .reconcile_messaging
+                                .protect_in(tx, claim, context, |service, tx| {
                                     Box::pin(async move {
                                         crate::automation::jobs::finish_job_in(
                                             tx,
@@ -494,9 +501,8 @@ impl PlanningWork {
                                         }
                                         Ok(())
                                     })
-                                },
-                            )
-                            .await
+                                })
+                                .await
                         })
                     },
                 )

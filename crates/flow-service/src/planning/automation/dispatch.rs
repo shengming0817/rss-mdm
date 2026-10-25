@@ -110,7 +110,13 @@ impl Planning {
         for device in devices.iter().take(32) {
             // Wake effects and the page cursor commit together. A retry reads
             // the durable cursor rather than repeating an acknowledged page.
-            rss_mdm_execution_service::wake::wake_native_in(source.clone(), tx, device).await?;
+            rss_mdm_execution_service::wake::wake_native_in(
+                &self.reconcile_messaging,
+                source.clone(),
+                tx,
+                device,
+            )
+            .await?;
         }
         if devices.len() > 32 {
             self.dispatch_cursor_in(

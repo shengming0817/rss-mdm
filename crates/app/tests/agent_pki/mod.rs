@@ -1904,6 +1904,44 @@ pub(crate) async fn authorize_request(
     s.authorize(p, request.grant_id, g.operation_id, a).await
 }
 
+async fn management() -> anyhow::Result<(
+    crate::test_support::authority::Authority,
+    Arc<rss_mdm_pki_service::registry::Registry>,
+    axum::Router,
+)> {
+    let authority = crate::test_support::authority::Authority::open().await?;
+    let config: crate::config::Config = serde_json::from_value(authority.base.clone())?;
+    let pki = config
+        .agent_pki
+        .load(
+            &config.identity.instance_id,
+            authority.audit.clone(),
+            Arc::new(SystemClock),
+            fixture_providers()?,
+            None,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("Agent PKI fixture"))?;
+    let registry = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        authority.pool.clone(),
+        authority.audit.clone(),
+        vec![pki.issuer.trust().trust.clone()],
+        fixture_providers()?,
+    ));
+    registry.admit(authority.identity.tenant, now()).await?;
+    let router = authority.router(
+        axum::Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::pki::routes()
+                .with_state(Arc::new(rss_mdm_management_http::pki::HttpState {
+                    registry: registry.clone(),
+                    clock: Arc::new(crate::agent_pki::PkiClock(Arc::new(SystemClock))),
+                }))
+                .into_axum(),
+        ),
+    )?;
+    Ok((authority, registry, router))
+}
+
 #[tokio::test]
 #[ignore = "make t2 MODULE=agent.pki"]
 async fn management_crl_publication_accepts_large_signed_material_and_rejects_overflow()
@@ -1911,14 +1949,16 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     use crate::test_support::{Body, Method, Request, StatusCode, http::Browser};
     use rss_mdm_agent_wire::pki::Purpose;
     use tower::ServiceExt;
-    let host = crate::windows::test_support::Host::open().await?;
-    let trust = host.pki.trust(Purpose::Agent)?;
+    let (mut authority, pki, router) = management().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+    let trust = pki.trust(Purpose::Agent)?;
     let issuer = &trust.issuers[0];
     let raw = (1_u64..=80_000).map(|i| i.to_be_bytes().to_vec());
     let crl = publication_fixture(&root(), &issuer.crl, false, now(), raw).await?;
     let body = serde_json::json!({"operation":Uuid::new_v4(),"purpose":"agent","publications":[{"issuer":issuer.digest,"crl":crl,"root_crl":issuer.root_crl}]});
     anyhow::ensure!(serde_json::to_vec(&body)?.len() > 2 * 1024 * 1024);
-    let secret = crate::test_support::identity::login(&host.authority.identity, "admin").await?;
+    let secret = crate::test_support::identity::login(&authority.identity, "admin").await?;
     let mut browser = Browser {
         cookies: std::collections::BTreeMap::from([(
             "__Host-identity-session".into(),
@@ -1929,7 +1969,7 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     };
     let (status, result) = browser
         .call(
-            &host.browser,
+            &router,
             Method::POST,
             "/api/v1/pki/crls",
             Some(body.clone()),
@@ -1941,7 +1981,7 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     );
     anyhow::ensure!(
         browser
-            .call(&host.browser, Method::POST, "/api/v1/pki/crls", Some(body))
+            .call(&router, Method::POST, "/api/v1/pki/crls", Some(body))
             .await?
             .0
             == StatusCode::NO_CONTENT
@@ -1966,8 +2006,7 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     let chunks = futures::stream::iter(
         (0..65).map(|i| Ok::<_, std::io::Error>(vec![b' '; if i == 64 { 1 } else { 1024 * 1024 }])),
     );
-    let response = host
-        .browser
+    let response = router
         .clone()
         .oneshot(
             Request::builder()
@@ -1988,8 +2027,8 @@ async fn management_crl_publication_accepts_large_signed_material_and_rejects_ov
     anyhow::ensure!(
         serde_json::from_slice::<serde_json::Value>(&bytes)?["code"] == "request_too_large"
     );
-    host.close().await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test]
@@ -2174,21 +2213,23 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
 -> anyhow::Result<()> {
     use crate::test_support::{Method, StatusCode, http::Browser};
     use rss_mdm_agent_wire::pki::{Mode, Purpose, Trust};
-    let host = crate::windows::test_support::Host::open().await?;
+    let (mut authority, pki, router) = management().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
     let mut browser = Browser::default();
     let path = "/api/v1/pki/agent/rotations";
     let id = Uuid::new_v4();
-    let trust = host.pki.trust(Purpose::Agent)?;
+    let trust = pki.trust(Purpose::Agent)?;
     let activate =
         serde_json::json!({"id":id,"expected_revision":trust.revision+1,"action":"activate"});
     assert_eq!(
         browser
-            .call(&host.browser, Method::POST, path, Some(activate.clone()))
+            .call(&router, Method::POST, path, Some(activate.clone()))
             .await?
             .0,
         StatusCode::UNAUTHORIZED
     );
-    let secret = crate::test_support::identity::login(&host.authority.identity, "admin").await?;
+    let secret = crate::test_support::identity::login(&authority.identity, "admin").await?;
     browser
         .cookies
         .insert("__Host-identity-session".into(), secret.expose().into());
@@ -2200,14 +2241,14 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
     let mut added = next.issuers[0].clone();
     added.mode = Mode::Prepared;
     proposal.issuers.push(added);
-    let (status, prepared) = browser.call(&host.browser, Method::POST, "/api/v1/pki/rotations", Some(serde_json::json!({"id":id,"purpose":"agent","expected_revision":trust.revision,"candidate":proposal}))).await?;
+    let (status, prepared) = browser.call(&router, Method::POST, "/api/v1/pki/rotations", Some(serde_json::json!({"id":id,"purpose":"agent","expected_revision":trust.revision,"candidate":proposal}))).await?;
     assert_eq!(status, StatusCode::OK, "{prepared}");
     assert_eq!(prepared["state"], "distributing");
     let mut invalid = activate.clone();
     invalid["action"] = "approve".into();
     assert_eq!(
         browser
-            .call(&host.browser, Method::POST, path, Some(invalid))
+            .call(&router, Method::POST, path, Some(invalid))
             .await?
             .0,
         StatusCode::BAD_REQUEST
@@ -2219,7 +2260,7 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
         crate::test_support::identity::device_grants(None, &["inventory_read"])?,
     )
     .await?;
-    let secret = crate::test_support::identity::login(&host.authority.identity, "other").await?;
+    let secret = crate::test_support::identity::login(&authority.identity, "other").await?;
     let mut reader = Browser {
         cookies: std::collections::BTreeMap::from([(
             "__Host-identity-session".into(),
@@ -2230,13 +2271,13 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
     };
     assert_eq!(
         reader
-            .call(&host.browser, Method::POST, path, Some(activate.clone()))
+            .call(&router, Method::POST, path, Some(activate.clone()))
             .await?
             .0,
         StatusCode::FORBIDDEN
     );
     let (status, activated) = browser
-        .call(&host.browser, Method::POST, path, Some(activate.clone()))
+        .call(&router, Method::POST, path, Some(activate.clone()))
         .await?;
     assert_eq!(status, StatusCode::OK, "{activated}");
     assert_eq!(
@@ -2245,11 +2286,11 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
     );
     assert_eq!(
         browser
-            .call(&host.browser, Method::POST, path, Some(activate))
+            .call(&router, Method::POST, path, Some(activate))
             .await?,
         (StatusCode::OK, activated)
     );
-    let active = host.pki.trust(Purpose::Agent)?;
+    let active = pki.trust(Purpose::Agent)?;
     assert_eq!(active.revision, trust.revision + 2);
     assert!(
         active
@@ -2264,8 +2305,8 @@ async fn management_rotation_accepts_direct_activation_and_rejects_retired_actio
             .any(|issuer| issuer.digest == trust.issuers[0].digest
                 && issuer.mode == Mode::VerifyOnly)
     );
-    host.close().await?;
     Ok(())
+    }).await
 }
 
 #[tokio::test]

@@ -8,6 +8,33 @@ fn wrong_action_cannot_select_another_parser() {
     assert!(soap::decode(DISCOVER, Operation::GetPolicies, &CodecLimits::default()).is_err());
 }
 #[test]
+fn on_premise_password_type_accepts_microsoft_namespace_without_ambiguity() {
+    // Microsoft On-premises authentication device enrollment uses wsse:Type.
+    // https://learn.microsoft.com/windows/client-management/on-premise-authentication-device-enrollment
+    let limits = CodecLimits::default();
+    for (operation, xml) in [
+        (
+            Operation::GetPolicies,
+            include_str!("fixtures/policy-request.xml"),
+        ),
+        (Operation::Issue, include_str!("fixtures/issue-request.xml")),
+    ] {
+        let expected = soap::decode(xml.as_bytes(), operation, &limits).unwrap();
+        let qualified = xml.replace("<o:Password Type=", "<o:Password o:Type=");
+        assert_eq!(
+            soap::decode(qualified.as_bytes(), operation, &limits).unwrap(),
+            expected
+        );
+        for invalid in [
+            xml.replace("<o:Password Type=", "<o:Password o:Type=\"wrong\" Type="),
+            qualified.replace("#PasswordText", "#PasswordDigest"),
+            xml.replace("<o:Password Type=", "<o:Password u:Type="),
+        ] {
+            assert!(soap::decode(invalid.as_bytes(), operation, &limits).is_err());
+        }
+    }
+}
+#[test]
 fn attribute_is_escaped_once() {
     let l = CodecLimits::default();
     let message = soap::Message {
@@ -411,6 +438,23 @@ fn xcep_sha256_triple_does_not_inherit_historical_sha1() {
     ] {
         assert!(soap::decode(bad.as_bytes(), Operation::GetPoliciesResponse, &l).is_err());
     }
+}
+
+#[test]
+fn certificate_policy_can_use_transport_identity_without_a_soap_token() {
+    let limits = CodecLimits::default();
+    let mut message = soap::decode(
+        include_bytes!("fixtures/policy-request.xml"),
+        Operation::GetPolicies,
+        &limits,
+    )
+    .unwrap();
+    message.header.security = None;
+    let wire = soap::encode(&message, &limits).unwrap();
+    assert_eq!(
+        soap::decode(&wire, Operation::GetPolicies, &limits).unwrap(),
+        message
+    );
 }
 
 #[test]

@@ -22,8 +22,8 @@ fn now(app: &HttpState) -> Result<i64, Error> {
         .ok_or(Error::Unavailable(Failure::Clock))
 }
 pub(crate) async fn discover(
-    State(app): State<Arc<HttpState>>,
     headers: HeaderMap,
+    Extension(endpoint): Extension<ManagementEndpoint>,
     uri: axum::http::Uri,
     bytes: Bytes,
 ) -> Result<Response, Error> {
@@ -62,25 +62,45 @@ pub(crate) async fn discover(
     if !rss_mdm_windows_mdm::native::declared::certificate_supported(build) {
         return Err(Error::Unsupported);
     }
-    let origin = &app.windows()?.enrollment_origin;
+    let origin = &endpoint.0;
     // Discovery claims only select the protocol. They never create registration authority.
     Ok(axum::Json(serde_json::json!({"EnrollmentServiceUrl":format!("{origin}/EnrollmentServer/LinkedEnrollment.svc"),"EnrollmentPolicyServiceUrl":format!("{origin}/EnrollmentServer/LinkedPolicy.svc"),"AuthenticationServiceUrl":format!("{origin}/EnrollmentServer/LinkedEnrollment.svc"),"EnrollmentVersion":"5.0","AuthPolicy":"Certificate"})).into_response())
 }
 pub(crate) async fn policy(
     State(app): State<Arc<HttpState>>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
+    Extension(endpoint): Extension<ManagementEndpoint>,
     bytes: Bytes,
 ) -> Response {
-    let message = match decode(
+    let message = match decode_at(
         &bytes,
         &headers,
         Operation::GetPolicies,
-        app.windows().map(|w| w.enrollment_origin.as_str()),
+        &endpoint.0,
         "/EnrollmentServer/LinkedPolicy.svc",
     ) {
         Ok(message) => message,
         Err(error) => return fault(None, error),
     };
+    if message
+        .header
+        .security
+        .as_ref()
+        .and_then(|security| security.binary_token.as_ref())
+        .is_none()
+    {
+        return certificate_enrollment::policy_message(
+            &app,
+            peer,
+            &audit,
+            &message,
+            Purpose::WindowsDeclared,
+        )
+        .await
+        .unwrap_or_else(|error| fault(Some(&message), error));
+    }
     let result = (|| {
         let security = message.header.security.as_ref().ok_or(Error::Malformed)?;
         if security.binary_token.is_none() || security.username.is_some() {
@@ -118,13 +138,14 @@ pub(crate) async fn issue(
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     Extension(audit): Extension<RequestAudit>,
     headers: HeaderMap,
+    Extension(endpoint): Extension<ManagementEndpoint>,
     bytes: Bytes,
 ) -> Response {
-    let message = match decode(
+    let message = match decode_at(
         &bytes,
         &headers,
         Operation::Issue,
-        app.windows().map(|w| w.enrollment_origin.as_str()),
+        &endpoint.0,
         "/EnrollmentServer/LinkedEnrollment.svc",
     ) {
         Ok(message) => message,
@@ -236,6 +257,7 @@ async fn issue_message(
             certificate_thumbprint: &thumbprint(&certificate),
             certificate_subject: &subject,
             management_url: &w.management_url(Purpose::WindowsDeclared),
+            renewal_discovery_url: &w.renewal_discovery_url(Purpose::WindowsDeclared),
             provider_id: &w.provider(Purpose::WindowsDeclared),
             username: &intent.registration.to_string(),
             client_password: Secret(&secrets.client_password),

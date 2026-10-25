@@ -39,7 +39,8 @@ pub async fn accept_for_device(
     )
     .await?;
     persist_effect_in(tx, id, &slot.effect).await?;
-    crate::sources::storage::wake_execution_in(tx, policy.owner).await?;
+    crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.owner)
+        .await?;
     Ok(())
 }
 

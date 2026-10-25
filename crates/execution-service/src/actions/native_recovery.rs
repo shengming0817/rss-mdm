@@ -1,5 +1,5 @@
 //! Durable native admission sweeps and individually fenced run recovery.
-//! ref: rss_reconcile_postgres::messaging::{wake_in, protect_in};
+//! ref: RSS reconcile-postgres/src/messaging.rs@d0202b30379a067a94ef386e4c071b7f6cc3d47c;
 //! Kubernetes sample-controller/controller.go (one queued object per reconciliation).
 use super::{production::AdmissionTrigger, storage as db};
 use crate::{Error, ExecutionService, Result, storage};
@@ -33,19 +33,29 @@ impl Work {
         }
     }
 }
-async fn wake(tx: &mut PgTransaction<'_>, work: Work) -> Result<()> {
+async fn wake(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    work: Work,
+) -> Result<()> {
     let target = rss_reconcile::Target::new(crate::recovery_scope(tx.tenant_id()), work.entity())
         .map_err(|_| Error::Malformed)?;
-    rss_reconcile_postgres::messaging::wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
+    reconcile
+        .wake_in(tx, &target, (), |_, _| Box::pin(async { Ok(()) }))
         .await?;
     crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
     Ok(())
 }
-pub(crate) async fn wake_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<()> {
-    wake(tx, Work::Run(id)).await
+pub(crate) async fn wake_run(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
+    tx: &mut PgTransaction<'_>,
+    id: Uuid,
+) -> Result<()> {
+    wake(reconcile, tx, Work::Run(id)).await
 }
 /// Only an accepted, authenticated protocol request records a new check-in.
 pub(crate) async fn record(
+    reconcile: &rss_reconcile_postgres::PgMessagingStore,
     tx: &mut PgTransaction<'_>,
     p: &crate::device::DevicePrincipal,
 ) -> Result<()> {
@@ -63,6 +73,7 @@ pub(crate) async fn record(
         Ok(())
     })).await?;
     wake(
+        reconcile,
         tx,
         Work::CheckIn {
             registration,

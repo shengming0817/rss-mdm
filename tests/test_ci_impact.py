@@ -460,7 +460,10 @@ class CiImpactContract(unittest.TestCase):
     def test_lock_comment_does_not_select_business(self):
         p = self.repo.root / 'Cargo.lock'
         p.write_text(p.read_text() + '\n# comment\n')
-        self.assert_selected(self.repo.select()[1], [], [])
+        decision = self.repo.select()[1]
+        self.assert_selected(decision, [], [])
+        self.assertIn(dict(kind='tool', input='Cargo.lock', modules=[], detail='dependency'),
+                      decision['reasons'])
 
     def test_makefile_and_policy_select_tools_only(self):
         for path in ('Makefile', 'deny.toml'):

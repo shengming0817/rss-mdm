@@ -185,7 +185,8 @@ impl super::super::Planning {
                 })
                 .await?
                 .map_err(Error::from)?;
-            rss_mdm_execution_service::unmanage::wake_in(tx, accepted.0).await?;
+            rss_mdm_execution_service::unmanage::wake_in(&self.reconcile_messaging, tx, accepted.0)
+                .await?;
             if !accepted.1 {
                 let audit = RequestAudit::new(tenant.to_string(), "device_retirement_accepted");
                 audit.identify_service("device-lifecycle");

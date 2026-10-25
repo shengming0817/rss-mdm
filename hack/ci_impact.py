@@ -542,6 +542,11 @@ def analyze_dependencies(oldroot, root, changes, graphs):
     """Select Cargo checks only; dependencies do not imply business T2."""
     packages, reasons = set(), []
     paths = {p for c in changes for p in (c.old, c.new) if p}
+    # Security scans own the complete dependency inputs, even when a changed
+    # lock entry has no current workspace consumer and selects no Cargo package.
+    reasons.extend(dict(kind='tool', input=path, modules=[], detail='dependency')
+                   for path in sorted(paths)
+                   if path in {'Cargo.toml', 'Cargo.lock'} or path.endswith('/Cargo.toml'))
     entries = [lock_entries(tree) for tree in (oldroot, root)] if 'Cargo.lock' in paths else [{}, {}]
     changed_lock = {key for key in entries[0].keys() | entries[1].keys() if entries[0].get(key) != entries[1].get(key)}
     manifest_fields = {

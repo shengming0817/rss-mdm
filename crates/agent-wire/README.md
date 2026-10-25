@@ -123,8 +123,10 @@ Agent 安装包目录描述安装文件与 releaseId；注册 installation 仅�
 
 `runtime::ValueMapping`、`Conversion` 和 `AgentCollectionMapping` 是普通采集与遥测的唯一声明和纯求值实现。
 Resource 拥有配置发布，Inventory 拥有字段语义、质量和多来源合并；协议包不执行查询、设备操作或授权。
-`project_selected` 接受已经按根 pointer 选中的单值或单行；列表由调用方按声明的字段类型逐行调用，
-不得再次应用根 pointer。缺失选择、显式 null、逐行失败和完整空列表分别保留，由业务质量 owner 结算。
+`project_selected(raw, value_type)` 接受已经按根 pointer 选中的单值或单行及其冻结目标类型；
+列表由调用方传入条目类型逐行调用，不得再次应用根 pointer。只有 Record 中声明为可选的属性缺失时才省略；
+必需属性缺失和转换失败仍拒绝，显式 null 不冒充属性缺失。转换后的值仍按字段 schema 校验，
+缺失选择、逐行失败和完整空列表分别保留，由业务质量 owner 结算。
 
 普通 Collection 任务必带冻结 `fields` 与 `mappings`；Script 任务必带显式 `projection`，
 采集用途携带字段、输出 schema、映射和 scope，非采集为 `kind=none`。缺少这些结构拒绝解码。

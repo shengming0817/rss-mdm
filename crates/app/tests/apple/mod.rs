@@ -270,7 +270,7 @@ impl Fixture {
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(), plan_audit.clone(), plan_runtime.clone(), tenant,
             Arc::new(crate::clock::InventoryClock(clock.clone())), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
         let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), plan_audit.clone(), tenant,
+        let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
             Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
         let requests = Arc::new(tokio::sync::Semaphore::new(4));

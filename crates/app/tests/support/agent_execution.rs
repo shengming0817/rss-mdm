@@ -234,7 +234,7 @@ impl Fixture {
             },
         });
                     let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), plan_audit, tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), inputs.clone()));
+                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit, tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), inputs.clone()));
                     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
                     let routes = Router::new().nest("/api/v1",
                         rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum()
