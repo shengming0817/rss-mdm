@@ -53,6 +53,10 @@ pub(crate) async fn open_content(
         }
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit host capabilities avoid a second assembly container"
+)]
 pub(crate) async fn open(
     config: &crate::config::Config,
     protection: Arc<rss_mdm_native_protection::Protector>,

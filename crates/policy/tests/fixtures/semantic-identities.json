@@ -32,6 +32,7 @@
           "window": null
         }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "b8df6137376ca735fd82a56125fc32d635063b612105672a7ae8e81b24f23c15"
@@ -56,14 +57,15 @@
           },
           "notBefore": 0,
           "trigger": {
-            "kind": "interval",
             "anchor": 0,
+            "kind": "interval",
             "seconds": 3600
           },
           "until": null,
           "window": null
         }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "3a94aa7ae48e32498a9a88885935b9cc71004716641a31e3957e043fbb65fc02"
@@ -81,6 +83,7 @@
           "version": "v1"
         }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "2278d83da98efcf3d8a07f3775f6e83f43ae99f5f33cd57f1804db98bbc5bdd4"
@@ -88,6 +91,7 @@
   {
     "definition": {
       "action": {
+        "channel": "agent",
         "delivery": {
           "kind": "direct"
         },
@@ -123,9 +127,9 @@
           },
           "until": null,
           "window": null
-        },
-        "channel": "agent"
+        }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "de15a23cdbcae5d21bee1ddd05252bc5084f55a2f762333d8816cb5ba0b7bba9"
@@ -152,6 +156,7 @@
           "window": null
         }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "36f652e21f8d8b676a4a402f1f7200a4aa4922cf94d00b70b5a7a0f85b80a303"
@@ -176,6 +181,7 @@
           "window": null
         }
       },
+      "alias": null,
       "scope": "11111111-1111-4111-8111-111111111111"
     },
     "digest": "d223c8579c227c68822671603a3eca64dcb35231b0cfeaecea90d002e7ecb6b8"

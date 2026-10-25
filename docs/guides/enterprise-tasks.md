@@ -153,7 +153,7 @@ Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。�
 
 状态查询核对当前读者、当前注册与 Policy 访问资格及设备 Scope，不要求原企业会话或 OS/helper 仍可执行；这不签发新的执行许可。
 
-Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、Policy revision/version、自助配置、有效设备 Scope 和确切 OS/helper。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy。
+Run 保存服务端选择的访问依据，用户模式只保存 Identity 签发的非凭据 SessionReference。领取及 Start 服务端复核原会话、账户和成员有效性、可信来源与快照期限、静态用户组、当前自助资格、有效设备 Scope 和确切 OS/helper；执行材料继续关联已受理 Run 的原版本，不要求与 Policy 当前 revision/version 相等。企业身份与 OS 账号分别绑定。签名覆盖通用 TaskAuthorization、精确输入和执行目标；客户端不能伪装成自动 Policy。
 
 访问撤回阻止未启动任务。已启动执行按原 attempt 和不可变材料记录完成证据，企业退出登录不产生新的执行许可。执行状态与可信 Inventory 投影分别判断。安装使用当前初始化 schema；当前版本内的任务恢复消费原 attempt 与不可变材料。
 
