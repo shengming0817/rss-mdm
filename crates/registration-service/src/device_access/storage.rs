@@ -111,6 +111,7 @@ pub async fn insert_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
         b.registration_generation,
     )
     .await?;
+    require_retired_in(c, b).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3")
         .bind(b.tenant).bind(&b.device).bind(b.registration).fetch_one(&mut *c).await.map_err(db)?;
     if count >= 128 {
@@ -243,8 +244,18 @@ pub async fn result_in(
                 return Err(Error::Conflict);
             }
             b.account = Some(account.clone());
-            b.applied_windows = windows.clone();
-            if report.effect.complete(&b.configuration) {
+            // Current observations remain in effect. Incomplete enrollment must not erase
+            // the last verified key used to fence subsequent reset attempts.
+            if report
+                .effect
+                .complete(&b.configuration, b.intent.platform())
+            {
+                b.applied_windows = windows.clone();
+            }
+            if report
+                .effect
+                .complete(&b.configuration, b.intent.platform())
+            {
                 b.state = State::Active;
             }
         }
@@ -271,20 +282,28 @@ pub async fn result_in(
         AccessEffect::Unbound { disposition }
             if b.state != State::Revoked
                 || *disposition != b.account_disposition
-                || matches!(
-                    b.configuration.windows,
-                    rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb
-                ) =>
+                || (b.intent.platform() == TaskPlatform::Windows
+                    && matches!(
+                        b.configuration.windows,
+                        rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::Whfb
+                    )) =>
         {
             return Err(Error::Conflict);
         }
         _ => {}
     }
-    if b.applied_revision == Some(b.revision) && !report.effect.complete(&b.configuration) {
+    if b.applied_revision == Some(b.revision)
+        && !report
+            .effect
+            .complete(&b.configuration, b.intent.platform())
+    {
         return Ok(false);
     }
     b.received_revision = Some(b.revision);
-    if report.effect.complete(&b.configuration) {
+    if report
+        .effect
+        .complete(&b.configuration, b.intent.platform())
+    {
         b.applied_revision = Some(b.revision);
     }
     b.effect = Some(report.effect.clone());
@@ -292,7 +311,7 @@ pub async fn result_in(
     let phase = match &report.effect {
         AccessEffect::Unknown => "unknown",
         AccessEffect::Failed { .. } => "failed",
-        effect if effect.complete(&b.configuration) => "applied",
+        effect if effect.complete(&b.configuration, b.intent.platform()) => "applied",
         _ => "pending",
     };
     super::lifecycle::emit_on(c, &b, None, event, phase).await?;
@@ -412,4 +431,21 @@ pub async fn mac_configuration_in(
         }
     }
     selected.ok_or(Error::NotFound)
+}
+
+/// Registration-locked admission: a new binding cannot race an old native key cleanup.
+pub async fn require_retired_in(c: &mut PgConnection, b: &Binding) -> Result<(), Error> {
+    let Some(account @ AccessAccount::Windows { .. }) = &b.account else {
+        return Ok(());
+    };
+    let configuration =
+        serde_json::to_value(&b.configuration.windows).map_err(|_| Error::Malformed)?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND account=$4 AND state='revoked' AND (document->'appliedRevision' IS DISTINCT FROM document->'revision') AND (document#>>'{configuration,windows,kind}'='whfb' OR document#>>'{configuration,windows,kind}' IS DISTINCT FROM $5))")
+        .bind(b.tenant).bind(&b.device).bind(b.registration).bind(serde_json::to_value(account).map_err(|_| Error::Malformed)?).bind(configuration["kind"].as_str().ok_or(Error::Malformed)?)
+        .fetch_one(c).await.map_err(db)?;
+    if pending {
+        Err(Error::Conflict)
+    } else {
+        Ok(())
+    }
 }

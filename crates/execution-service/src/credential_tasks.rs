@@ -101,7 +101,8 @@ impl FrozenCredential {
                             ));
                         }
                     };
-                    if b.device != target.device
+                    if !matches!(b.configuration.windows, wire::AccessWindowsConfiguration::RssFactor { .. })
+                        || b.device != target.device
                         || b.registration != target.registration
                         || b.registration_generation != target.generation
                         || b.generation != *binding_generation

@@ -558,7 +558,10 @@ impl AccessEffect {
         Ok(())
     }
     /// Application completion includes Secure Token confirmation on macOS.
-    pub fn complete(&self, configuration: &AccessConfiguration) -> bool {
+    pub fn complete(&self, configuration: &AccessConfiguration, platform: TaskPlatform) -> bool {
+        if self.validate_for(platform).is_err() {
+            return false;
+        }
         match self {
             Self::Applied { mac: Some(mac), .. } => {
                 let Some(login) = &configuration.mac else {
@@ -601,7 +604,8 @@ impl AccessEffect {
                     && facts.registration == AccessObservation::Absent
             }
             Self::Unbound { .. } => {
-                !matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
+                platform != TaskPlatform::Windows
+                    || !matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
             }
             Self::Applied { .. } => false,
             Self::Unknown | Self::Failed { .. } => false,

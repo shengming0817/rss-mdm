@@ -677,8 +677,9 @@ pub(crate) async fn reconcile_in(
                     if b.state != access::State::Revoked {
                         match policy_on(source, scope, c, tenant, &b.device, b.policy).await {
                             Ok(p) => {
-                                if std::mem::discriminant(&p.configuration.windows)
-                                    != std::mem::discriminant(&b.configuration.windows)
+                                if b.intent.platform() == wire::TaskPlatform::Windows
+                                    && std::mem::discriminant(&p.configuration.windows)
+                                        != std::mem::discriminant(&b.configuration.windows)
                                 {
                                     b.generation =
                                         b.generation.checked_add(1).ok_or_else(|| {

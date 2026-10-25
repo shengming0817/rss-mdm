@@ -309,7 +309,11 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         let outcome = async {
 
-        let (policy,registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
+        let (policy,registration)=setup(&mut f).await?;
+        let current=f.author.call(&f.router,Method::GET,&format!("/api/v1/policies/{policy}"),None).await?;
+        let mut definition=current.1["definition"].clone(); definition["action"]["windows"]=json!({"kind":"whfb"});
+        execution::post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":current.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
+        let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let started=user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?;
         ensure!(started.0==StatusCode::OK,"begin: {started:?}");

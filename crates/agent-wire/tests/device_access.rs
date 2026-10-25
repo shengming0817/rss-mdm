@@ -175,12 +175,12 @@ fn mac_application_requires_its_own_secure_token_observation() {
         };
         assert!(value.validate_for(TaskPlatform::Macos).is_ok());
         assert_eq!(
-            value.complete(&configuration()),
+            value.complete(&configuration(), TaskPlatform::Macos),
             state == AccessObservation::Present
         );
         assert!(value.validate_for(TaskPlatform::Windows).is_err());
     }
-    assert!(!AccessEffect::Unknown.complete(&configuration()));
+    assert!(!AccessEffect::Unknown.complete(&configuration(), TaskPlatform::Macos));
 }
 
 #[test]
@@ -385,7 +385,7 @@ fn password_application_requires_independent_password_keychain_and_volume_facts(
                 },
             }),
         };
-        assert_eq!(effect.complete(&config), missing == 4);
+        assert_eq!(effect.complete(&config, TaskPlatform::Macos), missing == 4);
     }
 }
 
@@ -493,7 +493,7 @@ fn hello_policy_observation_cannot_substitute_for_registration_or_hardware_proof
     effect(full.clone())
         .validate_for(TaskPlatform::Windows)
         .unwrap();
-    assert!(effect(full.clone()).complete(&configuration));
+    assert!(effect(full.clone()).complete(&configuration, TaskPlatform::Windows));
     for observation in [
         AccessObservation::Absent,
         AccessObservation::Unknown,
@@ -501,13 +501,13 @@ fn hello_policy_observation_cannot_substitute_for_registration_or_hardware_proof
     ] {
         let mut pending = full.clone();
         pending.policy = observation;
-        assert!(!effect(pending).complete(&configuration));
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
         let mut pending = full.clone();
         pending.registration = observation;
-        assert!(!effect(pending).complete(&configuration));
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
         let mut pending = full.clone();
         pending.hardware_key = observation;
-        assert!(!effect(pending).complete(&configuration));
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
     }
     let mut wrong = full.clone();
     wrong.tenant_id = Uuid::from_u128(43);
@@ -542,19 +542,19 @@ fn hello_retirement_requires_observed_policy_and_credential_removal() {
         disposition: AccessAccountDisposition::Keep,
         facts,
     };
-    assert!(!effect(facts.clone()).complete(&configuration));
+    assert!(!effect(facts.clone()).complete(&configuration, TaskPlatform::Windows));
     facts.registration = AccessObservation::Absent;
     facts.hardware_key = AccessObservation::Absent;
     facts.key_id = None;
     effect(facts.clone())
         .validate_for(TaskPlatform::Windows)
         .unwrap();
-    assert!(effect(facts).complete(&configuration));
+    assert!(effect(facts).complete(&configuration, TaskPlatform::Windows));
     assert!(
         !AccessEffect::Unbound {
             disposition: AccessAccountDisposition::Keep
         }
-        .complete(&configuration)
+        .complete(&configuration, TaskPlatform::Windows)
     );
     let mut task = hello_task();
     task.action = AccessAction::Unbind {
@@ -567,4 +567,21 @@ fn hello_retirement_requires_observed_policy_and_credential_removal() {
         previous_key: None,
     });
     task.validate().unwrap();
+}
+
+#[test]
+fn mixed_policy_retirement_uses_actual_platform() {
+    let AccessAction::Apply {
+        mut configuration, ..
+    } = hello_task().action
+    else {
+        panic!()
+    };
+    configuration.mac = Some(Default::default());
+    configuration.enabled = false;
+    let effect = AccessEffect::Unbound {
+        disposition: AccessAccountDisposition::Keep,
+    };
+    assert!(effect.complete(&configuration, TaskPlatform::Macos));
+    assert!(!effect.complete(&configuration, TaskPlatform::Windows));
 }
