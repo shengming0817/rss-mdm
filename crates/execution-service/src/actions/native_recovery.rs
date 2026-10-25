@@ -229,6 +229,7 @@ impl ExecutionService {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),
             "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         let result = crate::transaction::run(
             &self.audit_store,
@@ -241,6 +242,7 @@ impl ExecutionService {
                     let audit = rss_mdm_audit_integration::RequestAudit::new(
                         tx.tenant_id().to_string(),
                         "command_reconcile",
+                        rss_mdm_audit_integration::AuditIntent::Management,
                     );
                     let entity = Work::Run(ctx.1).entity();
                     let prepared = crate::recovery::prepare(ctx.0, tx, &entity, &audit).await?;

@@ -480,7 +480,7 @@ async fn session_decision(
         if let Some(old)=sqlx::query("SELECT digest,response,package_state,authenticated FROM mdm_access.management_messages WHERE tenant_id=$1::uuid AND registration=$2::uuid AND session_id=$3 AND message_id=$4")
             .bind(&tenant).bind(&registration).bind(&session).bind(message_id).fetch_optional(&mut *tx).await.map_err(db)? {
             if old.try_get::<String,_>("digest").map_err(db)?!=digest { return Err(Error::Conflict); }
-            audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management");
+            audit.operation(Uuid::from_bytes(Sha256::digest(format!("{registration}:{session}:{message_id}")).as_slice()[..16].try_into().expect("digest width")),"windows_management", rss_mdm_audit_integration::AuditIntent::Management);
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
             let sealed: Vec<u8> = old.try_get("response").map_err(db)?;
             let aad = crate::protection::native_aad(principal.tenant(), "windows.management.response", &(principal.registration(), principal.generation(), principal.credential(), &session, message_id))?;

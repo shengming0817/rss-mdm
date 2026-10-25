@@ -39,7 +39,10 @@ async fn list(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let query = rss_mdm_registration_service::device::directory::SCHEMA
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -73,7 +76,10 @@ async fn statistics(
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let q = rss_mdm_registration_service::device::directory::SCHEMA
         .statistics(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -86,7 +92,10 @@ async fn detail(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
 ) -> Result<Json<Value>, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&device);
     let mut item = s.devices.directory_device(&auth.proof, &device).await?;
     let present = s

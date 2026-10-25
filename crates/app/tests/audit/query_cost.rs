@@ -101,7 +101,11 @@ async fn exercise(
     let initial_records = bytes(pool, tenant).await?.len();
     counts.catalog.store(0, Ordering::Relaxed);
     counts.queries.store(0, Ordering::Relaxed);
-    let request = RequestAudit::new(tenant.to_string(), "audit_sql_observation");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "audit_sql_observation",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     for borrowed in [false, true] {
         let fact = Fact::business(
             &request,

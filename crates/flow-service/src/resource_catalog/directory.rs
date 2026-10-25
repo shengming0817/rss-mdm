@@ -6,10 +6,10 @@ impl ResourceCatalog {
     pub async fn blueprints(
         &self,
         proof: &AuthorizedPrincipal,
-        audit: &RequestAudit,
+        _audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         proof.manage(Permission::ResourceRead)?;
-        audit.require_request_settlement();
+
         proof.check_live()?;
         Ok(json!({"categories":r::blueprints::CATEGORIES,"items":r::blueprints::catalog()}))
     }
@@ -30,7 +30,7 @@ impl ResourceCatalog {
             (self, proof, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, audit) = *ctx;
+                    let (s, p, q, _audit) = *ctx;
                     let current = crate::action_admission::current(tx, p).await?;
                     current.require(p, Permission::ResourceRead, None)?;
                     let binding = q
@@ -62,7 +62,7 @@ impl ResourceCatalog {
                         None
                     };
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     Ok(Page {
                         items: items.into_iter().map(|row| q.project(row)).collect(),
                         next_cursor: next,

@@ -88,7 +88,11 @@ impl ExecutionService {
     ) -> std::result::Result<serde_json::Value, Error> {
         proof.require(Permission::SecurityOperate, Some(device))?;
         proof.bind_audit(audit)?;
-        audit.operation(input.operation_id, "command_accept");
+        audit.operation(
+            input.operation_id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device);
         let protection = self
             .recovery_credentials

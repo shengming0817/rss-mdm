@@ -386,8 +386,12 @@ async fn mutate(
         return Err(Error::Malformed);
     }
     p.bind_audit(&audit)?;
-    audit.operation(id, "windows_wns_material");
-    audit.require_request_settlement();
+    audit.operation(
+        id,
+        "windows_wns_material",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(8));
     let result=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(&app,p,&audit,id,&input),|ctx,tx|Box::pin(async move {

@@ -226,7 +226,8 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
             _, errors = process.communicate('ROLLBACK;\n', timeout=10)
             require(process.returncode == 0, 'audit projection lock cleanup failed: ' + errors)
 
-    def fill(browser, tenant_id, route):
+    def fill(browser, tenant_id):
+        replay = None
         for source in ('mdm.business', 'mdm.request'):
             for _ in range(limit // 2 + 1):
                 count = int(sql(f"SELECT coalesce((SELECT events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}' AND source_id='{source}'),0)"))
@@ -238,9 +239,11 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
                     current = json.loads(sql(f"SELECT jsonb_build_object('id',id,'revision',revision,'value',document) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant_id}' AND document IS NOT NULL ORDER BY id LIMIT 1"))
                     prefix = BASE + '/authorization/rules/' if tenant_id == management else '/api/v1/authorization/rules/'
                     change = dict(operationId=str(uuid.uuid4()), expectedRevision=current['revision'], value=current['value'])
-                    require(browser.call('PUT', prefix + current['id'], change)[0] == 200, source + ' fill rejected before capacity')
+                    replay = (prefix + current['id'], change)
+                    require(browser.call('PUT', *replay)[0] == 200, source + ' fill rejected before capacity')
                 else:
-                    require(browser.call('GET', route)[0] == 200, source + ' fill rejected before capacity')
+                    require(replay is not None, 'business replay must exist')
+                    require(browser.call('PUT', *replay)[0] == 200, source + ' fill rejected before capacity')
             else:
                 raise RuntimeError(source + ' did not fill its source quota')
 
@@ -254,9 +257,9 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
             operation = str(uuid.uuid4())
             with hold_projection():
                 if kind != 'webhook':
-                    fill(admin, management, BASE+'/tenants')
+                    fill(admin, management)
                 if kind in ('administrator', 'webhook'):
-                    fill(target, tenant, '/api/v1/authorization')
+                    fill(target, tenant)
                 before = sql(f"SELECT (SELECT count(*) FROM public.mdm_tenants)||':'||(SELECT count(*) FROM rss_transactional_messaging.tenant_epoch)||':'||(SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
                 tenant_before = sql(f"SELECT revision||':'||coalesce(notes,'') FROM public.mdm_tenants WHERE tenant_id='{tenant}'")
                 if kind == 'registry':

@@ -143,13 +143,18 @@ impl FrozenFact {
             )))?,
         ))
     }
-    pub(crate) fn partition(&self) -> Result<PartitionIdentity, Error> {
-        let kind = if self.source.source == "mdm.request" {
-            format!("request:{}", self.source.resource_kind)
-        } else {
-            self.source.resource_kind.clone()
-        };
-        partition(self.identity()?.tenant(), &kind, &self.source.resource)
+    pub(crate) fn partition(&self) -> Result<Option<PartitionIdentity>, Error> {
+        // Independent request outcomes have no causal order with other requests. Keeping them
+        // unordered also preserves isolation from an unsettled business partition owner.
+        if self.source.source == "mdm.request" {
+            return Ok(None);
+        }
+        partition(
+            self.identity()?.tenant(),
+            &self.source.resource_kind,
+            &self.source.resource,
+        )
+        .map(Some)
     }
     pub(crate) fn message(&self) -> Result<PendingMessage<Vec<u8>>, Error> {
         let identity = self.identity()?;
@@ -178,7 +183,7 @@ impl FrozenFact {
                         .map(CorrelationId::parse)
                         .transpose(),
                 )?,
-                Some(self.partition()?.key().clone()),
+                self.partition()?.map(|partition| partition.key().clone()),
                 None,
                 Default::default(),
             ),
@@ -289,10 +294,15 @@ mod tests {
         let audit = RequestAudit::new(
             "11111111-1111-4111-8111-111111111111".into(),
             "management_write",
+            crate::AuditIntent::Management,
         );
         audit.identify_service("test-source");
         audit.target("resource-one");
-        audit.operation(uuid::Uuid::from_u128(1), "management_write");
+        audit.operation(
+            uuid::Uuid::from_u128(1),
+            "management_write",
+            crate::AuditIntent::Management,
+        );
         audit.finalize(None);
         audit
     }
@@ -364,13 +374,16 @@ mod tests {
         );
         assert_eq!(
             business.partition().unwrap(),
-            partition(
-                business.identity().unwrap().tenant(),
-                &business.source.resource_kind,
-                &business.source.resource
+            Some(
+                partition(
+                    business.identity().unwrap().tenant(),
+                    &business.source.resource_kind,
+                    &business.source.resource
+                )
+                .unwrap()
             )
-            .unwrap()
         );
+        assert!(completion.partition().unwrap().is_none());
     }
     #[test]
     fn ambiguous_failed_response_can_use_reserve_without_claiming_business_failure() {

@@ -17,10 +17,11 @@ pub(crate) const ACCESS_CONTRACT: &str = include_str!("first_use/access-contract
 struct ObservationAction<'a> {
     audit: &'a RequestAudit,
     original: &'static str,
+    intent: rss_mdm_audit_integration::AuditIntent,
 }
 impl Drop for ObservationAction<'_> {
     fn drop(&mut self) {
-        self.audit.set_action(self.original);
+        self.audit.set_action(self.original, self.intent);
     }
 }
 
@@ -171,6 +172,7 @@ impl FirstUse {
         let action = ObservationAction {
             audit,
             original: audit.snapshot().action,
+            intent: audit.snapshot().intent,
         };
         let entries = self
             .directory
@@ -285,8 +287,12 @@ impl Source for FirstUse {
                     } else {
                         None
                     };
-                    audit.operation(id, "first_use_update");
-                    audit.require_request_settlement();
+                    audit.operation(
+                        id,
+                        "first_use_update",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
+                    audit.require_final_request();
                     let receipt = store::update(
                         &self.audit,
                         &auth.proof,

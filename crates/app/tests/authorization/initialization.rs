@@ -150,8 +150,7 @@ async fn bounded_initialization_recovery() -> Result<()> {
         let key = Uuid::new_v4();
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             case_tenant().into(),
-            "authorization_initialize",
-        );
+            "authorization_initialize", rss_mdm_audit_integration::AuditIntent::Management);
         store.inject_next_fault(fault);
         let deadline = rss_request_context::Deadline::from_timeout(
             &crate::lifecycle::RuntimeTimer,

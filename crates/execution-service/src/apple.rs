@@ -241,7 +241,7 @@ impl ExecutionService {
                         .await?;
                     let response = send(service, tx, (*apple).clone(), p, &user_key, audit).await?;
                     super::protocol::settle_dispatch_failures(service, tx, p, audit).await?;
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     Ok(response)
                 })
             },
@@ -634,7 +634,7 @@ impl ExecutionService {
                             complete_ddm(service, tx, &op).await?;
                         }
                     }
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     Ok(reply)
                 })
             },

@@ -108,8 +108,12 @@ impl ExecutionService {
         p.require(Permission::RegistrationConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
-        audit.operation(operation, "task_signing_change");
-        audit.require_request_settlement();
+        audit.operation(
+            operation,
+            "task_signing_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,change),|(service,p,audit,operation,change),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*change);
@@ -182,8 +186,12 @@ impl ExecutionService {
             return Err(Error::Forbidden);
         }
         input.validate().map_err(|_| Error::Malformed)?;
-        audit.operation(input.operation, "task_signing_ack");
-        audit.require_request_settlement();
+        audit.operation(
+            input.operation,
+            "task_signing_ack",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result=self.task_signing_audit.write(self.tenant,&budget.source_control(),(self,p,audit,input),|(service,p,audit,input),tx|Box::pin(async move {
             let mut context=(*p,*input);
@@ -215,8 +223,12 @@ impl ExecutionService {
         {
             return Err(Error::Forbidden);
         }
-        audit.operation(input.operation, "task_trust_observe");
-        audit.require_request_settlement();
+        audit.operation(
+            input.operation,
+            "task_trust_observe",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result = self
             .task_signing_audit

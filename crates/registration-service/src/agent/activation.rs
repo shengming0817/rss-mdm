@@ -16,7 +16,11 @@ impl Service {
             .map_err(|_| Error::Unauthorized)?;
         let fingerprint = hex(proof.metadata().fingerprint);
         let request_digest = digest(input)?;
-        a.operation(input.operation_id, "agent_certificate_activate");
+        a.operation(
+            input.operation_id,
+            "agent_certificate_activate",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(
             a,
             (self, input, a, proof, fingerprint, request_digest),

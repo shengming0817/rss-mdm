@@ -223,7 +223,10 @@ async fn read(
     Extension(audit): Extension<RequestAudit>,
     Extension(continuation): Extension<RequestContinuation>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    audit.set_action("first_use_read");
+    audit.set_action(
+        "first_use_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     run(source, auth, audit, continuation, Command::Read).await
 }
 async fn operation(
@@ -233,7 +236,10 @@ async fn operation(
     Extension(continuation): Extension<RequestContinuation>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    audit.set_action("first_use_operation_read");
+    audit.set_action(
+        "first_use_operation_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     run(source, auth, audit, continuation, Command::Operation(id)).await
 }
 async fn update(

@@ -129,9 +129,14 @@ impl SigningStore {
         let a = rss_mdm_audit_integration::RequestAudit::new(
             tenant.to_string(),
             "device_pki_signing_claim",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki-signing");
-        a.operation(intent.attempt, "device_pki_signing_claim");
+        a.operation(
+            intent.attempt,
+            "device_pki_signing_claim",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let claim=crate::mutation::run(&self.audit,rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,&a,
             (tenant,purpose,issuer,intent,&binding,&hash,now),|ctx,c|Box::pin(async move {
                 let (tenant,purpose,issuer,intent,binding,hash,now)=ctx;
@@ -196,9 +201,14 @@ impl SigningStore {
         let a = rss_mdm_audit_integration::RequestAudit::new(
             tenant.to_string(),
             "device_pki_signing_result",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         a.identify_service("service:device-pki-signing");
-        a.operation(attempt, "device_pki_signing_result");
+        a.operation(
+            attempt,
+            "device_pki_signing_result",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let result=crate::mutation::run(&self.audit,rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,&a,
             (tenant,attempt,hash,chain,bytes),|ctx,c|Box::pin(async move {
                 let (tenant,attempt,hash,chain,bytes)=ctx;

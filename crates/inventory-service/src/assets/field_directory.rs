@@ -63,7 +63,7 @@ impl AssetService {
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, audit) = *ctx;
+                    let (s, p, q, _audit) = *ctx;
                     let current = query_authority(tx, p).await?;
                     let editor = current
                         .require(p, Permission::InventoryFieldsWrite, None)
@@ -98,7 +98,7 @@ impl AssetService {
                         .await?;
                     let page = q.page(rows, &codec, &binding).map_err(crate::query_error)?;
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     json(&AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
                         asset: Response::FieldList {
@@ -125,7 +125,7 @@ impl AssetService {
             (self, p, key, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, key, audit) = *ctx;
+                    let (s, p, key, _audit) = *ctx;
                     let current = query_authority(tx, p).await?;
                     let editor = current
                         .require(p, Permission::InventoryFieldsWrite, None)
@@ -139,7 +139,7 @@ impl AssetService {
                     // and values remain checked by their existing read/compile owners.
                     let value = entry(field)?;
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     json(&AssetEnvelope {
                         tenant_id: p.tenant_id().into(),
                         asset: Response::FieldDescriptor { field: value },

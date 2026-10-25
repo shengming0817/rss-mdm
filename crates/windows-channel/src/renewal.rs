@@ -145,7 +145,7 @@ pub(crate) async fn issue(
                             .await
                             .map_err(Error::from)?;
                     }
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -302,7 +302,11 @@ pub(crate) async fn activate(
     if !pending {
         return Ok(());
     }
-    let audit = RequestAudit::new(tenant.to_string(), "windows_renewal");
+    let audit = RequestAudit::new(
+        tenant.to_string(),
+        "windows_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let budget = app.devices.retirement_budget();
     let outcome = app
         .audit_store

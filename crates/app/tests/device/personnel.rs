@@ -58,7 +58,7 @@ async fn authorized_names_and_local_login_are_projected_before_paging() -> Resul
         registration.assign_registration_user(&admin, last, &rss_mdm_registration_service::device::registration_user::RegistrationUserChange {
             expected_revision:0,
             user:Some(crate::authorization::User {tenant_id:case_a().into(),instance_id:identity::INSTANCE.into(),principal_id:principal.into()}),
-        },Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await?;
+        },Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change", rss_mdm_audit_integration::AuditIntent::Management)).await?;
 
         // Minimal unrelated accounts force the existing account API's second page. No login,
         // session, profile or searchable device fact is fabricated for these accounts.

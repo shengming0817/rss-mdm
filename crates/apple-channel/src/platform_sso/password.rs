@@ -112,7 +112,11 @@ pub(super) async fn login(
     let user = Uuid::parse_str(&claims.sub).map_err(|_| Error::Unauthorized)?;
     let budget = AuditBudget::new(Duration::from_secs(10));
     let operation = Uuid::new_v4();
-    audit.operation(operation, "apple_platform_password");
+    audit.operation(
+        operation,
+        "apple_platform_password",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let prepared = app
         .audit_store
         .write(

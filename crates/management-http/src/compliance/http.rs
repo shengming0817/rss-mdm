@@ -11,11 +11,18 @@ use rss_mdm_http_contract::{
 };
 type Response = std::result::Result<Json<Value>, Error>;
 async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) -> Response {
-    audit.set_action(if c.operation().is_some() {
-        "compliance_write"
-    } else {
-        "compliance_read"
-    });
+    audit.set_action(
+        if c.operation().is_some() {
+            "compliance_write"
+        } else {
+            "compliance_read"
+        },
+        if c.operation().is_some() {
+            rss_mdm_audit_integration::AuditIntent::Management
+        } else {
+            rss_mdm_audit_integration::AuditIntent::Routine
+        },
+    );
     match &c {
         Command::Current { device } | Command::History { device, .. } => {
             audit.target_device(device)
@@ -28,7 +35,11 @@ async fn run(s: &Compliance, a: &RequestAuth, audit: &RequestAudit, c: Command) 
         | Command::Task { id, .. } => audit.target(&id.to_string()),
     }
     if let Some(id) = c.operation() {
-        audit.operation(id, audit.snapshot().action)
+        audit.operation(
+            id,
+            audit.snapshot().action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        )
     }
     s.execute(&c, audit, &a.proof)
         .await

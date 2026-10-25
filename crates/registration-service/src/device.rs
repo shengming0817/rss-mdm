@@ -226,9 +226,17 @@ impl DeviceService {
         credential: &VerifiedChannelCredential,
         command: BindRegistration,
     ) -> Result<RegistrationReceipt, Error> {
-        let audit = RequestAudit::new(admin.tenant_id().into(), "registration_bind");
+        let audit = RequestAudit::new(
+            admin.tenant_id().into(),
+            "registration_bind",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         admin.bind_audit(&audit)?;
-        audit.operation(command.operation_id, "registration_bind");
+        audit.operation(
+            command.operation_id,
+            "registration_bind",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.audited(&audit, self.bind_inner(admin, credential, &command, &audit))
             .await
     }
@@ -240,9 +248,17 @@ impl DeviceService {
         registration: Uuid,
         operation_id: Uuid,
     ) -> Result<RevocationReceipt, Error> {
-        let audit = RequestAudit::new(admin.tenant_id().into(), "credential_revoke");
+        let audit = RequestAudit::new(
+            admin.tenant_id().into(),
+            "credential_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         admin.bind_audit(&audit)?;
-        audit.operation(operation_id, "credential_revoke");
+        audit.operation(
+            operation_id,
+            "credential_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device);
         self.audited(
             &audit,

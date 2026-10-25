@@ -150,7 +150,11 @@ pub async fn configure(
     .map_err(|_| Error::Conflict)??;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
-    audit.operation(op, "apple_ade_configuration");
+    audit.operation(
+        op,
+        "apple_ade_configuration",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let digest = rss_mdm_registration_service::enrollment::digest(&(
         id,
         p.principal_id(),
@@ -218,7 +222,11 @@ pub async fn operation(
     let p = proof(&auth, true)?;
     let op = operation_id(&headers)?;
     p.bind_audit(&audit)?;
-    audit.operation(op, "apple_ade_operation");
+    audit.operation(
+        op,
+        "apple_ade_operation",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let canonical = Zeroizing::new(
         serde_json::to_vec(&(p.principal_id(), p.instance_id(), &input))
             .map_err(|_| Error::Malformed)?,

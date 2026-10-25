@@ -243,7 +243,11 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             .execute(&mut holder)
             .await
             .unwrap();
-        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        let audit = RequestAudit::new(
+            tenant().to_string(),
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", crate::test_support::INSTANCE);
         let allowed = std::sync::atomic::AtomicBool::new(true);
         let authorize = || {
@@ -907,7 +911,11 @@ async fn planning_owner_settlement_preserves_unknown_rollback_and_exact_replay()
                 },
             ),
         };
-        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        let audit = RequestAudit::new(
+            tenant().to_string(),
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", crate::test_support::INSTANCE);
         service.runtime.inject_next_transaction_fault(fault);
         let first = if unknown {

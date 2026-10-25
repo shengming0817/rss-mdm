@@ -23,13 +23,15 @@ pub struct Envelope {
     pub tenant: String,
 }
 pub fn wrap(router: Router, envelope: Envelope) -> Router {
-    router.layer(middleware::from_fn_with_state(envelope, admit))
+    let endpoints = Arc::new(router.endpoints().to_vec());
+    router.layer(middleware::from_fn_with_state((envelope, endpoints), admit))
 }
 fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
         Some(Error::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
-        Some(Error::Unauthorized | Error::Forbidden) => Some(ResponseFailure::Denied),
+        Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
+        Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
         Some(Error::Unavailable(Failure::RequestDeadline)) => Some(ResponseFailure::Deadline),
         Some(Error::Unavailable(Failure::AuditIntegrity)) => Some(ResponseFailure::AuditIntegrity),
         Some(Error::Unavailable(
@@ -45,7 +47,11 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         _ => None,
     }
 }
-pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next: Next) -> Response {
+pub async fn admit(
+    State((envelope, endpoints)): State<(Envelope, Arc<Vec<rss_mdm_http_contract::Endpoint>>)>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let started = envelope.clock.now();
     let route = request
         .extensions()
@@ -57,7 +63,14 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     } else {
         8192
     };
-    let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route));
+    let intent = endpoints
+        .iter()
+        .find(|endpoint| endpoint.path == route && endpoint.method == request.method().as_str())
+        .map_or(
+            rss_mdm_audit_integration::AuditIntent::Routine,
+            request_intent,
+        );
+    let audit = RequestAudit::new(envelope.tenant.clone(), route_action(route), intent);
     let id = audit.request_id();
     let _permit = match envelope.admission.clone().try_acquire_owned() {
         Ok(p) => p,
@@ -121,7 +134,11 @@ pub async fn authentication(
     next: Next,
 ) -> Response {
     let started = envelope.clock.now();
-    let audit = RequestAudit::new(envelope.tenant.clone(), "authentication");
+    let audit = RequestAudit::new(
+        envelope.tenant.clone(),
+        "authentication",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let id = audit.request_id();
     request.extensions_mut().insert(audit.clone());
     request.extensions_mut().insert(envelope.clock.clone());
@@ -215,6 +232,38 @@ async fn body(request: Request, next: Next, requests: Arc<tokio::sync::Semaphore
 fn project(error: Error) -> Response {
     error.into_response()
 }
+// Bind known disclosures before authentication. Remaining choices consume the route owner's
+// semantic operation declaration, never a GET/POST or action-suffix heuristic.
+fn request_intent(
+    endpoint: &rss_mdm_http_contract::Endpoint,
+) -> rss_mdm_audit_integration::AuditIntent {
+    use rss_mdm_audit_integration::{AuditIntent as I, SensitiveAction as S};
+    use rss_mdm_http_contract::Operation as O;
+    match endpoint.path.as_str() {
+        "/api/v1/devices/{device}/recovery-credentials/{id}/versions/{version}/secret"
+        | "/api/v1/devices/{device}/device-access/materials/{id}/versions/{version}/secret" => {
+            I::Sensitive(S::CredentialReveal)
+        }
+        "/api/v1/certificate-archive/export" => I::Sensitive(S::CertificatePrivateExport),
+        "/api/v1/certificate-archive/vault/unlock"
+        | "/api/v1/api-keys/{id}/rotate"
+        | "/api/v1/software/content/cleanup"
+        | "/api/v1/pki/rotations"
+        | "/api/v1/pki/signing/recover"
+        | "/api/v1/pki/crls"
+        | "/api/v1/pki/{purpose}/rotations" => I::Management,
+        "/api/v1/audit-events" => I::Sensitive(S::AuditHistoryRead),
+        "/api/v1/resources/{id}/versions/{version}/script" => I::Sensitive(S::ScriptContentRead),
+        _ if endpoint
+            .operations
+            .iter()
+            .any(|op| matches!(op, O::Create | O::Update | O::Delete | O::Lifecycle)) =>
+        {
+            I::Management
+        }
+        _ => I::Routine,
+    }
+}
 fn route_action(route: &str) -> &'static str {
     match route {
         "/api/v1/agent-connections" | "/api/v1/agent-connections/configuration" => {
@@ -285,6 +334,20 @@ fn route_action(route: &str) -> &'static str {
 mod tests {
     use super::*;
     #[test]
+    fn pki_mutations_are_management_but_trust_queries_are_routine() {
+        use rss_mdm_audit_integration::AuditIntent;
+        let routes = crate::pki::routes();
+        for mut endpoint in routes.endpoints().iter().cloned() {
+            endpoint.path = format!("/api/v1{}", endpoint.path);
+            let expected = match endpoint.method {
+                "POST" => AuditIntent::Management,
+                "GET" => AuditIntent::Routine,
+                method => panic!("unexpected PKI method: {method}"),
+            };
+            assert_eq!(request_intent(&endpoint), expected, "{}", endpoint.path);
+        }
+    }
+    #[test]
     fn route_templates_select_audit_actions() {
         assert_eq!(
             route_action("/api/v1/devices/{device}/registrations"),
@@ -315,7 +378,7 @@ mod tests {
                 R::Forbidden,
                 403,
                 "permission_denied",
-                Some(ResponseFailure::Denied),
+                Some(ResponseFailure::Forbidden),
             ),
             (
                 R::CommitUnknown,
@@ -381,6 +444,7 @@ mod tests {
             let audit = RequestAudit::new(
                 "11111111-1111-4111-8111-111111111111".into(),
                 "protected_request",
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
             let id = audit.request_id();
             let response = secure(response, id);

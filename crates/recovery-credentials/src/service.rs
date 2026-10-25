@@ -76,9 +76,17 @@ impl Credentials {
         replay: bool,
         audit: &RequestAudit,
     ) -> Result<Disclosure, Error> {
+        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+            rss_mdm_audit_integration::SensitiveAction::CredentialReveal,
+        ));
         principal.credentials(device)?;
         principal.bind_audit(audit)?;
-        audit.set_action("recovery_credential_read");
+        audit.set_action(
+            "recovery_credential_read",
+            rss_mdm_audit_integration::AuditIntent::Sensitive(
+                rss_mdm_audit_integration::SensitiveAction::CredentialReveal,
+            ),
+        );
         audit.target_device(device);
         let identity = serde_json::to_vec(&(id, version)).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
@@ -194,7 +202,10 @@ impl Credentials {
         audit: &RequestAudit,
     ) -> Result<Material, Error> {
         principal.bind_audit(audit)?;
-        audit.set_action("recovery_credential_revoke");
+        audit.set_action(
+            "recovery_credential_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device);
         let identity = serde_json::to_vec(&(id, version)).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
@@ -412,8 +423,17 @@ impl Credentials {
         input: &DisclosureRequest,
         audit: &RequestAudit,
     ) -> Result<Disclosure, Error> {
+        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+            rss_mdm_audit_integration::SensitiveAction::CredentialReveal,
+        ));
         input.context(p, device, id, version)?;
-        audit.operation(input.operation_id, "device_access_material_read");
+        audit.operation(
+            input.operation_id,
+            "device_access_material_read",
+            rss_mdm_audit_integration::AuditIntent::Sensitive(
+                rss_mdm_audit_integration::SensitiveAction::CredentialReveal,
+            ),
+        );
         let replay = self
             .disclosure_committed(p, device, id, version, input.operation_id)
             .await?;

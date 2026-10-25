@@ -151,7 +151,7 @@ pub async fn checkin(
                         store.append(tx, fact, false).await.map_err(Error::from)?;
                     }
                     if let Some(result) = request_result {
-                        inputs.audit.require_request_settlement();
+                        inputs.audit.require_final_request();
                         if result == "replay" {
                             inputs.audit.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,

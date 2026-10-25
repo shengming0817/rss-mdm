@@ -206,7 +206,11 @@ pub(super) async fn finish(
     headers.insert("x-identity-request", HeaderValue::from_static("1"));
     let proof = authenticate(&app, &headers, true).await?;
     proof.bind_audit(&audit)?;
-    audit.operation(id, "apple_account_authorize");
+    audit.operation(
+        id,
+        "apple_account_authorize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let tenant = proof.tenant_id().to_owned();
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));

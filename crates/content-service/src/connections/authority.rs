@@ -113,8 +113,12 @@ impl Authority {
         p.require(Permission::StorageConfigurationWrite, None)?;
         p.session()?;
         p.bind_audit(audit)?;
-        audit.operation(operation, "storage_provision");
-        audit.require_request_settlement();
+        audit.operation(
+            operation,
+            "storage_provision",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.require_final_request();
         let budget = AuditBudget::new(Duration::from_secs(6));
         let result=self.audit.write(self.tenant,&budget.source_control(),(self,p,audit,operation,input),|(service,p,audit,operation,input),tx|Box::pin(async move {
             let mut context=(*service,*p,*operation,*input);

@@ -6,6 +6,7 @@ pub enum ResponseFailure {
     RollbackFailed,
     Deadline,
     Denied,
+    Forbidden,
     AuditIntegrity,
     AuditContract,
     AuditBackpressure,
@@ -49,10 +50,7 @@ pub async fn complete(
         Some(ResponseFailure::AuditUnavailable) => Some(FailureReason::Transaction),
         _ => None,
     };
-    if snapshot.settle_request
-        || snapshot.write_outcome != WriteOutcome::Committed
-        || matches!(snapshot.management_result, Some(ManagementResult::Replayed))
-    {
+    if requires_fact(&snapshot, status) {
         let unknown = replacement.is_some()
             || matches!(
                 failure,
@@ -70,8 +68,39 @@ pub async fn complete(
                 .or(Some(Replacement::Audit(error)));
         }
     }
+    if snapshot.intent == crate::AuditIntent::Routine && status >= 400 {
+        static DENIED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = DENIED
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
+        if count.is_power_of_two() {
+            eprintln!(
+                "{}",
+                serde_json::json!({"event":"ordinary_request_rejected","count":count})
+            );
+        }
+    }
     audit.finalize(reason);
     replacement
+}
+fn requires_fact(snapshot: &crate::Snapshot, status: u16) -> bool {
+    use crate::AuditIntent;
+    match snapshot.intent {
+        AuditIntent::Routine => false,
+        AuditIntent::Security => true,
+        AuditIntent::Sensitive(_) => {
+            snapshot.final_request
+                || status >= 400
+                || snapshot.write_outcome != WriteOutcome::Committed
+                || matches!(snapshot.management_result, Some(ManagementResult::Replayed))
+        }
+        AuditIntent::Management => {
+            snapshot.final_request
+                || status >= 400
+                || snapshot.write_outcome != WriteOutcome::Committed
+                || matches!(snapshot.management_result, Some(ManagementResult::Replayed))
+        }
+    }
 }
 fn request_result(
     status: u16,
@@ -81,7 +110,13 @@ fn request_result(
 ) -> &'static str {
     if unknown {
         "unknown"
-    } else if status == 401 || status == 403 || failure == Some(ResponseFailure::Denied) {
+    } else if status == 401
+        || status == 403
+        || matches!(
+            failure,
+            Some(ResponseFailure::Denied | ResponseFailure::Forbidden)
+        )
+    {
         "denied"
     } else if status >= 400 {
         "failed"
@@ -121,6 +156,41 @@ fn failure_reason(error: &Error) -> FailureReason {
 mod tests {
     use super::*;
     #[test]
+    fn ordinary_reads_never_depend_on_transaction_or_audit_state() {
+        let audit = RequestAudit::new("tenant".into(), "read", crate::AuditIntent::Routine);
+        for outcome in [
+            WriteOutcome::CommitNotStarted,
+            WriteOutcome::Committed,
+            WriteOutcome::Unknown,
+            WriteOutcome::RolledBack,
+            WriteOutcome::RollbackFailed,
+        ] {
+            let mut snapshot = audit.snapshot();
+            snapshot.write_outcome = outcome;
+            snapshot.final_request = true;
+            snapshot.management_result = Some(ManagementResult::Replayed);
+            for status in [200, 401, 403, 500] {
+                assert!(!requires_fact(&snapshot, status));
+            }
+        }
+        audit.finalize(None);
+    }
+    #[test]
+    fn sensitive_reads_cannot_be_downgraded_by_routine_helpers() {
+        use crate::{AuditIntent as I, SensitiveAction as S};
+        let audit = RequestAudit::new("tenant".into(), "secret", I::Sensitive(S::CredentialReveal));
+        audit.set_action("nested_read", I::Routine);
+        assert_eq!(audit.snapshot().intent, I::Sensitive(S::CredentialReveal));
+        assert!(requires_fact(&audit.snapshot(), 200));
+        audit.mark_commit_started();
+        audit.mark_committed();
+        assert!(!requires_fact(&audit.snapshot(), 200));
+        assert!(requires_fact(&audit.snapshot(), 403));
+        audit.require_final_request();
+        assert!(requires_fact(&audit.snapshot(), 200));
+        audit.finalize(None);
+    }
+    #[test]
     fn audit_settlement_preserves_original_commit_and_rollback_uncertainty() {
         for outcome in [
             WriteOutcome::CommitNotStarted,
@@ -158,8 +228,13 @@ mod tests {
         let audit = RequestAudit::new(
             "11111111-1111-4111-8111-111111111111".into(),
             "command_read",
+            crate::AuditIntent::Routine,
         );
-        audit.operation(uuid::Uuid::new_v4(), "command_read");
+        audit.operation(
+            uuid::Uuid::new_v4(),
+            "command_read",
+            crate::AuditIntent::Routine,
+        );
         assert_eq!(
             request_result(200, None, &audit.snapshot(), false),
             "success"

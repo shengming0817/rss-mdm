@@ -237,8 +237,8 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                         == "smtp"
                         && !s["evidence"].as_array().unwrap().is_empty()));
                 ensure!(
-                    audit_count(|r| r.action() == "first_use_read").await? == before + 1,
-                    "owner observations changed the enclosing Audit action"
+                    audit_count(|r| r.action() == "first_use_read").await? == before,
+                    "ordinary progress observations must not enqueue audit"
                 );
                 // A valid peer-tenant credential cannot be used against this host.
                 let peer = identity::credential_for(case::peer(), "admin")?;
@@ -280,9 +280,9 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
                 .load_authorization(&fixture.authorization.clone())
                 .await?;
             let id = Uuid::new_v4();
-            let audit = RequestAudit::new(case_tenant().into(), "first_use_update");
+            let audit = RequestAudit::new(case_tenant().into(), "first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
             proof.bind_audit(&audit)?;
-            audit.operation(id, "first_use_update");
+            audit.operation(id, "first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
             let update: Update = serde_json::from_value(input(0, false))?;
             let digest = store::fingerprint(&proof, &update)?;
             fixture
@@ -312,8 +312,8 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
             let peer_secret=identity::credential_for(case::peer(),"admin")?;
             let peer_session=peer_identity.authority.inspect_session(peer_identity.tenant,peer_secret,crate::identity::deadline()).await?;
             let peer_proof=AuthorizedPrincipal::new(peer_session)?.load_authorization(&fixture.authorization.clone()).await?;
-            let peer_audit=RequestAudit::new(case::peer().into(),"first_use_update");
-            peer_proof.bind_audit(&peer_audit)?;peer_audit.operation(id,"first_use_update");
+            let peer_audit=RequestAudit::new(case::peer().into(),"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
+            peer_proof.bind_audit(&peer_audit)?;peer_audit.operation(id,"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
             ensure!(store::read(&fixture.audit,&peer_proof,&peer_audit).await?.revision==0);
             let peer_digest=store::fingerprint(&peer_proof,&update)?;
             ensure!(store::update(&fixture.audit,&peer_proof,&peer_audit,id,&update,&peer_digest,None).await?.saved.revision==1);
@@ -334,8 +334,8 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
         tx.rollback().await?;connection.close().await?;
         // An Audit identity collision must roll back both intent and operation receipt.
         let conflict_id=Uuid::new_v4();
-        let conflict_audit=RequestAudit::new(case_tenant().into(),"first_use_update");
-        proof.bind_audit(&conflict_audit)?;conflict_audit.operation(conflict_id,"first_use_update");
+        let conflict_audit=RequestAudit::new(case_tenant().into(),"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
+        proof.bind_audit(&conflict_audit)?;conflict_audit.operation(conflict_id,"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
         let fact=rss_mdm_audit_integration::Fact::business(&conflict_audit,&format!("first-use:{}:{}:{conflict_id}",proof.instance_id(),proof.principal_id()),b"different-request",200,"success",None)?;
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
         let staged=fixture.audit.write(fixture.identity.tenant,&budget.source_control(),(&fixture.audit,&fact),|(store,fact),tx|Box::pin(async move {store.append(tx,fact,false).await})).await;

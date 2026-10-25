@@ -126,7 +126,7 @@ pub(crate) async fn requested(
             facts.push(fact);
             } else { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             for fact in facts.iter() { app.audit_store.append(tx,fact,false).await.map_err(Error::from)?; }
-            if replay.is_none() { audit.require_request_settlement(); }
+            if replay.is_none() { audit.require_final_request(); }
             audit.mark_commit_started();
             Ok(replay)
         })).await;

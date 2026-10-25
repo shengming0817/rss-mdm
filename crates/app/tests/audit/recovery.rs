@@ -9,7 +9,11 @@ async fn settlement_recovery(pool: &PgPool) -> Result<()> {
     };
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
     let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
-    let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "audit_recovery_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
     store.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
@@ -104,7 +108,11 @@ async fn process_interruption(pool: &PgPool) -> Result<()> {
         let cutoff = Deadline::from_timeout(&timer, Duration::from_millis(50))?;
         SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
-    let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "audit_recovery_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(
         &request,
         "process-interruption",

@@ -62,7 +62,10 @@ pub async fn read(
     audit: &RequestAudit,
     id: Uuid,
 ) -> std::result::Result<Value, Error> {
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.resource_target(
         rss_mdm_audit_integration::TargetKind::Policy,
         &id.to_string(),
@@ -74,7 +77,7 @@ pub async fn read(
         (&service, &auth, &audit),
         |ctx, tx| {
             Box::pin(async move {
-                let (s, a, audit) = *ctx;
+                let (s, a, _audit) = *ctx;
                 crate::action_admission::current(tx, a).await?.require(
                     a,
                     Permission::PolicyRead,
@@ -88,7 +91,7 @@ pub async fn read(
                         ),
                     ))?;
                 let value = storage::view(&policy)?;
-                audit.require_request_settlement();
+
                 Ok(value)
             })
         },
@@ -105,9 +108,12 @@ pub async fn list(
 ) -> std::result::Result<Value, Error> {
     query.require_schema(&SCHEMA).map_err(crate::query_error)?;
     auth.manage(Permission::PolicyRead)?;
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     crate::transaction::inspect(&service.runtime,service.tenant,(service,auth,audit,query),|ctx,tx|Box::pin(async move{
-  let(s,a,audit,q)=*ctx;let snapshot=crate::action_admission::current(tx,a).await?;
+  let(s,a,_audit,q)=*ctx;let snapshot=crate::action_admission::current(tx,a).await?;
   snapshot.require(a,Permission::PolicyRead,None)?;
   let binding=q.binding(&(a.tenant_id(),a.instance_id(),snapshot.query_binding(a)?)).map_err(crate::query_error)?;
   let codec=CursorCodec::from_key(s.cursor_key.clone());let after=q.after(&codec,&binding).map_err(crate::query_error)?;
@@ -117,7 +123,7 @@ pub async fn list(
   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
   let items:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
   for item in &items {let view:rss_mdm_policy::View=stored(serde_json::from_value(json!({"id":item["id"],"revision":item["revision"],"version":item["version"],"versionId":item["versionId"],"state":item["state"],"definition":item["definition"]})))?;view.definition.validate()?;}
-  a.check_live()?;audit.require_request_settlement();Ok(json!(q.page(items,&codec,&binding).map_err(crate::query_error)?))
+  a.check_live()?;Ok(json!(q.page(items,&codec,&binding).map_err(crate::query_error)?))
  }),TransactionOwner::Planning).await
 }
 
@@ -129,7 +135,10 @@ pub async fn resolve(
     selector: &rss_mdm_agent_wire::runtime::CapabilitySelector,
 ) -> std::result::Result<Value, Error> {
     auth.manage(Permission::PolicyRead)?;
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     crate::transaction::inspect(&service.runtime, service.tenant, (service,auth,audit,selector), |ctx,tx| Box::pin(async move {
         let (s,a,audit,selector) = *ctx;
         crate::action_admission::current(tx,a).await?.require(a,Permission::PolicyRead,None)?;
@@ -147,7 +156,7 @@ pub async fn resolve(
             input_schema:json!({"type":"object","properties":{},"additionalProperties":false}),
             output_schema:checked_input(serde_json::to_value(schemars::schema_for!(rss_mdm_policy::View)))?,
         };
-        a.check_live()?;audit.require_request_settlement();
+        a.check_live()?;
         Ok(json!({"capability":descriptor,"policy":storage::view(&policy)?}))
     }),TransactionOwner::Planning).await
 }

@@ -136,7 +136,11 @@ pub async fn finish_job_in(
         }
     }
     if let Some((target, kind)) = target {
-        let audit = RequestAudit::new(tx.tenant_id().to_string(), action);
+        let audit = RequestAudit::new(
+            tx.tenant_id().to_string(),
+            action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
             "group" | "group_preview" => {
@@ -148,7 +152,11 @@ pub async fn finish_job_in(
             }
             _ => audit.target(&target),
         }
-        audit.operation(id, action);
+        audit.operation(
+            id,
+            action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let fingerprint =
             serde_json::to_vec(&(id, &target, failure)).expect("closed automation result");
         let fact = rss_mdm_audit_integration::Fact::business(

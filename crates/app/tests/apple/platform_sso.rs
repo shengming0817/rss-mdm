@@ -245,6 +245,7 @@ async fn pair(
             &rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
                 "device_association_confirm",
+                rss_mdm_audit_integration::AuditIntent::Management,
             ),
         )
         .await?;

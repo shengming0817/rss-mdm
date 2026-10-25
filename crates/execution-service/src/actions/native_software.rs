@@ -299,10 +299,17 @@ pub async fn advance_run(
         operation: run.id,
         required: vec![crate::authorization::Permission::SoftwareDeploy],
     };
-    let audit =
-        rss_mdm_audit_integration::RequestAudit::new(tx.tenant_id().to_string(), "command_accept");
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        tx.tenant_id().to_string(),
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("native-software");
-    audit.operation(run.id, "command_accept");
+    audit.operation(
+        run.id,
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.plan(policy.id);
     audit.target_device(&run.target.device);
     let fingerprint = crate::protection::fingerprint(

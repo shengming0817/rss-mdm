@@ -34,7 +34,8 @@ pub struct Snapshot {
     pub operation_id: Option<Uuid>,
     pub registration_id: Option<Uuid>,
     pub write_outcome: WriteOutcome,
-    pub settle_request: bool,
+    pub final_request: bool,
+    pub intent: crate::AuditIntent,
     pub software: Option<SoftwareFact>,
     pub management_result: Option<ManagementResult>,
     pub plan: Option<Uuid>,
@@ -90,7 +91,7 @@ pub enum FailureReason {
 }
 impl RequestAudit {
     /// Create a request identity for one tenant; persisted facts validate its canonical tenant ID.
-    pub fn new(tenant: String, action: &'static str) -> Self {
+    pub fn new(tenant: String, action: &'static str, intent: crate::AuditIntent) -> Self {
         Self(Arc::new(Context {
             request_id: Uuid::new_v4(),
             tenant,
@@ -106,7 +107,8 @@ impl RequestAudit {
                     operation_id: None,
                     registration_id: None,
                     write_outcome: WriteOutcome::CommitNotStarted,
-                    settle_request: false,
+                    final_request: false,
+                    intent,
                     software: None,
                     management_result: None,
                     plan: None,
@@ -114,6 +116,17 @@ impl RequestAudit {
                 finalized: false,
             }),
         }))
+    }
+    /// Select necessity at the business boundary before authorization or disclosure.
+    pub fn intent(&self, intent: crate::AuditIntent) {
+        let mut state = self.0.state.lock().expect("audit lock");
+        // A routine helper cannot erase an explicit disclosure or security requirement.
+        if !matches!(
+            state.snapshot.intent,
+            crate::AuditIntent::Sensitive(_) | crate::AuditIntent::Security
+        ) {
+            state.snapshot.intent = intent;
+        }
     }
     /// Copy coordinates/facts for an independently owned transaction without sharing its diagnostic finalization.
     pub fn transaction_copy(&self) -> Self {
@@ -183,7 +196,8 @@ impl RequestAudit {
         self.0.state.lock().expect("audit lock").snapshot.software = Some(fact);
     }
     /// Select the business producer-owned action label.
-    pub fn set_action(&self, action: &'static str) {
+    pub fn set_action(&self, action: &'static str, intent: crate::AuditIntent) {
+        self.intent(intent);
         self.0.state.lock().expect("audit lock").snapshot.action = action;
     }
     /// Set a bounded, non-control-character target; invalid optional targets are omitted.
@@ -223,7 +237,8 @@ impl RequestAudit {
         state.snapshot.device_target = value;
     }
     /// Attach an operation coordinate; its presence does not imply successful execution or replay.
-    pub fn operation(&self, id: Uuid, action: &'static str) {
+    pub fn operation(&self, id: Uuid, action: &'static str, intent: crate::AuditIntent) {
+        self.intent(intent);
         let mut state = self.0.state.lock().expect("audit lock");
         state.snapshot.operation_id = Some(id);
         state.snapshot.action = action;
@@ -259,13 +274,13 @@ impl RequestAudit {
     }
     /// A request spanning separately settled product operations needs its own final event,
     /// even when those operations committed successfully.
-    pub fn require_request_settlement(&self) {
+    pub fn require_final_request(&self) {
         self.0
             .state
             .lock()
             .expect("audit lock")
             .snapshot
-            .settle_request = true;
+            .final_request = true;
     }
     /// Project entry into owner settlement as unknown; never erase an already confirmed commit.
     pub fn mark_commit_started(&self) {
@@ -344,7 +359,11 @@ mod tests {
     use super::*;
     #[test]
     fn target_rejects_values_that_cannot_be_persisted() {
-        let audit = RequestAudit::new("tenant".into(), "collection_read");
+        let audit = RequestAudit::new(
+            "tenant".into(),
+            "collection_read",
+            crate::AuditIntent::Routine,
+        );
         for invalid in ["x".repeat(257), "bad\nvalue".into(), String::new()] {
             audit.target(&invalid);
             assert!(audit.snapshot().target.is_none());
@@ -355,10 +374,14 @@ mod tests {
     }
     #[test]
     fn cancellation_preserves_operation_and_distinguishes_commit_phase() {
-        let a = RequestAudit::new("tenant".into(), "enrollment_create");
+        let a = RequestAudit::new(
+            "tenant".into(),
+            "enrollment_create",
+            crate::AuditIntent::Management,
+        );
         let key = Uuid::new_v4();
         let registration = Uuid::new_v4();
-        a.operation(key, "enrollment_create");
+        a.operation(key, "enrollment_create", crate::AuditIntent::Management);
         a.registration(registration);
         a.target("sensitive-target-not-for-logs");
         a.set_principal("sensitive-actor", "sensitive-instance");

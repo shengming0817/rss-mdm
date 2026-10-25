@@ -398,8 +398,8 @@ async fn token_is_required_before_management() -> Result<()> {
                     .map(|id| format!("device:{id}"))
                     .as_deref())
         .await?
-            >= 1,
-        "successful management audit must identify the verified device registration"
+            == 0,
+        "ordinary idle polls must not enqueue management audit"
     );
     f.close().await
 }

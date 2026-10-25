@@ -234,9 +234,17 @@ impl Registry {
                 sha2::Sha256::digest(serde_json::to_vec(&next).map_err(|_| Error::Configuration)?)
                     .to_vec();
             let id = Uuid::from_bytes(hash[..16].try_into().map_err(|_| Error::Storage)?);
-            let a = RequestAudit::new(tenant.to_string(), "device_pki_admit");
+            let a = RequestAudit::new(
+                tenant.to_string(),
+                "device_pki_admit",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             a.identify_service("service:device-pki");
-            a.operation(id, "device_pki_admit");
+            a.operation(
+                id,
+                "device_pki_admit",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             let result=self.mutation(tenant,&a,(next.clone(),stored,hash,id),|ctx,c|Box::pin(async move {
                 let (next,observed,hash,id)=ctx;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(next.tenant.to_string()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
@@ -507,7 +515,11 @@ impl Registry {
         if !found {
             return Ok(None);
         }
-        a.operation(id, "device_pki_rotation");
+        a.operation(
+            id,
+            "device_pki_rotation",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.mutation(
             TenantId::parse(p.tenant_id()).map_err(|_| Error::Request)?,
             a,
@@ -551,7 +563,11 @@ impl Registry {
         let (id, expected) = request;
         let (trust, state, added) = change;
         p.bind_audit(a).map_err(|_| Error::Forbidden)?;
-        a.operation(id, "device_pki_rotation");
+        a.operation(
+            id,
+            "device_pki_rotation",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.mutation(TenantId::parse(p.tenant_id()).map_err(|_|Error::Request)?,a,
             (p,id,expected,trust,state,added,now,hash),|ctx,c|Box::pin(async move {
                 let (p,id,expected,trust,state,added,now,hash)=ctx;

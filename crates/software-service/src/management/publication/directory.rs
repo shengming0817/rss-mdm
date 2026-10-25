@@ -58,9 +58,12 @@ pub async fn list(
 ) -> Result<Value, Error> {
     q.require_schema(&PUBLICATIONS).map_err(query_error)?;
     p.manage(Permission::ReleaseRead)?;
-    audit.set_action("management_read");
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     transaction::inspect(&s.runtime,s.tenant,(s,p,audit,q),|ctx,tx|Box::pin(async move{
-  let(s,p,audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::ReleaseRead,None)?;
+  let(s,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::ReleaseRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(query_error)?;let after=q.after(&s.cursor,&binding).map_err(query_error)?;
   s.audit_store.bind_in(tx).await.map_err(Error::from)?;crate::catalog::storage::lock(tx).await.map_err(|_|Error::Conflict)?;
   let mut sql=sqlx::QueryBuilder::new("SELECT record,convert_from(document,'UTF8')::jsonb->>'target',resource,version FROM mdm_software_composition.subjects s WHERE tenant_id=");sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
@@ -72,7 +75,7 @@ pub async fn list(
    let(record,withdrawal)=service.record_status_in(tx,&key).await?.map_err(failure)?;
    items.push(serde_json::to_value(view(id,(target,resource,version),&record,withdrawal,None)?).map_err(|_|Error::Malformed)?);
   }
-  p.check_live()?;audit.require_request_settlement();Ok(json!(q.page(items,&s.cursor,&binding).map_err(query_error)?))
+  p.check_live()?;Ok(json!(q.page(items,&s.cursor,&binding).map_err(query_error)?))
  }),transaction::TransactionOwner::Publication).await
 }
 pub async fn targets(

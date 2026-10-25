@@ -157,7 +157,7 @@ impl Compliance {
             )?;
             self.audit_store.append_in(tx, &fact, replay).await?;
         } else {
-            audit.require_request_settlement();
+            audit.require_final_request();
         }
         Ok(())
     }

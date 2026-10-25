@@ -413,7 +413,11 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         "SELECT count(*) FROM mdm_commands.operations WHERE tenant_id='{}'",
         tenant()
     ));
-    let revoke_audit = RequestAudit::new(tenant().to_string(), "device_association_revoke");
+    let revoke_audit = RequestAudit::new(
+        tenant().to_string(),
+        "device_association_revoke",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     associations
         .revoke(
             &admin,

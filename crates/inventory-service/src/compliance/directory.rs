@@ -16,14 +16,17 @@ impl Compliance {
         q.require_schema(&pg::directory::SCHEMA)
             .map_err(crate::query_error)?;
         p.manage(Permission::ComplianceRuleRead)?;
-        audit.set_action("compliance_read");
+        audit.set_action(
+            "compliance_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
             (self, p, q, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, q, audit) = *ctx;
+                    let (s, p, q, _audit) = *ctx;
                     let current = query_authority(tx, p).await?;
                     current.require(p, Permission::ComplianceRuleRead, None)?;
                     let binding = q
@@ -46,7 +49,7 @@ impl Compliance {
                         stored(definition.validate())?;
                     }
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     json(&q.page(rows, &codec, &binding).map_err(crate::query_error)?)
                 })
             },

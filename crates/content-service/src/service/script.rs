@@ -61,10 +61,16 @@ pub async fn download(
     input: &ScriptSelection,
     secret: &rss_mdm_authorization_service::credential::RequestCredential,
 ) -> Result<crate::Verified, Error> {
+    audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+        rss_mdm_audit_integration::SensitiveAction::ScriptContentRead,
+    ));
     proof.require(Permission::ResourceRead, None)?;
     audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
-    audit.set_action("management_read");
-    audit.require_request_settlement();
+    audit.set_action(
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    audit.require_final_request();
     let (digest, artifact) = selected(app, proof, id, version, input).await?;
     let verified = store(app)?.verify(&artifact).await?;
     // The original browser session can be revoked while Content verifies the bytes.

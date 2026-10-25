@@ -96,7 +96,7 @@ impl ExecutionService {
                         a.snapshot().management_result,
                         Some(rss_mdm_audit_integration::ManagementResult::Replayed)
                     ) {
-                        a.require_request_settlement();
+                        a.require_final_request();
                     }
                     let super::channels::Reply { bytes, facts } = reply;
                     for fact in &facts {

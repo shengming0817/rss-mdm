@@ -113,7 +113,11 @@ impl Registry {
         {
             return Err(Error::Forbidden);
         }
-        a.operation(input.operation, "device_pki_crl_publish");
+        a.operation(
+            input.operation,
+            "device_pki_crl_publish",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.publish_set(
             &input.publications,
             input.purpose,
@@ -267,9 +271,17 @@ impl Registry {
                     .map_err(|_| Error::Storage)?,
             );
             let publication_now = clock()?;
-            let a = RequestAudit::new(trust.tenant.to_string(), "device_pki_crl_publish");
+            let a = RequestAudit::new(
+                trust.tenant.to_string(),
+                "device_pki_crl_publish",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             a.identify_service("service:device-pki");
-            a.operation(operation, "device_pki_crl_publish");
+            a.operation(
+                operation,
+                "device_pki_crl_publish",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             let result = self
                 .publish_set(&inputs, trust.purpose, operation, &a, None, publication_now)
                 .await;
@@ -309,7 +321,11 @@ impl Registry {
         provider: &crate::providers::Provider,
         now: i64,
     ) -> Result<Option<Job>, Error> {
-        let a = RequestAudit::new(trust.tenant.to_string(), "device_pki_revoke_dispatch");
+        let a = RequestAudit::new(
+            trust.tenant.to_string(),
+            "device_pki_revoke_dispatch",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         a.identify_service("service:device-pki");
         let result=self.mutation(TenantId::parse(&trust.tenant.to_string()).map_err(|_|Error::Request)?,&a,
             (trust,provider,now,&a),|ctx,c|Box::pin(async move {
@@ -318,7 +334,7 @@ impl Registry {
                     .bind(trust.tenant).bind(purpose(provider.purpose)).bind(&provider.issuer).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
                 let Some(row)=row else{return Ok(Change{value:None,replay:true,key:String::new(),fingerprint:vec![0]});};
                 let job=Job{attempt:row.try_get("attempt").map_err(|_|Error::Storage)?,serial:row.try_get("serial").map_err(|_|Error::Storage)?,failures:row.try_get("failures").map_err(|_|Error::Storage)?};
-                a.operation(job.attempt,"device_pki_revoke_dispatch");
+                a.operation(job.attempt,"device_pki_revoke_dispatch", rss_mdm_audit_integration::AuditIntent::Management);
                 let seconds=(60_i64.saturating_mul(1_i64<<job.failures.min(9))).min(21600);
                 sqlx::query("UPDATE mdm_pki.revocations SET failures=least(failures+1,32),next_attempt=clock_timestamp()+make_interval(secs=>$4) WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3")
                     .bind(trust.tenant).bind(purpose(provider.purpose)).bind(job.attempt).bind(seconds as f64).execute(c).await.map_err(|_|Error::Storage)?;
@@ -339,9 +355,17 @@ impl Registry {
         provider: &crate::providers::Provider,
         job: &Job,
     ) -> Result<(), Error> {
-        let a = RequestAudit::new(trust.tenant.to_string(), "device_pki_revoke_submit");
+        let a = RequestAudit::new(
+            trust.tenant.to_string(),
+            "device_pki_revoke_submit",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         a.identify_service("service:device-pki");
-        a.operation(job.attempt, "device_pki_revoke_submit");
+        a.operation(
+            job.attempt,
+            "device_pki_revoke_submit",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let result=self.mutation(TenantId::parse(&trust.tenant.to_string()).map_err(|_|Error::Request)?,&a,(trust,provider,job),|ctx,c|Box::pin(async move {
             let (trust,provider,job)=ctx;
             let changed=sqlx::query("UPDATE mdm_pki.revocations SET state='submitted' WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3 AND state='pending'")

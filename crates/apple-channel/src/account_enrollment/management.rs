@@ -208,7 +208,11 @@ async fn change(
     proof.manage(Permission::RegistrationConfigurationWrite)?;
     proof.bind_audit(audit)?;
     let operation = operation(headers)?;
-    audit.operation(operation, "apple_account_configuration");
+    audit.operation(
+        operation,
+        "apple_account_configuration",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fingerprint = rss_mdm_registration_service::enrollment::digest(&(id, &input));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));

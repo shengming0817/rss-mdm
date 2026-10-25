@@ -96,7 +96,11 @@ async fn change_authorization<T: serde::Serialize + Sync>(
         key: change.operation_id,
         digest: &digest,
     };
-    audit.operation(change.operation_id, "authorization_write");
+    audit.operation(
+        change.operation_id,
+        "authorization_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&id.to_string());
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
@@ -433,7 +437,11 @@ pub async fn initialize_authorization(
     user: User,
     key: Uuid,
 ) -> Result<Receipt, Error> {
-    let audit = RequestAudit::new(user.tenant_id.clone(), "authorization_initialize");
+    let audit = RequestAudit::new(
+        user.tenant_id.clone(),
+        "authorization_initialize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let result = crate::store::initialize_verified_user(store, user, key, &audit).await;
     audit.finalize(
         result
@@ -456,7 +464,11 @@ pub(crate) async fn initialize_verified_user(
         return Err(Error::Malformed);
     }
     audit.set_principal(&user.principal_id, &user.instance_id);
-    audit.operation(key, "authorization_initialize");
+    audit.operation(
+        key,
+        "authorization_initialize",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let digest = format!(
         "{:x}",
         Sha256::digest(

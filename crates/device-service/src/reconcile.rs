@@ -25,7 +25,11 @@ impl Associations {
     /// A committed checkpoint covers registration/source/credential and raw inventory changes.
     pub async fn reconcile(&self) -> Result<usize> {
         let budget = AuditBudget::new(Duration::from_secs(15));
-        let audit = RequestAudit::new(self.tenant.to_string(), "device_association_automatic");
+        let audit = RequestAudit::new(
+            self.tenant.to_string(),
+            "device_association_automatic",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("device-associations");
         let attempt = self.audit.write(self.tenant,&budget.source_control(),(self,&audit),|(service,audit),tx|Box::pin(async move {
             let results=tx.with_connection_context(service,|service,c|Box::pin(async move {
@@ -73,7 +77,7 @@ impl Associations {
             })).await?;
             for (operation,result) in &results {
                 let fact_audit=audit.fact_copy("device_association_automatic");
-                fact_audit.operation(*operation,"device_association_automatic");fact_audit.target(&result.id.to_string());
+                fact_audit.operation(*operation,"device_association_automatic", rss_mdm_audit_integration::AuditIntent::Management);fact_audit.target(&result.id.to_string());
                 let digest=Sha256::digest(serde_json::to_vec(result).map_err(|_|Error::Storage)?);
                 let fact=Fact::business(&fact_audit,&format!("device_association:{operation}"),&digest,200,"success",None)?.with_details(serde_json::json!({"association":result}))?;
                 service.audit.append(tx,&fact,false).await?;

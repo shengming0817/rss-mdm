@@ -589,6 +589,9 @@ impl Archive {
         id: VersionRef,
         audit: &RequestAudit,
     ) -> Result<Export, Error> {
+        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+            rss_mdm_audit_integration::SensitiveAction::CertificatePrivateExport,
+        ));
         p.manage(P::CertificateArchiveExport)?;
         let (key, generation) = self.key(p).await?;
         let (_, bundle) = self.read_material(p, id, &key).await?;

@@ -131,7 +131,11 @@ pub(super) fn fact(
     if actor.tenant() != tenant {
         return Err(fault());
     }
-    let audit = rss_mdm_audit_integration::RequestAudit::new(tenant.to_string(), action);
+    let audit = rss_mdm_audit_integration::RequestAudit::new(
+        tenant.to_string(),
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     if let Ok((instance, subject)) = serde_json::from_str::<(String, String)>(actor.value()) {
         if instance.len() > 255 || subject.len() > 255 {
             return Err(fault());

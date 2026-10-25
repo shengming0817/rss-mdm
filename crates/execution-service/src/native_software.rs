@@ -394,9 +394,12 @@ impl ExecutionService {
         token: &str,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
-        audit.require_request_settlement();
         audit.identify_service("native-package-download");
-        audit.operation(id, "software_content");
+        audit.operation(
+            id,
+            "software_content",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         crate::transaction::inspect(&self.runtime, self.tenant, (self, id, token), |ctx, tx| {
             Box::pin(async move {
                 let (s, id, token) = *ctx;

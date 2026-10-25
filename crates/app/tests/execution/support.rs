@@ -129,7 +129,11 @@ impl Client {
         for _ in 0..16 {
             self.execution.relay_once().await?;
         }
-        let audit = RequestAudit::new(case_tenant().into(), "management_read");
+        let audit = RequestAudit::new(
+            case_tenant().into(),
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         let service = self.execution.as_ref();
         let result = service.recover_operation(id, &audit).await;
         audit.finalize(None);

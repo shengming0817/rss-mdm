@@ -105,7 +105,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants)
             .await?;
         let audit =
-            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "management_read");
+            rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "management_read", rss_mdm_audit_integration::AuditIntent::Routine);
         stale.bind_audit(&audit)?;
         let result = rss_mdm_execution_service::queries::preview::preview(
             &fixture.queries,

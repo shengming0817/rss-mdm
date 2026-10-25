@@ -481,7 +481,11 @@ impl ExecutionService {
         {
             return Err(Error::Malformed);
         }
-        audit.operation(input.operation_id, "command_accept");
+        audit.operation(
+            input.operation_id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let id = Uuid::new_v4();
         let partition =
             rss_mdm_audit_integration::source_partition(self.tenant, "mdm", &id.to_string())
@@ -584,7 +588,7 @@ impl ExecutionService {
                 _ => None,
             };
             if let Some(proof) = proof { proof.check_live()?; }
-            audit.require_request_settlement();
+            audit.require_final_request();
             json(&wire::SelfServiceStatus { request_id: request, run_id: id, attempt_id: run.state.attempt(), state: public_state(&run.state), available_at: run.available_at, deadline: run.deadline, result })
         })).await
     }

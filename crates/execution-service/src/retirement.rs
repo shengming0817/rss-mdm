@@ -12,7 +12,11 @@ pub async fn retire_in(
     registration: Uuid,
 ) -> Result<(), Error> {
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let audit = RequestAudit::new(tenant.to_owned(), "credential_revoke");
+    let audit = RequestAudit::new(
+        tenant.to_owned(),
+        "credential_revoke",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("registration-retirement");
     audit.registration(registration);
     audit.target(&registration.to_string());

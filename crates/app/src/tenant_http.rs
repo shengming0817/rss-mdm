@@ -250,9 +250,13 @@ impl Service {
             Action::AdministratorCreate | Action::Provision => return Err(Error::Malformed),
         };
         proof.require(permission, None)?;
-        audit.operation(input.operation_id, "tenant_registry_write");
+        audit.operation(
+            input.operation_id,
+            "tenant_registry_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target(input.tenant_id);
-        audit.require_request_settlement();
+        audit.require_final_request();
         let fingerprint = serde_json::to_vec(&request(&input)).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
             audit,

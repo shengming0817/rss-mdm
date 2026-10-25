@@ -47,7 +47,7 @@ impl Planning {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         proof.manage(Permission::ScopeRead)?;
         crate::transaction::inspect(&self.runtime, self.tenant, (self, proof, q, audit), |ctx, tx| Box::pin(async move {
-            let (s,p,q,audit) = *ctx;
+            let (s,p,q,_audit) = *ctx;
             let current = crate::action_admission::current(tx,p).await?;
             current.require(p,Permission::ScopeRead,None)?;
             let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(crate::query_error)?;
@@ -57,7 +57,7 @@ impl Planning {
             sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
             rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(crate::query_error)?;
             let rows:Vec<Value>=tx.with_connection(move |c| Box::pin(async move {sql.build_query_scalar().fetch_all(c).await})).await?;
-            p.check_live()?;audit.require_request_settlement();
+            p.check_live()?;
             Ok(json!(q.page(rows,&codec,&binding).map_err(crate::query_error)?))
         }),crate::transaction::TransactionOwner::Planning).await
     }

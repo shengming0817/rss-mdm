@@ -70,7 +70,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
                 && r.target() == id.to_string()
                 && r.status() == status)
             .await?
-                > 0
+                == 0
         );
     }
     ensure!(

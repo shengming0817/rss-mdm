@@ -96,7 +96,11 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
             s.confirm(
                 &admin,
                 &confirm,
-                &RequestAudit::new(case_a().into(), "device_association_confirm"),
+                &RequestAudit::new(
+                    case_a().into(),
+                    "device_association_confirm",
+                    rss_mdm_audit_integration::AuditIntent::Management,
+                ),
             )
             .await?;
             assert!(matches!(
@@ -141,7 +145,11 @@ async fn permission_projection_deduplication_and_cursor_invalidation() -> anyhow
                 s.confirm(
                     &admin,
                     &confirm,
-                    &RequestAudit::new(case_a().into(), "device_association_confirm")
+                    &RequestAudit::new(
+                        case_a().into(),
+                        "device_association_confirm",
+                        rss_mdm_audit_integration::AuditIntent::Management
+                    )
                 )
                 .await,
                 Err(rss_mdm_device_service::Error::Forbidden)
@@ -435,7 +443,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let prefix=crate::test_support::case::name("aaa-directory-filler");
         sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) SELECT $1::uuid,$2||'-'||lpad(n::text,4,'0') FROM generate_series(1,255) n").bind(case_a()).bind(prefix).execute(&mut c).await?;
         let registration=DeviceService::new(authority.registration.clone(),case_a().into(),authority.audit.clone());
-        let owned=registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:0,user:Some(admin.user()?)},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await?;
+        let owned=registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:0,user:Some(admin.user()?)},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change", rss_mdm_audit_integration::AuditIntent::Management)).await?;
         let mut filter=parameters(1,Some("search=icontains=search-NEEDLE;platform==windows"),None);
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::layer::SubscriberExt;
@@ -487,7 +495,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let planning = crate::planning::test_support::planning(TenantId::parse(case_a())?).await;
         let assets = crate::planning::test_support::assets(&planning).await;
         async fn write(service: &assets::AssetService, principal: &AuthorizedPrincipal, command: &assets::Command) -> anyhow::Result<serde_json::Value> {
-            let audit = RequestAudit::new(case_a().into(), "management_write");
+            let audit = RequestAudit::new(case_a().into(), "management_write", rss_mdm_audit_integration::AuditIntent::Management);
             audit.set_principal(principal.principal_id(), crate::test_support::INSTANCE);
             let result = service.execute(command, &audit, &|| Ok(())).await;
             audit.finalize(None);
@@ -542,7 +550,7 @@ async fn directory_search_authorization_and_generation_invalidation() -> anyhow:
         let tail=s.views(&admin,&next,&people(&authority)?).await?;
         assert_eq!(tail["items"].as_array().unwrap().len(),1);assert!(tail["nextCursor"].is_null());
         // Even a real manual assignment is unobservable without its read permission.
-        registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change")).await.err().context("stale authority must not write after grant removal")?;
+        registration.assign_registration_user(&admin,needle,&rss_mdm_registration_service::device::registration_user::RegistrationUserChange{expected_revision:owned.revision,user:None},Uuid::new_v4(),&RequestAudit::new(case_a().into(),"registration_user_change", rss_mdm_audit_integration::AuditIntent::Management)).await.err().context("stale authority must not write after grant removal")?;
         sqlx::query("UPDATE mdm_access.registration_users SET revision=revision+1,instance=NULL,principal=NULL WHERE tenant_id=$1::uuid AND device=$2").bind(case_a()).bind(needle).execute(&mut c).await?;
         assert!(matches!(s.views(&admin,&next,&people(&authority)?).await,Err(rss_mdm_device_service::Error::CursorInvalidated)));
         let refreshed=s.views(&admin,&query(1),&people(&authority)?).await?;

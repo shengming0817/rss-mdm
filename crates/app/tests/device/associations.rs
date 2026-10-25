@@ -122,7 +122,11 @@ pub(super) async fn member(
         .context("primary")
 }
 fn audit(action: &'static str) -> RequestAudit {
-    RequestAudit::new(case_a().into(), action)
+    RequestAudit::new(
+        case_a().into(),
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    )
 }
 
 #[tokio::test]

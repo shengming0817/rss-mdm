@@ -658,8 +658,11 @@ async fn grant(
         if matches!(&rule.subject, Subject::User { user } if user.principal_id == subject)
             && !protected_management_rule(rule)
         {
-            let audit =
-                rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
+            let audit = rss_mdm_audit_integration::RequestAudit::new(
+                tenant.into(),
+                "authorization_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             principal.bind_audit(&audit)?;
             crate::authorization::store::change_rule(
                 audit_store,
@@ -677,8 +680,11 @@ async fn grant(
         }
     }
     if !grants.is_empty() {
-        let audit =
-            rss_mdm_audit_integration::RequestAudit::new(tenant.into(), "authorization_write");
+        let audit = rss_mdm_audit_integration::RequestAudit::new(
+            tenant.into(),
+            "authorization_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         principal.bind_audit(&audit)?;
         crate::authorization::store::change_rule(
             audit_store,

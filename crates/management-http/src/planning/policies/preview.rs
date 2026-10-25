@@ -17,7 +17,10 @@ pub async fn preview(
         input.definition.action,
         rss_mdm_policy::Action::TelemetryProfile { .. }
     ) {
-        audit.set_action("telemetry_profile_preview");
+        audit.set_action(
+            "telemetry_profile_preview",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         return s
             .telemetry
             .as_ref()

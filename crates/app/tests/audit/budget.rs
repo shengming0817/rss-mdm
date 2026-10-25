@@ -11,7 +11,11 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
         let total = SourceControl::new(&timer, total_cutoff, total_cutoff, &cancel);
         let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
         let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
-        let request = RequestAudit::new(tenant.to_string(), "bounded_retirement");
+        let request = RequestAudit::new(
+            tenant.to_string(),
+            "bounded_retirement",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         request.identify_service("service:collection-finalizer");
         let fact = Fact::business(
             &request,

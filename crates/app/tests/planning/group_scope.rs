@@ -143,7 +143,11 @@ async fn durable_asset_group_scope_pipeline() {
     .await
     .unwrap();
     assert_eq!(continuation["page"]["items"], serde_json::json!([]));
-    let denied_audit = RequestAudit::new(tenant().to_string(), "management_read");
+    let denied_audit = RequestAudit::new(
+        tenant().to_string(),
+        "management_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     assert!(matches!(
         groups(&service)
             .await
@@ -578,7 +582,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
                 "scope"=>execute(&second,&Command::Scope {id:scope_id,change:operation(0,ScopeChange::Put {definition:scope(group)})}).await,
                 "group"=>execute(&second,&GroupCommand::Group {sensitive:true,id:scope_id,change:Box::new(group_operation(0,GroupChange::Create {asset_context:rss_mdm_group_postgres::AssetContext::Endpoint,presentation:json!({"name":"nested-race","description":""}).as_object().unwrap().clone(),criteria:Some(assets::InventoryCondition {selector:assets::ScopeSelector::Device,quantifier:assets::ScopeQuantifier::One,criteria:rss_mdm_inventory_service::groups::criteria::Criteria::Group {group_id:group,op:rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf}})}))}).await,
                 _=>{
-                    let s=compliance(&second).await;let audit=RequestAudit::new(second.tenant.to_string(),"compliance_write");proof.bind_audit(&audit).unwrap();
+                    let s=compliance(&second).await;let audit=RequestAudit::new(second.tenant.to_string(),"compliance_write", rss_mdm_audit_integration::AuditIntent::Management);proof.bind_audit(&audit).unwrap();
                     let input=serde_json::from_value(json!({"presentation":{"name":"disabled-race"},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"any"}}}})).unwrap();
                     let command=rss_mdm_inventory_service::compliance::Command::Put {id:scope_id,request:Box::new(rss_mdm_inventory_service::operation::Operation {operation_id:Uuid::new_v4(),expected_revision:0,input})};
                     let result=s.execute(&command,&audit,&proof).await.map_err(Into::into);audit.finalize(None);result
@@ -1670,7 +1674,11 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         tx.commit().await.unwrap();
         drop(conn);
         let proof = capability.principal(&access).await.unwrap();
-        let audit = RequestAudit::new(t.to_string(), "baseline_initialize");
+        let audit = RequestAudit::new(
+            t.to_string(),
+            "baseline_initialize",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         proof.bind_audit(&audit).unwrap();
         let command = GroupCommand::Group {
             id: group,

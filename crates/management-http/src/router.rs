@@ -356,7 +356,10 @@ async fn action(
     if rss_observation::Id::new(&id).is_ok() {
         audit.target_device(&id);
     }
-    audit.set_action("device_action");
+    audit.set_action(
+        "device_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let _grant = auth.proof.dangerous(&id)?;
     if input.map_err(Error::from)?.0.action != "wipe" {
         return Err(Error::Malformed);

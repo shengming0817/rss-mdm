@@ -194,7 +194,11 @@ impl Service {
             return Err(Error::Forbidden);
         }
         let who = person(employee)?;
-        audit.operation(input.operation_id, "device_access_begin");
+        audit.operation(
+            input.operation_id,
+            "device_access_begin",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device.device());
         self.write_admitted(&self.access_audit, audit, (device, employee, input, admission, who),
             |ctx,c| Box::pin(async move { admit_session(c, ctx.1).await }), |ctx,c| Box::pin(async move {
@@ -246,7 +250,11 @@ impl Service {
             .validate()
             .map_err(|_| Error::Malformed)?;
         let who = person(employee)?;
-        audit.operation(input.operation_id, "device_access_confirm");
+        audit.operation(
+            input.operation_id,
+            "device_access_confirm",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device.device());
         self.write_admitted(&self.access_audit,audit,(device,employee,input,admission,who,audit),
             |ctx,c| Box::pin(async move { admit_session(c, ctx.1).await }),|ctx,c|Box::pin(async move {
@@ -310,7 +318,11 @@ impl Service {
             return Err(Error::Malformed);
         }
         actor.require(Permission::AccountWrite, Some(device))?;
-        audit.operation(input.operation_id, "device_access_change");
+        audit.operation(
+            input.operation_id,
+            "device_access_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device);
         let context = input.step_up_context(actor, device, id, idp_fingerprints)?;
         let hash = digest(&("device_access_change", device, id, input, idp_fingerprints))?;

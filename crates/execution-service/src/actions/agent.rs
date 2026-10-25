@@ -153,7 +153,7 @@ impl ExecutionService {
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 db::receipt(tx,&actor,input.operation_id(),hash,&response,None).await?;
                 service.audit_store.append_in(tx,&fact,false).await?;
-            }else{audit.require_request_settlement();}
+            }
             Ok(response)
         })).await
     }
@@ -173,7 +173,9 @@ impl ExecutionService {
         ];
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit,&partitions),|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit,partitions)=*ctx;crate::transaction::lock_authority(service,tx).await?;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
-            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
+            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
+            if matches!(&plan, db::ScheduledPolicy::Script(_)) { audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(rss_mdm_audit_integration::SensitiveAction::ScriptContentRead)); }
+            let now=storage::now(tx).await?;
             let requires_start_authority = matches!(input.event(), wire::TaskEvent::Start | wire::TaskEvent::Received) || run.state.started_at.is_none();
             let allowed = if requires_start_authority { plan.authorized_run_in(service,tx,&run,now).await? } else { plan.completion_authorized_in(service,tx,&run.target,now).await? };
             let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
@@ -366,10 +368,11 @@ impl ExecutionService {
         key: Option<&str>,
         audit: &RequestAudit,
     ) -> std::result::Result<rss_mdm_resource::Artifact, Error> {
-        audit.require_request_settlement();
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,id,attempt,key,audit),|ctx,tx|Box::pin(async move{
             let (service,p,id,attempt,key,audit)=*ctx;crate::transaction::lock_authority(service,tx).await?;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;
-            let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
+            let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
+            if matches!(&plan, db::ScheduledPolicy::Script(_)) { audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(rss_mdm_audit_integration::SensitiveAction::ScriptContentRead)); }
+            let now=storage::now(tx).await?;
             let allowed=if run.state.started_at.is_some() {plan.completion_authorized_in(service,tx,&run.target,now).await?} else {plan.authorized_run_in(service,tx,&run,now).await?};
             if run.state.attempt()!=Some(attempt) || run.deadline<=now || run.state.cancellation!=Cancellation::None
                 || !matches!(run.state.execution, Execution::NotStarted | Execution::Running)

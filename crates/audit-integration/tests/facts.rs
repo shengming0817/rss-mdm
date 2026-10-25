@@ -4,8 +4,13 @@ fn business_retries_ignore_new_request_identity_but_detect_changed_facts() {
     let first = RequestAudit::new(
         "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
         "device_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let second = RequestAudit::new(first.tenant().into(), "device_action");
+    let second = RequestAudit::new(
+        first.tenant().into(),
+        "device_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let a = Fact::business(
         &first,
         "operation.phase",
@@ -67,6 +72,7 @@ fn detail_replacement_depends_only_on_final_facts() {
     let audit = RequestAudit::new(
         "f47ac10b-58cc-4372-a567-0e02b2c3d479".into(),
         "device_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
     let fact =
         || Fact::business(&audit, "operation.phase", b"request", 200, "success", None).unwrap();
@@ -99,7 +105,11 @@ fn detail_replacement_depends_only_on_final_facts() {
 #[test]
 fn invalid_facts_expose_closed_categories_without_input_values() {
     use rss_mdm_audit_integration::InvalidFact;
-    let context = RequestAudit::new("bad-secret-tenant".into(), "valid_action");
+    let context = RequestAudit::new(
+        "bad-secret-tenant".into(),
+        "valid_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     assert!(matches!(
         Fact::request(&context, 200, "success"),
         Err(InvalidFact::Tenant)
@@ -107,6 +117,7 @@ fn invalid_facts_expose_closed_categories_without_input_values() {
     let valid = RequestAudit::new(
         "11111111-1111-4111-8111-111111111111".into(),
         "valid_action",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
     assert!(matches!(
         Fact::request(&valid, 600, "success"),
@@ -133,6 +144,7 @@ fn device_request_coordinates_are_explicit_and_generic_targets_clear_them() {
     let audit = RequestAudit::new(
         "11111111-1111-4111-8111-111111111111".into(),
         "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target_device("device-a");
     let payload = |fact: Fact| {

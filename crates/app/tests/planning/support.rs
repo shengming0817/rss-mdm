@@ -144,7 +144,11 @@ pub(super) async fn execute(
     m: &Planning,
     c: &impl FixtureCommand,
 ) -> std::result::Result<Value, Error> {
-    let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
+    let audit = RequestAudit::new(
+        m.tenant.to_string(),
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.set_principal("operator", crate::test_support::INSTANCE);
     let result = c.run(m, &audit).await;
     audit.finalize(None);
@@ -207,7 +211,11 @@ pub(crate) async fn execute_asset_service(
     service: &assets::AssetService,
     c: &assets::Command,
 ) -> std::result::Result<Value, Error> {
-    let audit = RequestAudit::new(m.tenant.to_string(), "management_write");
+    let audit = RequestAudit::new(
+        m.tenant.to_string(),
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.set_principal("operator", crate::test_support::INSTANCE);
     let result = service.execute(c, &audit, &|| Ok(())).await;
     audit.finalize(None);

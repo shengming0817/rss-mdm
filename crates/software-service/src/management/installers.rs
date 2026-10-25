@@ -130,8 +130,12 @@ pub async fn save<C: ManagementContentPort>(
     if input.operation_id.is_nil() || input.package_id.is_nil() {
         return Err(Error::Malformed);
     }
-    audit.operation(input.operation_id, "software_installer_save");
-    audit.require_request_settlement();
+    audit.operation(
+        input.operation_id,
+        "software_installer_save",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let hash = crate::catalog::fingerprint(&(
         "installer-save-v1",
         p.instance_id(),

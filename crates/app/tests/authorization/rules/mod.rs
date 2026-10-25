@@ -78,8 +78,8 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
             );
             let after = audit_count(|r| r.action() == action && r.status() == expected).await?;
             ensure!(
-                after == before + 1,
-                "authorization read audit action missing: {action}"
+                after == before,
+                "ordinary authorization reads must not enqueue audit: {action}"
             );
         }
     }
@@ -253,11 +253,10 @@ async fn rules_cas_replay_revocation_and_escalation() -> Result<()> {
         .0 == StatusCode::OK
     );
     let audit =
-        rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "authorization_write");
+        rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "authorization_write", rss_mdm_audit_integration::AuditIntent::Management);
     let foreign_audit = rss_mdm_audit_integration::RequestAudit::new(
         Uuid::new_v4().to_string(),
-        "authorization_write",
-    );
+        "authorization_write", rss_mdm_audit_integration::AuditIntent::Management);
     ensure!(matches!(
         stale.bind_audit(&foreign_audit),
         Err(rss_mdm_authorization_service::Error::Forbidden)

@@ -182,7 +182,7 @@ impl ExecutionService {
                             rss_mdm_content_service::StorageClass::NativeConfiguration,
                         )
                         .await?;
-                    audit.require_request_settlement();
+                    audit.require_final_request();
                     Ok((selected, verified))
                 })
             },

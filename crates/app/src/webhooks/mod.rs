@@ -157,9 +157,13 @@ impl Backend {
                 } else {
                     "webhook_write"
                 },
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
         } else {
-            audit.set_action("webhook_read");
+            audit.set_action(
+                "webhook_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            );
         }
         let failure = Mutex::new(None);
         let attempt = self
@@ -272,7 +276,7 @@ impl Backend {
                                 .await
                                 .map_err(preserve_audit_error)?;
                         } else {
-                            audit.require_request_settlement();
+                            audit.require_final_request();
                         }
                         audit.mark_commit_started();
                         Ok(value)

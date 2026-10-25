@@ -915,6 +915,7 @@ async fn partial_initialization_content(
             let audit = rss_mdm_audit_integration::RequestAudit::new(
                 case_tenant().into(),
                 "baseline_initialize",
+                rss_mdm_audit_integration::AuditIntent::Management,
             );
             proof.bind_audit(&audit)?;
             let store = content.as_ref().unwrap();

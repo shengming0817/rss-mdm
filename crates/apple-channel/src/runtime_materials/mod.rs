@@ -366,8 +366,12 @@ async fn write(
         return Err(Error::Malformed);
     }
     p.bind_audit(audit)?;
-    audit.operation(id, "apple_runtime_material");
-    audit.require_request_settlement();
+    audit.operation(
+        id,
+        "apple_runtime_material",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let fingerprint = app
         .protection
         .mac(request, &request_aad(p.tenant_id(), id)?)

@@ -50,15 +50,18 @@ pub async fn list<C: ManagementContentPort>(
 ) -> Result<Value, Error> {
     q.require_schema(&SCHEMA).map_err(management::query_error)?;
     p.manage(Permission::AgentEnrollmentRead)?;
-    audit.set_action("agent_package_read");
+    audit.set_action(
+        "agent_package_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     transaction::inspect(&app.runtime,app.tenant,(app,p,audit,q),|ctx,tx|Box::pin(async move{
-  let(app,p,audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::AgentEnrollmentRead,None)?;
+  let(app,p,_audit,q)=ctx;let current=transaction::current(tx,p).await?;current.require(p,Permission::AgentEnrollmentRead,None)?;
   let binding=q.binding(&(p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(management::query_error)?;let after=q.after(&app.cursor,&binding).map_err(management::query_error)?;
   let mut sql=sqlx::QueryBuilder::new("SELECT document || jsonb_build_object('_package',document,'_id',id,'state',state,'platform',platform,'architecture',architecture) FROM mdm_agent_packages.releases WHERE tenant_id=");sql.push_bind(tx.tenant_id().to_string()).push("::uuid");
   rss_mdm_query_postgres::append(&mut sql,q,after.as_ref(),column).map_err(management::query_error)?;
   let rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
   for row in &rows{validate(row,app.tenant)?;}
-  p.check_live()?;audit.require_request_settlement();Ok(json!(q.page(rows,&app.cursor,&binding).map_err(management::query_error)?))
+  p.check_live()?;Ok(json!(q.page(rows,&app.cursor,&binding).map_err(management::query_error)?))
  }),TransactionOwner::SoftwareCatalog).await
 }
 pub async fn get<C: ManagementContentPort>(

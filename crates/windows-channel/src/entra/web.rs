@@ -331,7 +331,11 @@ async fn commit(
         "windows_entra_terms_start"
     };
     a.identify_service("service:windows-entra-terms");
-    a.operation(stored.id, action);
+    a.operation(
+        stored.id,
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
     let result = app
         .audit_store

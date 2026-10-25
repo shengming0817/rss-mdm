@@ -199,14 +199,17 @@ impl Authority {
                 crate::authorization::http::protect,
             ))
             .layer(middleware::from_fn_with_state(
-                rss_mdm_management_http::boundary::Envelope {
-                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                    host: "mdm.example.test".into(),
-                    clock: monotonic(),
-                    audit_store: self.audit.clone(),
-                    requests,
-                    tenant: self.identity.tenant.to_string(),
-                },
+                (
+                    rss_mdm_management_http::boundary::Envelope {
+                        admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                        host: "mdm.example.test".into(),
+                        clock: monotonic(),
+                        audit_store: self.audit.clone(),
+                        requests,
+                        tenant: self.identity.tenant.to_string(),
+                    },
+                    Arc::new(Vec::new()),
+                ),
                 rss_mdm_management_http::boundary::admit,
             ))
             .layer(axum::Extension(rss_identity_http_axum::ClientAddress(

@@ -20,7 +20,11 @@ impl Quotas {
             return Err(Error::Malformed);
         }
         p.bind_audit(audit)?;
-        audit.operation(key, "registration_quota_change");
+        audit.operation(
+            key,
+            "registration_quota_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let digest = crate::enrollment::digest(&(
             "registration_quota.v1",
             &subject,

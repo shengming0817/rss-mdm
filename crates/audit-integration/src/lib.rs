@@ -1,6 +1,9 @@
 //! MDM facts and request settlement over the public Audit component.
 #![forbid(unsafe_code)]
 
+mod intent;
+pub use intent::{AuditIntent, SensitiveAction};
+
 mod context;
 pub use context::{
     AuthenticationKind, FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact,
@@ -13,7 +16,9 @@ pub use fact::{Fact, InvalidFact};
 mod backlog;
 pub use backlog::BacklogSnapshot;
 mod projection;
-pub use projection::{AuditProjection, AuditProjectionError, AuditProjectionReport};
+pub use projection::{
+    AuditProjection, AuditProjectionError, AuditProjectionEvent, AuditProjectionReport,
+};
 mod queue;
 pub use queue::BacklogLimits;
 mod read_store;
@@ -53,4 +58,9 @@ pub fn source_partition(
 /// Decode an authored source fact without projecting it or inventing a sink timestamp.
 pub fn decode_source_event(bytes: &[u8]) -> Result<rss_audit_core::AuditEventV1, Error> {
     source::FrozenFact::decode(bytes)?.event()
+}
+
+/// A wake hint carries no tenant payload; durable claims remain authoritative.
+pub fn notification_channel(tenant: rss_request_context::TenantId) -> String {
+    format!("mdm_audit_{}", tenant.to_string().replace('-', ""))
 }

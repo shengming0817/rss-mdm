@@ -173,7 +173,11 @@ impl Service {
             })
             .transpose()?;
         let user = employee.map(|p| p.user()).transpose()?;
-        audit.operation(input.operation_id, "agent_current_user_change");
+        audit.operation(
+            input.operation_id,
+            "agent_current_user_change",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.target_device(device.device());
         let digest = crate::enrollment::digest(&(
             "agent-current-user.v1",

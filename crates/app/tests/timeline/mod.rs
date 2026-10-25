@@ -66,9 +66,17 @@ impl Fixture {
         observed: i64,
     ) -> Result<Vec<String>> {
         use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
-        let audit = RequestAudit::new(proof.tenant_id().into(), "command_reconcile");
+        let audit = RequestAudit::new(
+            proof.tenant_id().into(),
+            "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         proof.bind_audit(&audit)?;
-        audit.operation(operation, "command_reconcile");
+        audit.operation(
+            operation,
+            "command_reconcile",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let mut records = Vec::new();
         let mut ids = Vec::new();
         for index in indices {
@@ -292,13 +300,11 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
     let items = page["items"].as_array().unwrap();
     for action in [
         "enrollment_create",
-        "enrollment_read",
         "enrollment_resume",
         "enrollment_cancel",
         "registration_bind",
         "credential_revoke",
         "management_write",
-        "command_read",
     ] {
         ensure!(
             items.iter().any(|v| v["action"] == action),
@@ -312,6 +318,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
         && v["operationId"] == denied.to_string()
         && v["auditOutcome"] == "denied"
         && v["deviceId"] == device));
+    ensure!(items.iter().all(|v| v["action"] != "enrollment_read" && v["action"] != "command_read"), "ordinary reads leaked into management timeline");
     for item in items {
         ensure!(
             stored

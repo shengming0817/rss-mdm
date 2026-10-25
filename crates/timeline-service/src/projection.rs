@@ -7,11 +7,11 @@ use uuid::Uuid;
 pub fn project(event: &AuditEventV1) -> Result<FactView, Error> {
     let source = event.identity().source();
     let contract = source.contract();
-    let digest=format!("sha256:{:x}",Sha256::digest(b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details"));
+    let digest = rss_mdm_audit_integration::Fact::schema_digest().map_err(|_| Error::Integrity)?;
     let supported = matches!(source.source_id().as_str(), "mdm.business" | "mdm.request")
         && contract.id().as_str() == "mdm.audit.fact"
         && contract.version().major() == 1
-        && contract.schema_digest().as_str() == digest;
+        && contract.schema_digest().as_str() == digest.as_str();
     let payload: Value = if supported {
         serde_json::from_slice(event.context().payload().as_bytes())
             .map_err(|_| Error::Integrity)?
@@ -236,9 +236,17 @@ mod identity_tests {
     use rss_mdm_execution_service::timeline::Identity;
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
     fn resolve(action: &'static str, key: &str, id: Uuid, details: Value) -> Option<Identity> {
-        let audit = RequestAudit::new(TENANT.into(), action);
+        let audit = RequestAudit::new(
+            TENANT.into(),
+            action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.identify_service("fixture");
-        audit.operation(id, action);
+        audit.operation(
+            id,
+            action,
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let event = Fact::business(&audit, key, b"input", 200, "success", None)
             .unwrap()
             .with_details(details)
@@ -322,8 +330,16 @@ mod identity_tests {
             ),
             Some(Identity::ActionRun(id))
         );
-        let audit = RequestAudit::new(TENANT.into(), "command_accept");
-        audit.operation(id, "command_accept");
+        let audit = RequestAudit::new(
+            TENANT.into(),
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
+        audit.operation(
+            id,
+            "command_accept",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let event = Fact::request(&audit, 202, "success")
             .unwrap()
             .event(rss_contract::Timepoint::try_from(5i64).unwrap())

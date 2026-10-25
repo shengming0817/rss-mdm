@@ -25,7 +25,11 @@ impl Service {
         let p = self.authenticate(peer).await?;
         a.identify_device(p.registration());
         a.target(p.device());
-        a.operation(input.operation, "agent_trust_acknowledge");
+        a.operation(
+            input.operation,
+            "agent_trust_acknowledge",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let trust = self.trust().trust.public().map_err(|_| Error::Corrupt)?;
         let d = digest(&(p.registration(), input))?;
         self.write(a, (self, p, input, trust, d, a), |ctx, c| {
@@ -108,7 +112,11 @@ impl Service {
         }
         a.identify_device(p.registration());
         a.target(p.device());
-        a.operation(input.operation, "agent_trust_observe");
+        a.operation(
+            input.operation,
+            "agent_trust_observe",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         let d = digest(&(p.registration(), input))?;
         self.write(a, (self, p, input, d), |ctx, c| {
             Box::pin(async move {

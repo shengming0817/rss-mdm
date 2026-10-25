@@ -49,7 +49,7 @@ mod identity_read {
                 .0
                 == StatusCode::FORBIDDEN
         );
-        // RequestAudit is mandatory for both reads and denied requests; never disclose assets on failure.
+        // Ordinary reads and authentication denials remain independent of audit storage.
         pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
         let read = browser.call(&authorized, Method::GET, query, None).await?;
         let mut anonymous = Browser::default();
@@ -57,15 +57,8 @@ mod identity_read {
             .call(&authorized, Method::GET, query, None)
             .await?;
         pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
-        ensure!(
-            read.0 == StatusCode::SERVICE_UNAVAILABLE
-                && read.1["code"] == "operation_unknown"
-                && read.1.get("asset").is_none()
-        );
-        ensure!(
-            denied.0 == StatusCode::SERVICE_UNAVAILABLE
-                && denied.1["code"] == "service_unavailable"
-        );
+        ensure!(read.0 == StatusCode::OK && read.1["asset"] == assets["asset"]);
+        ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         browser.operation = None;
         let recovered = browser.call(&authorized, Method::GET, query, None).await?;
         ensure!(recovered.0 == StatusCode::OK && recovered.1["asset"]["device"]["fields"]["device.model"]["state"]["value"]["value"] == "Model-A");
@@ -112,7 +105,11 @@ mod storage {
         service: &assets::AssetService,
         command: &assets::Command,
     ) -> Result<Value, rss_mdm_inventory_service::Error> {
-        let audit = RequestAudit::new(tenant().to_string(), "management_write");
+        let audit = RequestAudit::new(
+            tenant().to_string(),
+            "management_write",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         audit.set_principal("operator", crate::test_support::INSTANCE);
         let result = service.execute(command, &audit, &|| Ok(())).await;
         audit.finalize(None);
@@ -245,7 +242,11 @@ mod storage {
             },
         };
         let audit = || {
-            let audit = RequestAudit::new(tenant.to_string(), "management_write");
+            let audit = RequestAudit::new(
+                tenant.to_string(),
+                "management_write",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             audit.set_principal("operator", crate::test_support::INSTANCE);
             audit
         };

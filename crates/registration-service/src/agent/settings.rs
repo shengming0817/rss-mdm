@@ -141,7 +141,11 @@ impl Service {
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(wire::API_VERSION, input.operation_id)?;
         input.values.validate()?;
-        a.operation(input.operation_id, "agent_settings_update");
+        a.operation(
+            input.operation_id,
+            "agent_settings_update",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(&(input.expected_revision, &input.values))?;
         self.write(a,(self,p,input,a,d),|ctx,c|Box::pin(async move {
             let (service,p,input,a,d)=ctx;

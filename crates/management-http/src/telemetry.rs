@@ -54,7 +54,10 @@ async fn configurations(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
 ) -> Result<Json<rss_mdm_telemetry_service::configurations::Configurations>, Error> {
-    audit.set_action("telemetry_configurations_read");
+    audit.set_action(
+        "telemetry_configurations_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&device);
     app.as_ref()
         .as_ref()
@@ -83,7 +86,10 @@ async fn history(
     input: Result<Json<HistoryRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_history_read");
+    audit.set_action(
+        "telemetry_history_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
@@ -100,7 +106,10 @@ async fn aggregate(
     input: Result<Json<AggregateRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_aggregate_read");
+    audit.set_action(
+        "telemetry_aggregate_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&input.query.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
@@ -120,7 +129,11 @@ async fn maintenance(
     >,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.operation(input.id, "telemetry_maintenance");
+    audit.operation(
+        input.id,
+        "telemetry_maintenance",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
@@ -137,7 +150,10 @@ async fn health(
     input: Result<Json<HealthRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_health_read");
+    audit.set_action(
+        "telemetry_health_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&input.device);
     let service = app.as_ref().as_ref().ok_or(Error::Unsupported)?;
     service
@@ -154,7 +170,10 @@ async fn resources(
     input: Result<Json<ResourceRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<serde_json::Value>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_resources_read");
+    audit.set_action(
+        "telemetry_resources_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&input.device);
     app.as_ref()
         .as_ref()
@@ -175,7 +194,10 @@ async fn gaps(
     >,
 ) -> Result<Json<rss_mdm_telemetry_service::gap_query::Page>, Error> {
     let input = input.map_err(Error::from)?.0;
-    audit.set_action("telemetry_gaps_read");
+    audit.set_action(
+        "telemetry_gaps_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&input.device);
     app.as_ref()
         .as_ref()

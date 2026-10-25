@@ -124,7 +124,7 @@ impl crate::queries::Queries {
             .authorization()?
             .devices_for(proof, Permission::OperationRead)?;
         crate::transaction::inspect(&self.runtime,self.tenant,(self,proof,q,codec,audit),|ctx,tx|Box::pin(async move{
-   let(s,p,q,codec,audit)=*ctx;
+   let(s,p,q,codec,_audit)=*ctx;
    let current=crate::action_admission::current(tx,p).await?;
    let grant=current.query_binding(p)?;
    let generation=crate::query_generation::read(tx).await?;
@@ -181,7 +181,7 @@ impl crate::queries::Queries {
     items.push(ExecutionSummary{metadata,evidence});
    }
    if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
-   p.check_live()?;audit.require_request_settlement();Ok(records::Page{items,next_cursor:page.next_cursor})
+   p.check_live()?;Ok(records::Page{items,next_cursor:page.next_cursor})
   })).await.map_err(Into::into)
     }
     pub async fn directory_statistics(
@@ -192,7 +192,7 @@ impl crate::queries::Queries {
     ) -> std::result::Result<Value, crate::queries::QueryError> {
         q.require_schema(&SCHEMA).map_err(query_error)?;
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,q,audit),|ctx,tx|Box::pin(async move{
-   let(_,p,q,audit)=*ctx;let current=crate::action_admission::current(tx,p).await?;
+   let(_,p,q,_audit)=*ctx;let current=crate::action_admission::current(tx,p).await?;
    let grant=current.query_binding(p)?;let generation=crate::query_generation::read(tx).await?;
    let allowed=current.devices_for(p,Permission::OperationRead)?.map(|v|v.into_iter().collect());
    let mut sql=relation(p.tenant_id().to_owned(),allowed,STATISTICS_SOURCES);
@@ -203,7 +203,7 @@ impl crate::queries::Queries {
    check_sources(source_rows,STATISTICS_SOURCES,"operations.statistics.sources")?;
    let value=value.ok_or(Error::Conflict)?;
    if generation!=crate::query_generation::read(tx).await?||grant!=crate::action_admission::current(tx,p).await?.query_binding(p)?{return Err(Error::Conflict.into());}
-   p.check_live()?;audit.require_request_settlement();Ok(value)
+   p.check_live()?;Ok(value)
   })).await.map_err(Into::into)
     }
     pub async fn directory_capabilities(

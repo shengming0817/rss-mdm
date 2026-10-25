@@ -80,7 +80,11 @@ async fn prepare(
     now: i64,
     candidate: Candidate,
 ) -> Result<(), Error> {
-    let audit = RequestAudit::new(tenant.into(), "apple_renewal");
+    let audit = RequestAudit::new(
+        tenant.into(),
+        "apple_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.identify_service("service:certificate-renewal");
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
@@ -487,7 +491,11 @@ pub async fn activate(
     leaf: &rss_mdm_device_trust::apple::CheckedLeaf,
     udid: &str,
 ) -> Result<(), Error> {
-    let audit = RequestAudit::new(app.identity.tenant().to_string(), "apple_renewal");
+    let audit = RequestAudit::new(
+        app.identity.tenant().to_string(),
+        "apple_renewal",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let outcome = app.audit_store.write(app.identity.tenant(),
@@ -594,7 +602,7 @@ pub async fn management(
     Ok::<_, Error>(result)
             })).await?;
             if result.is_some() {
-                audit.require_request_settlement();
+                audit.require_final_request();
                 audit.mark_commit_started();
             }
             Ok(result)

@@ -216,7 +216,7 @@ async fn registration_recovery_preserves_credential_rotation() -> Result<()> {
         issuance_id: serde_json::from_value(candidate.1["issuanceId"].clone())?,
         operation_id: Uuid::new_v4(),
     };
-    let a = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate");
+    let a = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate", rss_mdm_audit_integration::AuditIntent::Management);
     // Candidate was issued while management was live. An accepted exit blocks
     // activation while the predecessor registration and its credential stay valid.
     let exiting=Uuid::new_v4();
@@ -279,7 +279,7 @@ async fn browser_authorization_quota_expiry_and_restart_are_durable() -> Result<
     sqlx::query("INSERT INTO mdm_access.registration_quota_settings(tenant_id,subject,revision,agent) VALUES($1::uuid,$2,1,1)")
         .bind(case_tenant()).bind(format!("user:{}:{}",user.instance_id(),user.principal_id())).execute(&mut *quota_tx).await?;
     quota_tx.commit().await?;
-    let a = || RequestAudit::new(case_tenant().into(), "agent_authorization_request");
+    let a = || RequestAudit::new(case_tenant().into(), "agent_authorization_request", rss_mdm_audit_integration::AuditIntent::Management);
     let input: wire::GrantRequest = serde_json::from_value(
         json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":credential("pending"),"platform":"macos","csr":crate::test_support::agent::csr()?}),
     )?;
@@ -437,7 +437,7 @@ async fn admission_pause_preserves_candidate_and_existing_identity() -> Result<(
         issuance_id: serde_json::from_value(candidate["issuanceId"].clone())?,
         operation_id: Uuid::new_v4(),
     };
-    let audit = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate");
+    let audit = || RequestAudit::new(case_tenant().into(), "agent_certificate_activate", rss_mdm_audit_integration::AuditIntent::Management);
     ensure!(
         service
             .activate(&peer, &activation, &audit())

@@ -373,8 +373,12 @@ pub async fn publish<C: ManagementContentPort>(
     if p.tenant_id() != app.tenant.to_string() || i.operation_id.is_nil() || i.package_id.is_nil() {
         return Err(invalid());
     }
-    a.operation(i.operation_id, "agent_package_publish");
-    a.require_request_settlement();
+    a.operation(
+        i.operation_id,
+        "agent_package_publish",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    a.require_final_request();
     let hash = digest(&(p.principal_id(), p.instance_id(), i))?;
     let replay = transaction::inspect(
         &app.runtime,
@@ -646,7 +650,11 @@ pub async fn withdraw<C: ManagementContentPort>(
     if p.tenant_id() != app.tenant.to_string() || operation.is_nil() {
         return Err(invalid());
     }
-    a.operation(operation, "agent_package_withdraw");
+    a.operation(
+        operation,
+        "agent_package_withdraw",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let hash = digest(&(
         "agent_package_withdraw",
         p.principal_id(),

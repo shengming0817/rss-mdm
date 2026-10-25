@@ -80,7 +80,10 @@ impl Source for Directory {
                 return Err(Error::Forbidden);
             }
             proof.bind_audit(&audit)?;
-            audit.set_action("settings_catalog_read");
+            audit.set_action(
+                "settings_catalog_read",
+                rss_mdm_audit_integration::AuditIntent::Routine,
+            );
             let mut cache = BTreeMap::<&str, Projection>::new();
             let mut result = Vec::new();
             let mut organizations: Option<serde_json::Value> = None;

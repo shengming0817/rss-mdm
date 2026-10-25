@@ -7,7 +7,7 @@ use crate::{
 };
 use rss_audit_postgres::PgAudit;
 use rss_data_protection::Aead;
-use rss_request_context::{Clock, Deadline, TenantId};
+use rss_request_context::{Deadline, TenantId};
 use rss_transactional_messaging::{
     inbox::ConsumerGroup,
     message::{MessageEnvelope, MessagingDomain},
@@ -23,7 +23,6 @@ use rss_transactional_messaging_postgres::{
     PgTransaction,
 };
 use std::{
-    collections::VecDeque,
     num::NonZeroUsize,
     sync::{Arc, OnceLock},
 };
@@ -34,6 +33,8 @@ pub enum AuditProjectionError {
     Configuration,
     #[error("audit projection dependency unavailable")]
     Unavailable,
+    #[error("audit projection operation deadline elapsed")]
+    Deadline,
     #[error("audit projection requires storage repair")]
     Permanent,
     #[error("audit projection integrity violation")]
@@ -51,13 +52,14 @@ impl AuditProjectionError {
     pub fn is_retryable(self) -> bool {
         matches!(
             self,
-            Self::Unavailable | Self::CommitUnknown | Self::RollbackFailed
+            Self::Unavailable | Self::Deadline | Self::CommitUnknown | Self::RollbackFailed
         )
     }
     pub fn as_label(self) -> &'static str {
         match self {
             Self::Configuration => "configuration",
             Self::Unavailable => "unavailable",
+            Self::Deadline => "deadline",
             Self::Permanent => "permanent",
             Self::Integrity => "integrity",
             Self::Fenced => "fenced",
@@ -72,7 +74,8 @@ impl AuditProjectionError {
     fn pg_kind(kind: rss_transactional_messaging::error::MessagingErrorKind) -> Self {
         use rss_transactional_messaging::error::MessagingErrorKind as Kind;
         match kind {
-            Kind::Transient | Kind::DeadlineElapsed => Self::Unavailable,
+            Kind::Transient => Self::Unavailable,
+            Kind::DeadlineElapsed => Self::Deadline,
             Kind::Permanent => Self::Permanent,
             Kind::Conflict | Kind::Invariant => Self::Integrity,
             Kind::OwnershipLost => Self::Fenced,
@@ -172,13 +175,20 @@ impl IngressValidator<Vec<u8>> for Validator {
 pub struct AuditProjectionReport {
     pub projected: usize,
     pub deferred: usize,
-    pub transaction_status: Option<&'static str>,
-    pub resolution: Option<&'static str>,
+    pub recoveries: Vec<PgProjectionRecovery>,
+    pub events: Vec<AuditProjectionEvent>,
+    pub failure: Option<AuditProjectionError>,
+}
+/// Independent result retained even when another event failed in the same batch.
+pub struct AuditProjectionEvent {
+    pub tenant: TenantId,
+    pub message: rss_transactional_messaging::message::MessageId,
+    /// True means terminal delivery; false means another durable claim owns further progress.
+    pub result: Result<bool, AuditProjectionError>,
 }
 pub struct AuditProjection<K> {
     projection: PgLocalProjection<Effect, K>,
     validator: Validator,
-    pending: tokio::sync::Mutex<VecDeque<PgProjectionRecovery>>,
     fatal: Arc<OnceLock<AuditProjectionError>>,
 }
 impl<K: Aead + Send + Sync> AuditProjection<K> {
@@ -241,7 +251,6 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
         Ok(Self {
             projection,
             validator: Validator { tenants },
-            pending: tokio::sync::Mutex::new(VecDeque::new()),
             fatal,
         })
     }
@@ -261,33 +270,31 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
     fn terminal(&self, disposition: TerminalDisposition) -> Result<(), AuditProjectionError> {
         if disposition != TerminalDisposition::Succeeded {
             let _ = self.fatal.set(AuditProjectionError::Quarantined);
+            return Err(AuditProjectionError::Quarantined);
         }
-        self.check()
+        // A sibling's fatal error stops future claims, but cannot erase this event's commit.
+        Ok(())
     }
     fn consume(
         &self,
         attempt: PgProjectionAttempt,
-        pending: &mut VecDeque<PgProjectionRecovery>,
         report: &mut AuditProjectionReport,
     ) -> Result<(), AuditProjectionError> {
         use rss_transactional_messaging::observability::TransactionalMessagingTransactionStatus as Status;
         let (outcome, identity) = attempt.into_parts();
-        observe("transaction", outcome.status().as_label());
-        report.transaction_status = Some(outcome.status().as_label());
         if matches!(
             outcome.status(),
             Status::CommitUnknown | Status::RollbackFailed
         ) {
-            pending.push_back(identity);
+            report.recoveries.push(identity);
         }
-        self.check()?;
         let projected = outcome.fold(
             |value| {
                 self.terminal(value.into_parts().1.disposition())?;
                 Ok(true)
             },
-            |_| Ok(false),
-            |_| Ok(false),
+            |class| Err(class_error(class)),
+            |class| Err(class_error(class)),
             || Err(AuditProjectionError::RollbackFailed),
             || Err(AuditProjectionError::CommitUnknown),
             || Err(AuditProjectionError::Fenced),
@@ -299,51 +306,19 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
         }
         Ok(())
     }
-    /// Resolve pending identities and claim one bounded batch under the supplied deadline.
-    /// Each claimed event receives its own original timeout; all outcomes are consumed before returning.
-    pub async fn run_once(
+    /// One real provider claim; the host owns every returned recovery identity.
+    /// All sibling results are retained even when another event fails.
+    pub async fn project_batch(
         &self,
         limit: NonZeroUsize,
-        deadline: OperationDeadline,
+        claim_deadline: OperationDeadline,
+        execution_budget: std::time::Duration,
     ) -> Result<AuditProjectionReport, AuditProjectionError> {
         self.check()?;
-        let cutoff = Deadline::from_timeout(&RuntimeTimer, deadline.timeout())
-            .map_err(|_| AuditProjectionError::Configuration)?;
-        let mut pending = tokio::time::timeout(remaining(cutoff).timeout(), self.pending.lock())
-            .await
-            .map_err(|_| AuditProjectionError::Unavailable)?;
         let mut report = AuditProjectionReport::default();
-        while let Some(identity) = pending.front() {
-            let result = self.projection.resolve(identity, remaining(cutoff)).await;
-            observe(
-                "resolve",
-                match &result {
-                    Ok(Some(_)) => "confirmed",
-                    Ok(None) => "unresolved",
-                    Err(_) => "failed",
-                },
-            );
-            match result.map_err(AuditProjectionError::pg)? {
-                Some(receipt) => {
-                    self.terminal(receipt.disposition())?;
-                    report.projected += 1;
-                    report.resolution = Some("confirmed");
-                }
-                None => report.resolution = Some("unresolved"),
-            }
-            pending.pop_front();
-        }
-        if cutoff.is_expired(RuntimeTimer.now()) {
-            return Ok(report);
-        }
         let batch = self
             .projection
-            .project_batch(
-                &self.validator,
-                limit,
-                remaining(cutoff),
-                deadline.timeout(),
-            )
+            .project_batch(&self.validator, limit, claim_deadline, execution_budget)
             .await
             .map_err(|error| {
                 self.fatal
@@ -353,20 +328,26 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
             })?;
         let mut failure = None;
         for item in batch {
+            let tenant = item.tenant_id();
+            let message = item.message_id().clone();
+            let before = report.projected;
             let result = match item.into_outcome() {
                 Ok(PgProjectionOutcome::InProgress) => {
                     report.deferred += 1;
                     Ok(())
                 }
-                Ok(PgProjectionOutcome::Attempt(attempt)) => {
-                    self.consume(*attempt, &mut pending, &mut report)
-                }
+                Ok(PgProjectionOutcome::Attempt(attempt)) => self.consume(*attempt, &mut report),
                 Ok(PgProjectionOutcome::Rejected(_) | PgProjectionOutcome::DeliveryExpired) => {
                     let _ = self.fatal.set(AuditProjectionError::Quarantined);
                     Err(AuditProjectionError::Quarantined)
                 }
                 Err(error) => Err(AuditProjectionError::pg(error)),
             };
+            report.events.push(AuditProjectionEvent {
+                tenant,
+                message,
+                result: result.map(|()| report.projected > before),
+            });
             // Every sibling may carry an uncertain transaction identity. Never short-circuit.
             if let Err(error) = result
                 && failure.is_none_or(|previous: AuditProjectionError| previous.is_retryable())
@@ -374,18 +355,53 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
                 failure = Some(error);
             }
         }
-        self.check()?;
-        failure.map_or(Ok(report), Err)
+        report.failure = self.fatal.get().copied().or(failure);
+        Ok(report)
+    }
+    /// `false` is absence of terminal proof, not rollback or permission to execute the effect.
+    /// The original durable lease/Inbox decides whether a subsequent claim can execute it.
+    pub async fn resolve(
+        &self,
+        identity: &PgProjectionRecovery,
+        deadline: OperationDeadline,
+    ) -> Result<bool, AuditProjectionError> {
+        match self
+            .projection
+            .resolve(identity, deadline)
+            .await
+            .map_err(AuditProjectionError::pg)?
+        {
+            Some(receipt) => {
+                self.terminal(receipt.disposition())?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+}
+fn class_error(
+    class: rss_transactional_messaging::transaction::FailureClass,
+) -> AuditProjectionError {
+    use rss_transactional_messaging::transaction::FailureClass;
+    match class {
+        FailureClass::Permanent => AuditProjectionError::Permanent,
+        FailureClass::Transient | FailureClass::Infrastructure => AuditProjectionError::Unavailable,
     }
 }
 fn remaining(cutoff: Deadline) -> OperationDeadline {
     OperationDeadline::from_cutoff(cutoff, &RuntimeTimer)
 }
 
-fn observe(phase: &'static str, status: &'static str) {
-    use std::io::Write;
-    let mut output = std::io::stderr().lock();
-    let event = serde_json::json!({"component":"mdm-audit","event":"audit_projection","phase":phase,"status":status});
-    let _ = serde_json::to_writer(&mut output, &event);
-    let _ = writeln!(output);
+#[cfg(feature = "integration")]
+impl<K: Aead + Send + Sync> AuditProjection<K> {
+    /// Bind fixture uncertainty to the actual effect transaction, never a sibling claim.
+    pub fn inject_next_projection_fault(
+        &self,
+        fault: rss_transactional_messaging_postgres::PgTransactionFault,
+        before_acquire: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Result<(), AuditProjectionError> {
+        self.projection
+            .inject_next_projection_fault(fault, before_acquire)
+            .map_err(AuditProjectionError::pg)
+    }
 }

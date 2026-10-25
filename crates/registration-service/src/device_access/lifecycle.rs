@@ -329,6 +329,7 @@ impl crate::agent::Service {
         audit.operation(
             events::identity(audit.request_id(), &coordinate),
             "device_access_external_phase",
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(device);
         self.write_admitted(&self.access_audit,audit,(actor,device,operation,component,transition),

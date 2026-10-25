@@ -907,8 +907,11 @@ pub async fn withdraw_version(input: &PublishInput) {
             .unwrap(),
     )));
     let catalog = c::Catalog::new(runtime.clone(), tenant(), audit.clone());
-    let request =
-        rss_mdm_audit_integration::RequestAudit::new(tenant().to_string(), "software_withdraw");
+    let request = rss_mdm_audit_integration::RequestAudit::new(
+        tenant().to_string(),
+        "software_withdraw",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     request.set_principal("publisher", INSTANCE);
     let op = c::Operation {
         operation_id: uuid::Uuid::new_v4(),

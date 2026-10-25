@@ -19,7 +19,11 @@ async fn audit_process_exit_fixture() -> Result<()> {
         SourceControl::new(&timer, cutoff, cutoff, &cancel)
     };
     let store = new_store(pool, Integrity::Plain, tenant).await?;
-    let request = RequestAudit::new(tenant.to_string(), "audit_recovery_test");
+    let request = RequestAudit::new(
+        tenant.to_string(),
+        "audit_recovery_test",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     let fact = Fact::business(
         &request,
         "process-interruption",

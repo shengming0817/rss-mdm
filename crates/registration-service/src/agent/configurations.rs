@@ -239,7 +239,11 @@ impl Service {
             &input.quantity,
             &input.targets,
         ))?;
-        a.operation(input.operation_id, "agent_configuration_create");
+        a.operation(
+            input.operation_id,
+            "agent_configuration_create",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let config=self.write(a,(self,p,input,d),|ctx,c|Box::pin(async move {
             let (service,p,input,d)=ctx;let tenant=service.tenant.to_string();
             authorize_on(c,p,Permission::AgentEnrollmentWrite).await?;
@@ -331,7 +335,11 @@ impl Service {
         self.proof(p, a)?;
         p.manage(Permission::AgentEnrollmentWrite)?;
         version(1, operation)?;
-        a.operation(operation, "agent_configuration_revoke");
+        a.operation(
+            operation,
+            "agent_configuration_revoke",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(&("configuration_revoke", id, operation))?;
         self.write(a,(self,p,id,d,operation,a),|ctx,c|Box::pin(async move {
             let (service,p,id,d,operation,a)=ctx;let tenant=service.tenant.to_string();
@@ -365,7 +373,11 @@ impl Service {
         input.runtime.validate().map_err(|_| Error::Malformed)?;
         let spki = hex(csr(&input.csr)?.spki());
         let d = digest(input)?;
-        a.operation(input.operation_id, "agent_configuration_exchange");
+        a.operation(
+            input.operation_id,
+            "agent_configuration_exchange",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         self.write(a,(self,input,spki,d),|ctx,c|Box::pin(async move {
             let (service,input,spki,d)=ctx;let tenant=service.tenant.to_string();let cfg=&input.file.configuration;
             if cfg.tenant_id.to_string()!=tenant || cfg.connections.configuration.service_id!=service.service_id()?{return Err(Error::Forbidden);}
@@ -418,7 +430,11 @@ impl Service {
         a: &RequestAudit,
     ) -> Result<wire::GrantReceipt, Failure> {
         version(input.wire_version, input.operation_id)?;
-        a.operation(input.operation_id, "agent_reservation_cancel");
+        a.operation(
+            input.operation_id,
+            "agent_reservation_cancel",
+            rss_mdm_audit_integration::AuditIntent::Management,
+        );
         let d = digest(input)?;
         self.write(a,(self,input,d),|ctx,c|Box::pin(async move {
             let (service,input,d)=ctx;let tenant=service.tenant.to_string();let row=grant_row(c,&tenant,input.grant_id).await?;

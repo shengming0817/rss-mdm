@@ -57,7 +57,10 @@ async fn list(
     Path(device): Path<String>,
     RawQuery(raw): RawQuery,
 ) -> Result<Json<rss_mdm_query::Page<serde_json::Value>>, Error> {
-    audit.set_action("recovery_credential_list");
+    audit.set_action(
+        "recovery_credential_list",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     audit.target_device(&device);
     let q = rss_mdm_recovery_credentials::directory::SCHEMA
         .parse(raw.as_deref().unwrap_or(""))

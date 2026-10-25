@@ -45,7 +45,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                 ensure!(unsigned.service.loaded_task_signing_key().is_none());
                 // Lazy admission first persists a queued run. The real worker must accept it
                 // before a poll can reach the signer, rather than merely returning no work.
-                let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim");
+                let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim", rss_mdm_audit_integration::AuditIntent::Management);
                 let queued=unsigned.service.claim_action(&principal,&input,&audit).await?;
                 ensure!(queued["task"].is_null());
                 ensure!(run_count(policy)?.trim()=="1","matching collection was not admitted");
@@ -60,7 +60,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                         Ok::<_,anyhow::Error>(())
                     }).await??;
                     let before=effects()?;
-                    let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim");
+                    let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim", rss_mdm_audit_integration::AuditIntent::Management);
                     let rejected=unsigned.service.claim_action(&principal,&input,&audit).await;
                     ensure!(matches!(rejected,Err(rss_mdm_execution_service::Error::Unsupported)),"claim did not reach missing signer: {rejected:?}");
                     ensure!(effects()?==before,"unsigned offer persisted execution or collection effects");
@@ -71,7 +71,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                 Ok(())
             }).await?;
             // The same policy and operation must now reach a real, correctly signed offer.
-            let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim");
+            let audit=rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(),"agent_task_claim", rss_mdm_audit_integration::AuditIntent::Management);
             let response=f.execution.claim_action(&principal,&input,&audit).await?;
             let task:w::SignedTask=serde_json::from_value(response["task"].clone())?;
             let w::TaskPayload::Collection(spec)=&task.payload else { anyhow::bail!("wrong task family") };

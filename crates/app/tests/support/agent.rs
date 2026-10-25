@@ -120,6 +120,7 @@ pub(crate) async fn complete_grant(
         rss_mdm_audit_integration::RequestAudit::new(
             case_tenant().into(),
             "agent_certificate_activate",
+            rss_mdm_audit_integration::AuditIntent::Management,
         )
     };
     let candidate = service.issue(&request, &audit()).await?;

@@ -35,9 +35,12 @@ impl AssetService {
     ) -> std::result::Result<Value, Error> {
         q.require_schema(&SCHEMA).map_err(crate::query_error)?;
         ReadScope::from_proof(p)?;
-        audit.set_action("asset_read");
+        audit.set_action(
+            "asset_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         crate::transaction::inspect(&self.runtime,self.tenant,(self,p,q,audit),|ctx,tx|Box::pin(async move{
-   let(s,p,q,audit)=*ctx;let current=query_authority(tx,p).await?;
+   let(s,p,q,_audit)=*ctx;let current=query_authority(tx,p).await?;
    // Saved queries are personal documents, not a directory of device facts.
    current.inventory_devices(p)?;
    let binding=q.binding(&(p.tenant_id(),p.instance_id(),p.principal_id(),current.query_binding(p)?)).map_err(crate::query_error)?;
@@ -48,7 +51,7 @@ impl AssetService {
    let mut rows:Vec<Value>=tx.with_connection(move|c|Box::pin(async move{sql.build_query_scalar().fetch_all(c).await})).await?;
    for row in &mut rows{if !row["definition"].is_null(){let definition:rsql::StoredDefinition=stored(serde_json::from_value(row["definition"].take()))?;row["definition"]=stored(serde_json::to_value(definition.into_view()?))?;}}
    let page=q.page(rows,&codec,&binding).map_err(crate::query_error)?;
-   p.check_live()?;audit.require_request_settlement();json(&AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
+   p.check_live()?;json(&AssetEnvelope{tenant_id:p.tenant_id().into(),asset:Response::SavedList{items:page.items,next_cursor:page.next_cursor}})
   }),crate::transaction::TransactionOwner::Assets).await
     }
 }

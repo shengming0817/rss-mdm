@@ -47,7 +47,8 @@ pub(crate) async fn enrollment(
             now,
         );
     }
-    a.require_request_settlement();
+    a.intent(rss_mdm_audit_integration::AuditIntent::Management);
+    a.require_final_request();
     let soap::Body::Issue(input) = &message.body else {
         return Err(Error::Malformed);
     };

@@ -82,7 +82,11 @@ async fn pool(role: &str) -> Result<PgPool> {
         .await?)
 }
 
-async fn new_store(pool: PgPool, integrity: Integrity, tenant: TenantId) -> Result<AuditStore> {
+pub(crate) async fn new_store(
+    pool: PgPool,
+    integrity: Integrity,
+    tenant: TenantId,
+) -> Result<AuditStore> {
     new_store_with_limits(pool, integrity, tenant, Default::default()).await
 }
 

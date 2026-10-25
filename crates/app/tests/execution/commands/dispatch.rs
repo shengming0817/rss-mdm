@@ -80,7 +80,11 @@ async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> 
 }
 impl Client {
     async fn dispatch_receipts(&mut self) -> anyhow::Result<()> {
-        let audit = RequestAudit::new(case_tenant().into(), "management_read");
+        let audit = RequestAudit::new(
+            case_tenant().into(),
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         #[cfg(feature = "integration")]
         {
             self.retry_gateway().await?;

@@ -416,9 +416,17 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
             let input: Change = serde_json::from_value(
                 json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":definition()}),
             )?;
-            let audit = RequestAudit::new(case_tenant().into(), "user_attribute_definition_change");
+            let audit = RequestAudit::new(
+                case_tenant().into(),
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             p.bind_audit(&audit)?;
-            audit.operation(input.operation_id, "user_attribute_definition_change");
+            audit.operation(
+                input.operation_id,
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             f.audit.inject_next_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );
@@ -434,13 +442,28 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
             a.expected_revision = 1;
             let mut b = a.clone();
             b.operation_id = Uuid::new_v4();
-            let first = RequestAudit::new(case_tenant().into(), "user_attribute_definition_change");
+            let first = RequestAudit::new(
+                case_tenant().into(),
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             p.bind_audit(&first)?;
-            first.operation(a.operation_id, "user_attribute_definition_change");
-            let second =
-                RequestAudit::new(case_tenant().into(), "user_attribute_definition_change");
+            first.operation(
+                a.operation_id,
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
+            let second = RequestAudit::new(
+                case_tenant().into(),
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             p.bind_audit(&second)?;
-            second.operation(b.operation_id, "user_attribute_definition_change");
+            second.operation(
+                b.operation_id,
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             let (a, b) = tokio::join!(
                 store::change(&f.audit, &p, &first, id, &a),
                 store::change(&f.audit, &p, &second, id, &b)
@@ -451,10 +474,17 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                 expected_revision: 2,
                 value: None,
             };
-            let conflict =
-                RequestAudit::new(case_tenant().into(), "user_attribute_definition_change");
+            let conflict = RequestAudit::new(
+                case_tenant().into(),
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             p.bind_audit(&conflict)?;
-            conflict.operation(failed.operation_id, "user_attribute_definition_change");
+            conflict.operation(
+                failed.operation_id,
+                "user_attribute_definition_change",
+                rss_mdm_audit_integration::AuditIntent::Management,
+            );
             let fact = rss_mdm_audit_integration::Fact::business(
                 &conflict,
                 &format!(
@@ -557,20 +587,20 @@ async fn enabled_capacity_and_cross_tenant_storage_are_enforced() -> Result<()> 
         process::pg(&format!("INSERT INTO mdm_user_profiles.definitions(tenant_id,field_id,revision,collected_after_micros,value) SELECT '{}'::uuid,gen_random_uuid(),1,0,jsonb_set('{}'::jsonb,'{{key}}',to_jsonb('field'||i::text)) FROM generate_series(1,128) i",case_tenant(),seed))?;
         let session=f.identity.authority.inspect_session(f.identity.tenant,identity::credential(&f.identity,"admin")?,crate::identity::deadline()).await?;
         let p=AuthorizedPrincipal::new(session)?.load_authorization(&f.authorization.clone()).await?;
-        let audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&audit)?;
+        let audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);p.bind_audit(&audit)?;
         let input:Change=serde_json::from_value(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"value":definition()}))?;
-        audit.operation(input.operation_id,"user_attribute_definition_change");
+        audit.operation(input.operation_id,"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);
         ensure!(matches!(store::change(&f.audit,&p,&audit,Uuid::new_v4(),&input).await,Err(Error::Conflict)));
         let (existing,_)=store::definitions(&f.audit,&p,&audit,Some(Permission::UserAttributeDefinitionsRead),true,None).await?;
         ensure!(existing.len()==128);
         let mut first=existing[0].value.clone().unwrap();first.enabled=false;
         let stopped=Change{operation_id:Uuid::new_v4(),expected_revision:1,value:Some(first)};
-        let stop_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&stop_audit)?;
-        stop_audit.operation(stopped.operation_id,"user_attribute_definition_change");
+        let stop_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);p.bind_audit(&stop_audit)?;
+        stop_audit.operation(stopped.operation_id,"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);
         store::change(&f.audit,&p,&stop_audit,existing[0].field_id,&stopped).await?;
         stop_audit.finalize(None);
-        let create_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change");p.bind_audit(&create_audit)?;
-        create_audit.operation(input.operation_id,"user_attribute_definition_change");
+        let create_audit=RequestAudit::new(case_tenant().into(),"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);p.bind_audit(&create_audit)?;
+        create_audit.operation(input.operation_id,"user_attribute_definition_change", rss_mdm_audit_integration::AuditIntent::Management);
         store::change(&f.audit,&p,&create_audit,Uuid::new_v4(),&input).await?;
         create_audit.finalize(None);
         use sqlx::Connection;

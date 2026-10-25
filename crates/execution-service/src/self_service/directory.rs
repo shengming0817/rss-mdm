@@ -85,7 +85,7 @@ impl ExecutionService {
         };
         let query = Query::new(&SCHEMA, parameters).map_err(|_| Error::Malformed)?;
         crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
-            let (service, p, proof, query, audit) = *ctx;
+            let (service, p, proof, query, _audit) = *ctx;
             storage::lock(tx, p.device()).await?;
             crate::actions::agent::principal(service, tx, p).await?;
             let subject = if let Some(proof) = proof {
@@ -109,7 +109,6 @@ impl ExecutionService {
                 }
             }
             if let Some(proof) = proof { proof.check_live()?; }
-            audit.require_request_settlement();
             Ok(json!({"items":items,"nextCursor":page.next_cursor,"asOf":now}))
         })).await
     }
@@ -127,7 +126,7 @@ impl ExecutionService {
             (self, p, proof, input, audit),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (service, p, proof, input, audit) = *ctx;
+                    let (service, p, proof, input, _audit) = *ctx;
                     storage::lock(tx, p.device()).await?;
                     crate::actions::agent::principal(service, tx, p).await?;
                     let id = checked(
@@ -149,7 +148,6 @@ impl ExecutionService {
                     if let Some(proof) = proof {
                         proof.check_live()?;
                     }
-                    audit.require_request_settlement();
                     json(&item)
                 })
             },

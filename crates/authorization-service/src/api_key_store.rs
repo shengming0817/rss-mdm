@@ -66,7 +66,11 @@ pub async fn change_key(
         key: change.operation_id,
         digest: &digest,
     };
-    audit.operation(change.operation_id, "api_key_change");
+    audit.operation(
+        change.operation_id,
+        "api_key_change",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     audit.target(&id.to_string());
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,

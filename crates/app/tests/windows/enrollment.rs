@@ -430,7 +430,10 @@ async fn discover_and_policy(
                     && r.result() == "success"
             })
             .count();
-        ensure!(count == 1);
+        ensure!(
+            count == 0,
+            "discovery and policy reads must not enqueue audit"
+        );
     }
     pg.close().await?;
     Ok(())

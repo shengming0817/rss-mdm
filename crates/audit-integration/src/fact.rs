@@ -5,7 +5,7 @@ use rss_request_context::{RequestId, TenantId};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details";
+pub(crate) const SOURCE_SCHEMA: &[u8] = b"mdm.audit.fact.v1:status,result,instance,operation,registrationRequest,registration,software,plan,writeOutcome,details,sensitiveAction";
 
 /// Source-owned fact. A stable key identifies the operation and phase, never its outcome.
 pub struct Fact {
@@ -44,6 +44,12 @@ pub enum InvalidFact {
     Contract,
 }
 impl Fact {
+    /// Canonical current product fact identity, shared by its real consumers.
+    pub fn schema_digest() -> Result<SchemaDigest, InvalidFact> {
+        SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(SOURCE_SCHEMA)))
+            .map_err(|_| InvalidFact::Contract)
+    }
+
     pub fn business(
         context: &RequestAudit,
         key: &str,
@@ -109,6 +115,7 @@ impl Fact {
             "plan": snapshot.plan,
             "writeOutcome": request.map(|_| snapshot.write_outcome),
             "details": null,
+            "sensitiveAction": match snapshot.intent { crate::AuditIntent::Sensitive(action) => Some(action.as_str()), _ => None },
         }))
         .map_err(|_| InvalidFact::Payload)?;
         let facts = serde_json::to_vec(&(
@@ -129,8 +136,7 @@ impl Fact {
             SourceContract::new(
                 ContractId::parse("mdm.audit.fact").map_err(|_| InvalidFact::Contract)?,
                 ContractVersion::from_major(1).map_err(|_| InvalidFact::Contract)?,
-                SchemaDigest::parse(&format!("sha256:{:x}", Sha256::digest(SOURCE_SCHEMA)))
-                    .map_err(|_| InvalidFact::Contract)?,
+                Self::schema_digest()?,
             ),
         );
         let identity = RecordIdentity::new(

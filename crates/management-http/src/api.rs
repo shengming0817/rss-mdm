@@ -23,6 +23,10 @@ pub fn write_key(
     action: &'static str,
 ) -> Result<uuid::Uuid, Error> {
     let key = operation_key(headers)?;
-    audit.operation(key, action);
+    audit.operation(
+        key,
+        action,
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
     Ok(key)
 }

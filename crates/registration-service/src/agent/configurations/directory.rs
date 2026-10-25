@@ -70,8 +70,11 @@ impl Service {
         q.require_schema(&SCHEMA).map_err(error)?;
         self.proof(p, audit)?;
         p.manage(Permission::AgentEnrollmentRead)?;
-        audit.set_action("agent_configuration_read");
-        audit.require_request_settlement();
+        audit.set_action(
+            "agent_configuration_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+
         let mut tx = self.store.begin(p.tenant_id()).await?;
         authorize_on(&mut tx, p, Permission::AgentEnrollmentRead).await?;
         let current =

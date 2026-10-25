@@ -36,14 +36,17 @@ impl Queries {
             return Err(Error::Malformed.into());
         }
         audit.target_device(device);
-        audit.set_action("command_read");
+        audit.set_action(
+            "command_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
         crate::transaction::inspect(
             &self.runtime,
             self.tenant,
             (self, proof, device, query, audit, codec),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (s, p, device, q, audit, codec) = *ctx;
+                    let (s, p, device, q, _audit, codec) = *ctx;
                     let authorization = crate::action_admission::authorized(
                         tx,
                         p,
@@ -81,7 +84,7 @@ impl Queries {
                         if q.cursor.is_some() {
                             return Err(Error::Conflict.into());
                         }
-                        audit.require_request_settlement();
+
                         return Ok(Page {
                             items: Vec::new(),
                             next_cursor: None,
@@ -203,7 +206,7 @@ impl Queries {
                         return Err(Error::Conflict.into());
                     }
                     p.check_live()?;
-                    audit.require_request_settlement();
+
                     Ok(Page {
                         items,
                         next_cursor: next,

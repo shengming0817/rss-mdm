@@ -57,7 +57,8 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
     match error {
         Some(Error::CommitUnknown) => Some(ResponseFailure::CommitUnknown),
         Some(Error::RollbackFailed) => Some(ResponseFailure::RollbackFailed),
-        Some(Error::Unauthorized | Error::Forbidden) => Some(ResponseFailure::Denied),
+        Some(Error::Unauthorized) => Some(ResponseFailure::Denied),
+        Some(Error::Forbidden) => Some(ResponseFailure::Forbidden),
         Some(Error::Unavailable(Failure::RequestDeadline)) => Some(ResponseFailure::Deadline),
         Some(Error::Unavailable(Failure::AuditIntegrity)) => Some(ResponseFailure::AuditIntegrity),
         Some(Error::Unavailable(
@@ -94,7 +95,11 @@ pub async fn admit(
     } else {
         route_action(route)
     };
-    let audit = RequestAudit::new(envelope.tenant.clone(), action);
+    let audit = RequestAudit::new(
+        envelope.tenant.clone(),
+        action,
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
     let id = audit.request_id();
     let gateway_id = request
         .headers()
