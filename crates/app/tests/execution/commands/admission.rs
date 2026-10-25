@@ -600,9 +600,8 @@ impl Client {
         crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
-        let mut other_browser = crate::test_support::http::Browser::default();
-        let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
-        ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
+        let mut other_browser =
+            crate::test_support::authority::Authority::prepared_browser("other")?;
         let other_subject = crate::test_support::http::prepared_subject(&other_browser)?;
         crate::test_support::identity::change_grants(
             case_tenant(),

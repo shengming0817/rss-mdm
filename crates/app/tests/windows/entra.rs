@@ -337,7 +337,10 @@ fn issue(host: &Host, token: String, opaque: Option<&str>) -> anyhow::Result<soa
     }
     Ok(message)
 }
-async fn send(host: &Host, message: &soap::Message) -> anyhow::Result<(StatusCode, Vec<u8>)> {
+async fn send(
+    host: &Host,
+    message: &soap::Message,
+) -> anyhow::Result<(StatusCode, Vec<u8>, String)> {
     let response = host
         .client
         .post(message.header.to.as_deref().unwrap())
@@ -345,7 +348,13 @@ async fn send(host: &Host, message: &soap::Message) -> anyhow::Result<(StatusCod
         .body(soap::encode(message, &CodecLimits::default())?)
         .send()
         .await?;
-    Ok((response.status(), response.bytes().await?.to_vec()))
+    let request = response
+        .headers()
+        .get("x-request-id")
+        .ok_or_else(|| anyhow::anyhow!("request id missing"))?
+        .to_str()?
+        .to_owned();
+    Ok((response.status(), response.bytes().await?.to_vec(), request))
 }
 async fn scalar(_host: &Host, sql: &'static str) -> anyhow::Result<i64> {
     use sqlx::Connection;
@@ -497,14 +506,14 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         ),
         "policy storage failure was reported as authorization"
     );
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(case_tenant())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
-    let canonical: Vec<u8> = sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.request' ORDER BY position DESC LIMIT 1").bind(case_tenant()).fetch_one(&mut fault).await?;
-    let record = rss_audit_core::decode_untrusted(&canonical)?;
-    let payload: Value = serde_json::from_slice(record.event().context().payload().as_bytes())?;
+    let records = crate::audit_test_support::audit_records().await?;
+    let record = records
+        .iter()
+        .find(|record| {
+            record.source() == "mdm.request" && record.request() == Some(failed.2.as_str())
+        })
+        .ok_or_else(|| anyhow::anyhow!("failed request audit missing"))?;
+    let payload = &record.payload;
     ensure!(
         payload["result"] == "failed",
         "policy storage failure was audited as a denial"
@@ -521,7 +530,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     );
     ensure!(scalar(&host,"SELECT count(*) FROM mdm_access.requests WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND authority_kind='windows_entra' AND state='pending'").await?==1,"admission did not commit before issuance failure");
     ensure!(scalar(&host,"SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source_id='mdm.request'").await?==requests_before+1,"later issuance failure lost request audit");
-    let (status, first) = send(&host, &valid).await?;
+    let (status, first, _) = send(&host, &valid).await?;
     ensure!(
         status == StatusCode::OK,
         "native issuance {status}: {}",
@@ -532,7 +541,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     else {
         anyhow::bail!("missing provisioning")
     };
-    let (status, replay) = send(&host, &valid).await?;
+    let (status, replay, _) = send(&host, &valid).await?;
     ensure!(
         status == StatusCode::OK,
         "native retry {status}: {}",
@@ -569,7 +578,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         native_state().await? == before,
         "replacement CSR changed native authority or credentials"
     );
-    let (status, unchanged) = send(&host, &valid).await?;
+    let (status, unchanged, _) = send(&host, &valid).await?;
     ensure!(status == StatusCode::OK);
     let Body::IssueResponse(unchanged) =
         soap::decode_response(&valid, &unchanged, &CodecLimits::default())?.body
@@ -591,7 +600,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         input.request =
             soap::CertificateRequest::Pkcs10(Secret(std::fs::read(host.root.join("weak.csr"))?));
     }
-    let (status, body) = send(&host, &weak).await?;
+    let (status, body, _) = send(&host, &weak).await?;
     ensure!(status == StatusCode::INTERNAL_SERVER_ERROR);
     ensure!(matches!(
         soap::decode_response(&weak, &body, &CodecLimits::default())?.body,
@@ -669,7 +678,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     let another = issue(
         &host,
         jwt.token(user, Some(Uuid::new_v4()), &[])?,
-        Some(&another_opaque),
+        Some(another_opaque),
     )?;
     ensure!(
         send(&host, &another).await?.0 == StatusCode::OK,

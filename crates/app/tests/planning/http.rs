@@ -142,7 +142,9 @@ async fn console_pending_directory_and_permission_changes() -> Result<()> {
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(fixture.pool.clone())), tenant, monotonic(), fixture.audit.clone()).await?;
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, fixture.audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -243,7 +245,9 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(fixture.pool.clone())), tenant, monotonic(), fixture.audit.clone()).await?;
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, fixture.audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -276,12 +280,13 @@ async fn console_directory_pages_registered_revoked_and_pending() -> Result<()> 
     let pending = case::name("a-pending");
     let revoked = case::name("b-revoked");
     let registered = case::name("c-registered");
+    let password_digest = crate::enrollment::Password::new("A".repeat(43))?.digest(case_tenant(), pending)?;
     let pending_grant = Uuid::new_v4();
     let pending_request = Uuid::new_v4();
     let revoked_grant = Uuid::new_v4();
     let revoked_request = Uuid::new_v4();
     let registration = Uuid::new_v4();
-    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{tenant}','{pending_grant}','fixture','{instance}','{pending}','enrollment','available',clock_timestamp()+interval '60 seconds'),('{tenant}','{revoked_grant}','fixture','{instance}','{revoked}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile,state,expected_generation,password_digest,password_version,expires_at,issuance_operation) VALUES('{tenant}','{pending_request}','{pending_grant}','mdm.windows','Device','pending',0,repeat('0',64),1,clock_timestamp()+interval '60 seconds',gen_random_uuid()),('{tenant}','{revoked_request}','{revoked_grant}','mdm.windows','Device','cancelled',0,NULL,0,NULL,NULL); INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','{revoked}'); INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{tenant}','{registration}','{revoked}','mdm',1,'{revoked_request}','revoked','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES('{tenant}',gen_random_uuid(),'{registration}','mdm',repeat('1',64),'revoked')", tenant=case_tenant(), instance=INSTANCE))?;
+    pg(&format!("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{tenant}','{pending_grant}','fixture','{instance}','{pending}','enrollment','available',clock_timestamp()+interval '60 seconds'),('{tenant}','{revoked_grant}','fixture','{instance}','{revoked}','enrollment','consumed',clock_timestamp()+interval '60 seconds'); INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile,state,expected_generation,password_digest,password_version,expires_at,issuance_operation,credential_ref) VALUES('{tenant}','{pending_request}','{pending_grant}','mdm.windows','Device','pending',0,'{password_digest}',1,clock_timestamp()+interval '60 seconds',gen_random_uuid(),gen_random_uuid()),('{tenant}','{revoked_request}','{revoked_grant}','mdm.windows','Device','cancelled',0,NULL,0,NULL,NULL,NULL); INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','{revoked}'); INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{tenant}','{registration}','{revoked}','mdm',1,'{revoked_request}','revoked','primary',gen_random_uuid()); INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state) VALUES('{tenant}',gen_random_uuid(),'{registration}','mdm',repeat('1',64),'revoked')", tenant=case_tenant(), instance=INSTANCE))?;
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{}','{registered}')",
         case_tenant()
@@ -384,7 +389,9 @@ async fn console_script_support_requires_signer_and_content() -> Result<()> {
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(fixture.authority.pool.clone())), tenant, monotonic(), fixture.authority.audit.clone()).await?;
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, fixture.authority.audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;
@@ -838,7 +845,7 @@ async fn planning_routes_and_derived_result_authorization() -> Result<()> {
             call(&mut browser,&router,&group_path,0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"authorized-results","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"Model-A"}}}})).await?;
             let accepted = call(&mut browser, &router, &format!("{group_path}/previews"), 1, json!({})).await?;
             let scoped = call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":devices.map(|id|json!({"kind":"device","id":id})),"limitations":null,"exclusions":[]}})).await?;
-            native_configuration_resource(&(&planning).runtime, (&planning).tenant, content.as_deref().expect("native content"), resource, "windows", "x86_64", windows_configuration()).await?;
+            native_configuration_resource(&planning.runtime, planning.tenant, content.as_deref().expect("native content"), resource, "windows", "x86_64", windows_configuration()).await?;
             let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
             for permission in ["group_read","group_write","group_recompute","scope_read","scope_write","policy_read","policy_write","resource_read","resource_write"] {
                 grants.push(crate::authorization::Grant { operation: serde_json::from_value(json!(permission))?, scope: crate::authorization::Scope::Tenant });
@@ -1246,7 +1253,7 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             ensure!(result.0==StatusCode::OK,"compliance setup: {result:?}");
             await_ingress().await?;
             let resource=Uuid::new_v4();let policy=Uuid::new_v4();
-            native_configuration_resource(&(&planning).runtime, (&planning).tenant, content.as_deref().expect("native content"),resource,"windows","x86_64",windows_configuration()).await?;
+            native_configuration_resource(&planning.runtime, planning.tenant, content.as_deref().expect("native content"),resource,"windows","x86_64",windows_configuration()).await?;
             call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":false,"definition":{"scope":scope,"action":{"resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"kind":"configuration","exit":"retain"}}})).await?;
             await_ingress().await?;
             let refs=format!("{}/references",path(source));
@@ -1441,7 +1448,9 @@ async fn console_inventory_presence_uses_current_dataset_authority() -> Result<(
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
     let inventory = crate::inventory_runtime::InventoryRuntime::fixture(config.runtime_database.options()?, Arc::new(rss_mdm_inventory_service::Store::from_pool(fixture.pool.clone())), tenant, monotonic(), fixture.audit.clone()).await?;
     app_resources.resource(InventoryFixtureResource(inventory.clone()));
-    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, fixture.audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(inventory, audit, runtime, tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
     let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
     app_resources.resource(SourceResource(command_runtime.clone()));
     let protection = config.native_protector()?;

@@ -152,7 +152,17 @@ impl Fixture {
     pub(crate) async fn new() -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        Self::from_config(base).await
+        let fixture = Self::from_config(base).await?;
+        if let Err(error) = crate::test_support::identity::seed_grants(
+            case_tenant(),
+            &fixture.author_id,
+            fixture.grants.clone(),
+        )
+        .await
+        {
+            return fixture.resources.finish(async { Err(error) }).await;
+        }
+        Ok(fixture)
     }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
         let (resources, mut fixture) =
@@ -185,6 +195,12 @@ impl Fixture {
                         plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone(), &cursor_key,
                         Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone())),
                     ).await?);
+                    let mut publications = rss_mdm_software_service::management::publication::service::PublicationDirectory {
+                        cursor: rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?, services: Default::default(), tenant,
+                        runtime: plan_runtime.clone(), audit_store: plan_audit.clone(), clock: Arc::new(crate::clock::FlowClock(clock.clone())),
+                    };
+                    config.flow.open_publications(tenant, &mut publications, content.clone(), &mut |resource| resources.resource(resource)).await?;
+                    let publications = Arc::new(publications);
                     let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
                     let built = async {
                     let channels = Arc::new(crate::channel_status::Channels::new(&config));
@@ -192,7 +208,7 @@ impl Fixture {
                     let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant));
                     let (service, inputs, queries) = crate::execution_assembly::assemble(
                         &config, protection.clone(), authority.audit.clone(), content.clone(),
-                        Default::default(), runtime.clone(), channels, signer, None, sessions,
+                        publications.services.clone(), runtime.clone(), channels, signer, None, sessions,
                         config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?,
                         rss_device_command_postgres::CommandClock::Postgres,
                     ).await?;
@@ -205,6 +221,7 @@ impl Fixture {
                     resources.resource(rss_mdm_execution_service::Resource(service.clone()));
                     authority.identity.enterprise_platform.bind(service.clone())?;
                     let pki = config.agent_pki.load(&config.identity.instance_id, authority.audit.clone(), clock.clone(), crate::device_pki::providers(&config.device_pki)?, None)?.ok_or_else(|| anyhow::anyhow!("Agent PKI missing"))?;
+                    crate::test_support::pki::seed_trust(&authority.pool, &[pki.issuer.trust().trust.clone()]).await?;
                     let access_audit = Arc::new(authority.audit.on_runtime(authority.identity.runtime.clone(), tenant, &budget.control()).await?);
                     let enrollment = application_service(access_audit, &pki, authority.registration.clone(), authority.audit.clone(), service.clone())?;
                     let agent_store = Arc::new(rss_mdm_agent_channel::Store::from_pool(authority.pool.clone()));
@@ -225,8 +242,8 @@ impl Fixture {
         let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?);
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: plan_runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key)),
-            audit: authority.audit.clone(), tenant,
-            catalog: rss_mdm_software_service::catalog::Catalog::new(plan_runtime.clone(), tenant, authority.audit.clone()),
+            audit: plan_audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(plan_runtime.clone(), tenant, plan_audit.clone()),
             resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
             imports: rss_mdm_software_service::management::catalog::ImportConfig {
@@ -237,15 +254,21 @@ impl Fixture {
                     let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
                     let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit, tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), inputs.clone()));
                     let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-                    let routes = Router::new().nest("/api/v1",
+                    let mut routes = Router::new().nest("/api/v1",
                         rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum()
                         .merge(rss_mdm_management_http::planning::policies::http::routes(queries.clone()).with_state(policies).into_axum())
+                        .merge(rss_mdm_management_http::execution::actions::http::routes().with_state(queries.clone()).into_axum())
                         .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() })).into_axum())
                         .merge(rss_mdm_management_http::software_catalog::routes().with_state(software).into_axum())
                         .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum())
                         .merge(rss_mdm_management_http::execution::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState { execution: service.clone(), apple: false, windows: false })).into_axum()),
                     ).merge(authority.authorization()).merge(authority.enrollment());
-                    let router = authority.router_with_public(routes, Router::new().nest("/api/v1/agent/runtime", native.into_axum()))?;
+                    let mut public = Router::new().nest("/api/v1/agent/runtime", native.into_axum());
+                    if !publications.services.is_empty() {
+                        routes = routes.merge(Router::new().nest("/api/v1", rss_mdm_management_http::software_publication::http::routes().with_state(Arc::new(rss_mdm_management_http::software_publication::http::HttpState { publications: publications.clone(), access: authority.authorization.clone() })).into_axum()));
+                        public = public.merge(rss_mdm_management_http::software_native::routes().with_state(Arc::new(rss_mdm_management_http::software_native::StateData { directory: publications, content: content.clone(), requests: Arc::new(tokio::sync::Semaphore::new(8)) })).into_axum());
+                    }
+                    let router = authority.router_with_public(routes, public)?;
                     let author = crate::test_support::authority::Authority::prepared_browser("other")?;
                     let author_id = prepared_subject(&author)?;
                     let mut grants = crate::test_support::identity::device_grants(
@@ -282,12 +305,6 @@ impl Fixture {
                         None,
                         &["script_execute"],
                     )?);
-                    crate::test_support::identity::seed_grants(
-                        case_tenant(),
-                        &author_id,
-                        grants.clone(),
-                    )
-                    .await?;
                     Ok(Self {
                         resources: Default::default(),
                         builtin_collections: Vec::new(),

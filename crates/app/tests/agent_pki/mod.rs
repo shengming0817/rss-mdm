@@ -772,7 +772,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
         );
     let router = crate::native::ChannelRouter {
         origins: vec![service.trust().trust.public()?.origin],
-        router: routes.into_checked_axum(rss_mdm_http_contract::catalog::AGENT_LISTENER),
+        router: routes.into_axum(),
         admission: crate::native::admission::Admission::new(
             crate::test_support::runtime::monotonic(),
             requests,
@@ -906,15 +906,7 @@ async fn production_agent_listener_bootstraps_activates_and_rechecks_revocation(
             .0,
         200
     );
-    let secret = crate::test_support::identity::login(&authority.identity, "other").await?;
-    let mut observer = crate::test_support::http::Browser {
-        cookies: std::collections::BTreeMap::from([(
-            "__Host-identity-session".into(),
-            secret.expose().into(),
-        )]),
-        csrf: Some(secret.csrf()),
-        ..Default::default()
-    };
+    let mut observer = crate::test_support::authority::Authority::prepared_browser("other")?;
     let subject = crate::test_support::http::prepared_subject(&observer)?;
     let query_path = format!(
         "/api/v1/pki/agent/trust/devices/{}/observation",

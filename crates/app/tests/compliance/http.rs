@@ -89,12 +89,23 @@ async fn history_boundaries(
         )
         .await?,
     );
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit_store = Arc::new(
+        authority
+            .audit
+            .on_runtime(
+                runtime.clone(),
+                authority.identity.tenant,
+                &budget.control(),
+            )
+            .await?,
+    );
     let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
         rss_mdm_inventory_service::compliance::Dependencies {
             tenant: authority.identity.tenant,
             groups,
             runtime,
-            audit_store: authority.audit.clone(),
+            audit_store,
             clock: Arc::new(crate::clock::SystemClock),
             tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
             cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),

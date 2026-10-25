@@ -67,7 +67,38 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     launch.finish();
     let commands = client.command_worker(host.notifications.signals.clone())?;
     let source = Uuid::new_v4();
-    let registered=content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/software/sources/{source}/revisions/1"),0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
+    let definition = rss_mdm_software_service::catalog::SourceDefinition {
+        id: source.to_string(),
+        revision: "1".into(),
+        protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
+    };
+    let registered = host
+        .planning
+        .runtime
+        .local_tx(
+            host.planning.tenant,
+            crate::identity::deadline(),
+            move |tx| {
+                Box::pin(async move {
+                    rss_mdm_software_service::catalog::fixture::source_in(tx, definition)
+                        .await
+                        .map_err(|error| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(error.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("source seed rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("source seed commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )?;
     let bytes = b"controlled generic native software";
     let proof = serde_json::to_vec(
         &json!({"sha256":Sha256::digest(bytes).to_vec(),"mechanism":"authenticode","publisher":"Acme","verified":true}),
@@ -75,7 +106,24 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":300,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let resource = Uuid::new_v4();
     let alias = Uuid::new_v4();
-    let definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Acme.Generic","version":"1.2.3","artifacts":{"package":{"reference":"generic-msi","length":bytes.len(),"sha256":Sha256::digest(bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"}},"signatures":[{"artifact":"package","mechanism":"authenticode","publisher":"Acme","evidence":{"reference":"generic-proof","length":proof.len(),"sha256":Sha256::digest(&proof).to_vec()}}],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let definition = json!({"material":{"format":"msi","installer":"package"},"source":registered,"package":"Acme.Generic","version":"1.2.3","artifacts":{"package":{"reference":"generic-msi","length":bytes.len(),"sha256":Sha256::digest(bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"}},"signatures":[{"artifact":"package","mechanism":"authenticode","publisher":"Acme","evidence":{"reference":"generic-proof","length":proof.len(),"sha256":Sha256::digest(&proof).to_vec()}}],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    for (reference, bytes) in [
+        ("generic-msi", bytes.as_slice()),
+        ("generic-proof", proof.as_slice()),
+    ] {
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new(reference)?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            host.commands.content.as_ref().unwrap(),
+            &artifact,
+            bytes.to_vec(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
+    }
     for resource in [resource, alias] {
         let mut definition = definition.clone();
         if agent_unknown && resource == alias {
@@ -92,23 +140,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             definition.clone(),
         )
         .await?;
-        for (artifact, bytes) in [
-            ("generic-msi", bytes.as_slice()),
-            ("generic-proof", proof.as_slice()),
-        ] {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=windows&architecture=x86_64&artifact={artifact}&operation={}",Uuid::new_v4()))
-          .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1").header("x-csrf-token",client.browser.csrf.as_ref().unwrap())
-          .header("cookie",client.browser.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; ")).header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-            let _guard = content_setup::content_setup_guard().await?;
-            let response = client.router.clone().oneshot(request).await?;
-            ensure!(
-                response.status() == StatusCode::CREATED,
-                "upload {}",
-                response.status()
-            );
-        }
         software_execution::seed_enabled(
-            &(&host.planning).runtime,
+            &host.planning.runtime,
             host.commands.content.as_ref().unwrap(),
             &version,
         )
@@ -182,6 +215,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     let stage = software_execution::prepared_scope(&host.planning, &[case_device()])
         .await
         .context("prepare native rollout stage")?;
+    crate::test_support::planning_http::await_ingress().await?;
     let policy = Uuid::new_v4();
     let competing = Uuid::new_v4();
     for (policy, resource) in [(policy, resource), (competing, alias)] {
@@ -235,6 +269,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             host.commands.service.recover_action_fixture(competing).await?;
             if unsupported_architecture {
                 let progress = client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/software/rollout"),None).await?;
+                ensure!(progress.0 == StatusCode::OK, "native rollout: {progress:?}");
                 if progress.1["stages"][0]["ready"] == true && progress.1["stages"][0]["totalTargets"] == 1 {
                     ensure!(progress.1["stages"][0]["unsupportedCapability"] == 1, "unsupported variant missing from statistics: {progress:?}");
                     ensure!(executes == 0, "unsupported architecture must not install");
@@ -243,6 +278,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             }
             for policy in [policy,competing] {
             let runs=client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/runs"),None).await?;
+            ensure!(runs.0 == StatusCode::OK, "native runs: {runs:?}");
             if runs.1["items"].as_array().is_some_and(|items|items.iter().any(|r|r["effect"]=="verified")) {return Ok::<_,anyhow::Error>(());}
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

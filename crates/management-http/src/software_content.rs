@@ -1,3 +1,17 @@
+use rss_mdm_http_contract::{
+    Operation as RouteOperation, Router, catalog as contracts, routing::get,
+};
+pub fn routes(service: std::sync::Arc<rss_mdm_execution_service::ExecutionService>) -> Router {
+    Router::new()
+        .route(
+            "/api/v1/software/installations/{id}/package",
+            get(download).owned(
+                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
+                &[RouteOperation::Action],
+            ),
+        )
+        .with_state(service)
+}
 use crate::Error;
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]

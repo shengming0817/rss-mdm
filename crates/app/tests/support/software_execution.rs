@@ -252,7 +252,7 @@ impl Fixture {
         )
         .await?;
         seed_enabled(
-            &(&planning).runtime,
+            &planning.runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -315,7 +315,7 @@ impl Fixture {
             .await?;
         }
         seed_enabled(
-            &(&planning).runtime,
+            &planning.runtime,
             self.content
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
@@ -342,7 +342,7 @@ impl Fixture {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
         let mut agent = super::agent_execution::Fixture::from_config(base.clone()).await?;
         resources.extend(std::mem::take(&mut agent.resources));
-        let router = agent.router;
+        let router = agent.router.merge(agent.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(agent.queries.clone(), None).into_axum()))?);
         let planning = agent.planning;
         let author = crate::test_support::authority::Authority::prepared_browser("other")?;
         let subject = prepared_subject(&author)?;
@@ -474,9 +474,7 @@ pub(crate) async fn worker(
     base: &Value,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
+    crate::test_support::case::require_worker();
     let config: Config = serde_json::from_value(base.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,

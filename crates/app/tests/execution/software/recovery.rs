@@ -453,10 +453,15 @@ async fn reboot_waits_for_detection() -> Result<()> {
 #[ignore = "make t2 MODULE=execution.software.recovery"]
 async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::MacOs).await?;
+    let mut authority = authority::Authority::open().await?;
+    fixture
+        .resources
+        .extend(std::mem::take(&mut authority.resources));
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let stack = worker(&fixture.base, fixture.execution.clone()).await?;
-    let router = fixture.router;
+    let router = fixture.router.merge(authority.protect(Router::new().nest("/api/v1",
+        rss_mdm_management_http::agent_enrollment::routes(Some(fixture.enrollment.clone())).into_axum()))?);
     let mut author = fixture.author;
 
     let resource = fixture.resource;
@@ -530,9 +535,6 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     ensure!(grant.0 == StatusCode::OK, "{grant:?}");
     let mut signing = input;
     signing["runtime"] = json!({"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","software.pkg.system.v1"],"executionContext":context(Platform::MacOs)});
-    let mut authority = authority::Authority::open().await?;
-    let authority_resources = std::mem::take(&mut authority.resources);
-    authority_resources.finish(async {
     let service = crate::test_support::agent::service(&authority).await?;
     let next_credential = &credential("replacement");
     let next_registration =
@@ -561,8 +563,6 @@ async fn unknown_effect_survives_credential_recovery() -> Result<()> {
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{unknown_policy}'",case_tenant()))?.trim() == "1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id='{}' AND v.policy='{opposing}'",case_tenant()))?.trim() == "0", "opposing intent bypassed Unknown after credential generation changed");
 
-    Ok(())
-    }).await?;
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await

@@ -477,6 +477,7 @@ impl Host {
         let cursor = rss_mdm_query::cursor::CursorCodec::new(&key)?;
         let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {planning: planning.clone(), groups}))
             .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone()).with_state(policies))
+            .merge(rss_mdm_management_http::execution::actions::http::routes().with_state(execution.queries.clone()))
             .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None))
             .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState {catalog, content: content_access.clone()})))
             .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {assets: assets.clone()})))
@@ -500,6 +501,8 @@ impl Host {
         browser = browser.merge(rss_mdm_windows_channel::entra::browser_routes(windows_state.clone(), rss_mdm_windows_channel::boundary::Envelope {
             admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string(),
         }).into_axum());
+        browser = browser.merge(rss_mdm_management_http::boundary::wrap(rss_mdm_management_http::software_content::routes(execution.service.clone()),
+            rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: ingress_clock.clone(), audit_store: command_audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum());
         let (enrollment_listener, management_listeners) = crate::windows::routers(Some(&windows), windows_state.clone(), ingress_clock.clone()).unwrap();
         let mut listeners = vec![(crate::native::ChannelKind::WindowsEnrollment, enrollment_listener)];
         listeners.extend(management_listeners.into_iter().map(|router| (crate::native::ChannelKind::WindowsManagement, router)));
@@ -600,7 +603,8 @@ impl Host {
                     .critical(),
             );
         }
-        if crate::test_support::case::owns_worker() {
+        crate::test_support::case::require_worker();
+        {
             launch.stage_deferred_task_with_token(
                 self.runtime
                     .clone()

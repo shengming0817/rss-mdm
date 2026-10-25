@@ -6,6 +6,9 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async{
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
  let id=enterprise::ready(&mut f).await?;
  let device=execution::case_device_id();
  let path=format!("/api/v1/devices/{device}/device-access");
@@ -44,6 +47,10 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::FORBIDDEN);
  c.close().await?;
  Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
  }).await
 }
 

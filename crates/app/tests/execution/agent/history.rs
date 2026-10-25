@@ -200,10 +200,12 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     claim_request(&f.router, Uuid::new_v4()).await?;
     let key = "custom.confidential_observation";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    let mut tx = f.authority.pool.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
-    ensure!(rss_mdm_inventory_postgres::publish_field_in(&mut tx, f.authority.identity.tenant, 0, &serde_json::from_value(field)?).await?);
-    tx.commit().await?;
+    let tenant = f.planning.tenant;
+    let field = serde_json::from_value(field)?;
+    let inserted = f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |connection| Box::pin(async move { rss_mdm_inventory_postgres::publish_field_in(connection, tenant, 0, &field).await.map_err(|e| sqlx::Error::Protocol(e.to_string())) })).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+    ensure!(inserted);
     let id = Uuid::new_v4();
     let bytes = b"printf '{}'";
     let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});

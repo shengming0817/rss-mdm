@@ -166,10 +166,25 @@ impl Authority {
     }
 
     pub(crate) fn router_with_public(&self, routes: Router, public: Router) -> Result<Router> {
+        let authentication = rss_mdm_management_http::authentication_routes(
+            rss_mdm_http_contract::Router::from_identity_router(self.identity.routes()),
+            rss_mdm_management_http::boundary::Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                requests: Arc::new(tokio::sync::Semaphore::new(32)),
+                host: "mdm.example.test".into(),
+                clock: monotonic(),
+                audit_store: self.audit.clone(),
+                tenant: self.identity.tenant.to_string(),
+            },
+        )
+        .into_axum();
         Ok(self
             .protect(routes)?
             .merge(public)
-            .merge(self.identity.routes()))
+            .merge(authentication)
+            .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                "127.0.0.1".parse()?,
+            ))))
     }
 
     pub(crate) fn protect(&self, routes: Router) -> Result<Router> {

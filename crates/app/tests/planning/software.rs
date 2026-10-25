@@ -269,8 +269,8 @@ async fn new_approval_changes_execution_version() -> Result<()> {
     let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
-            audit: fixture.audit.clone(), tenant,
-            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, fixture.audit.clone()),
+            audit: audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
             resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
             imports: rss_mdm_software_service::management::catalog::ImportConfig {
@@ -283,8 +283,8 @@ async fn new_approval_changes_execution_version() -> Result<()> {
     let router = fixture.router(Router::new().nest("/api/v1", routes))?;
     app_resources.finish(async {
     let mut author = fixture.browser("admin")?;
-    let mut grants = identity::device_grants(None, &["software_deploy"])?;
-    for name in ["resource_read","policy_read","policy_write","software_read","software_write","software_withdraw"] {
+    let mut grants = identity::device_grants(None, &["software_deploy", "inventory_read"])?;
+    for name in ["scope_read","resource_read","policy_read","policy_write","software_read","software_write","software_withdraw"] {
         grants.push(crate::authorization::Grant { operation: serde_json::from_value(json!(name))?, scope: crate::authorization::Scope::Tenant });
     }
     identity::seed_grants(case_tenant(), &prepared_subject(&author)?, grants).await?;
@@ -302,7 +302,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
     let store = content.as_deref().expect("software content");
     let artifact = rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new("installer")?, bytes.len() as u64, rss_mdm_resource::Digest::of(bytes))?;
     rss_mdm_content_service::fixture::artifact(store,&artifact,bytes.to_vec(),crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?+86400).await?;
-    seed_enabled(&(&planning).runtime, store, &version).await?;
+    seed_enabled(&planning.runtime, store, &version).await?;
     let scope = prepared_scope(&planning, &[]).await?;
     let authored = |intent: &str| authored(resource, scope, intent);
             let policy = Uuid::new_v4();

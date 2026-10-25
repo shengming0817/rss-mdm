@@ -55,7 +55,18 @@ impl Fixture {
                 rss_mdm_apple_channel::enrollment::CurrentPeer { device: case_device(), udid: crate::test_support::case::name("rss-t2-apple"), csr: &device.csr, certificate: &der, now: crate::clock::SystemClock.unix_seconds()? }).await?;
             let (registration, generation): (Uuid, i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active' AND purpose='primary'")
                 .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
-            apple.channel.prepare_context_fixture(&mut tx, case_tenant(), registration, generation).await?;
+            tx.commit().await?;
+            let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant));
+            let (commands, _, runtime) = crate::test_support::command::command_service(authority.audit.clone(), sessions, rss_device_command_postgres::CommandClock::Postgres).await?;
+            let operation = Uuid::new_v4();
+            let prepared = runtime.local_tx_with_context(authority.identity.tenant, crate::identity::deadline(), (&commands, &proof), |(service, proof), tx| Box::pin(async move {
+                service.seed_cancelled_apple_restart_in(tx, proof, case_device(), operation).await.map_err(|e| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))
+            })).await.fold(Ok, Err, Err, Err, Err, Err);
+            rss_runtime::ManagedResource::shutdown(&rss_mdm_execution_service::Resource(commands)).await?;
+            prepared?;
+            let mut tx = authority.pool.begin().await?;
+            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+            apple.channel.prepare_context_fixture(&mut tx, case_tenant(), registration, generation, operation).await?;
             tx.commit().await?;
             Ok(lifecycle::Peer {
                 client: reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(15)).identity(device.identity(&der)?)

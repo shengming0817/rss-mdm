@@ -686,7 +686,7 @@ MODULES['apple.push'] = replace(MODULES['apple.push'], db_mode='reuse', scope='t
 MODULES['apple.fairness'] = replace(MODULES['apple.fairness'], db_mode='reuse', scope='tenant')
 MODULES['apple.host'] = replace(MODULES['apple.host'], db_mode='fresh', scope='objects')
 
-# These cases need the production consumers; precise stop/restart tests own theirs.
+# These cases start their actual domain consumers in the case tenant.
 for name in ('planning.http',
              'planning.policy', 'planning.agent_policy', 'planning.frequency', 'planning.software', 'planning.onboarding', 'compliance.evaluation', 'compliance.recovery',
              'execution.agent.delivery', 'execution.agent.content', 'execution.agent.history',
@@ -694,14 +694,16 @@ for name in ('planning.http',
              'execution.software.content', 'execution.software.recovery',
              'windows.enrollment', 'windows.management',
              'windows.commands', 'windows.limits'):
-    MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'shared_worker'))
+    value = MODULES[name]
+    MODULES[name] = replace(value, fixtures=(*value.fixtures, 'local_worker'),
+                            scope='tenant' if value.db_mode == 'reuse' else value.scope)
 for name in ('compliance.http', 'compliance.group_input'):
     MODULES[name] = replace(MODULES[name], fixtures=(*MODULES[name].fixtures, 'local_worker'))
 
 
 def case_fixtures(module, selector, marker):
     value = MODULES[module]
-    fixtures = tuple(f for f in value.fixtures if f not in {'shared_worker', 'local_worker'})
+    fixtures = tuple(f for f in value.fixtures if f not in {'local_worker'})
     fixtures += (marker,) if marker else ()
     previous = next((p for p in value.policies if p.selector == selector),
                     CasePolicy(selector, value.db_mode, value.scope))
@@ -1724,7 +1726,7 @@ add('telemetry.storage', selectors=('telemetry::tests::explicit_installations_re
 for backend in ('postgres','timescale_shared','timescale_dedicated','click_house'):
     name='telemetry.ingress.'+backend
     base=MODULES['planning.agent_policy']
-    add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history','telemetry::ingress::postgres_baseline_recovers_original_receipts_without_overwriting_edits') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='shared_worker'),'telemetry'))),actors=base.actors,
+    add(name,selectors=(('telemetry::ingress::postgres','telemetry::ingress::postgres_current','telemetry::ingress::postgres_history','telemetry::ingress::postgres_baseline_recovers_original_receipts_without_overwriting_edits') if backend=='postgres' else ('telemetry::ingress::'+backend,)),fixtures=tuple(dict.fromkeys((*(f for f in base.fixtures if f!='local_worker'),'telemetry'))),actors=base.actors,
         sources=('crates/app/src/telemetry.rs','crates/app/src/setup/providers/telemetry.rs','crates/app/src/setup/providers/telemetry/*','crates/app/src/setup/backup.rs','crates/app/src/setup/backup/archive.rs','crates/app/src/setup/backup/telemetry.rs','crates/telemetry-service/src/*','crates/agent-channel/src/telemetry.rs','crates/management-http/src/telemetry.rs','crates/flow-service/src/planning/policies/telemetry.rs','crates/flow-service/src/resource_catalog/telemetry.rs'),
         tests=('crates/app/tests/telemetry/ingress.rs','crates/app/tests/telemetry/counter.rs','crates/app/tests/telemetry/recovery.rs',*(('crates/app/tests/telemetry/gaps.rs','crates/app/tests/telemetry/performance.rs') if backend=='postgres' else ())),support=('hack/telemetry_fixtures.py','hack/telemetry_pg_client.py','crates/app/tests/setup/telemetry_backup.rs',))
     MODULES[name]=replace(MODULES[name],scope='pair' if backend=='postgres' else 'tenant',db_mode='fresh',materials=base.materials,actors=tuple(dict.fromkeys((*base.actors,*( (('peer','admin'),) if backend=='postgres' else () )))))
@@ -1815,10 +1817,18 @@ MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_tr
 
 consume(('hack/ingress_network.py',), 'gateway.network')
 # Device Access owns the joint human/device ceremony and exact application receipts.
-add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','shared_worker'),
+add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','local_worker'),
     sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs','crates/app/tests/agent/device_access/*.rs'),support=(),actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant', fixtures=(*MODULES['device-access.http'].fixtures, 'content'))
+for selector in (
+    'agent::t2::device_access::first_binding_requires_current_device_and_human_then_stays_admin_only',
+    'agent::t2::device_access::step_up_is_atomic_with_receipts_and_concurrent_duplicates',
+    'agent::t2::device_access::binding_commit_serializes_session_revocation',
+    'agent::t2::device_access::binding_rollback_releases_session_guard',
+    'agent::t2::device_access::queries::native_discovery_uses_signed_window_continuation',
+):
+    case_fixtures('device-access.http', selector, None)
 module=MODULES['device-access.http']
 MODULES['device-access.http']=replace(module, policies=(*module.policies,CasePolicy('agent::t2::device_access::enterprise::two_rps_exchange_cancel_and_revoke','reuse','tenant',fixtures=(*module.fixtures,'idp'))),support_inputs=(*module.support_inputs,'hack/enterprise_idp.py'))
 consume(('crates/registration-service/src/enterprise.rs','crates/registration-service/src/enterprise/*','crates/registration-service/schema/enterprise.sql','crates/management-http/src/enterprise_broker.rs','crates/app/src/identity/enterprise.rs','crates/agent-wire/src/enterprise.rs','crates/agent-wire/schema/enterprise/*'),'device-access.http')
@@ -1976,6 +1986,8 @@ for name in ('encrypted_versions_replay_rewrap_and_registration_retirement', 'po
 
 # Final concrete preparation needs after shared module defaults are applied.
 for module_id, selector, fixtures, db_mode, scope, actors in (
+    ('installation.ca', 'setup::providers::step_ca::tests::unified_ca_initialization_replays_and_isolates_tenants', ('windows', 'ca_windows'), None, 'pair', ()),
+    ('assets.sources', 'assets::t2::sources::sources_resolution_and_retained_quality', MODULES['assets.sources'].fixtures, None, None, (('tenant', 'admin'), ('tenant', 'other'))),
     ('planning.http', 'planning::t2::http::console_pending_directory_and_permission_changes', ('identity',), None, None, None),
     ('planning.http', 'planning::t2::http::console_directory_pages_registered_revoked_and_pending', ('identity',), None, None, None),
     ('planning.http', 'planning::t2::http::console_collection_routes_reuse_current_policy', ('identity',), None, None, None),
@@ -2024,3 +2036,9 @@ for path, owner in (
     module = MODULES[owner]
     MODULES[owner] = replace(module, support_inputs=tuple(dict.fromkeys((*module.support_inputs, path))))
 consume(('crates/app/tests/settings/first_use.rs',), 'agent.configurations')
+
+for selector in (
+    'planning::t2::self_service::sensitive_status_rechecks_read_permissions_without_leaking_diagnostics',
+    'planning::t2::self_service::employee_request_ids_are_independent_and_unknown_is_hidden',
+):
+    case_fixtures('planning.self_service', selector, None)

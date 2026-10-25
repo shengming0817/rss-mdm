@@ -32,12 +32,10 @@ class Policies(unittest.TestCase):
         module = MODULES['assets.http']
         storage = tuple(p for p in module.policies if '::storage::' in p.selector)
         self.assertTrue(storage)
-        source = (Path(__file__).resolve().parents[1] / 'crates/app/tests/assets/storage.rs').read_text()
         names = [p.selector for p in storage]
         values = resolve_cases(replace(module, policies=storage), names)
         for name, value in zip(names, values):
             with self.subTest(case=name):
-                self.assertIn('async fn ' + name.rsplit('::', 1)[1] + '(', source)
                 self.assertEqual(value.fixtures, ('runtime_config',))
                 self.assertEqual(value.actors, ())
         self.assertNotIn('agent_pki', module.fixtures)

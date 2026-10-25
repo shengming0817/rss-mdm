@@ -733,7 +733,8 @@ mod tests {
             let input: Transition = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(serde_json::to_value(input).unwrap(), value);
         }
-        for action in [""] {
+        {
+            let action = "";
             assert!(
                 serde_json::from_value::<Transition>(serde_json::json!({
                     "id": id, "expected_revision": 2, "action": action,
@@ -759,7 +760,8 @@ mod tests {
             );
             assert_eq!(RotationState::parse(state.as_str()).unwrap(), state);
         }
-        for state in [""] {
+        {
+            let state = "";
             assert!(
                 serde_json::from_value::<Receipt>(serde_json::json!({
                     "operation": id, "revision": 2, "state": state,

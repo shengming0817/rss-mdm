@@ -56,6 +56,8 @@ impl rss_runtime::ManagedResource for AssetRuntime {
 }
 // Only asset routes and the real authentication/audit boundary; no Agent or Planning.
 struct AssetHttp {
+    assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     resources: Resources,
     router: Router,
     author: Browser,
@@ -84,7 +86,7 @@ impl AssetHttp {
         let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
             inventory,
             audit,
-            runtime,
+            runtime.clone(),
             tenant,
             Arc::new(crate::clock::SystemClock),
             &key,
@@ -95,7 +97,7 @@ impl AssetHttp {
                 "/api/v1",
                 rss_mdm_management_http::assets::routes()
                     .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                        assets,
+                        assets: assets.clone(),
                     }))
                     .into_axum(),
             )
@@ -110,6 +112,8 @@ impl AssetHttp {
         crate::test_support::identity::seed_grants(case_tenant(), &author_id, grants.clone())
             .await?;
         Ok(Self {
+            assets,
+            runtime,
             resources: authority.resources,
             router,
             author,

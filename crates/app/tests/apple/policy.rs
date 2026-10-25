@@ -101,8 +101,8 @@ impl Fixture {
     ) -> Result<(Uuid, Uuid)> {
         let resource = Uuid::new_v4();
         crate::test_support::planning_http::native_configuration_resource(
-            &(&self.planning).runtime,
-            (&self.planning).tenant,
+            &self.planning.runtime,
+            self.planning.tenant,
             self.commands.content.as_deref().expect("native content"),
             resource,
             "macos",
@@ -131,6 +131,48 @@ impl Fixture {
     }
     // Retained prerequisite facts; control admission and response intake are tested separately.
     pub(super) async fn native_context(&mut self) -> Result<()> {
+        crate::test_support::identity::seed_grants(
+            case_tenant(),
+            crate::test_support::case::admin(),
+            Self::native_grants(&["device_control"])?,
+        )
+        .await?;
+        let secret = crate::test_support::identity::credential(&self.authority.identity, "admin")?;
+        let session = self
+            .authority
+            .identity
+            .authority
+            .inspect_session(
+                self.authority.identity.tenant,
+                secret,
+                crate::identity::deadline(),
+            )
+            .await?;
+        let proof = crate::authorization::context::AuthorizedPrincipal::new(session)?
+            .load_authorization(&self.authority.authorization)
+            .await?;
+        let operation = Uuid::new_v4();
+        self.commands
+            .runtime
+            .local_tx_with_context(
+                self.authority.identity.tenant,
+                crate::identity::deadline(),
+                (&self.commands.service, &proof),
+                |(service, proof), tx| {
+                    Box::pin(async move {
+                        service
+                            .seed_cancelled_apple_restart_in(tx, proof, case_device(), operation)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })
+                    })
+                },
+            )
+            .await
+            .fold(Ok, Err, Err, Err, Err, Err)?;
         let mut db =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
@@ -144,7 +186,7 @@ impl Fixture {
         self.apple
             .as_ref()
             .channel
-            .prepare_context_fixture(&mut tx, case_tenant(), registration, generation)
+            .prepare_context_fixture(&mut tx, case_tenant(), registration, generation, operation)
             .await?;
         tx.commit().await?;
         db.close().await?;
@@ -160,7 +202,7 @@ impl Fixture {
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
-        crate::test_support::planning_http::native_configuration_resource(&(&self.planning).runtime, (&self.planning).tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
+        crate::test_support::planning_http::native_configuration_resource(&self.planning.runtime, self.planning.tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
             json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();

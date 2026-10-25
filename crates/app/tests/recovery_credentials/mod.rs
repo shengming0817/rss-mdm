@@ -343,7 +343,7 @@ async fn login_and_device_permission_are_sufficient_over_real_http() -> Result<(
 async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
-        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .connect_with(crate::device::test_support::options("mdm_access")?)
         .await?;
     let mut resources = Resources::default();
     resources.resource(PoolResource(pool.clone()));
@@ -377,19 +377,19 @@ async fn encrypted_versions_replay_rewrap_and_registration_retirement() -> Resul
 async fn postgres_backup_restores_material_only_with_the_correct_key() -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
-        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .connect_with(crate::device::test_support::options("mdm_access")?)
         .await?;
     let mut resources = Resources::default();
     resources.resource(PoolResource(pool.clone()));
     resources.finish(async{
         let ring=keys("first",true);let device=case::name("recovery-backup");
         let secret="backup-recovery-canary-2789";let c=seed(&pool,&ring,device,secret).await?;
-        let config:Config=serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        let container=std::env::var("MDM_TEST_PG_CONTAINER")?;
-        let dump=command(&["exec","-i",&container,"pg_dump","-U","postgres","-d",&config.access_database.name,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
+        let config:Value=serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
+        let container=config["container"].as_str().context("PG container")?;
+        let dump=command(&["exec","-i",container,"pg_dump","-U","postgres","-d",config["database"].as_str().context("PG database")?,"--data-only","--schema=mdm_recovery","--disable-triggers","--no-owner","--no-privileges"],None)?;
         ensure!(!dump.contains(secret));
         pg("TRUNCATE mdm_recovery.disclosures,mdm_recovery.rss_login_uses,mdm_recovery.agent_materials,mdm_recovery.native_actions,mdm_recovery.agent_guards,mdm_recovery.versions,mdm_recovery.entries")?;
-        command(&["exec","-i",&container,"psql","-Xq","-U","postgres","-d",&config.access_database.name,"-v","ON_ERROR_STOP=1"],Some(&dump))?;
+        command(&["exec","-i",container,"psql","-Xq","-U","postgres","-d",config["database"].as_str().context("PG database")?,"-v","ON_ERROR_STOP=1"],Some(&dump))?;
         let mut tx=begin(&pool).await?;
         storage::validate_keys_in(&mut tx,c.tenant,&ring).await?;
         ensure!(storage::secret_in(&mut tx,&ring,&c).await?.expose()==secret.as_bytes());
@@ -407,7 +407,7 @@ async fn unknown_candidates_block_rotation_and_retention_preserves_unresolved_ma
 -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
-        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .connect_with(crate::device::test_support::options("mdm_access")?)
         .await?;
     let mut resources = Resources::default();
     resources.resource(PoolResource(pool.clone()));
@@ -447,7 +447,7 @@ async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked
 -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
-        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .connect_with(crate::device::test_support::options("mdm_access")?)
         .await?;
     let mut resources = Resources::default();
     resources.resource(PoolResource(pool.clone()));
@@ -486,7 +486,7 @@ async fn retention_sweep_skips_protected_registrations_and_advances_past_blocked
 async fn unescrowed_agent_mutation_protects_retired_material_from_expiry() -> Result<()> {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
-        .connect_with(identity::config(case_tenant())?.access_options()?)
+        .connect_with(crate::device::test_support::options("mdm_access")?)
         .await?;
     let mut resources = Resources::default();
     resources.resource(PoolResource(pool.clone()));

@@ -323,6 +323,9 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
     );
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         for operation in [crate::authorization::Permission::EnterpriseApplicationsWrite,crate::authorization::Permission::EnterpriseApplicationsRead]{f.grants.push(crate::authorization::Grant{operation,scope:crate::authorization::Scope::Tenant});}
         let binding=ready(&mut f).await?;
         let users=admin(&client,&admin_base,&token,reqwest::Method::GET,"/users?username=alice&exact=true",None).await?;let user=users[0]["id"].as_str().context("stable IdP subject")?;
@@ -413,5 +416,9 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
         let pending=f.author.call(&f.router,Method::GET,&operation_path,None).await?;ensure!(pending.1["complete"]==false,"offline native effects still require confirmation");
         ensure!(!backend(&f.router,"rp-b",&secrets[1],&format!("sessions/{}",sessions[1]),None).await?.0.is_success());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }

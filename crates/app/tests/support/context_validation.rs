@@ -40,7 +40,4 @@ fn rejects_malformed_and_incomplete_contract_before_consumption() {
     let mut value = CaseContext::decode(&bytes, Phase::Preparing).unwrap();
     value.actors_mut()[0].principal = Some("44444444-4444-4444-8444-444444444444".into());
     assert!(CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Ready).is_ok());
-    let mut value = serde_json::to_value(value).unwrap();
-    value["fixtures"] = serde_json::json!(["identity", "local_worker", "shared_worker"]);
-    assert!(CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Ready).is_err());
 }

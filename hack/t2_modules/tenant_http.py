@@ -400,13 +400,17 @@ class AckProxy:
         def transfer(source,target,backward):
             try:
                 while not self.stop.is_set():
-                    data = source.recv(16384)
+                    try: data = source.recv(16384)
+                    except socket.timeout: continue
                     if not data: break
                     if not backward or not self.discard.is_set(): target.sendall(data)
             except OSError:
                 pass
             finally:
-                source.close(); target.close()
+                for connection in (source, target):
+                    try: connection.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    connection.close()
         def accept():
             while not self.stop.is_set():
                 try: client,_ = self.listener.accept()
@@ -417,7 +421,8 @@ class AckProxy:
                 except OSError:
                     client.close()
                     continue
-                client.settimeout(15)
+                client.settimeout(0.2)
+                server.settimeout(0.2)
                 with self.lock:
                     if self.stop.is_set():
                         client.close();server.close();break

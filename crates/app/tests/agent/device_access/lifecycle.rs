@@ -5,6 +5,9 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let id=enterprise::ready(&mut f).await?;let person=f.author_id.clone();
         let list=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
         ensure!(list.0==StatusCode::OK,"bindings {list:?}");
@@ -38,6 +41,10 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         let stale=f.author.call(&f.router,Method::POST,&format!("{status_path}/identity"),Some(json!({"kind":"execute"}))).await?;
         ensure!(!stale.0.is_success(),"old offboarding reopened");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -46,6 +53,9 @@ async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         f.grants.extend(crate::test_support::identity::device_grants(None,&["credentials"])?);
         let binding=enterprise::ready(&mut f).await?;
         let device=execution::case_device_id();
@@ -66,5 +76,9 @@ async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -
         ensure!(unbound.0==StatusCode::OK,"unbind {unbound:?}");
         ensure!(!f.author.call(&f.router,Method::POST,&secret_path,Some(body)).await?.0.is_success());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }

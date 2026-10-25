@@ -258,17 +258,28 @@ async fn template_flow(
         post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     } else {
         crate::test_support::planning_http::seed_native_template(
-            &(&host.planning).runtime,
-            (&host.planning).tenant,
+            &host.planning.runtime,
+            host.planning.tenant,
             id,
             rss_mdm_resource::Platform::Windows,
             template,
         )
         .await?;
-        ensure!(
-            upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
-                == StatusCode::CREATED
-        );
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("native-template")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(&bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            host.commands
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("native content"))?,
+            &artifact,
+            bytes.clone(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
         crate::test_support::agent_execution::seed_scope(
             &host.planning,
             scope,

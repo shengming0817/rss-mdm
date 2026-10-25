@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from candidate_fixture import INSTANCE, ADMIN
 from t2_context import contexts, installation, registration_tenants, validate
 from t2_database import Costs, DatabasePool, measure
-from t2_hosts import Host, compatibility
 from t2_environment import Environment, private, run
 from t2_registry import PREPARATION
 from s3_fixtures import S3Environment
@@ -51,8 +50,6 @@ class RunFixtures:
         self.identity_locks = {}
         self.actor_batches = {}
         self.actors = {}
-        self.hosts = {}
-        self.host_locks = {}
         self.recovery_material = None
         self.materials = {}
         self.material_locks = {}
@@ -88,15 +85,6 @@ class RunFixtures:
 
     def cleanup_environments(self, phase='run-cleanup'):
         errors = []
-        for host in self.hosts.values():
-            if isinstance(host, BaseException):
-                continue
-            try:
-                with measure(self.costs, phase, host=host.address, hostLog=str(host.log_path)):
-                    host.close()
-            except Exception as error:
-                errors.append(error)
-        self.hosts.clear()
         for pool in (self.normal, self.fault):
             if pool.ready:
                 pool.sample_connections(list(pool.shared.values()))
@@ -408,62 +396,6 @@ class RunFixtures:
         self.prepare_materials('pki-' + purpose, directory)
         offline(directory, root, env, purpose)
 
-    @contextmanager
-    def workers(self, job, database, config):
-        pool = self.fault if job.module.db_mode == 'instance' else self.normal
-        tenant = self.case_contexts[job.key]['tenant']
-        # Full serve also owns the installation's management-tenant projector.
-        # A physical database has one full host, irrespective of the business tenant.
-        key = (pool.owner.project, pool.generation, database)
-        signature = compatibility(config)
-        with self.lock:
-            lock = self.host_locks.setdefault(key, threading.Lock())
-        with measure(self.costs, 'host-wait', database=database, tenant=tenant):
-            while not lock.acquire(timeout=.05):
-                self.builds.processes.check()
-        try:
-            self.builds.processes.check()
-            host = self.hosts.get(key)
-            if isinstance(host, BaseException):
-                raise DependencyBlocked('host preparation previously failed', host) from host
-            try:
-                if host is not None:
-                    host.check()
-                if host is not None and host.signature != signature:
-                    # Keep ownership if shutdown fails; never publish a second owner.
-                    host.close()
-                    del self.hosts[key]
-                    host = None
-                if host is None:
-                    output = self.output / 'hosts' / database / tenant / job.key
-                    try:
-                        with measure(self.costs, 'host-start', database=database, tenant=tenant):
-                            host = Host(self.builds, config, output)
-                        host.signature = signature
-                        self.hosts[key] = host
-                        self.costs.increment('hostStarts', 1)
-                    except BaseException as error:
-                        error.root_cause = str(output / 'host.log')
-                        self.hosts[key] = error
-                        raise
-                with self.builds.processes.depending_on(host.check):
-                    yield host
-            except BaseException as error:
-                if host is not None and host.failed.is_set():
-                    error.root_cause = str(host.log_path.with_name('failure.json'))
-                    self.hosts[key] = error
-                    with self.builds.processes.cleanup():
-                        host.close()
-                raise
-            finally:
-                if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
-                    if self.hosts.get(key) is host:
-                        with self.builds.processes.cleanup():
-                            host.close()
-                        del self.hosts[key]
-        finally:
-            lock.release()
-
     def source_tls(self, root):
         with self.lock:
             self.certificates.prepare_inputs()
@@ -506,7 +438,7 @@ class RunFixtures:
         pool = self.fault if job.module.db_mode == 'instance' else self.normal
         return dict(database=None, tenant=context['tenant'], peer=context['peer'],
                     pg=pool.owner.project if job.module.postgres else None,
-                    pgGeneration=None, host=None, hostLog=None)
+                    pgGeneration=None)
 
     @contextmanager
     def scenario(self, job, output, receipt):
@@ -625,10 +557,6 @@ class RunFixtures:
             # Runtime authority revisions must exist before a real host consumes them.
             if 'identity' in module.fixtures:
                 self.prepare_identity(pool, database, job, output / 'identity-setup')
-            if 'shared_worker' in module.fixtures:
-                host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
-                receipt['environment']['hostLog'] = str(host.log_path.relative_to(self.output))
-                receipt['environment']['host'] = host.address
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))

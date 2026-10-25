@@ -113,6 +113,8 @@ impl Fixture {
         let tenant = authority.identity.tenant;
         let runtime = crate::planning::test_support::runtime(tenant).await;
         resources.resource(SourceResource(runtime.clone()));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
         let clock = Arc::new(crate::clock::SystemClock);
         let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
         if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
@@ -120,15 +122,15 @@ impl Fixture {
         let content_access = Arc::new(rss_mdm_content_service::service::Access {
             sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
             authorization: authority.authorization.clone(), runtime: runtime.clone(),
-            audit_store: authority.audit.clone(), tenant, content: content.clone(),
+            audit_store: audit.clone(), tenant, content: content.clone(),
             clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: reader,
         });
         let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?);
         let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
         let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
             runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
-            audit: authority.audit.clone(), tenant,
-            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, authority.audit.clone()),
+            audit: audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
             resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
             content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
             imports: rss_mdm_software_service::management::catalog::ImportConfig {
@@ -136,7 +138,7 @@ impl Fixture {
                 transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
             },
         });
-        let catalog = crate::flow::catalog(authority.audit.clone(), runtime.clone(), tenant, clock).await?;
+        let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
         let router = authority.router(Router::new().nest("/api/v1",
             rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
                 rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
@@ -311,12 +313,15 @@ impl Fixture {
         };
         let operation = Uuid::new_v4();
         let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-        let budget = store.upload_budget()?;
-        store.begin(operation, binding, now, budget).await?;
-        store
-            .append(&self.subject, operation, 0, now, bytes, budget)
+        rss_mdm_content_service::fixture::artifact(store, &artifact, bytes.to_vec(), now + 86400)
             .await?;
-        let upload = store.finish(&self.subject, operation, now, budget).await?;
+        let upload = rss_mdm_content_service::Upload {
+            id: operation,
+            binding,
+            offset: bytes.len() as u64,
+            expires: now + 86400,
+            complete: true,
+        };
         self.runtime
             .local_tx(
                 rss_request_context::TenantId::parse(case_tenant())?,

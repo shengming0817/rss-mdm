@@ -69,7 +69,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     }
     identity::seed_grants(case_tenant(), &member, grants).await?;
     let resource = Uuid::new_v4();
-    native_configuration_resource(&(&planning).runtime, (&planning).tenant, content.as_deref().expect("native content"),
+    native_configuration_resource(&planning.runtime, planning.tenant, content.as_deref().expect("native content"),
         resource,
         "windows",
         "x86_64",
@@ -91,12 +91,10 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let scope = uuid::Uuid::new_v4();
     let group_path = format!("/api/v1/groups/{group}");
     let devices = (1..=65).map(|n| format!("{prefix}-{n}")).collect::<Vec<_>>();
-    let members = devices.clone();
-    runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
-        rss_mdm_group_postgres::fixture::static_members_in(tx, rss_mdm_group_postgres::GroupId::parse(&group.to_string()).unwrap(),
-            json!({"name":"scale","description":""}).as_object().unwrap().clone(), members, rss_contract::Timepoint::try_from(1_i64).unwrap()).await
-    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
     let automation = start_automation(&fixture.base).await?;
+    await_ingress().await?;
+    call(browser, router, &group_path, 0, json!({"action":"create","assetContext":"endpoint","presentation":{"name":"scale","description":""},"criteria":null})).await?;
+    call(browser, router, &group_path, 1, json!({"action":"members","add":devices.iter().map(|id|json!({"kind":"endpoint","id":id})).collect::<Vec<_>>(),"remove":[]})).await?;
     call(browser,router,&group_path,2,json!({"action":"members","add":[],"remove":[{"kind":"endpoint","id":devices[1]}]})).await?;
     let retained=browser.call(router,Method::GET,&format!("/api/v1/devices/{}/groups",devices[0]),None).await?;
     ensure!(retained.0==StatusCode::OK && retained.1["items"][0]["id"]==group.to_string(),"sparse membership lost unchanged endpoint: {retained:?}");

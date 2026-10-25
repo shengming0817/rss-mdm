@@ -210,7 +210,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let bootstrap_peer = crate::test_support::bootstrap::prepare_apple(
         &f.commands.runtime,
         &f.commands.protection,
-        &agent_channel,
+        agent_channel,
         &f.authority.audit,
         f.agent_enrollment.as_ref().context("Agent enrollment")?,
         &f.router,
@@ -372,6 +372,7 @@ async fn next_after_cooldown(
 #[ignore = "MODULE=apple.onboarding: native bundle evidence never verifies the publisher"]
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent().await?;
+    let owner = f.policy_worker().await?;
     let (peer, device) = f.ready_local_peer().await?;
     setup::publish_macos_release(
         &mut f.browser,
@@ -424,6 +425,7 @@ async fn collected_bundle_presence_remains_unknown() -> Result<()> {
         }
     }).await??;
     drop(device);
+    ensure!(owner.shutdown().join().await?.is_clean());
     f.close().await
 }
 

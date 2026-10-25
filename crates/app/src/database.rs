@@ -267,6 +267,10 @@ impl Database {
 pub(crate) async fn verify_product_storage(
     connection: &mut sqlx::PgConnection,
 ) -> Result<(), sqlx::Error> {
+    // Deparsers must not abbreviate same-name schemas through the role's "$user" path.
+    sqlx::query("SET LOCAL search_path=pg_catalog,public")
+        .execute(&mut *connection)
+        .await?;
     let actual: String = sqlx::query_scalar(include_str!("product-storage.sql"))
         .fetch_one(connection)
         .await?;

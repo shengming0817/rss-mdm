@@ -385,11 +385,11 @@ async fn admission_rejects_catalog_and_security_drift() {
         ),
         (
             "ALTER POLICY tenant ON mdm_group.groups USING (true)",
-            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
         ),
         (
             "ALTER POLICY tenant ON mdm_group.groups WITH CHECK (true)",
-            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+            "DROP POLICY tenant ON mdm_group.groups; CREATE POLICY tenant ON mdm_group.groups USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
         ),
         (
             "CREATE POLICY extra ON mdm_group.groups USING (true)",
@@ -461,7 +461,7 @@ async fn admission_rejects_catalog_and_security_drift() {
         );
         GroupStore::new(runtime.clone(), tenant(), deadline())
             .await
-            .unwrap();
+            .unwrap_or_else(|e| panic!("restore {restore}: {e:?}"));
     }
     runtime.close().await;
 }

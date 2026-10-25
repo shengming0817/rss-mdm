@@ -24,10 +24,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     )
     .await?;
     let query = json!({"sort":[{"field":"custom.office_floor"}],"fields":["custom.office_floor"]});
-    let result = ok(
+    let result = query_and_project(
+        &fixture,
         &mut browser,
-        router,
-        Method::POST,
         "/api/v1/device-queries",
         Some(query),
     )
@@ -87,10 +86,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             == receipt
     );
     ensure!(
-        ok(
+        query_and_project(
+            &fixture,
             &mut browser,
-            router,
-            Method::POST,
             &format!("{saved_path}/execute"),
             Some(json!({}))
         )
@@ -199,10 +197,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
             == StatusCode::FORBIDDEN
     );
     ensure!(
-        ok(
+        query_and_project(
+            &fixture,
             &mut browser,
-            router,
-            Method::POST,
             "/api/v1/device-queries",
             Some(json!({}))
         )
@@ -230,10 +227,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     )
     .await?;
     ensure!(old["asset"]["items"] == frozen);
-    let fresh = ok(
+    let fresh = query_and_project(
+        &fixture,
         &mut browser,
-        router,
-        Method::POST,
         "/api/v1/device-queries",
         Some(json!({"filter":"custom.office_floor==4","fields":["custom.office_floor"]})),
     )
@@ -287,10 +283,9 @@ async fn query_snapshots_saved_ownership_and_stable_pagination() -> Result<()> {
     }
     for descending in [false, true] {
         let query = json!({"filter":"custom.office_floor==99","sort":[{"field":"custom.office_floor","descending":descending}]});
-        let result = ok(
+        let result = query_and_project(
+            &fixture,
             &mut browser,
-            router,
-            Method::POST,
             "/api/v1/device-queries",
             Some(query),
         )
@@ -390,7 +385,9 @@ async fn maximum_sort_keys_page_through_the_same_immutable_result() -> Result<()
             if composite {
                 sort.push(json!({"field":"custom.office_floor"}));
             }
-            let created = ok(&mut browser, router, Method::POST, "/api/v1/device-queries", Some(json!({"filter":format!("{field}=isnotnull=true"),"sort":sort,"fields":[field]}))).await?;
+            let created = query_and_project(
+        &fixture,
+        &mut browser, "/api/v1/device-queries", Some(json!({"filter":format!("{field}=isnotnull=true"),"sort":sort,"fields":[field]}))).await?;
             let task = created["asset"]["snapshot"]
                 .as_str()
                 .context("query task")?;
@@ -462,18 +459,16 @@ async fn maximum_saved_filter_reads_executes_and_saves_again() -> Result<()> {
         ensure!(written["asset"]["query"] == read["asset"]["query"]);
         let definition = read["asset"]["query"]["definition"].clone();
         ensure!(definition["query"]["filter"] == filter);
-        let direct = ok(
+        let direct = query_and_project(
+            &fixture,
             &mut browser,
-            router,
-            Method::POST,
             "/api/v1/device-queries",
             Some(definition["query"].clone()),
         )
         .await?;
-        let saved = ok(
+        let saved = query_and_project(
+            &fixture,
             &mut browser,
-            router,
-            Method::POST,
             &format!("{path}/execute"),
             Some(json!({})),
         )
@@ -738,4 +733,105 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
             == StatusCode::CONFLICT
     );
     fixture.close().await
+}
+
+// These query tests explicitly project their accepted task; polling helpers remain read-only.
+pub(super) async fn query_and_project(
+    fixture: &AssetHttp,
+    browser: &mut Browser,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value> {
+    use rss_mdm_inventory_service::tasks::Tasks;
+    let (status, accepted) = browser
+        .call(
+            &fixture.router,
+            Method::POST,
+            path,
+            Some(request(
+                if path.ends_with("/execute") { 1 } else { 0 },
+                body.unwrap_or_else(|| json!({})),
+            )),
+        )
+        .await?;
+    ensure!(
+        status == StatusCode::ACCEPTED,
+        "query acceptance: {status} {accepted}"
+    );
+    let status_url = accepted["asset"]["statusUrl"]
+        .as_str()
+        .context("query status URL")?;
+    let task = Uuid::parse_str(status_url.rsplit('/').next().context("task")?)?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    loop {
+        let assets = fixture.assets.clone();
+        let done = fixture
+            .runtime
+            .local_tx(tenant, crate::identity::deadline(), move |tx| {
+                Box::pin(async move {
+                    let (job, done, failure, cursor, _) =
+                        crate::automation::inventory_tasks::InventoryTasks
+                            .read(tx, task)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })?;
+                    if let Some(failure) = failure {
+                        return Err(rss_transactional_messaging_postgres::PgError::from(
+                            sqlx::Error::Protocol(failure),
+                        ));
+                    }
+                    if !done {
+                        let rss_mdm_inventory_service::tasks::JobInput::AssetQuery {
+                            scope, ..
+                        } = &job
+                        else {
+                            unreachable!()
+                        };
+                        let partition = rss_mdm_audit_integration::source_partition(
+                            tenant,
+                            "mdm",
+                            &scope.subject,
+                        )
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })?;
+                        tx.prepare_outbox_partitions(&[partition]).await?;
+                        assets
+                            .advance_asset_query_in(tx, task, &job, cursor)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })?;
+                    }
+                    Ok(done)
+                })
+            })
+            .await
+            .fold(
+                Ok,
+                |e| Err(anyhow::anyhow!(e)),
+                |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("query rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("query commit unconfirmed")),
+                |e| Err(anyhow::anyhow!(e)),
+            )?;
+        if done {
+            break;
+        }
+    }
+    ok(
+        browser,
+        &fixture.router,
+        Method::GET,
+        &format!("{status_url}/items"),
+        None,
+    )
+    .await
 }

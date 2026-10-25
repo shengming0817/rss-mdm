@@ -173,6 +173,7 @@ class PreparationTests(unittest.TestCase):
         fixture.apple_recovery_test = recovery
         fixture.normal = Mock()
         fixture.normal.owner.project = 'normal'
+        fixture.normal.owner.identity = fixture.s3.owner.identity
         fixture.normal.ready = False
         fixture.fault = Mock()
         fixture.fault.owner.project = 'fault'
@@ -220,6 +221,7 @@ class PreparationTests(unittest.TestCase):
             job = Invocation(module, Case(module.build, 'test', '/test', 'artifact'))
             with patch('s3_fixtures.run') as run, \
                  patch('t2_fixtures.owned_by', return_value=nullcontext()), \
+                 patch('t2_fixtures.run', return_value=SimpleNamespace(stdout='')), \
                  patch.object(fixture.s3, 'prepare') as prepare:
                 run.side_effect = [SimpleNamespace(stdout='prior'), SimpleNamespace(stdout=json.dumps([info])),
                                    None, SimpleNamespace(stdout='')]
@@ -238,7 +240,8 @@ class PreparationTests(unittest.TestCase):
             info = {'Name': '/' + fixture.s3.name, 'Config': {'Labels': {
                 'rss.mdm.worktree': 'foreign', 'rss.mdm.fixture': 'content-s3'}}}
             with patch('s3_fixtures.run') as run, \
-                 patch('t2_fixtures.owned_by', return_value=nullcontext()):
+                 patch('t2_fixtures.owned_by', return_value=nullcontext()), \
+                 patch('t2_fixtures.run', return_value=SimpleNamespace(stdout='')):
                 run.side_effect = [SimpleNamespace(stdout='foreign'), SimpleNamespace(stdout=json.dumps([info]))]
                 with self.assertRaisesRegex(RuntimeError, 'clean owned'):
                     with fixture:
@@ -281,6 +284,7 @@ class PreparationTests(unittest.TestCase):
             for name in ('ca.crt', 'server.crt', 'server.key'):
                 (fixture.fault.owner.root / name).write_text(name)
             fixture.fault.owner.port.return_value = 5432
+            fixture.fault.owner.container.return_value = 'isolated-pg'
             fixture.fault.config.return_value = {'database': 'isolated'}
             phases = []
             @contextmanager
@@ -515,7 +519,7 @@ class PreparationBatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = RunFixtures(Mock(), Path(tmp), 2)
             self.addCleanup(fixture.cert_directory.cleanup)
-            module = replace(MODULES['execution.agent.content'], actors=(('tenant', 'admin'),))
+            module = replace(MODULES['execution.agent.content'], scope='objects', fixtures=('identity', 'stable_admin'), actors=(('tenant', 'admin'),))
             jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(3)]
             fixture.prepare(jobs)
             shared = fixture.root / 'shared'
@@ -547,7 +551,7 @@ class PreparationBatchTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(len({fixture.case_contexts[j.key]['actors'][0]['principal'] for j in jobs}), 1)
 
-    def test_gateway_product_worker_has_a_distinct_tenant_from_shared_workers(self):
+    def test_gateway_product_host_has_a_distinct_tenant_from_domain_workers(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = RunFixtures(Mock(), Path(tmp), 2)
             self.addCleanup(fixture.cert_directory.cleanup)
@@ -558,121 +562,3 @@ class PreparationBatchTests(unittest.TestCase):
             contexts = [fixture.case_contexts[job.key] for job in jobs]
             self.assertNotEqual(contexts[0]['tenant'], contexts[1]['tenant'])
             self.assertEqual(jobs[0].module.profile, jobs[1].module.profile)
-            self.assertNotIn('shared_worker', gateway.fixtures)
-
-    def test_host_start_does_not_hold_global_resource_lock_and_failure_is_shared(self):
-        import threading
-        from concurrent.futures import ThreadPoolExecutor
-        with tempfile.TemporaryDirectory() as tmp:
-            fixture = RunFixtures(Mock(), Path(tmp), 2)
-            self.addCleanup(fixture.cert_directory.cleanup)
-            module = MODULES['execution.agent.content']
-            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(2)]
-            fixture.prepare(jobs)
-            entered = threading.Event()
-            release = threading.Event()
-            failure = RuntimeError('original host failure')
-            failure.root_cause = str(Path(tmp) / 'host.log')
-            def start(*args):
-                entered.set()
-                if not release.wait(3):
-                    raise TimeoutError('test stalled')
-                raise failure
-            def run(job):
-                with fixture.workers(job, 'db', 'config'):
-                    self.fail('failed host was published')
-            with patch('t2_fixtures.compatibility', return_value='same'), patch('t2_fixtures.Host', side_effect=start) as host:
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    first = executor.submit(run, jobs[0])
-                    self.assertTrue(entered.wait(3))
-                    self.assertTrue(fixture.lock.acquire(timeout=1))
-                    fixture.lock.release()
-                    second = executor.submit(run, jobs[1])
-                    release.set()
-                    with self.assertRaises(RuntimeError) as original:
-                        first.result(timeout=3)
-                    self.assertIs(original.exception, failure)
-                    with self.assertRaises(DependencyBlocked) as blocked:
-                        second.result(timeout=3)
-                    self.assertIs(blocked.exception.__cause__, failure)
-                    self.assertEqual(blocked.exception.root_cause, failure.root_cause)
-                self.assertEqual(host.call_count, 1)
-
-
-class HostOwnershipTests(unittest.TestCase):
-    def test_different_tenants_and_configs_never_overlap_full_hosts(self):
-        import threading
-        from concurrent.futures import ThreadPoolExecutor
-        from types import SimpleNamespace
-        from t2_execution import Processes
-        with tempfile.TemporaryDirectory() as tmp:
-            processes = Processes()
-            fixture = RunFixtures(SimpleNamespace(processes=processes), Path(tmp), 2)
-            self.addCleanup(fixture.cert_directory.cleanup)
-            module = MODULES['execution.agent.content']
-            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(2)]
-            fixture.prepare(jobs)
-            fixture.case_contexts[jobs[1].key]['tenant'] = 'other-tenant'
-            held, release, second = threading.Event(), threading.Event(), threading.Event()
-            live = []
-            class Worker:
-                def __init__(self, builds, config, output):
-                    if live:
-                        raise AssertionError('overlapping physical database owner')
-                    live.append(self)
-                    self.failed = threading.Event()
-                    self.address, self.log_path = config, output / 'host.log'
-                def check(self):
-                    pass
-                def close(self):
-                    live.remove(self)
-            def run(index):
-                with fixture.workers(jobs[index], 'db', str(index)):
-                    if index == 0:
-                        held.set()
-                        if not release.wait(3):
-                            raise TimeoutError('first borrow not released')
-                    else:
-                        second.set()
-            with patch('t2_fixtures.compatibility', side_effect=lambda value: value), patch('t2_fixtures.Host', Worker):
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    first = executor.submit(run, 0)
-                    self.assertTrue(held.wait(3))
-                    next_case = executor.submit(run, 1)
-                    self.assertFalse(second.wait(.1))
-                    release.set()
-                    first.result(timeout=3)
-                    next_case.result(timeout=3)
-                self.assertTrue(second.is_set())
-                for host in fixture.hosts.values():
-                    host.close()
-
-
-    def test_dead_retained_host_blocks_different_configuration_without_restart(self):
-        import threading
-        from t2_execution import Processes
-        with tempfile.TemporaryDirectory() as tmp:
-            fixture = RunFixtures(SimpleNamespace(processes=Processes()), Path(tmp), 2)
-            self.addCleanup(fixture.cert_directory.cleanup)
-            module = replace(MODULES['execution.agent.content'], scope='objects')
-            jobs = [Invocation(module, Case(module.build, 'test', '/test', str(i))) for i in range(3)]
-            fixture.prepare(jobs)
-            host = Mock(failed=threading.Event(), log_path=Path(tmp) / 'host.log')
-            def check():
-                if host.failed.is_set():
-                    raise RuntimeError('unexpected exit')
-            host.check.side_effect = check
-            with patch('t2_fixtures.compatibility', side_effect=lambda value: value), patch('t2_fixtures.Host', return_value=host) as start:
-                with fixture.workers(jobs[0], 'db', 'first'):
-                    pass
-                host.close.assert_not_called()
-                host.failed.set()
-                with self.assertRaisesRegex(RuntimeError, 'unexpected exit'):
-                    with fixture.workers(jobs[1], 'db', 'changed'):
-                        self.fail('dead host was replaced')
-                with self.assertRaises(DependencyBlocked) as blocked:
-                    with fixture.workers(jobs[2], 'db', 'third'):
-                        self.fail('failed generation was reused')
-                start.assert_called_once()
-                host.close.assert_called_once()
-                self.assertEqual(blocked.exception.root_cause, str(Path(tmp) / 'failure.json'))

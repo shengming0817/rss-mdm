@@ -79,7 +79,7 @@ impl Client {
             execution_runtime: commands.runtime.clone(),
             audit_store: audit,
             tenant: identity.tenant,
-            clock: clock,
+            clock,
             protection: commands.protection.clone(),
             sessions: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(

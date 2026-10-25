@@ -217,9 +217,9 @@ impl crate::Apple {
         tenant: &str,
         registration: Uuid,
         generation: i64,
+        operation: Uuid,
     ) -> Result<(), Error> {
         use crate::protection::{self, Part};
-        let operation = Uuid::new_v4();
         let mut device_report = None;
         for (phase, request, root, fields) in [
             (

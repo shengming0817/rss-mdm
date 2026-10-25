@@ -24,6 +24,12 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let base: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     let mut fixture = agent::Fixture::from_config(base).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        &fixture.author_id,
+        fixture.grants.clone(),
+    )
+    .await?;
     fixture.register().await?;
     let (resource, _, _) = fixture.resource().await?;
     fixture

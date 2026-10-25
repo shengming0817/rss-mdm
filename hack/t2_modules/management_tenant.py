@@ -171,7 +171,7 @@ def http_authority(fixture):
         delegate_id,delegate_login,login,write,rule,operations = h.delegate_id,h.delegate_login,h.login,h.write,h.rule,h.operations
         api='/api/v1/identity/tenants/'+management
         business_api='/api/v1/identity/tenants/'+business
-        protected=json.loads(sql(f"SELECT jsonb_build_object('id',r.id,'revision',r.revision) FROM mdm_access.authorization_initializations i JOIN mdm_access.authorization_operations o ON(o.tenant_id,o.instance,o.operation_id,o.actor)=(i.tenant_id,i.instance,i.operation_id,i.principal::text) JOIN mdm_access.authorization_rules r ON(r.tenant_id,r.instance,r.id)=(i.tenant_id,i.instance,(o.result::jsonb->>'id')::uuid) WHERE i.tenant_id='{management}' AND i.instance='{INSTANCE}'"))
+        protected=json.loads(sql(f"SELECT jsonb_build_object('id',r.id,'revision',r.revision) FROM mdm_access.authorization_initializations i JOIN mdm_access.authorization_rules r ON(r.tenant_id,r.instance)=(i.tenant_id,i.instance) AND r.document->'subject'->'user'->>'principalId'=i.principal::text WHERE i.tenant_id='{management}' AND i.instance='{INSTANCE}'"))
         status, host_context = admin.call('GET', '/api/v1/identity-host/tenants/' + management + '/context')
         require(status == 200 and host_context['tenantId'] == management and host_context['principalId'] == ADMIN
                 and host_context['navigation']['manageAccounts'] and not host_context['navigation']['manageProviders'],

@@ -46,12 +46,12 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
             .await;
         runtime.close().await;
         owner.close().await;
-        pg(&if original.is_empty() {
+        pg(&if original.trim().is_empty() {
             format!("ALTER ROLE {role} RESET default_transaction_isolation")
         } else {
             format!(
                 "ALTER ROLE {role} SET default_transaction_isolation='{}'",
-                original.replace('\'', "''")
+                original.trim().replace('\'', "''")
             )
         })
         .unwrap();
@@ -91,6 +91,21 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
     )
     .await
     .unwrap();
+    pg("GRANT UPDATE(source_bytes) ON mdm_audit.receipts TO mdm_access").unwrap();
+    let denied = AuditStore::new(
+        access.clone(),
+        integrity(true).unwrap(),
+        source.clone(),
+        tenant,
+        Default::default(),
+        &AuditBudget::new(Duration::from_secs(5)).control(),
+    )
+    .await;
+    pg("REVOKE UPDATE(source_bytes) ON mdm_audit.receipts FROM mdm_access").unwrap();
+    assert!(
+        denied.is_err(),
+        "receipt column UPDATE must fail Audit owner admission"
+    );
     for role in [
         "mdm_flow_runtime",
         "mdm_command_runtime",

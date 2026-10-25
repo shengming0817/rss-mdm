@@ -295,6 +295,9 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let started=user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?;
@@ -329,6 +332,10 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants).await?;
         ensure!(f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?.0==StatusCode::FORBIDDEN);
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
@@ -338,6 +345,9 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let id=Uuid::new_v4();let device=execution::case_device_id();
@@ -372,6 +382,10 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["account"]["generatedUid"]==account.to_string());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
@@ -381,6 +395,9 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;
         let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
@@ -425,6 +442,10 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let cleanup=offer(&f,&c,&registration).await?;
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind","scope-exit cleanup {cleanup:?}");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
@@ -434,6 +455,9 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let manager = crate::test_support::authority::Authority::prepared_browser("admin")?;
@@ -453,6 +477,10 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
         ensure!(listed.0==StatusCode::OK && listed.1["items"][0]["appliedRevision"].is_null(),"publisher remains authorized {listed:?}");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
@@ -462,6 +490,10 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let automation = start_automation(&f.base).await?;
+        let outcome = async {
+
         let (policy,registration)=setup_profile(&mut f,true).await?;
         let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
@@ -489,6 +521,11 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":"unmanage_result","outcome":"unknown"})).await?.0==StatusCode::OK);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK,"uncertain unmanage must retain communication");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        let automation_stopped = stop_worker(automation).await;
+        outcome.and(stopped).and(automation_stopped)
+
     }).await
 }
 
@@ -610,6 +647,9 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
     let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration) = setup_platform(&mut f,false,true).await?;
         let c = windows_context();
         ensure!(claim(&f,&c).await?.0 == StatusCode::OK);
@@ -699,6 +739,10 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         ensure!(reset.0 == StatusCode::OK && reset.1["bindingGeneration"] == 1 && reset.1["factorGeneration"] == 2,"reset {reset:?}");
         ensure!(event(&f,&preserved,&c,&registration,json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 

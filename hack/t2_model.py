@@ -151,7 +151,6 @@ def resolve_cases(module, names):
             'local_worker' in value.fixtures
             and value.db_mode == 'reuse'
             and value.scope == 'objects'
-            or {'local_worker', 'shared_worker'} <= set(value.fixtures)
         ):
             raise ValueError(
                 'conflicting consumer ownership: ' + module.id + ': ' + name

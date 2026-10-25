@@ -179,24 +179,20 @@ pub(crate) async fn seed_native_template(
         Id::new(id.to_string())?,
         Id::new("v1")?,
         Kind::NativeCollection,
-        [if platform == rss_mdm_resource::Platform::MacOS {
-            Architecture::Aarch64
-        } else {
-            Architecture::X86_64
-        }]
-        .into_iter()
-        .map(|architecture| {
-            Variant::new(
-                platform,
-                architecture,
-                Id::new("default").expect("fixed id"),
-                Declaration::NativeCollection {
-                    artifact: artifact.clone(),
-                    definition: template.clone(),
-                },
-            )
-        })
-        .collect(),
+        [Architecture::X86_64, Architecture::Aarch64]
+            .into_iter()
+            .map(|architecture| {
+                Variant::new(
+                    platform,
+                    architecture,
+                    Id::new("default").expect("fixed id"),
+                    Declaration::NativeCollection {
+                        artifact: artifact.clone(),
+                        definition: template.clone(),
+                    },
+                )
+            })
+            .collect(),
     )?;
     runtime
         .local_tx(tenant, crate::identity::deadline(), move |tx| {

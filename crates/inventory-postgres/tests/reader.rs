@@ -57,7 +57,7 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .bind(tenant)
             .execute(&mut *catalog_tx)
             .await?;
-        sqlx::query("INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES($1::uuid,'inventory','1',$2,$3,$4,$5) ON CONFLICT DO NOTHING")
+        sqlx::query("INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES($1::uuid,'inventory','1',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING")
             .bind(tenant).bind(source).bind(definition.fingerprint()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&definition)?).execute(&mut *catalog_tx).await?;
         catalog_tx.commit().await?;
         let mut tx = writer.begin().await?;

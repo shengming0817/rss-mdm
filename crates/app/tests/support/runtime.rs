@@ -61,9 +61,7 @@ pub(crate) fn monotonic() -> Arc<dyn rss_observation::Clock> {
 }
 
 pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
+    crate::test_support::case::require_worker();
     let config: Config = serde_json::from_value(value.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
@@ -109,6 +107,11 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
     startup.stage_resource(rss_runtime::DynManagedResource::new_box(SourceResource(
         runtime.clone(),
     )));
+    let audit = Arc::new(
+        audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
     let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
     let clock = Arc::new(crate::clock::SystemClock);
     let planning = Arc::new(

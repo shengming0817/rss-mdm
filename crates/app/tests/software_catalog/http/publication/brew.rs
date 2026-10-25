@@ -151,7 +151,7 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
         "metadata: {metadata}"
     );
     ensure!(
-        metadata["formulae"][0]["bottle"]["stable"]["files"]["arm64_sonoma"]["sha256"]
+        metadata["formulae"][0]["bottle"]["stable"]["files"]["sonoma"]["sha256"]
             == rss_mdm_resource::Digest::of(b"abc")
                 .bytes()
                 .iter()
@@ -176,7 +176,6 @@ async fn immutable_native_tap_is_consumed_by_git_and_homebrew_and_withdrawn() ->
     );
     let expected: std::collections::BTreeSet<_> = [
         format!("{digest}.source.tar.gz"),
-        "tool-1.arm64_sonoma.bottle.tar.gz".into(),
         "tool-1.sonoma.bottle.tar.gz".into(),
     ]
     .into_iter()

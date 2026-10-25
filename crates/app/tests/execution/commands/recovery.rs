@@ -177,7 +177,7 @@ impl Client {
             )
             .await
             .fold(Ok, Err, Err, Err, Err, Err)?;
-        sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'damaged'")
+        sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due(uuid,text,integer,bigint) RENAME TO claim_due_unavailable")
             .execute(&mut pg)
             .await?;
         let fatal_timer = recovery::Timer::new();
@@ -186,7 +186,7 @@ impl Client {
         let fatal = restarted
             .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
             .await;
-        sqlx::raw_sql("COMMENT ON SCHEMA rss_reconcile IS 'rss-reconcile-postgres:1'")
+        sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due_unavailable(uuid,text,integer,bigint) RENAME TO claim_due")
             .execute(&mut pg)
             .await?;
         ensure!(

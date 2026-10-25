@@ -1,5 +1,6 @@
 use super::*;
-async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
+async fn source_matrix(fixture: &AssetHttp, browser: &mut Browser) -> Result<()> {
+    let router = &fixture.router;
     let (mdm, _) = seed_source("asset-b", "mdm", "mdm.windows", "Same")?;
     let (agent, _) = seed_source("asset-b", "agent", "agent.builtin", "Same")?;
     let path = "/api/v1/devices/asset-b/inventory";
@@ -9,10 +10,9 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     let detail = ok(browser, router, Method::GET, path, None).await?;
     ensure!(detail["asset"]["device"]["fields"]["device.model"]["state"]["kind"] == "conflict");
     let query = rsql_query(predicate("device.model", "string", json!("Same")));
-    let found = ok(
+    let found = queries::query_and_project(
+        fixture,
         browser,
-        router,
-        Method::POST,
         "/api/v1/device-queries",
         Some(query.clone()),
     )
@@ -35,7 +35,8 @@ async fn source_matrix(browser: &mut Browser, router: &Router) -> Result<()> {
     );
     Ok(())
 }
-async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> Result<()> {
+async fn retained_collection_quality(fixture: &AssetHttp, browser: &mut Browser) -> Result<()> {
+    let router = &fixture.router;
     let (registration, epoch) = seed_source("tie-b", "agent", "agent.builtin", "quality-sequence")?;
     let scope = crate::device::scope(
         rss_request_context::TenantId::parse(case_tenant())?,
@@ -79,10 +80,9 @@ async fn retained_collection_quality(browser: &mut Browser, router: &Router) -> 
         )
         .await?;
         ensure!(detail["asset"]["device"]["quality"][0]["runId"] == expected);
-        let page = ok(
+        let page = queries::query_and_project(
+            fixture,
             browser,
-            router,
-            Method::POST,
             "/api/v1/device-queries",
             Some(query.clone()),
         )
@@ -108,14 +108,13 @@ async fn sources_resolution_and_retained_quality() -> Result<()> {
         "INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{tenant}','asset-a'),('{tenant}','asset-b')",
         tenant = case_tenant()
     ))?;
-    let router = &fixture.router;
     let mut browser = fixture.author.clone();
-    source_matrix(&mut browser, router).await?;
+    source_matrix(&fixture, &mut browser).await?;
     pg(&format!(
         "INSERT INTO mdm_access.devices VALUES('{TENANT}','tie-b')",
         TENANT = case_tenant()
     ))?;
-    retained_collection_quality(&mut browser, router).await?;
+    retained_collection_quality(&fixture, &mut browser).await?;
     fixture.resources.finish(async { Ok(()) }).await
 }
 

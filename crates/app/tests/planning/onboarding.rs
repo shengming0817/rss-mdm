@@ -77,7 +77,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
             access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
                 f.authority.pool.clone(),
             )),
-            inventory: runtime,
+            inventory: runtime.clone(),
             telemetry: None,
         }),
         rss_mdm_agent_channel::boundary::Envelope {
@@ -92,6 +92,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     f.router = f
         .router
         .merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
+    let inventory_worker = crate::inventory_runtime::test_support::start(runtime).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let id = publish(&mut f).await?;
@@ -174,6 +175,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         .trim()
             == "0"
     );
+    stop_worker(inventory_worker).await?;
     stop_worker(workers).await?;
     stop_worker(automation).await?;
     Ok(())

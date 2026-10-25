@@ -610,7 +610,6 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     );
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
-    without_signing["agent_pki"] = json!({"mode":"disabled"});
     let mut unsigned = Fixture::from_config(without_signing).await?;
     unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None).into_axum()))?);
     let resources = std::mem::take(&mut unsigned.resources);

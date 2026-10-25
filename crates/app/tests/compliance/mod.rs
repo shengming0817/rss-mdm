@@ -131,17 +131,24 @@ impl Fixture {
         let tenant = authority.identity.tenant;
         let plan_runtime = crate::planning::test_support::runtime(tenant).await;
         resources.resource(SourceResource(plan_runtime.clone()));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let plan_audit = Arc::new(
+            authority
+                .audit
+                .on_runtime(plan_runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
         let key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
         let clock = Arc::new(crate::clock::SystemClock);
         let planning = Arc::new(
             crate::planning::Planning::new(
-                authority.audit.clone(),
+                plan_audit.clone(),
                 plan_runtime.clone(),
                 tenant,
                 clock.clone(),
                 &key,
                 Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                    authority.audit.clone(),
+                    plan_audit.clone(),
                 )),
             )
             .await?,
@@ -161,7 +168,7 @@ impl Fixture {
         resources.resource(InventoryFixtureResource(inventory.clone()));
         let assets = Arc::new(crate::assets::AssetService::new(
             inventory,
-            authority.audit.clone(),
+            plan_audit.clone(),
             plan_runtime.clone(),
             tenant,
             Arc::new(crate::clock::InventoryClock(clock.clone())),
@@ -210,7 +217,7 @@ impl Fixture {
             subject,
             reader,
             plan_runtime,
-            audit: authority.audit.clone(),
+            audit: plan_audit,
         })
     }
     async fn rule(&self) -> Result<(Uuid, String, Value)> {

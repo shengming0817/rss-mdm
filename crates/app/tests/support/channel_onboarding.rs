@@ -196,7 +196,10 @@ pub(crate) async fn seed_package(
         .await
         .fold(Ok, Err, Err, Err, Err, Err)?;
     let resource = Uuid::new_v4();
-    let definition = json!({"material":{"format":if windows {format}else{"pkg"},"installer":"package"},"source":snapshot,"package":format!("Private.{resource}"),"version":version,"artifacts":{"package":{"reference":"package","length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}},"behavior":behavior,"reboot":"report","downgrade":"deny","dependencies":[],"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let mut definition = json!({"material":{"format":if windows {format}else{"pkg"},"installer":"package"},"source":snapshot,"package":format!("Private.{resource}"),"version":version,"artifacts":{"package":{"reference":"package","length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}},"behavior":behavior,"reboot":"report","downgrade":"deny","dependencies":[],"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    if !windows {
+        definition["material"]["bundle_id"] = json!("com.rss.agent");
+    }
     let stored =
         software_execution::seed_resource(runtime, tenant, resource, platform, arch, definition)
             .await?;

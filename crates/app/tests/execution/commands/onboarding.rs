@@ -1977,6 +1977,25 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(
+        host.authority.audit.clone(),
+        host.authority.identity.tenant,
+        &[7; 32],
+    )?);
+    client.router = client.router.merge(
+        host.authority.router(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::device_views::routes(
+                    client.sessions.clone(),
+                    host.authority.identity.authority.clone(),
+                    None,
+                )
+                .with_state(associations)
+                .into_axum(),
+            ),
+        )?,
+    );
     let (initial, execute, bootstrap_wire) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     // Complete the independent bootstrap certificate delivery without activating

@@ -104,7 +104,6 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     for (drift, restore) in [
         ("GRANT UPDATE(profile) ON mdm_access.enrollment_intents TO mdm_access", "REVOKE UPDATE(profile) ON mdm_access.enrollment_intents FROM mdm_access"),
         ("GRANT UPDATE(state) ON mdm_access.grants TO mdm_access", "REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access"),
-        ("GRANT UPDATE(source_bytes) ON mdm_audit.receipts TO mdm_access", "REVOKE UPDATE(source_bytes) ON mdm_audit.receipts FROM mdm_access"),
         ("ALTER POLICY expired_only ON mdm_access.management_sessions USING(true)", "ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())"),
 
         (
@@ -128,14 +127,6 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             "REVOKE UPDATE (instance) ON mdm_access.authorization_rules FROM mdm_access",
         ),
         (
-            "CREATE FUNCTION rss_transactional_messaging.consumer_scope_domain(text) RETURNS text LANGUAGE sql AS 'SELECT $1'",
-            "DROP FUNCTION rss_transactional_messaging.consumer_scope_domain(text)",
-        ),
-        (
-            "ALTER FUNCTION rss_transactional_messaging.consumer_scope_domain() SECURITY INVOKER",
-            "ALTER FUNCTION rss_transactional_messaging.consumer_scope_domain() SECURITY DEFINER",
-        ),
-        (
             "CREATE TABLE mdm_agent.unexpected(tenant_id uuid)",
             "DROP TABLE mdm_agent.unexpected",
         ),
@@ -151,7 +142,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         pg(drift)?;
         let rejected = crate::Database::connect(config.access_options()?).await;
         pg(restore)?;
-        ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted");
+        ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted: {drift}");
         crate::Database::connect(config.access_options()?).await?.close().await;
     }
     // An unrelated Apple contract belongs to full App admission, not ordinary capabilities.

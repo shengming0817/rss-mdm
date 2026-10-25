@@ -83,15 +83,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             state.identity.tenant,
         ),
     );
-    let software_content = Router::new()
-        .route(
-            "/api/v1/software/installations/{id}/package",
-            get(crate::software_content::download).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
-            ),
-        )
-        .with_state(state.execution.clone());
+    let software_content = crate::software_content::routes(state.execution.clone());
     let directory = Arc::new(crate::enrollment::directory::HttpState {
         cursor: state.query_cursor.clone(),
         devices: state.devices.clone(),

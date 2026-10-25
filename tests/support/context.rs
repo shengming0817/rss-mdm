@@ -76,7 +76,6 @@ impl CaseContext {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 != self.fixtures.len()
-            || self.has_fixture("shared_worker") && self.has_fixture("local_worker")
         {
             return Err("fixtures");
         }
@@ -218,29 +217,9 @@ pub fn id(label: &str) -> u128 {
     namespace ^ u128::from(hash.finish())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum WorkerOwner {
-    Run,
-    Case,
-    None,
-}
-
-pub fn worker_owner() -> WorkerOwner {
-    match (
-        context().has_fixture("shared_worker"),
+pub fn require_worker() {
+    assert!(
         context().has_fixture("local_worker"),
-    ) {
-        (true, false) => WorkerOwner::Run,
-        (false, true) => WorkerOwner::Case,
-        (false, false) => WorkerOwner::None,
-        (true, true) => panic!("case has conflicting worker owners"),
-    }
-}
-
-pub fn owns_worker() -> bool {
-    match worker_owner() {
-        WorkerOwner::Run => false,
-        WorkerOwner::Case => true,
-        WorkerOwner::None => panic!("worker ownership is missing from case policy"),
-    }
+        "worker ownership is missing from case policy"
+    );
 }

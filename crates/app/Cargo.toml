@@ -117,7 +117,6 @@ rss-reconcile-postgres.workspace = true
 
 [dev-dependencies]
 rss-mdm-policy-postgres = { workspace = true, features = ["integration"] }
-rss-mdm-group-postgres = { workspace = true, features = ["integration"] }
 rss-mdm-content-service = { workspace = true, features = ["integration"] }
 webauthn-authenticator-rs = { version = "=0.5.5", default-features = false, features = ["softpasskey"] }
 msi = "=0.10.0"

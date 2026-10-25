@@ -31,11 +31,17 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
         tenant: case_tenant().into(),
     };
-    let public = rss_mdm_agent_channel::enroll::router(service.clone(), envelope.clone()).merge(
-        rss_mdm_agent_channel::boundary::wrap_enroll(
-            rss_mdm_management_http::software_catalog::agent_packages_public(f.software.clone()),
-            envelope,
-        ),
+    let public = rss_mdm_agent_channel::enroll::router(service.clone(), envelope);
+    let packages = rss_mdm_management_http::boundary::wrap(
+        rss_mdm_management_http::software_catalog::agent_packages_public(f.software.clone()),
+        rss_mdm_management_http::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(4)),
+            requests: Arc::new(tokio::sync::Semaphore::new(4)),
+            host: "mdm.example.test".into(),
+            clock: monotonic(),
+            audit_store: authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
     );
     f.router = f
         .router
@@ -50,7 +56,7 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
                     .merge(authority.enrollment()),
             )?,
         )
-        .merge(Router::new().nest("/api/v1/agent/enroll", public.into_axum()));
+        .merge(Router::new().nest("/api/v1/agent/enroll", public.merge(packages).into_axum()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     f.origin = format!("http://{}", listener.local_addr()?);
     f.server = software::HttpServer::start(listener, f.router.clone());
@@ -1335,7 +1341,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, old.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .header("range", "bytes=0-4")
         .send()
         .await?;
@@ -1383,7 +1389,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, old.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(anonymous.status() == StatusCode::NOT_FOUND);
@@ -1454,7 +1460,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
                 "{}/api/v1/agent/enroll/packages/{}/content",
                 f.origin, package.release_id
             ))
-            .header("host", "mdm.example.test:9445")
+            .header("host", "mdm.example.test")
             .send()
             .await?;
         ensure!(download.status() == StatusCode::OK);
@@ -1513,7 +1519,7 @@ async fn arm64_exe_explicit_enable_preserves_publication_binding() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, package.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(download.status() == StatusCode::OK);
@@ -2009,7 +2015,7 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
         ensure!(published.0 == StatusCode::OK, "publication must not reread bytes: {published:?}");
         let package: w::configuration::Package = serde_json::from_value(published.1)?;
         let download = f.client.get(format!("{}/api/v1/agent/enroll/packages/{}/content",f.origin,package.release_id))
-            .header("host","mdm.example.test:9445").send().await?;
+            .header("host","mdm.example.test").send().await?;
         ensure!(!download.status().is_success(), "real download must still reject missing bytes");
         Ok(package)
     }.await;
@@ -2021,7 +2027,7 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, package.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(

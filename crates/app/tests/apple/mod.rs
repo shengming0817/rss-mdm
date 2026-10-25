@@ -302,6 +302,7 @@ impl Fixture {
         let cursor = rss_mdm_query::cursor::CursorCodec::new(&key)?;
         let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState {planning: planning.clone(), groups}))
             .merge(rss_mdm_management_http::planning::policies::http::routes(execution.queries.clone()).with_state(policies))
+            .merge(rss_mdm_management_http::execution::actions::http::routes().with_state(execution.queries.clone()))
             .merge(rss_mdm_management_http::planning::policies::http::previews(execution.queries.clone(), None))
             .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState {catalog, content: content_access.clone()})))
             .merge(rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {assets: assets.clone()})))
@@ -321,6 +322,8 @@ impl Fixture {
         let authentication = rss_mdm_management_http::authentication_routes(rss_mdm_http_contract::Router::from_identity_router(identity.routes()),
             rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum();
         let mut router = authority.protect(protected)?.merge(rss_mdm_apple_channel::browser_routes(ade.clone(), boundary.clone()).into_axum()).merge(authentication);
+        router = router.merge(rss_mdm_management_http::boundary::wrap(rss_mdm_management_http::software_content::routes(execution.service.clone()),
+            rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum());
         let native = crate::apple::router(Some(&apple), ade.clone(), monotonic.clone()).context("Apple listener")?;
         let mut agent_channel = None;
         if let Some(service) = &agent_enrollment {
@@ -874,7 +877,6 @@ impl Fixture {
         &mut self,
         scope: rss_mdm_resource::TemplateScope,
     ) -> Result<serde_json::Value> {
-        use crate::test_support::agent_execution::upload;
         use rss_mdm_resource::{
             NativeAdapter, NativeCollectionDefinition, NativeCollectionSpec, NativeMapping,
         };
@@ -902,14 +904,25 @@ impl Fixture {
         let bytes = template.canonical();
         let id = Uuid::new_v4();
         crate::test_support::planning_http::seed_native_template(
-            &(&self.planning).runtime,
-            (&self.planning).tenant,
+            &self.planning.runtime,
+            self.planning.tenant,
             id,
             rss_mdm_resource::Platform::MacOS,
             template,
         )
         .await?;
-        ensure!(upload(&self.browser, &self.router, id, &bytes).await? == StatusCode::CREATED);
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("native-template")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(&bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            self.commands.content.as_deref().context("native content")?,
+            &artifact,
+            bytes,
+            self.clock.unix_seconds()? + 86400,
+        )
+        .await?;
         let scope = Uuid::new_v4();
         crate::test_support::agent_execution::seed_scope(
             &self.planning,

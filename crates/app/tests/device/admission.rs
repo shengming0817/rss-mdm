@@ -12,10 +12,11 @@ async fn runtime_role_cannot_mutate_history_or_read_without_tenant() -> anyhow::
     let grant = Uuid::new_v4();
     let request = Uuid::new_v4();
     let registration = Uuid::new_v4();
+    let password = crate::enrollment::Password::new("A".repeat(43))?.digest(case_a(), device)?;
     sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES($1::uuid,$2,'fixture',$3,$4,'enrollment','consumed',clock_timestamp()+interval '300 seconds')")
         .bind(case_a()).bind(grant).bind(crate::test_support::identity::INSTANCE).bind(device).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,windows_profile) VALUES($1::uuid,$2,$3,'bound','mdm.windows','Device')")
-        .bind(case_a()).bind(request).bind(grant).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,windows_profile,expected_generation,expires_at,issuance_operation,password_digest,password_version,credential_ref) VALUES($1::uuid,$2,$3,'bound','mdm.windows','Device',0,clock_timestamp()+interval '300 seconds',gen_random_uuid(),$4,1,gen_random_uuid())")
+        .bind(case_a()).bind(request).bind(grant).bind(password).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO mdm_access.devices(tenant_id,id) VALUES($1::uuid,$2)")
         .bind(case_a())
         .bind(device)

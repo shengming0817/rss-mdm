@@ -205,7 +205,7 @@ class Environment:
         return ident
 
     def sql(self, statement, database='postgres'):
-        return run(['docker','exec','-i',self.container(),'psql','-X','-At','-v','ON_ERROR_STOP=1',
+        return run(['docker','exec','-i',self.container(),'psql','-X','-qAt','-v','ON_ERROR_STOP=1',
                     '-U','postgres','-d',database], input=statement, capture_output=True, timeout=60).stdout.strip()
 
     def port(self):

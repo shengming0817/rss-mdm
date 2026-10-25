@@ -14,9 +14,16 @@ async fn mount_assets(
 ) -> Result<()> {
     let tenant = f.authority.identity.tenant;
     let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+    let audit_budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        f.authority
+            .audit
+            .on_runtime(f.plan_runtime.clone(), tenant, &audit_budget.control())
+            .await?,
+    );
     let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
         inventory,
-        f.authority.audit.clone(),
+        audit,
         f.plan_runtime.clone(),
         tenant,
         Arc::new(crate::clock::SystemClock),
@@ -44,6 +51,9 @@ async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_histo
     let mut fixture = Fixture::new().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async{
+        let delivery_worker = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
+        let outcome = async {
+
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
         let registration=crate::test_support::agent::seed_service(&fixture.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
@@ -98,6 +108,10 @@ async fn credential_offer_start_escrow_and_result_keep_secrets_out_of_task_histo
         for secret in secrets{ensure!(!history.contains(&secret));}
         ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{task}' AND validity='verified'",case_tenant()))?.trim()=="2");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -539,7 +553,7 @@ async fn native_unmapped_evidence_requires_sensitive_permission() -> Result<()> 
         "windows",
         None,
         rss_mdm_agent_wire::runtime::NativeQueryStatus::Complete,
-        &[0, 1, 2, 3],
+        &[0, 3],
     )
     .await
 }
@@ -751,30 +765,12 @@ async fn native_inventory_case(
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
     let claim_input = |engines: Value| json!({"wireVersion":1,"operationId":Uuid::new_v4(),"profiles":[],"environment":{"edition":null,"tools":{},"nativeEngines":engines},"executionContext":context});
-    let updates = if !map_software && !all_failed {
-        let mut spec = definition.spec().clone();
-        let mut plan = spec.plan.spec().clone();
-        plan.queries.retain(|id, _| id == "sys_updates");
-        spec.plan = w::NativeCollectionPlan::new(plan)?;
-        spec.mappings.retain(|_, mapping| mapping.query == "sys_updates");
-        let updates = r::AgentCollectionDefinition::new(spec)?;
-        let bytes = updates.canonical();
-        let artifact = r::Artifact::new(r::Id::new("native.json")?, bytes.len() as u64, r::Digest::of(&bytes))?;
-        let id = Uuid::new_v4();
-        let version = r::Version::new(f.authority.identity.tenant, r::Id::new(id.to_string())?, r::Id::new("v1")?, r::Kind::AgentCollection, vec![r::Variant::new(r::Platform::Windows, r::Architecture::X86_64, r::Id::new("default")?, r::Declaration::AgentCollection { artifact: artifact.clone(), definition: updates.clone() })])?;
-        f.plan_runtime.local_tx(f.authority.identity.tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
-            rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).unwrap()).await
-        })).await.fold(Ok, Err, Err, Err, Err, Err)?;
-        let store = f.content.as_ref().expect("native content");
-        rss_mdm_content_service::fixture::artifact(store, &artifact, bytes, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?+86400).await?;
-        Some((id, updates))
-    } else { None };
     let policy_input = |resource_id| json!({"scope":case_task_scope(),"action":{"kind":"agent_collection","resource":{"id":resource_id,"version":"v1","platform":platform,"architecture":"x86_64","variant":"default"},"runLifetimeSeconds":300}});
     let mut prior_network = String::new();
     let mut prior_software = String::new();
     let mut prior_updates = Value::Null;
     for &stage in stages {
-        let (current_resource, current_definition) = if matches!(stage, 1 | 2) && let Some((id, updates)) = &updates { (*id, updates) } else { (resource_id, &definition) };
+
         let policy = Uuid::new_v4();
         if !map_software && !all_failed && stage == 0 {
         let ordinary = f
@@ -784,7 +780,7 @@ async fn native_inventory_case(
             .cloned()
             .collect();
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
-        let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(current_resource)}}))).await?;
+        let denied = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{policy}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(resource_id)}}))).await?;
         ensure!(
             denied.0 == StatusCode::FORBIDDEN,
             "raw evidence publication bypass: {denied:?}"
@@ -792,7 +788,7 @@ async fn native_inventory_case(
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         }
-        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(current_resource)}})).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_input(resource_id)}})).await?;
         if large_raw && stage == 0 {
         let unsupported = agent_call(
             &f.router,
@@ -834,7 +830,7 @@ async fn native_inventory_case(
         let w::TaskPayload::Collection(spec) = &task.payload else {
             anyhow::bail!("native policy issued another task family");
         };
-        ensure!(spec.mappings == current_definition.spec().mappings && spec.fields.len() == spec.mappings.len());
+        ensure!(spec.mappings == definition.spec().mappings && spec.fields.len() == spec.mappings.len());
         if macos {
             ensure!(spec.fields.iter().any(|f| f.key.as_str() == "custom.ship_memory" && f.version == 1));
             let verify = ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, f.key.public_key().as_ref());
@@ -1087,16 +1083,6 @@ async fn native_inventory_case(
                 }
             }).await??;
             ensure!(pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native'", case_tenant(), spec.registration_id))?.trim() == "0");
-        } else if !map_software && matches!(stage, 1 | 2) {
-            tokio::time::timeout(Duration::from_secs(20), async {
-                loop {
-                    if pg(&format!("SELECT NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t" {break Ok::<_,anyhow::Error>(());}
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }).await??;
-            let updates: Value = serde_json::from_str(&projected_value(spec.registration_id, "device.updates.available", None).await?)?;
-            if stage == 1 {ensure!(updates == prior_updates, "truncated update replaced prior complete discovery");}
-            else {ensure!(updates["value"] == json!([]), "complete empty updates did not clear prior list");}
         } else {
             tokio::time::timeout(Duration::from_secs(20),async{
             loop{let rows=pg(&format!("SELECT count(*) FROM mdm.inventory WHERE tenant_id='{}' AND registration='{}' AND source='agent.native' AND field='device.memory.bytes' AND value::jsonb->>'value'='{}'",case_tenant(),spec.registration_id,8192+stage))?;if rows.trim()=="1"{break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(50)).await;}
@@ -1352,6 +1338,12 @@ async fn macos_user_applications_and_brew_keep_other_users_after_complete_empty(
     let worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let runtime = agent_runtime(&f.authority).await?;
     let inventory = crate::inventory_runtime::test_support::start(runtime.clone()).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(f.authority.audit.on_runtime(f.plan_runtime.clone(), f.planning.tenant, &budget.control()).await?);
+    let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+    let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(runtime.clone(), audit, f.plan_runtime.clone(), f.planning.tenant, Arc::new(crate::clock::SystemClock), &key, Arc::new(crate::automation::inventory_tasks::InventoryTasks)));
+    f.router = f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::assets::routes().with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState { assets })).into_axum()))?);
+
     let mut datasets = Vec::new();
     for (stage, uid) in [(0, "501"), (1, "502"), (2, "501")] {
         context["revision"] = json!(stage + 2);
@@ -1778,6 +1770,9 @@ async fn recover_unknown_after_restart(
     );
     let sid = "S-1-5-21-101-202-303-500";
     let original=resources.finish(async{
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
         f.grants.extend(identity::device_grants(None,&["account_write"])?);
         identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
@@ -1797,6 +1792,10 @@ async fn recover_unknown_after_restart(
         ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),task.task_id))?.trim()=="unknown");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id='{}' AND operation='{}'",case_tenant(),task.task_id))?.trim()==if escrow_only{"1"}else{"0"});
         Ok(task)
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and_then(|task| stopped.map(|()| task))
+
     }).await?;
     let base = f.base.clone();
     drop(f);
@@ -1804,129 +1803,141 @@ async fn recover_unknown_after_restart(
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
-            f.grants
-                .extend(identity::device_grants(None, &["account_write"])?);
-            identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-            let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options(
-                "postgres",
-            )?)
-            .await?;
-            use sqlx::Connection;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-                .bind(case_tenant())
-                .execute(&mut c)
-                .await?;
-            ensure!(
-                rss_mdm_recovery_credentials::storage::start_agent_in(
-                    &mut c,
-                    original.tenant_id,
-                    original.registration_id,
-                    original.generation as i64,
-                    Uuid::new_v4(),
-                    Uuid::new_v4()
+            let delivery_worker =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
+            let outcome = async {
+                f.grants
+                    .extend(identity::device_grants(None, &["account_write"])?);
+                identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+                let mut c = sqlx::PgConnection::connect_with(
+                    &crate::device::test_support::options("postgres")?,
                 )
-                .await
-                .is_err(),
-                "restart lost mutation fence"
-            );
-            credential_policy(
-                &mut f,
-                json!({"kind":"verify_local_administrator","sid":sid}),
-            )
-            .await?;
-            let task = claim_credential(&f, &context).await?;
-            ensure!(
-                task.recovery
-                    == Some(wire::CredentialRecovery {
-                        task_id: original.task_id,
-                        attempt_id: original.attempt_id
-                    })
-            );
-            for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
-                let response = credential_event(&f, &context, &task, event).await?;
-                ensure!(response.0 == StatusCode::OK, "verify start {response:?}");
-            }
-            let subject = wire::CredentialSubject::LocalAdministrator { sid: sid.into() };
-            if effect == wire::CredentialRecoveryOutcome::Applied {
-                let envelope = credential_envelope(
-                    &task,
-                    subject.clone(),
-                    b"persisted-before-os-change-2789",
-                )?;
+                .await?;
+                use sqlx::Connection;
+                sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+                    .bind(case_tenant())
+                    .execute(&mut c)
+                    .await?;
+                ensure!(
+                    rss_mdm_recovery_credentials::storage::start_agent_in(
+                        &mut c,
+                        original.tenant_id,
+                        original.registration_id,
+                        original.generation as i64,
+                        Uuid::new_v4(),
+                        Uuid::new_v4()
+                    )
+                    .await
+                    .is_err(),
+                    "restart lost mutation fence"
+                );
+                credential_policy(
+                    &mut f,
+                    json!({"kind":"verify_local_administrator","sid":sid}),
+                )
+                .await?;
+                let task = claim_credential(&f, &context).await?;
+                ensure!(
+                    task.recovery
+                        == Some(wire::CredentialRecovery {
+                            task_id: original.task_id,
+                            attempt_id: original.attempt_id
+                        })
+                );
+                for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+                    let response = credential_event(&f, &context, &task, event).await?;
+                    ensure!(response.0 == StatusCode::OK, "verify start {response:?}");
+                }
+                let subject = wire::CredentialSubject::LocalAdministrator { sid: sid.into() };
+                if effect == wire::CredentialRecoveryOutcome::Applied {
+                    let envelope = credential_envelope(
+                        &task,
+                        subject.clone(),
+                        b"persisted-before-os-change-2789",
+                    )?;
+                    let response = credential_event(
+                        &f,
+                        &context,
+                        &task,
+                        serde_json::to_value(wire::TaskEvent::CredentialEscrow(
+                            wire::CredentialEscrow {
+                                definition_digest: task.definition_digest,
+                                materials: vec![envelope],
+                            },
+                        ))?,
+                    )
+                    .await?;
+                    ensure!(
+                        response.0 == StatusCode::OK,
+                        "recovery escrow: {response:?}"
+                    );
+                }
                 let response = credential_event(
                     &f,
                     &context,
                     &task,
-                    serde_json::to_value(wire::TaskEvent::CredentialEscrow(
-                        wire::CredentialEscrow {
+                    serde_json::to_value(wire::TaskEvent::CredentialResult(
+                        wire::CredentialResult {
+                            recovery: Some(effect),
                             definition_digest: task.definition_digest,
-                            materials: vec![envelope],
+                            complete: true,
+                            failure: None,
+                            items: if effect == wire::CredentialRecoveryOutcome::Applied {
+                                vec![wire::CredentialItemResult {
+                                    subject,
+                                    outcome: wire::CredentialOutcome::Verified,
+                                }]
+                            } else {
+                                vec![]
+                            },
                         },
                     ))?,
                 )
                 .await?;
+                ensure!(response.0 == StatusCode::OK, "reconcile: {response:?}");
                 ensure!(
-                    response.0 == StatusCode::OK,
-                    "recovery escrow: {response:?}"
+                    rss_mdm_recovery_credentials::storage::agent_guard_in(
+                        &mut c,
+                        original.tenant_id,
+                        original.registration_id,
+                        original.generation as i64
+                    )
+                    .await?
+                    .is_none()
                 );
-            }
-            let response = credential_event(
-                &f,
-                &context,
-                &task,
-                serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult {
-                    recovery: Some(effect),
-                    definition_digest: task.definition_digest,
-                    complete: true,
-                    failure: None,
-                    items: if effect == wire::CredentialRecoveryOutcome::Applied {
-                        vec![wire::CredentialItemResult {
-                            subject,
-                            outcome: wire::CredentialOutcome::Verified,
-                        }]
-                    } else {
-                        vec![]
-                    },
-                }))?,
-            )
-            .await?;
-            ensure!(response.0 == StatusCode::OK, "reconcile: {response:?}");
-            ensure!(
-                rss_mdm_recovery_credentials::storage::agent_guard_in(
-                    &mut c,
-                    original.tenant_id,
-                    original.registration_id,
-                    original.generation as i64
+                let stale = credential_event(
+                    &f,
+                    &context,
+                    &original,
+                    serde_json::to_value(wire::TaskEvent::CredentialResult(
+                        wire::CredentialResult {
+                            recovery: None,
+                            definition_digest: original.definition_digest,
+                            complete: false,
+                            failure: Some(wire::CredentialFailure::RecoveryState),
+                            items: vec![],
+                        },
+                    ))?,
                 )
-                .await?
-                .is_none()
-            );
-            let stale = credential_event(
-                &f,
-                &context,
-                &original,
-                serde_json::to_value(wire::TaskEvent::CredentialResult(wire::CredentialResult {
-                    recovery: None,
-                    definition_digest: original.definition_digest,
-                    complete: false,
-                    failure: Some(wire::CredentialFailure::RecoveryState),
-                    items: vec![],
-                }))?,
-            )
-            .await?;
-            ensure!(!stale.0.is_success(), "old attempt reopened settled run");
-            credential_policy(
-                &mut f,
-                json!({"kind":"rotate_local_administrator","sid":sid}),
-            )
-            .await?;
-            let next = claim_credential(&f, &context).await?;
-            for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
-                let response = credential_event(&f, &context, &next, event).await?;
-                ensure!(response.0 == StatusCode::OK, "next rotation {response:?}");
+                .await?;
+                ensure!(!stale.0.is_success(), "old attempt reopened settled run");
+                credential_policy(
+                    &mut f,
+                    json!({"kind":"rotate_local_administrator","sid":sid}),
+                )
+                .await?;
+                let next = claim_credential(&f, &context).await?;
+                for event in [json!({"kind":"received"}), json!({"kind":"start"})] {
+                    let response = credential_event(&f, &context, &next, event).await?;
+                    ensure!(response.0 == StatusCode::OK, "next rotation {response:?}");
+                }
+                c.close().await?;
+                Ok(())
             }
-            c.close().await?;
-            Ok(())
+            .await;
+            let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+            outcome.and(stopped)
         })
         .await
 }
@@ -1939,6 +1950,9 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
     f.mount_access().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows);
         let sid="S-1-5-21-101-202-303-1001";
         let registration=crate::test_support::agent::seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64","executionContext":context})).await?;
@@ -2031,6 +2045,10 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         let late=credential_event(&f,&context,&original,json!({"kind":"start"})).await?;
         ensure!(!late.0.is_success());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 

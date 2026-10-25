@@ -524,7 +524,7 @@ async fn seed_version(
             )
             .unwrap();
             rss_mdm_content_service::fixture::artifact(
-                &content,
+                content,
                 &material,
                 b"abc".to_vec(),
                 1700000000 + 86400,
@@ -544,7 +544,7 @@ async fn seed_version(
         .fold(|r| r, Err, Err, Err, Err, Err)
         .unwrap();
     if enabled {
-        seed_enabled_version(&version, &content).await;
+        seed_enabled_version(&version, content).await;
     }
     PublishInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),

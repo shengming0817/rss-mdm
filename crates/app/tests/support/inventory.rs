@@ -118,7 +118,7 @@ pub(crate) fn seed_unenrolled(device: &str) -> Result<()> {
     let registration: Uuid = serde_json::from_value(coordinates[0].clone())?;
     let epoch: Uuid = serde_json::from_value(coordinates[1].clone())?;
     let field = rss_mdm_inventory::FieldKey::parse("channel.mdm.enrollment")?;
-    let definition = definition("mdm-enrollment-fixture", "agent.builtin", &[field]);
+    let definition = definition(field.as_str(), "agent.builtin", &[field]);
     register_definition(&definition)?;
     let scope = crate::device::scope_dataset(
         rss_request_context::TenantId::parse(case_tenant())?,
@@ -131,8 +131,22 @@ pub(crate) fn seed_unenrolled(device: &str) -> Result<()> {
     .replace('\'', "''");
     let coverage = serde_json::to_string(&definition.coverage()?)?.replace('\'', "''");
     let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String("unenrolled".into()))?;
+    let snapshot = Uuid::new_v4();
+    let progress = rss_mdm_inventory::CollectionProgress::native(
+        definition,
+        [(
+            field,
+            rss_mdm_inventory::NativeValue::Value(rss_mdm_inventory::CollectedValue::Value(
+                rss_mdm_inventory::Scalar::String("unenrolled".into()),
+            )),
+        )]
+        .into(),
+        2,
+    )?;
+    let attempts = serde_json::to_string(&progress)?.replace('\'', "''");
+
     pg(&format!(
-        "SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','fixture',1,2,'known','{value}','fixture',1,2,'{registration}','agent.builtin','{epoch}',0)",
+        "SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','{snapshot}',1,2,'known','{value}','{snapshot}',1,2,'{registration}','agent.builtin','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{tenant}','{snapshot}','{registration}','agent.builtin','{epoch}','{scope}',0,1,'{attempts}','snapshot','complete',2)",
         tenant = case_tenant()
     ))?;
     Ok(())

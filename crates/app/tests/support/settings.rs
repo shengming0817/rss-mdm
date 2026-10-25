@@ -6,7 +6,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
     let tenant = f.identity.tenant;
     let clock = Arc::new(crate::clock::SystemClock);
     let protection = config.native_protector()?;
-    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_runtime").await;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_flow_runtime").await;
     f.resources.resource(SourceResource(runtime.clone()));
     let webhook_runtime =
         crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
