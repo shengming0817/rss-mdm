@@ -210,9 +210,7 @@ pub async fn advance_run(
                     })
                     .await?
                     .map_err(Error::from)?;
-                for fact in facts {
-                    service.audit_store.append_in(tx, &fact, false).await?;
-                }
+                service.audit_store.append_batch_in(tx, &facts).await?;
                 crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             }
             run.state.claim(run.id, now)?;

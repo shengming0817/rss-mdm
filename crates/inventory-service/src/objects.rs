@@ -44,12 +44,7 @@ pub trait ObjectReader: Send + Sync {
         device: &'a str,
     ) -> Pending<'a, MembershipObjects>;
 
-    fn changes<'a>(
-        &'a self,
-        tenant: TenantId,
-        after: u64,
-        through: Option<u64>,
-    ) -> Pending<'a, ChangeWindow>;
+    fn relation_revision<'a>(&'a self, tenant: TenantId) -> Pending<'a, u64>;
     fn freeze<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -95,13 +90,6 @@ pub trait ObjectReader: Send + Sync {
         after: Option<String>,
         limit: usize,
     ) -> Pending<'a, Vec<DeviceObject>>;
-}
-
-#[derive(Clone, Debug)]
-pub struct ChangeWindow {
-    pub after: u64,
-    pub through: Option<u64>,
-    pub changed: bool,
 }
 
 /// A directory object, never an executable registration identity.

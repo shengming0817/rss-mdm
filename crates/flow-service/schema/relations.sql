@@ -70,7 +70,6 @@ GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_runtime;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_maintenance;
 
-GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_identity_audit;
 
 GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_command_runtime;
 
@@ -206,13 +205,11 @@ GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_ident
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_identity_maintenance;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_identity_audit;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.check_execution() TO mdm_command_runtime;
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) TO mdm_identity_audit;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.claim_outbox(p_tenant uuid, p_domain text, p_limit integer, p_ttl_ms bigint) TO mdm_command_runtime;
 
@@ -228,7 +225,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.guard_execution() FROM PUBLIC
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) TO mdm_identity_audit;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.outbox_lease(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_extend_ms bigint, p_dr uuid) TO mdm_command_runtime;
 
@@ -254,7 +250,6 @@ REVOKE ALL ON FUNCTION rss_transactional_messaging.read_outbox_frame(data bytea,
 
 REVOKE ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) FROM PUBLIC;
 
-GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_identity_audit;
 
 GRANT ALL ON FUNCTION rss_transactional_messaging.settle_outbox(p_tenant uuid, p_seq bigint, p_token uuid, p_lease_us bigint, p_disposition text, p_dr uuid) TO mdm_command_runtime;
 
@@ -278,7 +273,7 @@ GRANT SELECT,INSERT ON TABLE mdm_flow.cursor_keys TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
-GRANT UPDATE(relation_after,relation_through,relation_cursor,relation_page_after,relation_page_through) ON mdm_planning.asset_dispatch TO mdm_flow_runtime;
+GRANT UPDATE(relation_revision,relation_cursor,relation_pending_revision) ON mdm_planning.asset_dispatch TO mdm_flow_runtime;
 GRANT UPDATE(consumed) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
 GRANT UPDATE(watermark) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
@@ -471,7 +466,6 @@ GRANT SELECT,INSERT,UPDATE ON TABLE rss_transactional_messaging.dr_plans TO rss_
 
 GRANT SELECT ON TABLE rss_transactional_messaging.inbox TO rss_tmsg_relay;
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE rss_transactional_messaging.inbox TO mdm_identity_audit;
 
 GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE rss_transactional_messaging.inbox TO mdm_command_runtime;
 
@@ -489,7 +483,6 @@ GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_identity_runtime
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_identity_maintenance;
 
-GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_identity_audit;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.outbox TO mdm_command_runtime;
 
@@ -509,7 +502,6 @@ GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_identity_runtime
 
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_identity_maintenance;
 
-GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_identity_audit;
 
 GRANT SELECT ON TABLE rss_transactional_messaging.policy TO mdm_command_runtime;
 

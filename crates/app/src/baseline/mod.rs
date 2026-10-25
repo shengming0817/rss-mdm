@@ -390,7 +390,6 @@ pub(crate) async fn reserve(
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("baseline:{operation}"),
-        &serde_json::to_vec(&authority).map_err(|_| Error::Malformed)?,
         200,
         "success",
         None,
@@ -415,7 +414,11 @@ pub(crate) async fn reserve(
                             })
                         })
                         .await?;
-                    store.append(tx, fact, !inserted).await?;
+                    (if !inserted {
+                        Ok(())
+                    } else {
+                        store.append(tx, fact).await
+                    })?;
                     Ok::<_, rss_mdm_audit_integration::Error>(())
                 })
             },

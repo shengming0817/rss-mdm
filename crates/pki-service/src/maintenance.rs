@@ -207,7 +207,7 @@ impl Registry {
                 let actor=p.map(|p|p.principal_id()).unwrap_or("service:device-pki");
                 let instance=p.map(|p|p.instance_id()).unwrap_or("");
                 let replay=crate::mutation::replay(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint).await?.is_some();
-                if replay { return Ok(Change{value:false,replay:true,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()}); }
+                if replay { return Ok(Change{value:false, replay:true, key:format!("pki:{operation}:crl_publish")}); }
                 let checked=DeviceTrust::restore(current.clone(),current.purpose,*now).map_err(|_|Error::Storage)?;
                 checked.update(next.clone(),*now).map_err(|_|Error::Conflict)?;
                 for (issuer,published) in publications {
@@ -217,7 +217,7 @@ impl Registry {
                 }
                 crate::registry::persist(c,next).await?;
                 if !replay {crate::mutation::save(c,(&next.tenant.to_string(),actor,instance),*operation,"crl_publish",fingerprint,b"null").await?;}
-                Ok(Change{value:true,replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
+                Ok(Change{value:true, replay, key:format!("pki:{operation}:crl_publish")})
             })).await;
         if matches!(result, Ok(true)) {
             self.binding(requested_purpose)?
@@ -333,14 +333,14 @@ impl Registry {
                 let (trust,provider,now,a)=ctx;
                 let row=sqlx::query("SELECT serial,attempt,failures FROM mdm_pki.revocations WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND state<>'published' AND next_attempt<=clock_timestamp() ORDER BY next_attempt,attempt LIMIT 1 FOR UPDATE SKIP LOCKED")
                     .bind(trust.tenant).bind(purpose(provider.purpose)).bind(&provider.issuer).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)?;
-                let Some(row)=row else{return Ok(Change{value:None,replay:true,key:String::new(),fingerprint:vec![0]});};
+                let Some(row)=row else{return Ok(Change{value:None, replay:true, key:String::new()});};
                 let job=Job{attempt:row.try_get("attempt").map_err(|_|Error::Storage)?,serial:row.try_get("serial").map_err(|_|Error::Storage)?,failures:row.try_get("failures").map_err(|_|Error::Storage)?};
                 a.operation(job.attempt,"device_pki_revoke_dispatch", rss_mdm_audit_integration::AuditIntent::Management);
                 let seconds=(60_i64.saturating_mul(1_i64<<job.failures.min(9))).min(21600);
                 sqlx::query("UPDATE mdm_pki.revocations SET failures=least(failures+1,32),next_attempt=clock_timestamp()+make_interval(secs=>$4) WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3")
                     .bind(trust.tenant).bind(purpose(provider.purpose)).bind(job.attempt).bind(seconds as f64).execute(c).await.map_err(|_|Error::Storage)?;
-                let fingerprint=Sha256::digest(serde_json::to_vec(&(provider.issuer.as_str(),job.serial.as_str(),job.failures,*now)).map_err(|_|Error::Storage)?).to_vec();
-                Ok(Change{key:format!("pki:{}:dispatch:{now}",job.attempt),fingerprint,value:Some(job),replay:false})
+
+                Ok(Change{key:format!("pki:{}:dispatch:{now}",job.attempt), value:Some(job), replay:false})
             })).await;
         a.finalize(
             result
@@ -371,7 +371,7 @@ impl Registry {
             let (trust,provider,job)=ctx;
             let changed=sqlx::query("UPDATE mdm_pki.revocations SET state='submitted' WHERE tenant_id=$1 AND purpose=$2 AND attempt=$3 AND state='pending'")
                 .bind(trust.tenant).bind(purpose(provider.purpose)).bind(job.attempt).execute(c).await.map_err(|_|Error::Storage)?.rows_affected();
-            Ok(Change{value:(),replay:changed==0,key:if changed==0{String::new()}else{format!("pki:{}:submitted",job.attempt)},fingerprint:Sha256::digest(job.serial.as_bytes()).to_vec()})
+            Ok(Change{value:(), replay:changed==0, key:if changed==0{String::new()}else{format!("pki:{}:submitted",job.attempt)}})
         })).await;
         a.finalize(
             result

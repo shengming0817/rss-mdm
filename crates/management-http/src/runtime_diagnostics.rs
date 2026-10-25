@@ -78,10 +78,6 @@ pub struct Component {
     pub runner: Option<Runner>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<Dispatch>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audit_backlog: Option<rss_mdm_audit_integration::BacklogSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub audit_progress: Option<serde_json::Value>,
 }
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,9 +85,6 @@ pub enum ComponentName {
     Initialization,
     Telemetry,
     Inventory,
-    IdentityAudit,
-    AuditProjection,
-    AuditSource,
     Automation,
     ExecutionRecovery,
 }
@@ -150,9 +143,6 @@ pub enum Reason {
     OwnershipLost,
     WorkRejected,
     ObservationLimit,
-    AuditBacklogWarning,
-    AuditBackpressure,
-    AuditReserveExhausted,
 }
 #[derive(Serialize)]
 pub struct Dependency {

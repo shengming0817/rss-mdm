@@ -287,7 +287,7 @@ impl ExecutionService {
                         })
                         .await?
                         .map_err(crate::recovery_credentials::error)?;
-                    let bytes = checked_input(serde_json::to_vec(&(device.registration(), input)))?;
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!(
@@ -295,12 +295,15 @@ impl ExecutionService {
                             device.registration(),
                             input.operation_id
                         ),
-                        &bytes,
                         200,
                         "success",
                         None,
                     )?;
-                    service.audit_store.append_in(tx, &fact, replay).await?;
+                    (if replay {
+                        Ok(())
+                    } else {
+                        service.audit_store.append_in(tx, &fact).await
+                    })?;
                     Ok(())
                 })
             },
@@ -572,7 +575,6 @@ pub(crate) async fn prepare_reconciliation_in(
     if !work_allowed {
         return Ok(PreparedReconciliation {
             bindings: Vec::new(),
-            partitions: Vec::new(),
         });
     }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
@@ -582,7 +584,6 @@ pub(crate) async fn prepare_reconciliation_in(
         sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 ORDER BY id LIMIT 128").bind(tenant).bind(name).bind(registration).fetch_all(c).await
     })).await?;
     let mut bindings = Vec::new();
-    let mut partitions = Vec::new();
     for document in documents {
         let source = service.source.clone();
         let scope = service.tenant;
@@ -610,21 +611,13 @@ pub(crate) async fn prepare_reconciliation_in(
             })
             .await?;
         let delivery = Uuid::new_v4();
-        partitions.push(rss_mdm_audit_integration::source_partition(
-            tx.tenant_id(),
-            "mdm",
-            &delivery.to_string(),
-        )?);
+
         bindings.push((binding, delivery));
     }
-    Ok(PreparedReconciliation {
-        bindings,
-        partitions,
-    })
+    Ok(PreparedReconciliation { bindings })
 }
 pub(crate) struct PreparedReconciliation {
     bindings: Vec<(access::Binding, Uuid)>,
-    pub(crate) partitions: Vec<rss_transactional_messaging::message::PartitionIdentity>,
 }
 /// Apply exactly the bounded bindings prepared before the caller's partition declaration.
 pub(crate) async fn reconcile_in(
@@ -705,22 +698,14 @@ pub(crate) async fn reconcile_in(
             })
             .await?;
         if binding.revision != previous_revision {
-            let bytes = checked_input(serde_json::to_vec(&(
-                binding.id,
-                binding.generation,
-                binding.revision,
-                binding.policy_version,
-                binding.state,
-            )))?;
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
                 &format!("device-access:{id}:revision:{}", binding.revision),
-                &bytes,
                 200,
                 "success",
                 None,
             )?;
-            service.audit_store.append_in(tx, &fact, false).await?;
+            service.audit_store.append_in(tx, &fact).await?;
         }
         if binding.applied_revision == Some(binding.revision)
             || (binding.state == access::State::Revoked && binding.account.is_none())

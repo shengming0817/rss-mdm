@@ -138,8 +138,8 @@ impl SigningStore {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let claim=crate::mutation::run(&self.audit,rss_request_context::TenantId::parse(&tenant.to_string()).map_err(|_|Error::Request)?,&a,
-            (tenant,purpose,issuer,intent,&binding,&hash,now),|ctx,c|Box::pin(async move {
-                let (tenant,purpose,issuer,intent,binding,hash,now)=ctx;
+            (tenant,purpose,issuer,intent,&binding,now),|ctx,c|Box::pin(async move {
+                let (tenant,purpose,issuer,intent,binding,now)=ctx;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(tenant.to_string()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 if let Some(row)=sqlx::query("SELECT binding,state,chain FROM mdm_pki.signing WHERE tenant_id=$1 AND attempt=$2 FOR UPDATE")
                     .bind(*tenant).bind(intent.attempt).fetch_optional(&mut *c).await.map_err(|_|Error::Storage)? {
@@ -154,10 +154,10 @@ impl SigningStore {
                     } else {
                         if state!="issued" {return Err(Error::Unknown{attempt:intent.attempt});}
                         let chain=serde_json::from_slice(&row.try_get::<Vec<u8>,_>("chain").map_err(|_|Error::Storage)?).map_err(|_|Error::Storage)?;
-                        return Ok(crate::mutation::Change{value:Claim::Cached(chain),replay:false,key:String::new(),fingerprint:vec![]});
+                        return Ok(crate::mutation::Change{value:Claim::Cached(chain), replay:false, key:String::new()});
                     }
                 } else {return Err(Error::Request);}
-                Ok(crate::mutation::Change{value:Claim::New,replay:false,key:format!("pki:{}:claim",intent.attempt),fingerprint:hash.to_vec()})
+                Ok(crate::mutation::Change{value:Claim::New, replay:false, key:format!("pki:{}:claim",intent.attempt)})
             })).await;
         a.finalize(
             claim
@@ -217,7 +217,7 @@ impl SigningStore {
                 if row.try_get::<Vec<u8>,_>("digest").map_err(|_|Error::Storage)?!=*hash {return Err(Error::Conflict);}
                 if row.try_get::<String,_>("state").map_err(|_|Error::Storage)?!="signing" {
                     if row.try_get::<Option<Vec<u8>>,_>("chain").map_err(|_|Error::Storage)?==*bytes {
-                        return Ok(crate::mutation::Change{value:(),replay:false,key:String::new(),fingerprint:vec![]});
+                        return Ok(crate::mutation::Change{value:(), replay:false, key:String::new()});
                     }
                     return Err(Error::Conflict);
                 }
@@ -228,8 +228,8 @@ impl SigningStore {
                 }
                 sqlx::query("UPDATE mdm_pki.signing SET state=$3,chain=$4 WHERE tenant_id=$1 AND attempt=$2")
                     .bind(*tenant).bind(*attempt).bind(state).bind(&*bytes).execute(c).await.map_err(|_|Error::Storage)?;
-                let fingerprint=Sha256::digest(serde_json::to_vec(&(hash,&bytes)).map_err(|_|Error::Storage)?).to_vec();
-                Ok(crate::mutation::Change{value:(),replay:false,key:format!("pki:{attempt}:{state}"),fingerprint})
+
+                Ok(crate::mutation::Change{value:(), replay:false, key:format!("pki:{attempt}:{state}")})
             })).await;
         a.finalize(
             result

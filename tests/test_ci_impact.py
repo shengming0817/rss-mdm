@@ -422,6 +422,21 @@ class CiImpactContract(unittest.TestCase):
         self.assertEqual(decision['removedModules'][0]['carriers'],
                          [dict(path='crates/leaf/tests/behavior.rs', kind='deleted', modules=[])])
 
+    def test_deleted_shared_helper_does_not_retain_old_business_mapping(self):
+        helper = 'tests/support/retired.rs'
+        self.repo._write(helper, '')
+        registry = self.repo.root / 'hack/t2_registry.py'
+        original = registry.read_text()
+        registry.write_text(original + "\nfrom dataclasses import replace\nMODULES['leaf'] = replace(MODULES['leaf'], production_inputs=MODULES['leaf'].production_inputs + ('tests/support/retired.rs',))\n")
+        self.repo.commit('helper owner')
+        self.repo.base = self.repo.git('rev-parse', 'HEAD').stdout.strip()
+        self.repo.delete(helper)
+        registry.write_text(original)
+        decision = self.repo.select()[1]
+        self.assertEqual(decision['status'], 'selected')
+        self.assertEqual(decision['t2']['modules'], [])
+        self.assertTrue(decision['ownershipChecks'])
+
     def test_selector_change_requests_ownership_check_not_other_modules(self):
         p = self.repo.root / 'hack/t2_registry.py'
         p.write_text(p.read_text() + "\nfrom dataclasses import replace\nMODULES['leaf'] = replace(MODULES['leaf'], selectors=('current::',))\n")

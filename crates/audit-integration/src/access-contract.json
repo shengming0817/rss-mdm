@@ -2,6 +2,10 @@
   "tables": [],
   "functions": [
     {
+      "name": "rss_audit.append_batch",
+      "search_path": "search_path=pg_catalog, rss_audit"
+    },
+    {
       "name": "rss_transactional_messaging.check_execution",
       "search_path": "search_path=pg_catalog, rss_transactional_messaging, pg_temp"
     },
@@ -27,12 +31,7 @@
     }
   ],
   "external_relations": [
-    "rss_audit.heads",
     "rss_audit.records",
-    "rss_ledger.heads",
-    "rss_ledger.entries",
-    "mdm_audit.receipts",
-    "mdm_audit.backlog",
     "rss_transactional_messaging.policy",
     "rss_transactional_messaging.outbox"
   ],

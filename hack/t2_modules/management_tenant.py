@@ -55,7 +55,7 @@ def bootstrap(fixture):
     seeds = {}
     initialization = {}
     for tenant in (business, management):
-        account = dict(database=pool.database_config(root, fixture.database, 'mdm_identity_maintenance', 'identity-maintenance-fixture'),
+        account = dict(audit={"mode":"plain"},database=pool.database_config(root, fixture.database, 'mdm_identity_maintenance', 'identity-maintenance-fixture'),
                        installation=installation(), tenant_id=tenant, expected_epoch=1,
                        principal_id=ADMIN, login='admin', password_file=str(password_file))
         command('initialize', account)
@@ -238,7 +238,7 @@ def account_lifecycle(fixture):
         require(admin.call('POST', api + '/accounts/' + ADMIN + '/membership', dict(enabled=False))[0] == 403,
                 'initial account manager membership could be removed')
         new_password = 'Fixture-only-recovered-management-2026!'
-        recovery = dict(database=h.pool.database_config(root, fixture.database, 'mdm_identity_maintenance','identity-maintenance-fixture'), installation=installation(), tenant_id=management, expected_epoch=1, principal_id=ADMIN, login=None, password_file=str(private(root / 'recovered-password', new_password)))
+        recovery = dict(audit={'mode':'plain'},database=h.pool.database_config(root, fixture.database, 'mdm_identity_maintenance','identity-maintenance-fixture'), installation=installation(), tenant_id=management, expected_epoch=1, principal_id=ADMIN, login=None, password_file=str(private(root / 'recovered-password', new_password)))
         command('recover-password', recovery)
         require(admin.call('GET', EFFECTIVE)[0] == 401, 'recovery retained old session')
         login(admin, management, secret=new_password)
@@ -253,7 +253,7 @@ def account_lifecycle(fixture):
 def assembly_admission(fixture):
     with management_host(fixture) as h:
         h.host.close()
-        for table in ('mdm_audit.receipts','rss_audit.records'):
+        for table in ('rss_audit.records',):
             h.sql(f'GRANT UPDATE ON {table} TO mdm_identity_provisioning')
             try: h.command('serve',h.config,accepted=False,reason='startup.identity: Audit')
             finally: h.sql(f'REVOKE UPDATE ON {table} FROM mdm_identity_provisioning')

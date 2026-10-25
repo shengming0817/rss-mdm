@@ -68,7 +68,6 @@ impl Planning {
             let fact = rss_mdm_audit_integration::Fact::business(
                 &audit,
                 &format!("asset-ingress:{generation}:failed"),
-                &generation.to_be_bytes(),
                 200,
                 "failed",
                 None,
@@ -76,7 +75,7 @@ impl Planning {
             .map_err(Error::from)?;
             let result = self
                 .audit_store
-                .append_in(tx, &fact, false)
+                .append_in(tx, &fact)
                 .await
                 .map_err(Error::from);
             audit.finalize(

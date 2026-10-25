@@ -519,7 +519,6 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         client.tenant,
         &[31; 32],
     )?);
-    timeline.initialize().await?;
     client.router = client.router.clone().merge(
         host.protect(
             axum::Router::new().nest(
@@ -544,11 +543,7 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         )
         .await?;
     ensure!(cancelled.0 == StatusCode::OK, "cancel: {cancelled:?}");
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(case_tenant())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let path = format!(
         "/api/v1/devices/{other}/timeline?action=command_cancel&operationId={other_operation}"
     );

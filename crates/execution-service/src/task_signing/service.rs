@@ -132,9 +132,9 @@ impl ExecutionService {
                 };
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
-            let digest=value.installation_digest().map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("task-signing:{operation}"),digest.as_bytes(),200,"success",None).map_err(|_|Error::Malformed)?;
-            service.task_signing_audit.append(tx,&fact,replayed).await?;
+
+            let fact=Fact::business(audit, &format!("task-signing:{operation}"), 200, "success", None).map_err(|_|Error::Malformed)?;
+            (if replayed { Ok(()) } else { service.task_signing_audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
         })).await;
@@ -200,9 +200,9 @@ impl ExecutionService {
                 let replayed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_task_signing.acknowledgements WHERE tenant_id=$1::uuid AND operation_id=$2)").bind(p.tenant().to_string()).bind(input.operation).fetch_one(&mut *c).await.map_err(|_|Error::Unavailable(crate::Failure::Database))?;
                 trust::acknowledge(c,p,input).await?;Ok::<_,Error>(replayed)
             })).await?;
-            let bytes=serde_json::to_vec(input).map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("task-signing-ack:{}",input.operation),&bytes,200,"success",None).map_err(|_|Error::Malformed)?;
-            service.task_signing_audit.append(tx,&fact,replayed).await?;
+
+            let fact=Fact::business(audit, &format!("task-signing-ack:{}",input.operation), 200, "success", None).map_err(|_|Error::Malformed)?;
+            (if replayed { Ok(()) } else { service.task_signing_audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}audit.mark_commit_started();Ok(())
         })).await;
         settle(result, audit, true)
@@ -257,20 +257,20 @@ impl ExecutionService {
                                 })
                             })
                             .await?;
-                        let bytes = serde_json::to_vec(input).map_err(|_| Error::Malformed)?;
+
                         let fact = Fact::business(
                             audit,
                             &format!("task-trust-observe:{}", input.operation),
-                            &bytes,
                             200,
                             "success",
                             None,
                         )
                         .map_err(|_| Error::Malformed)?;
-                        service
-                            .task_signing_audit
-                            .append(tx, &fact, replayed)
-                            .await?;
+                        (if replayed {
+                            Ok(())
+                        } else {
+                            service.task_signing_audit.append(tx, &fact).await
+                        })?;
                         audit.mark_commit_started();
                         Ok(())
                     })

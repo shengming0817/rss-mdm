@@ -32,7 +32,6 @@ pub(crate) struct Assembly {
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) content_writer: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) audit_projection_health: Arc<crate::audit_health::Readiness>,
     pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
@@ -151,10 +150,6 @@ pub(crate) async fn application_fixture(
         );
         let timeline =
             access.timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)?;
-        timeline
-            .initialize()
-            .await
-            .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         let telemetry = match &compiled.config.telemetry {
             Some(config) => {
                 let service = config
@@ -179,7 +174,6 @@ pub(crate) async fn application_fixture(
             compiled,
             AssemblyDependencies {
                 mount_channels: false,
-                audit_projection_health: Default::default(),
                 telemetry,
                 certificate_archive: crate::certificate_archive::assemble(
                     &access,
@@ -251,7 +245,6 @@ pub(crate) struct AssemblyDependencies {
     pub(crate) timeline: Arc<rss_mdm_timeline_service::Timeline>,
     pub(crate) associations: Arc<rss_mdm_device_service::Associations>,
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
-    pub(crate) audit_projection_health: Arc<crate::audit_health::Readiness>,
     pub(crate) execution: crate::execution_assembly::Assembly,
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) monotonic: Arc<dyn rss_observation::Clock>,
@@ -293,7 +286,6 @@ pub(crate) async fn from_compiled(
         timeline,
         associations,
         audit_store,
-        audit_projection_health,
         execution,
         clock,
         monotonic,
@@ -600,7 +592,6 @@ pub(crate) async fn from_compiled(
         queries,
         protection,
         audit_store,
-        audit_projection_health,
         apple,
         platform_configuration,
         execution,
@@ -712,13 +703,9 @@ pub(crate) fn from_state(
         pki: state.pki.clone(),
         apple_store: state.access.apple_store(),
         access: state.access.archive_pool(),
-        audit_store: state.audit_store.clone(),
         telemetry: state.telemetry.clone(),
         execution: state.execution.clone(),
         inventory: state.inventory.clone(),
-        identity_audit: state.identity.audit_readiness.clone(),
-        mdm_audit: state.audit_projection_health.clone(),
-        management_tenant: state.identity.management_tenant,
         apple: state.apple.clone(),
         clock: state.clock.clone(),
         planning: state.flow.planning.clone(),
@@ -1242,12 +1229,7 @@ pub(crate) async fn apple_management_settlement(
             | AppleFailure::AuditIsolation
             | AppleFailure::AuditAdmission,
         )) => Some(ResponseFailure::AuditContract),
-        Some(AppleError::Unavailable(AppleFailure::AuditBackpressure)) => {
-            Some(ResponseFailure::AuditBackpressure)
-        }
-        Some(AppleError::Unavailable(AppleFailure::AuditReserveExhausted)) => {
-            Some(ResponseFailure::AuditReserveExhausted)
-        }
+
         Some(AppleError::Unavailable(AppleFailure::Audit)) => {
             Some(ResponseFailure::AuditUnavailable)
         }

@@ -185,7 +185,7 @@ pub async fn configure(
             save(c,p.tenant_id(),id,op,"configuration",digest,p.principal_id(),p.instance_id(),current+1,0,&json!({}),"succeeded",Some(&value),false,now(app)?).await?;
             p.check_live()?;Ok((value,false))
         })).await?;
-        append(app,tx,audit,op,digest,value.1).await?;
+        append(app,tx,audit,op,value.1).await?;
         Ok(value.0)
     })).await;
     crate::operations::settle(result, &audit).map(Json)
@@ -377,7 +377,7 @@ pub async fn operation(
             if kind=="sync" && !full {sqlx::query("UPDATE mdm_apple.ade_operations SET cursor=$3 WHERE tenant_id=$1::uuid AND id=$2").bind(p.tenant_id()).bind(op).bind(row.try_get::<Option<String>,_>("cursor").map_err(db)?).execute(&mut *c).await.map_err(db)?;}
             p.check_live()?;crate::notify(c,"apple").await.map_err(db)?;Ok((value,false))
         })).await?;
-        append(app,tx,audit,op,digest,replayed).await?;Ok(value)
+        append(app,tx,audit,op,replayed).await?;Ok(value)
     })).await;
     crate::operations::settle(result, &audit).map(Json)
 }
@@ -461,21 +461,15 @@ async fn append(
     tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
     audit: &RequestAudit,
     op: Uuid,
-    digest: &str,
     replayed: bool,
 ) -> Result<(), Error> {
-    let fact = Fact::business(
-        audit,
-        &format!("apple-ade:{op}"),
-        digest.as_bytes(),
-        200,
-        "success",
-        Some(op),
-    )?;
-    app.audit_store
-        .append(tx, &fact, replayed)
-        .await
-        .map_err(Error::from)?;
+    let fact = Fact::business(audit, &format!("apple-ade:{op}"), 200, "success", Some(op))?;
+    (if replayed {
+        Ok(())
+    } else {
+        app.audit_store.append(tx, &fact).await
+    })
+    .map_err(Error::from)?;
     audit.mark_commit_started();
     Ok(())
 }

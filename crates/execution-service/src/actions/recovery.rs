@@ -22,7 +22,6 @@ pub async fn active(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<bool> {
 pub(crate) struct PreparedRecovery {
     id: Uuid,
     runs: Vec<(Uuid, Option<Uuid>, String)>,
-    pub(crate) partitions: Vec<rss_transactional_messaging::message::PartitionIdentity>,
 }
 pub(crate) async fn prepare(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<PreparedRecovery> {
     crate::sources::storage::lock(tx, id).await?;
@@ -40,24 +39,8 @@ pub(crate) async fn prepare(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Prep
     for (run, _, _) in &runs {
         db::load_run(tx, *run).await?;
     }
-    let mut partitions = Vec::new();
-    partitions.push(rss_mdm_audit_integration::source_partition(
-        tx.tenant_id(),
-        "mdm",
-        "request",
-    )?);
-    for (_, _, device) in &runs {
-        partitions.push(rss_mdm_audit_integration::source_partition(
-            tx.tenant_id(),
-            "device",
-            device,
-        )?);
-    }
-    Ok(PreparedRecovery {
-        id,
-        runs,
-        partitions,
-    })
+
+    Ok(PreparedRecovery { id, runs })
 }
 pub(crate) async fn recover(
     service: &ExecutionService,
@@ -145,14 +128,13 @@ pub async fn audit_recovery(
                 run.id,
                 sha2::Sha256::digest(&bytes)
             ),
-            &bytes,
             200,
             "success",
             None,
         )?
         .with_details(serde_json::json!({"before":previous,"after":run.state}))?;
         audit.finalize(None);
-        service.audit_store.append_in(tx, &fact, false).await?;
+        service.audit_store.append_in(tx, &fact).await?;
     }
     Ok(())
 }
@@ -177,7 +159,7 @@ impl ExecutionService {
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move{
             let (service,id,fingerprint,audit)=ctx;
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
-            let fact=Fact::business(audit,&format!("action:{id}:dispatch"),fingerprint,200,"success",None)?;
+            let fact=Fact::business(audit, &format!("action:{id}:dispatch"), 200, "success", None)?;
             let tenant=tx.tenant_id().to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move{
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
@@ -185,7 +167,7 @@ impl ExecutionService {
                 Ok(old)
             })).await?.ok_or(crate::Error::Unavailable(crate::Failure::CommandInvariant))?;
             if old{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            service.audit_store.append_in(tx,&fact,old).await?;Ok(())
+            (if old { Ok(()) } else { service.audit_store.append_in(tx, &fact).await })?;Ok(())
         })).await;
         audit.finalize(
             result

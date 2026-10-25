@@ -99,7 +99,7 @@ impl Service {
             let safe: bool = sqlx::query_scalar("SELECT current_user=session_user AND current_user='mdm_tenant_registry' AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreaterole AND NOT rolcreatedb AND NOT EXISTS(SELECT 1 FROM pg_auth_members WHERE member=pg_roles.oid) AND has_function_privilege(current_user,'public.create_new_tenant(uuid,bigint,text,text)','EXECUTE') AND (SELECT count(*)=2 AND bool_and(NOT has_function_privilege(current_user,p.oid,'EXECUTE')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname,p.proname) IN (('mdm','seed_tenant_catalog'),('mdm_access','seed_tenant_settings'))) FROM pg_roles WHERE rolname=current_user")
                 .fetch_one(&mut *connection).await.map_err(|_| invalid("role query"))?;
             if !safe { return Err(invalid("registry role")); }
-            let bounded: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND n.nspname||'.'||c.relname NOT IN ('public.mdm_tenants','public.mdm_tenant_operations','mdm_audit.receipts','mdm_audit.backlog') AND (has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))")
+            let bounded: bool = sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND c.relkind IN ('r','p','v','m','f') AND n.nspname||'.'||c.relname NOT IN ('public.mdm_tenants','public.mdm_tenant_operations') AND (has_table_privilege(current_user,c.oid,'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'INSERT,UPDATE,REFERENCES')))")
                 .fetch_one(&mut *connection).await.map_err(|_| invalid("capabilities query"))?;
             let body = include_str!("../schema/tenant-administration.sql").split("$create$").nth(1).expect("create function body");
             let exact: bool = sqlx::query_scalar("SELECT count(*)=1 AND coalesce(bool_and(p.prosecdef AND p.proowner='mdm_owner'::regrole AND p.prosrc=$1 AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp'] AND NOT EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 OR a.is_grantable OR pg_get_userbyid(a.grantee) NOT IN ('mdm_owner','mdm_tenant_registry'))),false) FROM pg_proc p WHERE p.oid='public.create_new_tenant(uuid,bigint,text,text)'::regprocedure")
@@ -107,7 +107,7 @@ impl Service {
             if !bounded || !exact { return Err(invalid("registry capabilities")); }
             drop(connection);
             let budget = AuditBudget::new(Duration::from_secs(5));
-            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), management, config.audit_projection.limits()?, &budget.control()).await.map_err(|_| invalid("audit"))?;
+            let audit = AuditStore::new(pool.clone(), config.audit.integrity()?, source_runtime.clone(), management, &budget.control()).await.map_err(|_| invalid("audit"))?;
             let this = Self { pool: pool.clone(), source_runtime: source_runtime.clone(), audit, config: options.clone(), installation, management, kdf, policy,
                 fingerprint: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key) };
             let target = TenantId::parse(&config.identity.tenant_id).map_err(|_| invalid("configuration"))?;
@@ -261,11 +261,10 @@ impl Service {
         );
         audit.target(input.tenant_id);
         audit.require_final_request();
-        let fingerprint = serde_json::to_vec(&request(&input)).map_err(|_| Error::Malformed)?;
+
         let fact = Fact::business(
             audit,
             &format!("tenant-registry:{}", input.operation_id),
-            &fingerprint,
             200,
             "success",
             None,
@@ -285,7 +284,7 @@ impl Service {
             }.await.map_err(project) })).await?;
             let receipt = match result {
                 Outcome::Replay(receipt) => { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); receipt }
-                Outcome::Changed(receipt) => { service.audit.append(tx, fact, false).await?; receipt }
+                Outcome::Changed(receipt) => { service.audit.append(tx, fact).await?; receipt }
             };
             audit.mark_commit_started();
             Ok::<_, Error>(receipt)
@@ -558,8 +557,7 @@ impl axum::response::IntoResponse for HttpFailure {
                     Failure::AuditIsolation => F::AuditIsolation,
                     Failure::AuditAdmission => F::AuditAdmission,
                     Failure::AuditContract => F::AuditContract,
-                    Failure::AuditBackpressure => F::AuditBackpressure,
-                    Failure::AuditReserveExhausted => F::AuditReserveExhausted,
+
                     _ => F::Database,
                 })
             }

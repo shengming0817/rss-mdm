@@ -250,35 +250,20 @@ impl Backend {
                             .check_live()
                             .map_err(|_| PgError::from(webhooks::Error::Denied))?;
                         if let Some(id) = operation(command) {
-                            use sha2::{Digest, Sha256};
-                            let digest = if matches!(
-                                command,
-                                Command::PrepareMaterial(..) | Command::TransitionMaterial(..)
-                            ) {
-                                backend
-                                    .material_fingerprint(proof, command)
-                                    .map_err(|_| PgError::from(webhooks::Error::Invalid))?
-                            } else {
-                                Sha256::digest(
-                                    serde_json::to_vec(command)
-                                        .map_err(|_| PgError::from(webhooks::Error::Invalid))?,
-                                )
-                                .to_vec()
-                            };
                             let fact = rss_mdm_audit_integration::Fact::business(
                                 audit,
                                 &format!("webhook:{id}"),
-                                &digest,
                                 200,
                                 "success",
                                 None,
                             )
                             .map_err(|_| PgError::from(webhooks::Error::Invalid))?;
-                            backend
-                                .audit
-                                .append_in(tx, &fact, replayed)
-                                .await
-                                .map_err(preserve_audit_error)?;
+                            (if replayed {
+                                Ok(())
+                            } else {
+                                backend.audit.append_in(tx, &fact).await
+                            })
+                            .map_err(preserve_audit_error)?;
                         } else {
                             audit.require_final_request();
                         }

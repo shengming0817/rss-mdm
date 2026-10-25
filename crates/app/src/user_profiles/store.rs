@@ -208,8 +208,8 @@ pub(super) async fn change(
                 .bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(input.operation_id).bind(*fingerprint).bind(serde_json::to_value(&result).map_err(|_|unavailable())?).execute(c).await.map_err(database)?;
             p.check_live()?;Ok((result,false))
         })).await?;
-        let fact=Fact::business(audit,&format!("user-attribute:{}:{}:{}",p.instance_id(),p.principal_id(),input.operation_id),fingerprint,200,"success",None)?;
-        store.append(tx,&fact,replayed).await?;
+        let fact=Fact::business(audit, &format!("user-attribute:{}:{}:{}",p.instance_id(),p.principal_id(),input.operation_id), 200, "success", None)?;
+        (if replayed { Ok(()) } else { store.append(tx, &fact).await })?;
         p.check_live()?;
         audit.mark_commit_started();
         Ok::<_,Error>(result)

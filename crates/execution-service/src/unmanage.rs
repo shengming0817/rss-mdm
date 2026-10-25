@@ -140,7 +140,6 @@ pub(crate) struct PreparedRetirement {
     original: rss_mdm_device_service::lifecycle::Retirement,
     executions: std::collections::BTreeMap<Uuid, Uuid>,
     cleanup: std::collections::BTreeMap<Uuid, Vec<sqlx::postgres::PgRow>>,
-    pub(crate) partitions: Vec<rss_transactional_messaging::message::PartitionIdentity>,
 }
 
 impl ExecutionService {
@@ -191,38 +190,15 @@ impl ExecutionService {
                 )
             })
             .await??;
-        let mut partitions = Vec::new();
         let mut executions = std::collections::BTreeMap::new();
         let mut cleanup = std::collections::BTreeMap::new();
         for channel in &original.channels {
-            partitions.push(rss_mdm_audit_integration::source_partition(
-                tenant,
-                "mdm",
-                &channel.registration.to_string(),
-            )?);
-            partitions.push(rss_mdm_audit_integration::source_partition(
-                tenant,
-                "device",
-                &channel.device,
-            )?);
             if channel.channel == rss_mdm_inventory::Channel::Agent {
                 let execution = Uuid::new_v4();
-                partitions.push(rss_mdm_audit_integration::source_partition(
-                    tenant,
-                    "mdm",
-                    &execution.to_string(),
-                )?);
+
                 executions.insert(channel.registration, execution);
                 if channel.stage == Stage::Cleanup {
                     let rows = cleanup_candidates(tx, channel.registration).await?;
-                    for row in rows.iter().take(128) {
-                        let run = cleanup_run_id(tenant, id, row.try_get("id")?)?;
-                        partitions.push(rss_mdm_audit_integration::source_partition(
-                            tenant,
-                            "mdm",
-                            &run.to_string(),
-                        )?);
-                    }
                     cleanup.insert(channel.registration, rows);
                 }
             }
@@ -232,7 +208,6 @@ impl ExecutionService {
             original,
             executions,
             cleanup,
-            partitions,
         })
     }
     pub(crate) async fn advance_retirement_in(
@@ -277,12 +252,10 @@ impl ExecutionService {
                         })
                     })
                     .await?;
-                for fact in facts {
-                    self.audit_store
-                        .append_in(tx, &fact, false)
-                        .await
-                        .map_err(Error::from)?;
-                }
+                self.audit_store
+                    .append_batch_in(tx, &facts)
+                    .await
+                    .map_err(Error::from)?;
                 if channel.channel == rss_mdm_inventory::Channel::Mdm {
                     let t = tenant.to_string();
                     let device = channel.device.clone();
@@ -521,7 +494,6 @@ impl ExecutionService {
         let before = checked_input(serde_json::to_value(&original.channels))?;
         let after = checked_input(serde_json::to_value(&current.channels))?;
         if before != after {
-            let bytes = checked_input(serde_json::to_vec(&(id, &before, &after)))?;
             let event = crate::transaction::fingerprint(&(id, &before, &after))?;
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
@@ -532,13 +504,12 @@ impl ExecutionService {
                         .map(|v| format!("{v:02x}"))
                         .collect::<String>()
                 ),
-                &bytes,
                 200,
                 "success",
                 None,
             )?;
             self.audit_store
-                .append_in(tx, &fact, false)
+                .append_in(tx, &fact)
                 .await
                 .map_err(Error::from)?;
         }

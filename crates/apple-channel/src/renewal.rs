@@ -106,11 +106,10 @@ async fn prepare(
                     let Some((prepared, replayed)) = prepared else {
                         return Ok(None);
                     };
-                    let fingerprint = rss_mdm_registration_service::enrollment::digest(&prepared);
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-renewal:{}:prepare", prepared.attempt),
-                        fingerprint.as_bytes(),
                         202,
                         "success",
                         Some(prepared.enrollment),
@@ -121,10 +120,12 @@ async fn prepare(
                         )
                     })
                     .map_err(Error::from)?;
-                    store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     audit.mark_commit_started();
                     Ok(Some(prepared))
                 })
@@ -359,10 +360,9 @@ pub async fn challenge(
 
             })).await?;
             let Some(replayed) = replayed else { return Ok(false); };
-            let fingerprint = rss_mdm_registration_service::enrollment::digest(&(csr.attempt(), csr.digest(), csr.spki(), transaction));
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:challenge", csr.attempt()),
-                fingerprint.as_bytes(), 200, "success", Some(csr.enrollment())).map_err(Error::from)?;
-            app.audit_store.append(tx, &fact, replayed).await.map_err(Error::from)?;
+
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:challenge", csr.attempt()), 200, "success", Some(csr.enrollment())).map_err(Error::from)?;
+            (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
             Ok(true)
@@ -434,25 +434,21 @@ pub async fn notify(
                     let Some(replayed) = replayed else {
                         return Ok(false);
                     };
-                    let fingerprint = rss_mdm_registration_service::enrollment::digest(&(
-                        leaf.attempt(),
-                        leaf.fingerprint(),
-                        csr.digest(),
-                        transaction,
-                    ));
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-renewal:{}:notify", leaf.attempt()),
-                        fingerprint.as_bytes(),
                         200,
                         "success",
                         Some(leaf.attempt()),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -537,10 +533,9 @@ pub async fn activate(
 
                 })).await?;
             if changed {
-                let fingerprint = rss_mdm_registration_service::enrollment::digest(&(leaf.attempt(), leaf.fingerprint(), udid));
-                let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:activate", leaf.attempt()),
-                    fingerprint.as_bytes(), 200, "success", Some(leaf.enrollment())).map_err(Error::from)?;
-                app.audit_store.append(tx, &fact, false).await.map_err(Error::from)?;
+
+                let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-renewal:{}:activate", leaf.attempt()), 200, "success", Some(leaf.enrollment())).map_err(Error::from)?;
+                app.audit_store.append(tx, &fact).await.map_err(Error::from)?;
                 audit.mark_commit_started();
             }
             Ok(())

@@ -367,9 +367,9 @@ impl crate::agent::Service {
                 sqlx::query("UPDATE mdm_access.device_access_lifecycles SET document=$3 WHERE tenant_id=$1::uuid AND operation=$2")
                     .bind(actor.tenant_id()).bind(*operation).bind(serde_json::to_value(&value).map_err(|_|Error::Corrupt)?)
                     .execute(c).await.map_err(crate::database::db)?;
-                use sha2::{Digest,Sha256};
-                let bytes=serde_json::to_vec(&(*operation,*component,*transition)).map_err(|_|Error::Malformed)?;
-                Ok(crate::agent::Change{value:(value,claimed),digest:format!("{:x}",Sha256::digest(bytes)),replay:false})
+
+
+                Ok(crate::agent::Change{value:(value,claimed), replay:false})
             })).await
     }
 }

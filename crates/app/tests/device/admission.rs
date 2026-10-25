@@ -43,7 +43,7 @@ async fn runtime_role_cannot_mutate_history_or_read_without_tenant() -> anyhow::
     for statement in [
         "DELETE FROM mdm_access.registrations",
         "UPDATE mdm_access.credentials SET locator=repeat('0',64)",
-        "UPDATE mdm_audit.receipts SET source_bytes=source_bytes",
+        "UPDATE rss_audit.records SET canonical=canonical",
     ] {
         let error = runtime.execute(statement).await.unwrap_err();
         assert_eq!(

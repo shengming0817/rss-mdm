@@ -173,7 +173,6 @@ pub(crate) async fn write(
             p.principal_id(),
             id
         ),
-        &digest,
         200,
         "success",
         None,
@@ -198,7 +197,7 @@ pub(crate) async fn write(
             sqlx::query("INSERT INTO mdm_certificate_archive.operations(tenant_id,actor,instance,id,action,digest,result,created_at) VALUES($1::uuid,$2,$3::uuid,$4::uuid,$5,$6,$7::jsonb,floor(extract(epoch FROM clock_timestamp()))::bigint)").bind(p.tenant_id()).bind(p.principal_id()).bind(p.instance_id()).bind(id.to_string()).bind(*action).bind(digest.as_slice()).bind(serde_json::to_string(&receipt).map_err(|_|Error::Integrity)?).execute(c).await?;
             Ok((receipt,false))
         })).await?;
-        context.6.append(tx,&context.7,replayed).await?;
+        if !replayed { context.6.append(tx,&context.7).await?; }
         if replayed{context.5.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         context.5.mark_commit_started();Ok(receipt)
     })).await;

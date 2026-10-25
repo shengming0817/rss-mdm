@@ -329,19 +329,17 @@ pub(crate) async fn reauthentication(
                         },
                     )
                     .await?;
-                    let digest =
-                        rss_mdm_registration_service::enrollment::digest(&(*enrollment, *flow));
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-account-reauthentication:{flow}"),
-                        digest.as_bytes(),
                         401,
                         "success",
                         Some(*enrollment),
                     )
                     .map_err(Error::from)?;
                     app.audit_store
-                        .append(tx, &fact, false)
+                        .append(tx, &fact)
                         .await
                         .map_err(Error::from)?;
                     audit.mark_commit_started();

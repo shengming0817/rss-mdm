@@ -227,16 +227,7 @@ async fn issue_message(
     };
     let (id, intent) = intent(app, &parent, operation, proof.replay(), &csr.0, input).await?;
     let certificate = issuance::sign(app, &parent.tenant().to_string(), &intent, now(app)?).await?;
-    complete(
-        app,
-        &parent,
-        id,
-        &intent,
-        &certificate,
-        audit,
-        proof.replay(),
-    )
-    .await?;
+    complete(app, &parent, id, &intent, &certificate, audit).await?;
     let secrets =
         app.windows()?
             .protection
@@ -383,7 +374,6 @@ async fn complete(
     intent: &issuance::Intent,
     certificate: &[u8],
     audit: &RequestAudit,
-    digest: [u8; 32],
 ) -> Result<(), Error> {
     let profile = certificate::IssuanceProfile::decode(&intent.profile)?;
     let leaf = app.windows()?.ca.validate_issued(
@@ -400,7 +390,7 @@ async fn complete(
     .credential(leaf.fingerprint())?;
     let budget = app.devices.retirement_budget();
     let result = app.audit_store.write(parent.tenant(),
-            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,digest,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,digest,facts),tx|Box::pin(async move {
+            &budget.source_control(),(app,parent,id,intent,certificate,audit,&credential,Vec::new()),|(app,parent,id,intent,certificate,audit,credential,facts),tx|Box::pin(async move {
         let replayed = tx.with_connection_context(&mut (*app,*parent,*id,*intent,*certificate,*credential,&mut *facts),|(app,parent,id,intent,certificate,credential,facts),c|Box::pin(async move {
             let (app,parent,id,intent,certificate,credential) = (*app,*parent,*id,*intent,*certificate,*credential);
             crate::device::store::revalidate_management(c,parent).await?;
@@ -416,9 +406,9 @@ async fn complete(
             enrollment_store::insert_certificate(c,&parent.tenant().to_string(),id.to_string(),certificate,&secrets.server_nonce).await.map_err(db)?;
             Ok(false)
         })).await?;
-        for fact in facts.iter() { app.audit_store.append(tx,fact,false).await.map_err(Error::from)?; }
-        let fact = rss_mdm_audit_integration::Fact::business(audit,&format!("windows-linked:{id}:issued"),digest,200,"success",Some(*id)).map_err(Error::from)?;
-        app.audit_store.append(tx,&fact,replayed).await.map_err(Error::from)?;
+        for fact in facts.iter() { app.audit_store.append(tx, fact).await.map_err(Error::from)?; }
+        let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("windows-linked:{id}:issued"), 200, "success", Some(*id)).map_err(Error::from)?;
+        (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
         audit.mark_commit_started(); Ok(())
     })).await;
     crate::operations::settle(result, audit)

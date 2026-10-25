@@ -140,7 +140,6 @@ pub(crate) async fn send(
         facts.push(Fact::business(
             &a,
             &format!("apple-pki:{id}:dispatch"),
-            digest.as_bytes(),
             200,
             "success",
             Some(id),
@@ -226,7 +225,6 @@ pub(crate) async fn receive(
         facts: vec![Fact::business(
             &a,
             &format!("apple-pki:{id}:confirmed"),
-            current.installation_digest().as_bytes(),
             200,
             "success",
             Some(id),

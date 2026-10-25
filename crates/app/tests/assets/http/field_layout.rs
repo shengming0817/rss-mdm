@@ -219,16 +219,16 @@ async fn layout_cas_receipts_and_audit_are_atomic() -> Result<()> {
         ensure!(matches!(a, Err(Error::Conflict)) ^ matches!(b, Err(Error::Conflict)));
         let before = pg(&format!("SELECT revision||':'||document::text FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))?;
         let business = || -> Result<String> {
-            pg(&format!("SELECT event_id FROM mdm_audit.receipts WHERE tenant_id='{}' AND source_id='mdm.business' ORDER BY event_id", case_tenant()))
+            pg(&format!("SELECT event_id FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business' ORDER BY event_id", case_tenant()))
         };
         let facts = business()?;
         ensure!(!facts.is_empty());
         let failed_id = Uuid::new_v4();
         let failed = Command::FieldLayoutWrite { change: Operation { operation_id: failed_id, expected_revision: 2, input: FieldLayout::default() } };
         // Failure while enqueueing the source fact rolls the layout and receipt back.
-        pg("CREATE FUNCTION public.reject_layout_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_layout_audit BEFORE INSERT ON mdm_audit.receipts FOR EACH ROW EXECUTE FUNCTION public.reject_layout_audit();")?;
+        pg("CREATE FUNCTION public.reject_layout_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_layout_audit BEFORE INSERT ON rss_audit.records FOR EACH ROW EXECUTE FUNCTION public.reject_layout_audit();")?;
         let result = execute(&service, &failed).await;
-        pg("DROP TRIGGER reject_layout_audit ON mdm_audit.receipts; DROP FUNCTION public.reject_layout_audit();")?;
+        pg("DROP TRIGGER reject_layout_audit ON rss_audit.records; DROP FUNCTION public.reject_layout_audit();")?;
         ensure!(result.is_err(), "audit failure accepted layout");
         ensure!(pg(&format!("SELECT revision||':'||document::text FROM mdm_assets.field_layouts WHERE tenant_id='{}'", case_tenant()))? == before);
         ensure!(pg(&format!("SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{}' AND id='{failed_id}'", case_tenant()))?.trim() == "0");

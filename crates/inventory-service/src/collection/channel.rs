@@ -148,7 +148,6 @@ pub async fn finish_in(
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("channel-collection:{id}"),
-        digest.as_bytes(),
         200,
         "success",
         None,
@@ -189,11 +188,10 @@ pub async fn abandon_in(
     audit.identify_service("service:collection-finalizer");
     audit.registration(registration);
     let details = serde_json::json!({"collectionResult":"failed","reason":reason,"sealedAt":at});
-    let fingerprint = serde_json::to_vec(&details).map_err(|_| Error::Malformed)?;
+
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("channel-collection:{id}"),
-        &fingerprint,
         200,
         "failed",
         None,

@@ -231,7 +231,7 @@ pub(super) async fn prepare_accounts(
     let kdf = Arc::new(PasswordKdf::new());
     let result = async {
         let provisioner = AccountProvisioner::connect(runtime.clone(), kdf.clone(),
-            crate::identity::authority_config(InstanceId::parse(INSTANCE)?, tenants.iter().map(|(t, _)| *t).collect())?,
+            crate::identity::authority_config(InstanceId::parse(INSTANCE)?, tenants.iter().map(|(t, _)| *t).collect(), rss_audit_postgres::Integrity::Plain)?,
             source, Arc::new(crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?),
             crate::identity::deadline()).await?;
         let mut costs = vec![serde_json::json!({"phase":"case-reads","count":paths.len()})];
@@ -612,7 +612,6 @@ async fn change_grants_in(
                 config.audit.integrity()?,
                 source.clone(),
                 rss_request_context::TenantId::parse(tenant)?,
-                Default::default(),
                 &budget.control(),
             )
             .await?;

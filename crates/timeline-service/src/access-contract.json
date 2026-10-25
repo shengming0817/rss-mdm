@@ -2,16 +2,6 @@
   "tables": [
     {
       "schema": "mdm_timeline",
-      "table": "checkpoints",
-      "read_write": true,
-      "updates": [
-        "position",
-        "source_through"
-      ],
-      "delete_policy": null
-    },
-    {
-      "schema": "mdm_timeline",
       "table": "facts",
       "read_write": true,
       "updates": [],

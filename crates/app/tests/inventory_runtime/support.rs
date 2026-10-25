@@ -73,7 +73,7 @@ pub(crate) async fn report_statuses(
                         )
                         .await?;
                     for fact in &facts {
-                        store.append(tx, fact, false).await?;
+                        store.append(tx, fact).await?;
                     }
                     audit.operation(
                         id,

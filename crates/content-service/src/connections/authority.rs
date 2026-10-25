@@ -140,9 +140,9 @@ impl Authority {
                 let value=prepare(c,service.tenant,*operation,input,&actor,&service.protection).await?;
                 p.check_live()?;Ok::<_,Failure>((value,replayed))
             })).await?;
-            let fingerprint=serde_json::to_vec(&(value.operation_id,value.revision,&value.profile)).map_err(|_|Failure::Malformed)?;
-            let fact=Fact::business(audit,&format!("storage-provision:{operation}"),&fingerprint,202,"success",None)?;
-            service.audit.append(tx,&fact,replayed).await?;
+
+            let fact=Fact::business(audit, &format!("storage-provision:{operation}"), 202, "success", None)?;
+            (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
         })).await;

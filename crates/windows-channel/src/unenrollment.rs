@@ -121,11 +121,11 @@ pub(crate) async fn requested(
                     Ok::<_,Error>(None)
                 })).await?;
             if replay.is_none() {
-            let fact = rss_mdm_audit_integration::Fact::business(audit,&format!("windows-unenrollment:{}:{}",p.registration(),p.generation()),digest.as_slice(),200,"success",None)
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("windows-unenrollment:{}:{}",p.registration(),p.generation()), 200, "success", None)
                 .and_then(|f|f.with_details(serde_json::json!({"nativeType":"com.microsoft:mdm.unenrollment.userrequest","registrationState":"revoked","deviceCleanup":"unverified"}))).map_err(Error::from)?;
             facts.push(fact);
             } else { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
-            for fact in facts.iter() { app.audit_store.append(tx,fact,false).await.map_err(Error::from)?; }
+            for fact in facts.iter() { app.audit_store.append(tx, fact).await.map_err(Error::from)?; }
             if replay.is_none() { audit.require_final_request(); }
             audit.mark_commit_started();
             Ok(replay)

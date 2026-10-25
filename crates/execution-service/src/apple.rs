@@ -163,14 +163,7 @@ impl ExecutionService {
         exchange: Box<dyn super::channels::AppleExchange>,
         audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
-        let partitions = [
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", p.device())
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "device", p.device())
-                .map_err(Error::from)?,
-        ];
+        let partitions = [];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
@@ -220,7 +213,7 @@ impl ExecutionService {
                         }
                         channels::AppleReception::Collection { facts, run } => {
                             for fact in &facts {
-                                service.audit_store.append_in(tx, fact, false).await?;
+                                service.audit_store.append_in(tx, fact).await?;
                             }
                             if let Some(id) = run {
                                 actions::recovery::recover_one(service, tx, id).await?;
@@ -368,7 +361,7 @@ async fn send(
             .await?
             .map_err(Error::from)?;
         for fact in &reply.facts {
-            service.audit_store.append_in(tx, fact, false).await?;
+            service.audit_store.append_in(tx, fact).await?;
         }
         if !reply.bytes.is_empty() {
             return Ok(reply.bytes);
@@ -438,7 +431,7 @@ async fn send(
         .await?
         .map_err(Error::from)?;
     for fact in &reply.facts {
-        service.audit_store.append_in(tx, fact, false).await?;
+        service.audit_store.append_in(tx, fact).await?;
     }
     Ok(reply.bytes)
 }
@@ -555,14 +548,7 @@ impl ExecutionService {
         exchange: Box<dyn channels::AppleDdmExchange>,
         audit: &RequestAudit,
     ) -> std::result::Result<channels::AppleDdmReply, Error> {
-        let partitions = [
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", p.device())
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "device", p.device())
-                .map_err(Error::from)?,
-        ];
+        let partitions = [];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
@@ -610,7 +596,7 @@ impl ExecutionService {
                         .await?
                         .map_err(Error::from)?;
                     for fact in &reply.facts {
-                        service.audit_store.append_in(tx, fact, false).await?;
+                        service.audit_store.append_in(tx, fact).await?;
                     }
                     for id in &reply.synchronized {
                         let op = storage::load(tx, &service.protection, *id).await?;

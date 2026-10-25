@@ -75,7 +75,6 @@ pub async fn change_key(
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("api_key:{}:{}", proof.principal_id(), change.operation_id),
-        digest.as_bytes(),
         200,
         "success",
         None,
@@ -104,10 +103,12 @@ pub async fn change_key(
                             Box::pin(change_on(c, context))
                         })
                         .await?;
-                    store
-                        .append(tx, fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         context.audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

@@ -153,10 +153,9 @@ pub async fn download(
     Ok::<_, Error>((attempt, replayed, bytes))
 
                 })).await?;
-            let fingerprint = rss_mdm_registration_service::enrollment::digest(&(auth.id, auth.version, attempt, &apple.configuration, apple.access_rights()));
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-profile:{attempt}"),
-                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
-            app.audit_store.append(tx, &fact, replayed).await.map_err(Error::from)?;
+
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-profile:{attempt}"), 200, "success", Some(auth.id)).map_err(Error::from)?;
+            (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
             Ok(bytes)
@@ -275,10 +274,9 @@ pub async fn challenge(
     Ok::<_, Error>(())
 
                 })).await?;
-            let fingerprint = rss_mdm_registration_service::enrollment::digest(&(auth.id, auth.version, transaction, csr.digest(), csr.spki()));
-            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-scep:{}:consume", csr.attempt()),
-                fingerprint.as_bytes(), 200, "success", Some(auth.id)).map_err(Error::from)?;
-            app.audit_store.append(tx, &fact, false).await.map_err(Error::from)?;
+
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("apple-scep:{}:consume", csr.attempt()), 200, "success", Some(auth.id)).map_err(Error::from)?;
+            app.audit_store.append(tx, &fact).await.map_err(Error::from)?;
             audit.mark_commit_started();
             Ok(())
         }),
@@ -404,25 +402,21 @@ pub async fn notify(
                             },
                         )
                         .await?;
-                    let fingerprint = rss_mdm_registration_service::enrollment::digest(&(
-                        leaf.attempt(),
-                        leaf.fingerprint(),
-                        csr.digest(),
-                        transaction,
-                    ));
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-scep:{}:notify", leaf.attempt()),
-                        fingerprint.as_bytes(),
                         200,
                         "success",
                         Some(leaf.enrollment()),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -499,12 +493,6 @@ pub async fn bind(
     audit: &RequestAudit,
 ) -> Result<(), Error> {
     let (auth, proof) = authorized(app, leaf.enrollment(), None, audit).await?;
-    let fingerprint = rss_mdm_registration_service::enrollment::digest(&(
-        leaf.attempt(),
-        leaf.fingerprint(),
-        udid,
-        auth.operation,
-    ));
     let budget = app.devices.retirement_budget();
     let attempt = app
         .audit_store
@@ -513,7 +501,6 @@ pub async fn bind(
             &budget.source_control(),
             (
                 app,
-                &fingerprint,
                 BindInputs {
                     app,
                     leaf,
@@ -524,27 +511,26 @@ pub async fn bind(
                     facts: Vec::new(),
                 },
             ),
-            |(app, fingerprint, inputs), tx| {
+            |(app, inputs), tx| {
                 Box::pin(async move {
                     tx.with_connection_context(inputs, |inputs, c| Box::pin(bind_on(c, inputs)))
                         .await?;
                     for fact in &inputs.facts {
                         app.audit_store
-                            .append(tx, fact, false)
+                            .append(tx, fact)
                             .await
                             .map_err(Error::from)?;
                     }
                     let fact = rss_mdm_audit_integration::Fact::business(
                         inputs.audit,
                         &format!("apple-bind:{}", inputs.leaf.attempt()),
-                        fingerprint.as_bytes(),
                         200,
                         "success",
                         Some(inputs.auth.id),
                     )
                     .map_err(Error::from)?;
                     app.audit_store
-                        .append(tx, &fact, false)
+                        .append(tx, &fact)
                         .await
                         .map_err(Error::from)?;
                     inputs.audit.mark_commit_started();

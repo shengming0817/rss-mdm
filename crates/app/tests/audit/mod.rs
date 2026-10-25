@@ -29,14 +29,8 @@ async fn bytes(pool: &PgPool, tenant: TenantId) -> Result<Vec<Vec<u8>>> {
         .execute(&mut *tx)
         .await?;
     let bytes = sqlx::query_scalar(
-        "SELECT source_bytes FROM mdm_audit.receipts WHERE tenant_id=$1::uuid ORDER BY source_id,event_id",
+        "SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid ORDER BY source_id,event_id",
     ).bind(tenant.to_string()).fetch_all(&mut *tx).await?;
-    let missing: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts r LEFT JOIN rss_transactional_messaging.outbox o ON o.tenant_id=r.tenant_id AND o.message_id=r.message_id AND o.domain='mdm.audit' WHERE r.tenant_id=$1::uuid AND o.message_id IS NULL")
-        .bind(tenant.to_string()).fetch_one(&mut *tx).await?;
-    ensure!(
-        missing == 0,
-        "source receipt and Outbox must commit together"
-    );
     tx.rollback().await?;
     Ok(bytes)
 }
@@ -87,21 +81,31 @@ pub(crate) async fn new_store(
     integrity: Integrity,
     tenant: TenantId,
 ) -> Result<AuditStore> {
-    new_store_with_limits(pool, integrity, tenant, Default::default()).await
-}
-
-async fn new_store_with_limits(
-    pool: PgPool,
-    integrity: Integrity,
-    tenant: TenantId,
-    limits: rss_mdm_audit_integration::BacklogLimits,
-) -> Result<AuditStore> {
     // Random tenants isolate receipt and integrity observations in the existing fixture DB.
     use sqlx::Connection;
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let mut owner = sqlx::PgConnection::connect_with(&options).await?;
+    if matches!(integrity, Integrity::Ledger(_)) {
+        // Optional component fixture uses its published schema and product grants, without migration copies.
+        let installed: bool =
+            sqlx::query_scalar("SELECT to_regnamespace('rss_ledger') IS NOT NULL")
+                .fetch_one(&mut owner)
+                .await?;
+        if !installed {
+            sqlx::raw_sql("SET ROLE mdm_ledger_owner")
+                .execute(&mut owner)
+                .await?;
+            sqlx::raw_sql(rss_ledger_postgres::MIGRATION_SQL)
+                .execute(&mut owner)
+                .await?;
+            sqlx::raw_sql("RESET ROLE").execute(&mut owner).await?;
+        }
+        sqlx::raw_sql(include_str!("../../schema/audit-ledger-runtime.sql"))
+            .execute(&mut owner)
+            .await?;
+    }
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(tenant.to_string())
         .execute(&mut owner)
@@ -111,5 +115,5 @@ async fn new_store_with_limits(
     owner.close().await?;
     let runtime = crate::audit_test_support::source_runtime(&pool, tenant).await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-    Ok(AuditStore::new(pool, integrity, runtime, tenant, limits, &budget.control()).await?)
+    Ok(AuditStore::new(pool, integrity, runtime, tenant, &budget.control()).await?)
 }

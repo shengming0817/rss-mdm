@@ -60,7 +60,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             None,
         )
         .await;
-    let reconnect = crate::Database::connect(config.access_options()?).await;
+    let reconnect = crate::Database::connect(config.access_options()?, &config.audit).await;
     pg("GRANT SELECT ON mdm_access.authorization_rules TO mdm_access")?;
     let denied = denied?;
     let context = context?;
@@ -140,10 +140,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         ),
     ] {
         pg(drift)?;
-        let rejected = crate::Database::connect(config.access_options()?).await;
+        let rejected = crate::Database::connect(config.access_options()?, &config.audit).await;
         pg(restore)?;
         ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted: {drift}");
-        crate::Database::connect(config.access_options()?).await?.close().await;
+        crate::Database::connect(config.access_options()?, &config.audit).await?.close().await;
     }
     // An unrelated Apple contract belongs to full App admission, not ordinary capabilities.
     pg("ALTER TABLE mdm_apple.devices NO FORCE ROW LEVEL SECURITY")?;
@@ -175,7 +175,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             Ok(())
         }).await
     }.await;
-    let complete_app = crate::Database::connect(config.access_options()?).await;
+    let complete_app = crate::Database::connect(config.access_options()?, &config.audit).await;
     pg("ALTER TABLE mdm_apple.devices FORCE ROW LEVEL SECURITY")?;
     isolated?;
     ensure!(matches!(complete_app, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "full App admitted a damaged Apple contract");

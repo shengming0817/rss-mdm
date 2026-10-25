@@ -50,8 +50,6 @@ impl Work {
 #[derive(Default)]
 pub(crate) struct Signals {
     work: [Arc<Notify>; 7],
-    pub(crate) audit: Arc<Notify>,
-    pub(crate) mdm_audit: Arc<Notify>,
 }
 impl Signals {
     pub(crate) fn handle(&self, work: Work) -> Arc<Notify> {
@@ -69,8 +67,6 @@ impl Signals {
         for work in Work::ALL {
             self.get(work).notify_one();
         }
-        self.audit.notify_one();
-        self.mdm_audit.notify_one();
     }
 }
 
@@ -98,8 +94,6 @@ pub(crate) async fn wait(notify: &Notify, stop: &CancellationToken, nearest: Opt
 pub(crate) struct Listener {
     pool: PgPool,
     channel: String,
-    identity_channels: Vec<String>,
-    mdm_audit_channels: Vec<String>,
     pub(crate) signals: Arc<Signals>,
 }
 impl Listener {
@@ -110,33 +104,12 @@ impl Listener {
                 .acquire_timeout(RECOVERY)
                 .connect_lazy_with(options),
             channel: format!("mdm_work_{}", tenant.to_string().replace('-', "")),
-            identity_channels: Vec::new(),
-            mdm_audit_channels: Vec::new(),
             signals: Arc::default(),
         }
-    }
-    pub(crate) fn with_identity(
-        mut self,
-        instance: rss_identity_core::InstanceId,
-        tenants: [rss_request_context::TenantId; 2],
-    ) -> Self {
-        self.mdm_audit_channels = tenants
-            .into_iter()
-            .map(rss_mdm_audit_integration::notification_channel)
-            .collect();
-        self.identity_channels = tenants
-            .into_iter()
-            .map(|tenant| rss_identity_postgres::audit::notification_channel(instance, tenant))
-            .collect();
-        self
     }
     fn received(&self, channel: &str, payload: &str) {
         if channel == self.channel {
             self.signals.received(payload);
-        } else if payload.is_empty() && self.identity_channels.iter().any(|c| c == channel) {
-            self.signals.audit.notify_one();
-        } else if payload.is_empty() && self.mdm_audit_channels.iter().any(|c| c == channel) {
-            self.signals.mdm_audit.notify_one();
         }
     }
     pub(crate) fn registration(self) -> ManagedTaskRegistration {
@@ -158,8 +131,8 @@ impl Listener {
                 let connect = async {
                     let mut listener = PgListener::connect_with(&self.pool).await?;
                     listener.listen_all(std::iter::once(self.channel.as_str())
-                        .chain(self.identity_channels.iter().map(String::as_str))
-                        .chain(self.mdm_audit_channels.iter().map(String::as_str))).await?;
+
+                        ).await?;
                     Ok::<_, sqlx::Error>(listener)
                 };
                 let mut listener = tokio::select! { biased;

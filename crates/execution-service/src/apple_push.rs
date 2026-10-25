@@ -84,18 +84,6 @@ impl ExecutionService {
                         prepared.push((row, needed));
                     }
                     let rows = prepared;
-                    let partitions = rows
-                        .iter()
-                        .map(|(row, _)| {
-                            rss_mdm_audit_integration::source_partition(
-                                tx.tenant_id(),
-                                "mdm",
-                                &row.registration.to_string(),
-                            )
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
-                    crate::transaction::lock_directory(tx).await?;
-                    tx.prepare_outbox_partitions(&partitions).await?;
                     for (row, needed) in rows {
                         let registration = row.registration;
                         let user_key = row.user_key.clone();
@@ -167,20 +155,15 @@ impl ExecutionService {
                         );
                         audit.target(&registration.to_string());
                         let revision = row.revision;
-                        let fingerprint = checked_input(serde_json::to_vec(&(
-                            registration,
-                            revision,
-                            configuration,
-                        )))?;
+
                         let fact = Fact::business(
                             audit,
                             &format!("apple-push:{id}:lease"),
-                            &fingerprint,
                             200,
                             "success",
                             None,
                         )?;
-                        service.audit_store.append_in(tx, &fact, false).await?;
+                        service.audit_store.append_in(tx, &fact).await?;
                         return Ok(Some(Wake {
                             id,
                             registration,
@@ -223,16 +206,16 @@ impl ExecutionService {
         audit.target(&wake.registration.to_string());
         audit.identify_service("apple-push");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
-            let (service,wake,status,outcome,audit)=*ctx;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;let tenant=service.tenant.to_string();let registration=wake.registration;let id=wake.id;let revision=wake.revision;
+            let (service,wake,status,outcome,audit)=*ctx;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;let tenant=service.tenant.to_string();let id=wake.id;let revision=wake.revision;
             let outcome_name=outcome.as_str();
-            let fingerprint=checked_input(serde_json::to_vec(&(registration,id,revision,status,outcome_name)))?;
-            let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?
+
+            let fact=Fact::business(audit, &format!("apple-push:{id}:settle"), 200, "success", None)?
                 .with_details(serde_json::json!({"outcome":outcome_name,"status":status,"tokenRevision":revision}))?;
             let participant=service.apple_push.clone();let wake=wake.clone();
             let changed=tx.with_connection(move|c|Box::pin(async move{Ok(participant.settle_push(c,tenant,wake,status,outcome).await)})).await?.map_err(Error::from)?;
             if changed == Some(1) { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             match changed {
-                Some(0|1)=>{service.audit_store.append_in(tx,&fact,changed==Some(0)).await?;},
+                Some(0|1)=>{(if changed==Some(0) { Ok(()) } else { service.audit_store.append_in(tx, &fact).await })?;},
                 Some(_)=>return Err(Error::Conflict.into()),
                 None=>{audit.require_final_request();},
             }

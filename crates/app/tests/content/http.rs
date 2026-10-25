@@ -211,12 +211,14 @@ async fn lifecycle_contract(
 ) -> Result<Value> {
     let router = &fixture.router;
     // The content owner is independently usable without task-signing configuration.
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime")?;
+    pg(
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+    )?;
     let failed = user
         .call(router, Method::POST, admission_path, Some(enable.clone()))
         .await?;
     pg(
-        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
     )?;
     ensure!(
         failed.0 == StatusCode::SERVICE_UNAVAILABLE && failed.1["code"] == "service_unavailable",

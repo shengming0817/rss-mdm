@@ -446,23 +446,20 @@ impl ExecutionService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         let id = Uuid::new_v4();
-        let partition =
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", &id.to_string())
-                .map_err(Error::from)?;
-        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit, id, &partition), |ctx, tx| Box::pin(async move {
-            let (service, p, proof, input, audit, id, partition) = *ctx;
+        run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit, id), |ctx, tx| Box::pin(async move {
+            let (service, p, proof, input, audit, id) = *ctx;
 
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let hash = fingerprint(input)?;
             let now = storage::now(tx).await?;
-            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,std::slice::from_ref(partition)).await?;
+            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             // Search the same authenticated identities as status before selecting today's access basis.
             for actor in request_actors(p, proof)? {
                 if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {
                 let run = db::load_run(tx, checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?).await?;
                 crate::actions::agent::belongs(&run, p)?;
-                let event_key = format!("{actor}:{}",input.operation_id);
-                let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;
+
+
                 return Ok(response);
             }
             }
@@ -494,7 +491,7 @@ impl ExecutionService {
             let response = json(&wire::SelfServiceAccepted { request_id: input.operation_id, run_id: id, policy_id: policy.id, policy_revision: policy.revision as u64, policy_version: policy.version })?;
             db::receipt(tx, &actor, input.operation_id, hash.clone(), &response, None).await?;
             if let Some(proof) = proof { proof.check_live()?; }
-            let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, false).await?;
+            let fact = Fact::business(audit, &event_key, 202, "success", None)?; service.audit_store.append_in(tx, &fact).await?;
             crate::sources::storage::wake_execution_in(&service.reconcile_messaging, tx, policy.id).await?;
             Ok(response)
         })).await

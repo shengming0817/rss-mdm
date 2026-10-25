@@ -14,33 +14,29 @@ async fn settlement_recovery(pool: &PgPool) -> Result<()> {
         "audit_recovery_test",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fact = Fact::business(&request, "commit-ack-loss", b"A", 200, "success", None)?;
+    let fact = Fact::business(&request, "commit-ack-loss", 200, "success", None)?;
     store.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let attempt = store
         .write(tenant, &control, (&store, &fact), |(s, f), tx| {
-            Box::pin(async move { s.append(tx, f, false).await })
+            Box::pin(async move { s.append(tx, f).await })
         })
         .await;
     ensure!(state(attempt) == "unknown");
     let original = bytes(pool, tenant).await?;
     ensure!(original.len() == 1);
-    let attempt = store
-        .write(tenant, &control, (&store, &fact), |(s, f), tx| {
-            Box::pin(async move { s.append(tx, f, true).await })
-        })
-        .await;
-    ensure!(state(attempt) == "committed");
+    // Commit-unknown is not permission to re-execute business. Its original final fact exists.
+    // Business operation replay is covered by each operation owner's durable receipt tests.
     ensure!(bytes(pool, tenant).await? == original);
-    let failed = Fact::business(&request, "rollback-ack-loss", b"B", 200, "success", None)?;
+    let failed = Fact::business(&request, "rollback-ack-loss", 200, "success", None)?;
     store.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::RollbackFailedAfterAck,
     );
     let attempt = store
         .write(tenant, &control, (&store, &failed), |(s, f), tx| {
             Box::pin(async move {
-                s.append(tx, f, false).await?;
+                s.append(tx, f).await?;
                 Err::<(), _>(Error::Receipt)
             })
         })
@@ -69,7 +65,7 @@ pub(super) async fn crash_write(
         })
     })
     .await?;
-    store.append(tx, fact, false).await
+    store.append(tx, fact).await
 }
 
 async fn process_interruption(pool: &PgPool) -> Result<()> {
@@ -113,14 +109,7 @@ async fn process_interruption(pool: &PgPool) -> Result<()> {
         "audit_recovery_test",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fact = Fact::business(
-        &request,
-        "process-interruption",
-        b"crash-device",
-        200,
-        "success",
-        None,
-    )?;
+    let fact = Fact::business(&request, "process-interruption", 200, "success", None)?;
     let attempted = std::sync::atomic::AtomicBool::new(false);
     let locked = store
         .write(

@@ -116,7 +116,7 @@ impl Compliance {
                             if old != hash {
                                 return Err(Error::Conflict.into());
                             }
-                            s.audit(tx, audit, operation, &hash, true).await?;
+                            s.audit(tx, audit, operation, true).await?;
                             proof.check_live()?;
                             return Ok(response);
                         }
@@ -130,7 +130,7 @@ impl Compliance {
                         })
                         .await?;
                     }
-                    s.audit(tx, audit, operation, &hash, false).await?;
+                    s.audit(tx, audit, operation, false).await?;
                     proof.check_live()?;
                     Ok(response)
                 })
@@ -144,19 +144,21 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         audit: &RequestAudit,
         id: Option<Uuid>,
-        hash: &[u8],
         replay: bool,
     ) -> Result<()> {
         if let Some(id) = id {
             let fact = rss_mdm_audit_integration::Fact::business(
                 audit,
                 &format!("compliance:{id}"),
-                hash,
                 200,
                 "success",
                 None,
             )?;
-            self.audit_store.append_in(tx, &fact, replay).await?;
+            (if replay {
+                Ok(())
+            } else {
+                self.audit_store.append_in(tx, &fact).await
+            })?;
         } else {
             audit.require_final_request();
         }

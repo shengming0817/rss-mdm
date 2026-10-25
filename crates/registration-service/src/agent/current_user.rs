@@ -202,7 +202,7 @@ impl Service {
             if let Some(old)=old {
                 if old.try_get::<String,_>("digest").map_err(db)?!=*digest || old.try_get::<String,_>("instance").map_err(db)?!=device.registration().to_string() {return Err(Error::Conflict);}
                 let value=serde_json::from_str(&old.try_get::<String,_>("result").map_err(db)?).map_err(|_|Error::Corrupt)?;
-                return Ok(Change{value,replay:true,digest:digest.clone()});
+                return Ok(Change{value, replay:true});
             }
             let current=binding_on(c,&device.tenant().to_string(),device.device()).await?;
             if current.revision!=input.expected_revision {return Err(Error::Conflict);}
@@ -222,7 +222,7 @@ impl Service {
             write_stage(*request_id,"channel_revalidation");
             crate::device::store::revalidate_management(c,device).await?;
             write_stage(*request_id,"source_callback_complete");
-            Ok(Change{value,replay:false,digest:digest.clone()})
+            Ok(Change{value, replay:false})
         })).await
     }
 }

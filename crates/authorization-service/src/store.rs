@@ -109,7 +109,6 @@ async fn change_authorization<T: serde::Serialize + Sync>(
             proof.principal_id(),
             change.operation_id
         ),
-        digest.as_bytes(),
         200,
         "success",
         None,
@@ -139,10 +138,12 @@ async fn change_authorization<T: serde::Serialize + Sync>(
                             Box::pin(change_authorization_on(c, context))
                         })
                         .await?;
-                    store
-                        .append(tx, fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         context.audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -486,7 +487,6 @@ pub(crate) async fn initialize_verified_user(
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("authorization_initialize:{}:{}", user.principal_id, key),
-        digest.as_bytes(),
         200,
         "success",
         None,
@@ -507,10 +507,12 @@ pub(crate) async fn initialize_verified_user(
                             },
                         )
                         .await?;
-                    store
-                        .append(tx, fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

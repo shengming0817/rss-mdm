@@ -68,9 +68,8 @@ CREATE TABLE mdm_flow.cursor_keys (
 ALTER TABLE ONLY mdm_flow.cursor_keys FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE mdm_planning.asset_dispatch (
-    relation_after bigint DEFAULT 0 NOT NULL CHECK(relation_after>=0),
-    relation_through bigint, relation_cursor uuid,
-    relation_page_after bigint, relation_page_through bigint,
+    relation_revision bigint DEFAULT 0 NOT NULL CHECK(relation_revision>=0),
+    relation_cursor uuid, relation_pending_revision bigint,
 
     tenant_id uuid NOT NULL,
     consumed bigint DEFAULT 0 NOT NULL,

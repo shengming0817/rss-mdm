@@ -431,9 +431,6 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         .await
         .unwrap();
     revoke_audit.finalize(None);
-    crate::audit_test_support::projection::drain(tenant(), rss_audit_postgres::Integrity::Plain)
-        .await
-        .unwrap();
     service.forward_asset_changes().await.unwrap();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {

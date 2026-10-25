@@ -33,22 +33,22 @@ RSS 提供其明确接纳的公共契约、事务消息、Saga、投影、状态
 
 `rss-mdm-audit-integration` 是产品内唯一审计接缝，直接消费者限定为 App、device-service、pki-service、certificate-archive-service、recovery-credentials、timeline-service、software-service、authorization-service、registration-service、inventory-service、flow-service、execution-service、content-service，以及 mail-service、telemetry-service、management-http、agent-channel、windows-channel、apple-channel；实际依赖集合由 CI 校验。
 不反向依赖 App、Identity 或任何 MDM 领域/应用包，纯领域核心不得依赖它。
-共同 envelope、精确 canonical 字节/指纹回执、恢复核对、请求结算和取消诊断归此包；
-业务事件及主体真实性、资源授权仍归各业务 owner。组件 schema/锁/追加实现归 Audit/Ledger，
-接入库回执仅用于恢复，不能成为查询引擎、另一套事务状态机或提交证明。
+产品事实映射、请求结算和取消诊断归此包；业务事件、主体真实性、资源授权和操作回执仍归各业务 owner。
+最终 Audit 与业务状态在原 RSS 事务直接提交，组件 schema、追加和可选链完整性归 Audit/Ledger。
+不维护审计 Outbox/Inbox 中转、复制回执或第二套事务恢复状态。业务回放使用原操作回执，不重复追加业务事实。
 
 `collection_runs.delivery_pending` 是已提交报告成功消费后的派生确认，
 `mdm_apple.devices.identity_health` 是从已存证书及当前时间计算的健康提示。
 这两类内部标记更新不生成新的业务/审计事实；它们不改变注册世代、证书或采集结果。
-其事务直接提交后结束，不生成业务源事件。真实业务事实、操作回执与业务状态在同一 RSS 事务可靠入队；
-Audit/Ledger 链头锁只由后台投影持有。依赖原同步审计隐含串行化的业务必须由自己的操作锁或唯一约束保护。
-同库投影的 Audit/Ledger、Inbox 与源 Outbox 终态由 RSS 一个事务提交；产品不自行结算消息或伪造提交证明。
+其事务直接提交后结束，不生成业务审计事实。真实业务事实、操作回执与业务状态由同一个原事务提交。
+Plain 没有全租户审计头锁；显式 Ledger 在业务锁之前取得链锁。业务并发不依赖审计串行化，
+由自己的操作锁或唯一约束保护。消息机制保留给真实消息消费者。
 
 审计组件的主体字段是中立数据，不充当身份认证证明。在线 principal 由 authorization owner 的
 `AuthorizedPrincipal` 绑定并核对审计租户；初始化和软件恢复分别消费已验证的初始化用户及持久化
 ActorId。结构守卫限制原始字段写入这些 owner。事实构造失败使用不含输入值的闭合类别；宿主区分
 契约错误、完整性错误和中断，结算状态仍由原事务 owner 决定。宿主预算对象仅持有 timer、绝对
-截止时间与取消 token；读历史借出 Audit Control，生产源事件借出 SourceControl。重复借用不延长预算，
-事务执行与结算归 RSS。审计必要性由产品 AuditIntent 声明，与事务结果独立。普通读取、轮询、常规遥测和安装包下载不写管理审计；普通拒绝使用有界日志和计数。关键变更保留原子业务事实，敏感读取、关键越权和多阶段最终结果在受保护响应交付前可靠入队。SensitiveAction 单源标识凭据披露、私密证书导出、审计检索、脚本内容及资产/遥测批量导出；业务动作名称仍归各 owner。
+截止时间与取消 token；读历史借出 Audit Control，业务写入借出 SourceControl。重复借用不延长预算，
+事务执行与结算归 RSS。审计必要性由产品 AuditIntent 声明，与事务结果独立。普通读取、轮询、常规遥测和安装包下载不写管理审计；普通拒绝使用有界日志和计数。关键变更保留原子业务事实，敏感读取、关键越权和多阶段最终结果在受保护响应交付前可靠提交。SensitiveAction 单源标识凭据披露、私密证书导出、审计检索、脚本内容及资产/遥测批量导出；业务动作名称仍归各 owner。
 
 `mail-service` 仅持有 SMTP 材料、资格和固定测试投递，不拥有通知订阅产品。管理入口复用产品授权和 Audit，网络资格由显式一次性维护命令核验。

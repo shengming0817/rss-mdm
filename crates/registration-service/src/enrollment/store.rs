@@ -114,16 +114,17 @@ pub async fn create_enrollment(
                             inputs.permission.proof.principal_id(),
                             op.key
                         ),
-                        op.digest.as_bytes(),
                         200,
                         "success",
                         Some(receipt.enrollment_id),
                     )
                     .map_err(Error::from)?;
-                    store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -299,16 +300,17 @@ pub async fn change_enrollment(
                             inputs.permission.proof.principal_id(),
                             op.key
                         ),
-                        op.digest.as_bytes(),
                         200,
                         "success",
                         Some(receipt.enrollment_id),
                     )
                     .map_err(Error::from)?;
-                    store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

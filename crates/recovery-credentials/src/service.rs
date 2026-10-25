@@ -88,14 +88,13 @@ impl Credentials {
             ),
         );
         audit.target_device(device);
-        let identity = serde_json::to_vec(&(id, version)).map_err(|_| Error::Malformed)?;
+
         let fact = Fact::business(
             audit,
             &format!(
                 "recovery:read:{}",
                 access.map(|v| v.operation_id).unwrap_or(audit.request_id())
             ),
-            &identity,
             200,
             "success",
             None,
@@ -181,7 +180,7 @@ impl Credentials {
                                 })
                             })
                             .await?;
-                        context.9.append(tx, &context.6, context.8).await?;
+                        (if context.8 { Ok(()) } else { context.9.append(tx, &context.6).await })?;
                         context.1.check_live()?;
                         context.5.mark_commit_started();
                         Ok::<_, Error>(response)
@@ -207,11 +206,10 @@ impl Credentials {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(device);
-        let identity = serde_json::to_vec(&(id, version)).map_err(|_| Error::Malformed)?;
+
         let fact = Fact::business(
             audit,
             &format!("recovery:revoke:{}", audit.request_id()),
-            &identity,
             200,
             "success",
             None,
@@ -233,7 +231,7 @@ impl Credentials {
                 let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.id=$2 AND v.version=$3")).bind(principal.tenant_id()).bind(*id).bind(*version).fetch_one(c).await?;
                 storage::decode(&row)
             })).await?;
-            context.0.audit.append(tx,&context.6,false).await?;
+            context.0.audit.append(tx, &context.6).await?;
             context.5.mark_commit_started();
             Ok::<_,Error>(material)
         })).await;

@@ -17,7 +17,6 @@ async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
         integrity(false).unwrap(),
         source.clone(),
         tenant,
-        Default::default(),
         &budget.control(),
     )
     .await
@@ -83,25 +82,23 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
     let budget = AuditBudget::new(Duration::from_secs(5));
     let store = AuditStore::new(
         access.clone(),
-        integrity(true).unwrap(),
+        integrity(false).unwrap(),
         source.clone(),
         tenant,
-        Default::default(),
         &budget.control(),
     )
     .await
     .unwrap();
-    pg("GRANT UPDATE(source_bytes) ON mdm_audit.receipts TO mdm_access").unwrap();
+    pg("GRANT UPDATE(canonical) ON rss_audit.records TO mdm_access").unwrap();
     let denied = AuditStore::new(
         access.clone(),
-        integrity(true).unwrap(),
+        integrity(false).unwrap(),
         source.clone(),
         tenant,
-        Default::default(),
         &AuditBudget::new(Duration::from_secs(5)).control(),
     )
     .await;
-    pg("REVOKE UPDATE(source_bytes) ON mdm_audit.receipts FROM mdm_access").unwrap();
+    pg("REVOKE UPDATE(canonical) ON rss_audit.records FROM mdm_access").unwrap();
     assert!(
         denied.is_err(),
         "receipt column UPDATE must fail Audit owner admission"
@@ -113,11 +110,7 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
     ] {
         let owner = pool(role).await.unwrap();
         let runtime = source_runtime(&owner, tenant).await.unwrap();
-        for table in [
-            "mdm_audit.receipts",
-            "rss_audit.records",
-            "rss_ledger.entries",
-        ] {
+        for table in ["rss_audit.records"] {
             pg(&format!("GRANT UPDATE ON {table} TO {role}")).unwrap();
             let result = store
                 .on_runtime(

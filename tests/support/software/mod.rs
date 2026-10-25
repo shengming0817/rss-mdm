@@ -741,9 +741,8 @@ impl rss_mdm_software_service::AuditPort for TestAudit {
         &'a self,
         tx: &'a mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         fact: &'a rss_mdm_audit_integration::Fact,
-        replayed: bool,
     ) -> rss_mdm_software_service::AuditFuture<'a> {
-        Box::pin(async move { self.0.append_in(tx, fact, replayed).await })
+        Box::pin(async move { self.0.append_in(tx, fact).await })
     }
     fn prepare_in<'a>(
         &'a self,
@@ -936,17 +935,7 @@ pub async fn withdraw_version(input: &PublishInput) {
                         input.version.as_str(),
                     )
                     .await?;
-                    let partitions = records
-                        .iter()
-                        .map(|record| {
-                            rss_mdm_audit_integration::source_partition(
-                                tx.tenant_id(),
-                                "mdm",
-                                record,
-                            )
-                        })
-                        .collect::<std::result::Result<Vec<_>, _>>()
-                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    let partitions = [];
                     let value = catalog
                         .version_change_in(
                             tx,

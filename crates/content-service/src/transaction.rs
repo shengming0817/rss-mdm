@@ -14,9 +14,7 @@ pub enum Fault {
     Sql(#[from] sqlx::Error),
 }
 pub type Result<T> = std::result::Result<T, Fault>;
-pub fn checked_input<T>(value: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> {
-    value.map_err(|_| Error::Malformed.into())
-}
+
 pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
@@ -259,10 +257,7 @@ impl From<rss_mdm_software_service::catalog::Error> for Fault {
         }
     }
 }
-pub fn fingerprint(value: &impl serde::Serialize) -> Result<[u8; 32]> {
-    use sha2::{Digest, Sha256};
-    Ok(Sha256::digest(checked_input(serde_json::to_vec(value))?).into())
-}
+
 pub async fn lock_resource(tx: &mut PgTransaction<'_>) -> Result<()> {
     // The resource author and reclaimer share the existing product ordering lock.
     let key = format!("{}:action-owner", tx.tenant_id());

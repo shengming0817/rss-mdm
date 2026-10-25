@@ -4,7 +4,7 @@
 
 本版本使用全新数据库安装；后续租户登记、回执恢复查询和当前安装重放见[安装指南](installation.md#全新实例安装)。安装身份、组件清单、权限或 fencing 不匹配时保留数据库及安装记录，按实际失败原因恢复。
 
-部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v1`、状态型设备命令 `/api/v1`、企业脚本计划及运行 `/api/v1/script-plans`。安装前显式配置审计 Plain 或 Ledger；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
+部署使用配套数据库、服务、Agent 协议及可信签名配置。管理客户端使用 Enrollment `/api/v1`、状态型设备命令 `/api/v1`、企业脚本计划及运行 `/api/v1/script-plans`。新安装默认使用审计 Plain，Ledger 须显式配置；Ledger 的 key ID 与受保护密钥文件必须由部署方提供，缺失或错误时拒绝启动。
 
 恢复前停止全部写入实例，按同一备份时间点恢复数据库、内容卷和原 `native_protection` 引用的全部材料，确认服务账户可读且所有实例使用同一份 32 原始字节密钥后再启动。密钥备份应存入受控秘密存储并验证可取回；不要打印密钥或提交到代码/日志。加密写钥通过 `rotate-protection` 切换，不能直接覆盖原文件；丢失原密钥后重新生成文件不能解密已有 native 数据，也不能解除比较身份校验。原生输入认证或身份完整性损坏归为永久恢复失败，记录 `mdm_command_recovery_integrity_failure` / `native_input_integrity`，不持续退避；保留证据并从一致备份恢复，不能删除 guards 后重发变更。
 
@@ -12,14 +12,14 @@
 
 Command、Inventory、Audit、Ledger 与产品 receipts 的完整结构/权限检查只在构造、显式启动和受控变更重新准入时执行。
 变更相关角色、函数或结构前，停止相关写实例并排空事务，再执行受控变更；使用 access、
-flow、command、software、租户注册、管理员初始化和 Identity audit worker 各自实际连接重新验证，成功后才恢复接流。
+flow、command、software、租户注册、管理员初始化和 Identity 运行、维护入口各自实际连接重新验证，成功后才恢复接流。
 目标数据库、角色或部署版本变化时停止并重建相关 runtime，使用新连接完成启动准入后才接流；验证失败保持停机。
 业务操作仍检查租户、必要隔离和持久材料一致性，并传播真实 SQL 权限失败；
 不承诺逐次调用发现管理员带外配置漂移，不支持滚动混跑旧、新契约。
 
 ## 就绪、停机与恢复
 
-/livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过、Identity 审计首轮投递成功，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
+/livez 表示进程可响应。/readyz 要求启动 admission、首次有界恢复与投影通过，工作任务仍运行且尚未停机；不表示 backlog 已全部追平，健康查询不额外探测 IdP。
 
 经授权的 `GET /api/v1/runtime/diagnostics` 查询当前实例的组件汇总，返回 `alive`、`ready`、`components` 和 `channels`。
 管理员通过现有授权规则显式授予租户级 `runtime_diagnostics_read`；该权限不由设备读权限或授权管理权限隐式获得。
@@ -50,15 +50,14 @@ lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs
 局部探测失败时查询仍可返回 HTTP 200 和已知组件结果；响应成功只表示查询成功。授权加载与诊断共用宿主绝对截止时间，
 不逐依赖续期，审计由原 owner 完成结算。诊断不返回设备身份、任务输入、数据库地址、配置、秘密或底层错误原文。
 
-
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
-审计恢复要求各产品运行连接使用 `READ COMMITTED`；启动与每次借用事务均检查，组件不替调用方修改隔离级别。业务事务先取得 Audit head，以及 Ledger 模式下固定审计链的 head，再取得业务和 Outbox 锁。提交未知后使用原操作身份和原请求重试，锁后的新语句快照同时核对业务回执、产品审计回执与组件记录；恢复原 canonical bytes 和 recorded_at，不生成新的事件身份。单边缺失、指纹或字节冲突均拒绝并要求修复，不能补造记录。两者都不存在也只有在成功取得同一锁、确认先前数据库事务已结束后才允许重新判定业务；这不证明设备或软件源的外部副作用回滚。锁或读取超时继续保留未知状态。注册替换、撤销、Apple CheckOut 和共用退役策略的 Windows 路径保留六秒总上限，业务窗口最多四点五秒，余下四分之一留给原 Audit owner 提交/回滚；已有更早调用方 deadline 时同步收紧。截止时间在入口一次冻结，下游和逐事件追加不续期。这个兼容策略不保证任意采集积压能在六秒完成，也不是吞吐 SLO。业务超时后停止新增工作并等待原 owner 结算；上游 Acquire/Begin/Setup 尚未进入产品回调，仍受原总截止时间约束，Setup 耗尽预算仍可能回滚未确认。按实际结算状态处理，不分批伪装成完整退役。
+审计与业务状态在原 RSS 事务中直接提交。运行连接使用 `READ COMMITTED`，启动校验实际 writer 权限；Plain 不取得租户审计头锁，Ledger 在业务和 Outbox 锁之前取得所选链锁。提交未知沿原操作身份和原请求由业务回执恢复，不直接重执行业务，也不重新生成审计时间或复制回执。暂时缺失不能证明回滚；锁或读取超时继续保留未知状态。既有业务截止时间不续期，由原事务 owner 完成提交或回滚；这些资源边界不是吞吐或设备容量承诺。
 
-Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。关键动作拒绝、敏感查询、多阶段最终结果及其重放与未知结果使用独立请求事实，在受保护响应释放前完成可靠入队；普通读取与轮询不写管理审计。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。
+Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。关键动作拒绝、敏感查询、多阶段最终结果及其重放与未知结果使用独立请求事实，在受保护响应释放前完成可靠提交；普通读取与轮询不写管理审计。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。
 收到 `operation_rollback_unconfirmed` 时保留原 operation 身份及原请求，按同一锁协议重试/读取原回执；
 不得更换 UUID 或把暂时 404 当作回滚证明。持续不可核对时停止自动重试并由部署 owner 检查业务、
-审计回执及记录的一致性，不补造记录。Agent 通道将它与 CommitUnknown 一并映射为 `operation_unknown`，
+最终审计记录的一致性，不补造记录。Agent 通道将它与 CommitUnknown 一并映射为 `operation_unknown`，
 设备端使用相同 operationId 和原内容恢复，不重新执行已开始但结果未知的外部动作。
 
 审计持久记录不一致返回 HTTP 500 `audit_integrity_error`，日志原因同名；隔离级别、权限准入或
@@ -84,45 +83,16 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 安装失败保持服务停止并保留证据。回退指停止新部署后恢复原有独立部署及其一致数据库/密钥备份；新代码没有中央认证回退路径。仅在新候选和 smoke 通过后，按精确镜像身份、归档目录和专属缓存记录清理本任务废弃产物，不进行全局 prune。
 
 
-
-## Identity 审计投递
-
-`identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多两条，与 Audit 连接池容量一致；成功投递后立即继续；空闲等待通知、持久化重试/租约最近期限或三十秒恢复补扫。复用产品唯一 LISTEN 连接，监听可信实例的业务与管理租户 Identity 频道；空 payload 只作唤醒提示，不作为提交、领取或授权证明。所有订阅完成后及重连后补扫；空领取即使仍有到期候选也仅立即复查一次，随后有界等待，避免行锁竞争自旋。基础设施暂时失败保留至多一秒退避，由已知更早持久期限收紧，通知不能绕过退避。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
-
-组件日志 `component=identity-audit event=audit_projection` 使用 `phase=transaction` 的 `status=commit_unknown|rollback_failed` 报告事务不确定性，使用 `phase=resolve` 的 `status=confirmed|unresolved|failed` 报告持久恢复核对结果。提交未知后保留原事件身份，先观察 resolve，再核对 Outbox 终态与 Inbox 回执，不将 unknown 或 unresolved 当作回滚或成功。正常投影与空闲轮询不逐条输出日志；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障或事件重试令投影 health 降级，后续成功处理后恢复；退避中的空轮询不清除重试状态。Identity 与 MDM 审计投影的 readiness 均为 NotApplicable，投影延迟本身不关闭可靠源入队。audit_source 汇总业务及管理租户的容量告警与接流状态；普通容量或失败事实保留额度耗尽时 readiness 关闭，投影释放额度后可恢复。诊断中的积压明细仅展示当前业务租户，不公开管理租户计数。永久投影故障由关键任务监督关闭宿主；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
-
-只读查询示例（psql 的 `tenant_id` 变量由已授权操作员提供）：
-
-```sql
-BEGIN READ ONLY;
-SELECT set_config('rss.tenant_id', :'tenant_id', true);
-SELECT status, count(*) AS events, min(retry_after) AS earliest_retry
-FROM rss_transactional_messaging.outbox
-WHERE tenant_id = :'tenant_id'::uuid AND domain = 'identity.security'
-GROUP BY status ORDER BY status;
-ROLLBACK;
-```
-
-- `transient`：检查数据库连通性和锁等待，恢复依赖后由原 worker 自动重试，或用同一配置重启；不能更换实例、租户、lineage、epoch 或消息 ID。
-- `permanent`、`ownership_lost`、`invariant`：关键任务退出，服务非零关闭；核对安装版本、角色权限及 storage fencing，修复后重启同一身份。
-- `rejected_event`：存在隔离事件，保持服务关闭并保存证据；启动也会拒绝既有死信。由消息 recovery owner 的受控流程处理，本产品不提供死信改表、删除 Inbox/Audit 或强制重放命令。
-
-恢复后核对相同事件的 Audit 记录及 Ledger（启用时）一致、积压继续减少、readiness 恢复；重启不应新增重复审计。日志和源 published 状态均不代替原事务的持久结算证据。
-
-## 接入与审计容量
+## 请求与后台执行
 
 配套网关对实际 TCP peer 的通用 `/api/` 请求执行每秒 10 次、burst 20 的 admission，登录仍使用
-更严格的独立额度；转发头不能改写额度身份。宿主每个 HTTP envelope 最多接纳 32 个同时进行的
-审计请求，健康检查及由 Identity 自有结算的路由不占此额度。超额在业务处理前返回 429
-（Agent 使用既有 503 serviceUnavailable）及 Retry-After，不触发 handler 或持久审计。
-关键动作及敏感访问的拒绝与未知结果仍可靠审计，不降级 Plain；普通拒绝仅有界记录日志和计数。已受理业务仍由原 Runtime 生命周期排空，锁序与业务/请求独立配额保持不变。
-Inventory 和 Windows retention 先做无行锁的只读候选检查；无过期任务时不取 Audit head。
+更严格的独立额度；转发头不能改写额度身份。已受理业务由原 Runtime 生命周期排空。关键动作及敏感访问必须可靠提交审计；普通读取和普通拒绝仅保留有界诊断。Inventory 和 Windows retention 先做只读候选检查，无过期任务时不追加审计。
 
 Inventory、资产自动化、命令 relay/recovery 和原生协议维护由产品实例内唯一 PostgreSQL LISTEN 连接接收提交通知。连接只监听配置租户的独立通道，发送端从同一业务事务已绑定的租户派生通道；同租户多实例均可接收，无关租户不会被唤醒。通知仅携带闭合工作类型，不携带租户、设备或任务正文；业务事务提交后才投递，所有 worker 仍从持久状态重新读取、准入并领取。有进展立即继续，空闲等待通知或最近到期点，最长五秒补扫；既有错误退避独立保留。资产自动化成功动作后的 Reobserve 仍为二十毫秒，与五秒空闲补扫分别配置；已确认提交的短期重观察/重试可提前唤醒。初次 LISTEN 和重连完成后全部补扫，通知丢失、进程重启或多个实例均不改变持久事实的权威。`mdm_notification_connection.connected` 记录连接故障与恢复转换，SQLx自动重连完成也补记这对转换；不需要按通知数量推断完成量。
 
 Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。数据库健康检查不代表产品 readiness。
-有候选时仍先取 Audit/可选 Ledger 锁，再锁业务行，每次至多处理 32 个会话，事务六秒、周期调用七秒有界；
-超时回滚或未知时保留原状态，下轮重新读取，不能把 Audit 锁移到业务锁之后。
+有候选时，Ledger 模式先取链锁，再锁业务行；Plain 直接使用业务锁。每次至多处理 32 个会话，事务六秒、周期调用七秒有界；
+超时回滚或未知时保留原状态，下轮重新读取，Ledger 链锁不能移到业务锁之后。
 监控网关 429、请求延迟、审计/retention 超时与数据库存储增长；这些是部署 admission 上限，不能解释为吞吐承诺。
 
 ## 安装失败与恢复
@@ -142,7 +112,6 @@ Compose 中 PostgreSQL 启动期每秒检查，稳定运行后每十秒检查。
 S3 凭据由内容连接领域加密持久化；按[安装指南](installation.md)提交新材料版本，部署侧验证真实供应方身份、权限、TLS、版本化和租户前缀后，通过受控宿主重启应用确切 revision。旧版本在新候选失败时继续使用，但过期或撤销后不可用。保留历史操作与备份所需的旧材料；不能通过替换挂载文件轮换运行凭据。私有 CA 文件有界读取且不接受符号链接；不提供关闭 TLS 校验的选项。Compose 的只读 runtime 挂载用于部署输入、信任根和保护材料；S3 access/secret/session token 从持久化连接版本加载。S3 模式不使用 content 卷；卷模式继续挂载持久 content 卷。
 
 清理先在短事务内核对业务引用与读 pin，提交“删除中”屏障后，再逐个删除确切物理版本；已删除部分持久登记，下轮继续。结果未知保留原对象意图和额度，不把未知当作不存在。不能用外部 lifecycle 规则、删除 bucket 版本或直接删除卷文件代替产品清理。原生配置保护域仍为 `content.native-configuration`，诊断使用独立保护域。
-
 
 ## Agent CA 与签发恢复
 
@@ -164,13 +133,11 @@ Windows 未知签发通过 `POST /api/v1/pki/signing/recover` 提交原 attempt 
 
 在线撤销先在原登记/凭据 Audit 事务中立即生效，并写入实际 serial 的持久撤销队列。维护任务每 60 秒从各代次 CA 拉取 signed CRL，离开业务锁后调用 `/revoke`，失败保留 bounded backoff 任务。CA 接受 passive revoke 只表示 submitted；只有 serial 出现在经批准 issuer 签名的新鲜 CRL 中才记为 published。正式 SIT 的 issuer CRL 有效期为 168 小时、step-ca 每小时重新生成，吊销时立即生成，配置见[服务端 SIT 部署](installation.md#服务端-sit-部署)。根 CRL 30 天并在到期前 7 天由离线 owner 更新；缺失、过期、号码/时间回滚或同号异内容均拒绝认证。保留连接及 TLS 恢复仍逐次检查当前凭据映射。
 
-
 共享 CA 的同一份 CRL 分别更新各用途记录；自动维护操作按用途区分，重放只更新公开吊销材料，不改变设备身份、信任 revision 或原签发回执。短周期 CRL 可用于专项测试，不作为正式 SIT 默认值。
 
 维护前核对所有已启用用途已接收到 CA 最新 CRL，剩余有效期须覆盖预计停机及恢复余量；168 小时不是任意时刻都剩余 7 天。只停止 CA 时，已有有效证书可在原 CRL 有效窗口内继续通过产品校验，签发、续期及吊销发布暂停；产品内已撤销登记仍立即拒绝。整个环境停机时设备管理通信暂停。恢复先启动原 CA 和数据库，再启动产品服务；原维护任务从签名历史恢复并自动获取新 CRL，核对所有已启用用途就绪及原身份、撤销记录。即使旧 CRL 已过期，也不清库、重新注册或放宽过期/回滚检查。预计超过有效窗口时提前制定更长窗口或可用性方案，不能把过期清单当作宽限授权。
 
 离线根或 legacy issuer 的 CRL 使用 `POST /api/v1/pki/crls` 发布单一 operation、purpose 和 publications 数组（1–16 项，每项 issuer、crl、root_crl，base64 DER）。同 root 的所有代次共同采用同一 root CRL，集合内冲突拒绝；不把根私钥带入在线宿主。刷新按同 purpose 完整集合校验、原子发布；停机造成多个 issuer CRL 过期后可整组恢复。备份/恢复必须保留 CA 数据库、原密钥身份、serial/token 使用记录、MDM 数据库和 Audit/Ledger；成功签发与撤销发布的未知结果仍沿原记录恢复。
-
 
 设备 CA 在正式 SIT 使用 `deployment/sit.compose.yaml` 的 `step-ca`；开发/T2 使用 `deployment/compose.yaml` 的 `pki` profile。SIT 使用一个 CA 实例及数据库，各 purpose 保留独立 provisioner 和产品记录；在线 `MDM_PKI_ROOT` 只含中间 CA 加密密钥、公开根、配置、模板及 CA 数据库，根私钥和独立解密秘密放在未挂载的离线目录。step-ca 原生 `kms` 配置选择加密文件 SoftKMS 基线，`key` 可替换为受支持 KMS/HSM URI，由 CA 部署 owner 提供对应访问凭据与验收；MDM 不读取 KMS 或根私钥。非 step-ca 企业 CA 路线登记为 #2680。
 
@@ -190,7 +157,6 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 
 停写后联合备份数据库、凭据密钥环、接收私钥及原有 native protection/内容材料。恢复使用对应密钥，重新检查当前登录授权、注册世代、撤销状态和保留期限。数据库与密钥重启/备份验证只证明服务端能按授权读取正确材料；PRK 解锁、Recovery Lock、Windows 密码登录及 BitLocker 实际恢复另由真机验收证明。
 
-
 ### 原生加密写钥切换
 
 `docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init rotate-protection --config /var/lib/rss-mdm/private-rotation.json` 接受 `installation`（原部署输入）、`purpose`（`native` 或 `windows`）和稳定 UUID `operation_id`。该一次性维护命令与其它维护操作互斥。操作先在最终保管目录生成新钥并保存每个宿主的两个不可变输入：第一阶段让全部实际进程读取新旧钥，第二阶段才切换新密文写钥。每个阶段都要求 HTTPS 返回确切宿主、操作、版本、摘要与新进程观察；失败使用原 operation ID 重试，不能手工跳过剩余宿主。
@@ -198,7 +164,6 @@ Apple 的 challenge/notify webhook ID 和 HMAC 秘密属于稳定协议配置。
 写钥切换完成后，每次调用以有界领域事务重加密 APNs/Profile/Managed Apple Account、任务签名私钥和 S3 凭据；`rewrapping` 表示还需继续用原输入调用，`complete` 表示该轮切换和上述运行材料批次已完成。私钥身份、材料版本、签名信任、ACK、原请求指纹和证书均不改变。中断可重放，单批失败回滚。
 
 完成回执始终标记 `historicalKeysRetained=true`。历史原生输入、协议回执、物理内容块和备份仍可能引用旧加密钥，不能仅凭运行材料批次为零就删除旧钥。稳定比较钥另有持久身份用途，密文轮换不表示比较 HMAC 轮换。恢复须联合取回全部仍被记录或备份引用的材料；此流程不会自动退出旧钥，也不会修改固定安装 Ledger HMAC。
-
 
 Windows 保护配置现在使用 `protocol_protection`，包含 `active_file`、`historical_files`、`fingerprint_file`。Windows 轮换先向所有启用 Windows 的宿主分发读钥，再切换写钥并分批重包注册秘密；固定 fingerprint 维持原注册/续期配置身份。旧钥继续保留供历史与备份恢复，完成写钥切换不表示旧钥可以删除。
 
@@ -369,11 +334,7 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 入口退役同时检查仍可使用的注册配置和未完成的原生 Agent 安装。新任务在接受时冻结当前发布的首选地址；策略和软件身份不绑定地址。已下发任务保留原下载 URL，完成、撤销或失效前保留其入口。撤销注册配置不会取消已接受的注册授权，已有授权须完成、显式取消或到期。连接状态的 `retirementBlockers` 分别报告注册材料和原生安装的阻断数量。Windows/Apple 原生注册与 SCEP 地址仍须按各原生配置的生命周期维护。
 
-### MDM 审计投影调度
-
-`audit_projection.max_inflight` 默认 9，是执行与待核对恢复身份的共同容量；消息 runtime 额外保留一个控制连接。worker 按空闲容量一次批量领取，各事件独立结算。领取、事件执行和恢复各自使用新建的单操作预算，不共享整轮截止。提交后通知只是提示，30 秒持久补查覆盖丢通知和重连；依赖失败复用 RSS 有上限指数退避，通知不能绕过退避。
-
-`mdm_audit_projection_progress` 聚合阶段耗时、推进数、恢复数量、连续失败和最后推进年龄，不含载荷。`resolve` 无终态证明时仍只能由新的持久 claim 决定重执行；关闭或超时不证明回滚。当前候选仅支持全新部署，使用当前 schema 安装；不修改旧部署迁移摘要或导入旧积压。
+#
 
 
 ### 配置状态与完整历史

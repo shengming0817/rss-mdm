@@ -1,15 +1,8 @@
--- Producers freeze source events; only the dedicated projector can append final history.
-GRANT USAGE ON SCHEMA rss_audit,rss_ledger,mdm_audit TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT SELECT ON rss_audit.heads,rss_audit.records,rss_ledger.heads,rss_ledger.entries TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT SELECT ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT SELECT,INSERT,UPDATE ON mdm_audit.backlog TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime;
-GRANT USAGE ON SCHEMA rss_audit,mdm_audit TO mdm_audit_worker;
-GRANT SELECT ON rss_audit.heads,rss_audit.records,mdm_audit.receipts,mdm_audit.backlog TO mdm_audit_worker;
-GRANT UPDATE(projected_at) ON mdm_audit.receipts TO mdm_audit_worker;
-GRANT UPDATE(events,bytes,reserved_events,reserved_bytes) ON mdm_audit.backlog TO mdm_audit_worker;
-GRANT EXECUTE ON FUNCTION rss_audit.reserve(uuid),rss_audit.append(uuid,text,text,bigint,bytea,bigint) TO mdm_audit_worker;
-GRANT SELECT,INSERT ON rss_transactional_messaging.consumer_dead_letter TO mdm_audit_worker;
+-- Business owners append final Audit records on their existing transaction.
+GRANT USAGE ON SCHEMA rss_audit TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT SELECT ON rss_audit.records TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+-- The existing RSS transaction owner retains its producer profile and fencing checks.
+GRANT USAGE ON SCHEMA rss_transactional_messaging TO mdm_access,mdm_tenant_registry;
+GRANT SELECT ON rss_transactional_messaging.policy,rss_transactional_messaging.outbox TO mdm_access,mdm_tenant_registry;
+GRANT EXECUTE ON FUNCTION rss_transactional_messaging.check_execution(),rss_transactional_messaging.prepare_outbox_partitions(jsonb),rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_access,mdm_tenant_registry;

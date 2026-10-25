@@ -3,10 +3,6 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
     vec![
         ("audit-v1", rss_audit_postgres::MIGRATION_SQL),
         ("audit-ledger-v1", rss_ledger_postgres::MIGRATION_SQL),
-        (
-            "audit-receipts-v1",
-            rss_mdm_audit_integration::MIGRATION_SQL,
-        ),
         ("observation-v2", rss_observation_postgres::MIGRATION_SQL),
         ("projection-v3", rss_projection_postgres::MIGRATION_SQL),
         ("inventory-v1", rss_mdm_inventory_postgres::MIGRATION_SQL),
@@ -54,8 +50,8 @@ pub(super) fn units() -> Vec<(&'static str, &'static str)> {
             include_str!("../../schema/audit-runtime.sql"),
         ),
         (
-            "identity-audit-runtime-v1",
-            include_str!("../../schema/identity-audit-runtime.sql"),
+            "audit-ledger-runtime-v1",
+            include_str!("../../schema/audit-ledger-runtime.sql"),
         ),
         (
             "installation-binding-v1",

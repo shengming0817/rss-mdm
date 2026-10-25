@@ -296,7 +296,7 @@ impl ExecutionService {
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,id,fingerprint,&audit),|ctx,tx|Box::pin(async move {
             let (service,id,fingerprint,audit) = ctx;
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
-            let fact=Fact::business(audit,&format!("command:{id}:dispatch"),fingerprint,200,"success",None)?;
+            let fact=Fact::business(audit, &format!("command:{id}:dispatch"), 200, "success", None)?;
             let tenant=service.tenant.to_string();let id=id.to_string();let fingerprint=fingerprint.clone();
             let old=tx.with_connection(move|c|Box::pin(async move {
                 let old=sqlx::query_scalar::<_,bool>("SELECT gateway_accepted FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2::uuid AND dispatch_fingerprint=$3 FOR UPDATE").bind(&tenant).bind(&id).bind(&fingerprint).fetch_optional(&mut *c).await?;
@@ -304,7 +304,7 @@ impl ExecutionService {
                 Ok(old)
             })).await?.ok_or(Error::Unavailable(Failure::CommandInvariant))?;
             if old {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            service.audit_store.append_in(tx,&fact,old).await?;
+            (if old { Ok(()) } else { service.audit_store.append_in(tx, &fact).await })?;
             if !old { crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?; }
             Ok(())
         })).await;
@@ -350,10 +350,9 @@ pub(crate) async fn prepare(
     audit: &RequestAudit,
 ) -> Result<PreparedRecovery> {
     let tenant = tx.tenant_id();
-    let mut partitions = Vec::new();
+    let partitions = [];
     let prepared = if let Some(id) = crate::unmanage::operation(entity) {
         let batch = service.prepare_retirement_in(tx, id).await?;
-        partitions.extend(batch.partitions.iter().cloned());
         PreparedRecovery::Retirement(batch)
     } else if let Some(work) = actions::native_recovery::Work::parse(entity) {
         let t = tenant.to_string();
@@ -368,14 +367,7 @@ pub(crate) async fn prepare(
             actions::storage::load_run(tx, id).await?;
         }
         let run_id = Uuid::new_v4();
-        partitions.push(rss_mdm_audit_integration::source_partition(
-            tenant,
-            "mdm",
-            &run_id.to_string(),
-        )?);
-        partitions.push(rss_mdm_audit_integration::source_partition(
-            tenant, "device", &device,
-        )?);
+
         PreparedRecovery::Native(work, run_id)
     } else if let Some(id) = actions::recovery::policy_id(entity) {
         crate::sources::storage::lock(tx, id).await?;
@@ -385,26 +377,13 @@ pub(crate) async fn prepare(
         }) {
             if let Some(batch) = actions::native_collection::prepare_policy(service, tx, id).await?
             {
-                partitions.push(rss_mdm_audit_integration::source_partition(
-                    tenant,
-                    "mdm",
-                    &batch.run_id.to_string(),
-                )?);
                 PreparedRecovery::Collection(batch)
             } else {
                 PreparedRecovery::Empty
             }
         } else {
             let batch = actions::recovery::prepare(tx, id).await?;
-            partitions.extend(batch.partitions.iter().cloned());
             let admission = actions::native_software::prepare_policy(service, tx, id).await?;
-            if let Some(admission) = &admission {
-                partitions.push(rss_mdm_audit_integration::source_partition(
-                    tenant,
-                    "mdm",
-                    &admission.run_id.to_string(),
-                )?);
-            }
             PreparedRecovery::Policy(batch, admission)
         }
     } else {
@@ -415,9 +394,7 @@ pub(crate) async fn prepare(
         };
         if let Some(device) = device {
             actions::native_recovery::lock_device(tx, &device).await?;
-            partitions.push(rss_mdm_audit_integration::source_partition(
-                tenant, "device", &device,
-            )?);
+
             if configuration.is_some() {
                 PreparedRecovery::Configuration(device)
             } else {
@@ -427,9 +404,7 @@ pub(crate) async fn prepare(
             PreparedRecovery::Empty
         }
     };
-    partitions.push(rss_mdm_audit_integration::source_partition(
-        tenant, "mdm", "request",
-    )?);
+
     crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &partitions).await?;
     Ok(prepared)
 }
@@ -565,18 +540,17 @@ pub(crate) async fn apply_prepared(
                     fact_audit.target_device(&operation.device);
                     fact_audit.registration(operation.registration);
                     let details = serde_json::json!({"before":status,"after":service::status(command.status()),"version":command.version()});
-                    let fingerprint = checked_input(serde_json::to_vec(&details))?;
+
                     let fact = Fact::business(
                         &fact_audit,
                         &format!("command:{id}:recover:{}", command.version()),
-                        &fingerprint,
                         200,
                         "success",
                         None,
                     )?
                     .with_details(details)?;
                     fact_audit.finalize(None);
-                    service.audit_store.append_in(tx, &fact, false).await?;
+                    service.audit_store.append_in(tx, &fact).await?;
                 }
             }
             let cursor = page.after.map(|s| s.as_str().to_owned());

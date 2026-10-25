@@ -78,9 +78,9 @@ impl Associations {
             for (operation,result) in &results {
                 let fact_audit=audit.fact_copy("device_association_automatic");
                 fact_audit.operation(*operation,"device_association_automatic", rss_mdm_audit_integration::AuditIntent::Management);fact_audit.target(&result.id.to_string());
-                let digest=Sha256::digest(serde_json::to_vec(result).map_err(|_|Error::Storage)?);
-                let fact=Fact::business(&fact_audit,&format!("device_association:{operation}"),&digest,200,"success",None)?.with_details(serde_json::json!({"association":result}))?;
-                service.audit.append(tx,&fact,false).await?;
+
+                let fact=Fact::business(&fact_audit, &format!("device_association:{operation}"), 200, "success", None)?.with_details(serde_json::json!({"association":result}))?;
+                service.audit.append(tx, &fact).await?;
             }
             audit.mark_commit_started();
             Ok(results.len())

@@ -11,7 +11,6 @@ pub(crate) struct Change<R> {
     pub value: R,
     pub replay: bool,
     pub key: String,
-    pub fingerprint: Vec<u8>,
 }
 impl Registry {
     pub(crate) async fn mutation<C: Send, R: Send>(
@@ -50,10 +49,13 @@ pub(crate) async fn run<C: Send, R: Send>(
                     if change.key.is_empty() {
                         return Ok((change.value, false));
                     }
-                    let fact =
-                        Fact::business(a, &change.key, &change.fingerprint, 200, "success", None)
-                            .map_err(|e| Error::Audit(e.into()))?;
-                    store.append(tx, &fact, change.replay).await?;
+                    let fact = Fact::business(a, &change.key, 200, "success", None)
+                        .map_err(|e| Error::Audit(e.into()))?;
+                    (if change.replay {
+                        Ok(())
+                    } else {
+                        store.append(tx, &fact).await
+                    })?;
                     a.mark_commit_started();
                     Ok((change.value, true))
                 })

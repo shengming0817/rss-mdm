@@ -17,8 +17,6 @@ pub(super) const ROLES: &[&str] = &[
     "mdm_owner",
     "mdm_identity_maintenance",
     "mdm_identity_runtime",
-    "mdm_identity_audit",
-    "mdm_audit_worker",
     "mdm_access",
     "mdm_runtime",
     "mdm_command_runtime",
@@ -57,6 +55,7 @@ pub struct Input {
     #[serde(default)]
     pub content_storage: ContentStorage,
     pub database: DatabaseInput,
+    #[serde(default)]
     pub audit_mode: AuditMode,
     pub organization_name: String,
     pub platform_login: String,
@@ -272,8 +271,6 @@ pub async fn install(input: Input) -> Result<Receipt> {
             first,
         )?);
     }
-    let audit_recovery = protected(&journal, "audit-recovery.key", 32, first)?;
-    let identity_audit_recovery = protected(&journal, "identity-audit-recovery.key", 32, first)?;
     let native_key = protected(&journal, "native.key", 32, first)?;
     let native_fingerprint = protected(&journal, "native-fingerprint.key", 32, first)?;
     let ledger_key = if input.audit_mode == AuditMode::Ledger {
@@ -287,8 +284,6 @@ pub async fn install(input: Input) -> Result<Receipt> {
             platform.as_str(),
             administrator.as_str(),
             &database_passwords,
-            audit_recovery.as_slice(),
-            identity_audit_recovery.as_slice(),
             native_key.as_slice(),
             native_fingerprint.as_slice(),
             ledger_key.as_deref(),
@@ -479,6 +474,7 @@ async fn initialize_account(
     // a real login, verifies the exact expected subject and revokes the temporary session.
     let initialized = crate::maintenance::run(
         crate::maintenance::Config {
+            audit: input.audit(journal)?,
             database: input.database("mdm_identity_maintenance")?,
             installation: coordinates(input, saved),
             tenant_id: tenant.into(),
@@ -525,9 +521,8 @@ fn runtime(input: &Input, journal: &Journal, saved: &Saved) -> Result<serde_json
     Ok(serde_json::json!({
         "runtime_binding":{"host_id":saved.receipt.host_id,"operation_id":saved.receipt.operation_id,"revision":1,"material_digest":saved.fingerprint_digest()},
         "agent_pki":{"mode":"disabled"},"device_pki":[],"native_protocols":{},"native_protection":{"active_file":journal.path("native.key")?,"historical_files":[],"fingerprint_file":journal.path("native-fingerprint.key")?},
-        "audit_projection":{"database":input.database("mdm_audit_worker")?,"recovery_keys":{"active_file":journal.path("audit-recovery.key")?,"historical_files":[]},"max_events":100000,"max_bytes":1073741824},
         "audit":audit,"listen":input.listen,"product_origin":input.origin,"trusted_gateway":input.trusted_gateway,
-        "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"audit_worker":input.database("mdm_identity_audit")?,"audit_recovery_keys":{"active_file":journal.path("identity-audit-recovery.key")?,"historical_files":[]},"oidc":null},
+        "identity":{"instance_id":saved.receipt.instance_id,"tenant_id":saved.receipt.tenant_id,"database":input.database("mdm_identity_runtime")?,"oidc":null},
         "access_database":input.database("mdm_access")?,"runtime_database":input.database("mdm_runtime")?,"execution":{"database":input.database("mdm_command_runtime")?},
         "flow":{"storage":{"database":input.database("mdm_flow_runtime")?,"target":saved.target,"lineage":saved.lineage,"epoch":1},"publication":{"database":input.database("mdm_software_driver")?,"sources":[]}},
         "tenant_administration":{"registry_database":input.database("mdm_tenant_registry")?,"provisioning_database":input.database("mdm_identity_provisioning")?,"fingerprint_key_file":journal.path("operation.key")?},

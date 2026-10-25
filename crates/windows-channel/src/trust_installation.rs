@@ -235,7 +235,6 @@ pub(crate) async fn send(
     facts.push(rss_mdm_audit_integration::Fact::business(
         &a,
         &format!("windows-pki:{id}:dispatch"),
-        digest.as_bytes(),
         200,
         "success",
         Some(id),
@@ -411,7 +410,6 @@ pub(crate) async fn receive(
                 facts.push(rss_mdm_audit_integration::Fact::business(
                     a,
                     &format!("windows-pki:{id}:confirmed"),
-                    trust.installation_digest().as_bytes(),
                     200,
                     "success",
                     Some(id),

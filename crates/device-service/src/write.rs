@@ -123,9 +123,7 @@ impl Associations {
                 },
             )
             .await?;
-        let result = self
-            .record_change(tx, change, audit, digest, outcome)
-            .await?;
+        let result = self.record_change(tx, change, audit, outcome).await?;
         proof.check_live()?;
         audit.mark_commit_started();
         Ok(result)
@@ -135,7 +133,6 @@ impl Associations {
         tx: &mut rss_mdm_audit_integration::SourceTransaction<'_, '_>,
         change: &Change<'_>,
         audit: &RequestAudit,
-        digest: &[u8],
         outcome: (Association, bool),
     ) -> Result<Association> {
         let (result, replayed) = outcome;
@@ -143,13 +140,16 @@ impl Associations {
         let fact = Fact::business(
             audit,
             &format!("device_association:{}", change.operation()),
-            digest,
             200,
             "success",
             None,
         )?
         .with_details(serde_json::json!({"association":result}))?;
-        self.audit.append(tx, &fact, replayed).await?;
+        (if replayed {
+            Ok(())
+        } else {
+            self.audit.append(tx, &fact).await
+        })?;
         if replayed {
             audit.management_result(ManagementResult::Replayed);
         }

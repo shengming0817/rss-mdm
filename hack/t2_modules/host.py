@@ -25,8 +25,6 @@ def verify_startup_deadlines(fixture):
             config['flow']['storage' if key=='database' else 'publication']['database']['port']=stalled_port
         config['execution']['database']['port']=stalled_port
         config['identity']['database']['port']=stalled_port
-        config['identity']['audit_worker']['port']=stalled_port
-        config['audit_projection']['database']['port']=stalled_port
         path=root/'stalled.json';path.write_text(json.dumps(config));path.chmod(0o600)
         start=time.monotonic()
         result=subprocess.run([binary,'serve','--config',str(path)],pass_fds=lease_fds(), cwd=ROOT,env=env,capture_output=True,text=True,timeout=22)

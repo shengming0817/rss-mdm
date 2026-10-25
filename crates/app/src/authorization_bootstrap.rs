@@ -162,7 +162,7 @@ async fn initialize_owned(
         let authority = Authority::connect_runtime(
             runtime.clone(),
             owned.kdf.clone(),
-            identity::authority_config(instance, vec![tenant])?,
+            identity::authority_config(instance, vec![tenant], config.audit.integrity()?)?,
             policy,
             identity::deadline(),
         )
@@ -171,7 +171,7 @@ async fn initialize_owned(
         Ok::<_, Error>(authority)
     }
     .await?;
-    owned.access = Some(Database::connect(config.database.options()?).await?);
+    owned.access = Some(Database::connect(config.database.options()?, &config.audit).await?);
     let database = owned
         .access
         .as_ref()
@@ -185,7 +185,7 @@ async fn initialize_owned(
     .await?;
     owned.source_runtime = Some(source_runtime.clone());
     let store = database
-        .audit_store(&config.audit, source_runtime, tenant, Default::default())
+        .audit_store(&config.audit, source_runtime, tenant)
         .await?;
     let pool = database.archive_pool();
     let management: String =

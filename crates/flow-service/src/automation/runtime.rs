@@ -308,9 +308,7 @@ impl PlanningWork {
                                             .await?,
                                     )
                                 } else {
-                                    let mut partitions = vec![
-                                        job.audit_partition(tx.tenant_id()).map_err(Error::from)?,
-                                    ];
+                                    let mut partitions = vec![];
                                     match &job {
                                         JobInput::Group { group, .. } => partitions
                                             .push(service.groups.partition(&group.to_string())?),
@@ -495,8 +493,7 @@ impl PlanningWork {
                             let (job, _, _, _, _) = crate::automation::jobs::read_in(tx, id)
                                 .await
                                 .map_err(|e| fault(e, &Mutex::new(None)))?;
-                            let mut partitions =
-                                vec![job.audit_partition(tx.tenant_id()).map_err(PgError::from)?];
+                            let mut partitions = vec![];
                             if let JobInput::Group { group, .. } = &job {
                                 partitions.push(service.groups.partition(&group.to_string())?);
                             }

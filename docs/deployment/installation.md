@@ -235,13 +235,13 @@ Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后
 
 由数据库管理员创建专用数据库和 `mdm_owner`、`mdm_runtime`、`mdm_api`、`mdm_access` 基础角色。所有产品角色均禁止 SUPERUSER、BYPASSRLS 和高权继承；`mdm_owner` 需要该数据库与 public schema 的 CREATE 权限，但不持有 CREATEROLE。`mdm_api` 是组件 reader 的验证角色，不进入 serve 配置。
 
-再按顺序安装候选目录 deployment/ 中的 `software-publication-roles.sql`、`flow-roles.sql`、`identity-roles.sql`、`commands-roles.sql`、`audit-roles.sql`。脚本创建的 NOLOGIN profile 保持为权限角色；仅对实际配置的连接角色启用 LOGIN 并设置独立秘密，不额外授予继承权限。Identity runtime/maintenance/audit worker 不继承 owner；owner 的准入检查所需切换关系由随附 SQL 设置。
+再按顺序安装候选目录 deployment/ 中的 `software-publication-roles.sql`、`flow-roles.sql`、`identity-roles.sql`、`commands-roles.sql`、`audit-roles.sql`。脚本创建的 NOLOGIN profile 保持为权限角色；仅对实际配置的连接角色启用 LOGIN 并设置独立秘密，不额外授予继承权限。Identity runtime/maintenance/provisioning 不继承 owner；owner 的准入检查所需切换关系由随附 SQL 设置。
 
-Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 安装，两个 owner 均为 NOLOGIN、NOSUPERUSER、NOBYPASSRLS。管理员须对目标数据库执行 `audit-roles.sql` 中的 CREATE 授权。四类产品运行角色只取得组件表 SELECT 和固定写函数 EXECUTE；产品恢复回执位于 `mdm_audit.receipts`，使用租户 RLS 和 SELECT/INSERT 权限。
+Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 安装，两个 owner 均为 NOLOGIN、NOSUPERUSER、NOBYPASSRLS。管理员须对目标数据库执行 `audit-roles.sql` 中的 CREATE 授权。实际业务运行角色只取得组件表 SELECT 和固定追加函数 EXECUTE；业务状态、操作回执与最终审计共同提交。Plain 默认安装不创建 Ledger schema，显式 Ledger 才安装和授予其能力。
 
-`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 和 audit worker 权限，脚本成功不代表角色准入成功。
+`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际业务及 Identity runtime/maintenance/provisioning 权限，脚本成功不代表角色准入成功。
 
-迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予 Identity audit worker 权限，模式不能随重放改变。
+迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予实际业务与 Identity 写角色权限，模式不能随重放改变。
 
 新增租户统一使用平台会话调用 `POST /api/v1/tenant-administration/provisionings`，包含 `name`、`administratorLogin`、`administratorPassword`，并提供 UUID `Idempotency-Key`。返回可查询开通回执；202 表示管理员或宿主阶段尚未完成，不能解释为租户已启用。旧裸创建 HTTP 入口与 `tenant-create` 命令已移除。元数据维护、查询和追加管理员保留独立用途。
 
@@ -323,7 +323,7 @@ create/update/delete 的 operation_id 共用一个全局命名空间。同一操
 
 ## 管理员密码恢复
 
-按[Compose 材料导入](operations.md#compose-维护材料与数据库-tls-续期)准备并导入独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
+按[Compose 材料导入](operations.md#compose-维护材料与数据库-tls-续期)准备并导入独立 recover.json，沿用初始化配置的 installation、tenant_id 与既有 principal_id；`login` 必须为 null，`password_file` 指向新密码文件，database 使用 mdm_identity_maintenance，audit 与原安装完整性模式一致；Ledger 同时提供原密钥文件。该操作轮换密码并撤销旧会话，不创建主体，也不恢复 MDM 业务授权。
 
 ```sh
 docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.yaml run --rm --no-deps --user 10001:10001 --entrypoint /usr/local/bin/rss-mdm-installer init recover-password --config /var/lib/rss-mdm/recover.json
@@ -335,19 +335,13 @@ docker compose -p rss-mdm -f /absolute/candidate/deployment/production.compose.y
 
 运行配置从交付的 mdm-config.example.json 填写：实例、租户、产品域名、数据库地址、独立秘密、Windows 公开设备 trust、协议密钥和独立 TLS 输入。各数据库角色连接同一 MDM 数据库。OIDC 可不配置，本地认证无需参考应用或企业 IdP；企业接入使用产品自己的 `/api/v1/identity/oidc/callback`。账户坐标及旧、新主体不自动对应的边界见认证指南。
 
-`identity.audit_worker` 必须配置独立 `mdm_identity_audit` 登录角色及秘密文件；host、port、name 必须与 `identity.database` 一致。安装器通过 Identity 公共 worker 授权接口赋予 consumer 与 Audit 权限，并通过 Ledger 的公开 SQL 接缝赋予追加能力；worker 不具有身份私表、producer、DDL 或直接审计表写权限。运行服务同时挂入 worker 密码，maintenance 密码仍仅归一次性维护命令。现有安装集合新增 `identity-audit-runtime-v1`，旧候选安装账本不会被静默升级。
-
-MDM 投影使用 `audit_projection.database` 的独立 `mdm_audit_worker` 登录，连接同一实际数据库；固定 domain 为 `mdm.audit`，消费组为 `mdm.audit.v1`。业务角色只可靠入队，不拥有 Audit/Ledger 追加权限。两个审计 worker 都在一个 PostgreSQL 事务中提交 effect、Inbox 与源 Outbox 完成状态；普通 broker 投递不使用这条接缝。
-
-`audit_projection.recovery_keys` 与 `identity.audit_recovery_keys` 各自配置 `active_file` 和 `historical_files`，文件为 32 字节原始密钥、权限 0600，最多 15 个历史钥。两个集合及设备材料保护钥不得复用，历史钥也须保留至相应恢复材料退出；这些文件随运行配置进入联合备份。worker 密码必须与生产角色及另一 worker 分离。
+MDM 和 Identity 使用各自原业务连接直接追加 Audit，不配置审计 worker、投影数据库或审计恢复密钥。Plain 为新安装默认；Ledger 由安装输入显式选择，业务角色不能直接修改审计表。旧候选须保留原制品和数据，本版本不提供旧库或旧配置转换。
 
 原生请求在 SIGTERM 后由 Runtime 先关闭准入并排空，再释放依赖。进程总停机预算为 60 秒，Compose server 的 `stop_grace_period` 为 75 秒（另留 15 秒进程退出余量）；正常退出立即结束，不等待宽限期用满。
 
-`audit_projection.max_events` 默认 100000，`max_bytes` 默认 1073741824，按租户以先到者为限（两项均至少为 2）；普通额度等分给业务事实与请求完成事实，奇数余量归业务，两个来源分别持有配额行和 outbox 分区，避免请求完成等待业务长事务。字节数指冻结源事件的精确载荷字节，不是 PostgreSQL 物理占用。每个来源在自身普通额度之外保留向上取整的 10% 失败/拒绝事实容量，未投影及隔离事实继续计费。达到上限拒绝新应审计业务，预留耗尽关闭相应接流，不能递归写入失败事实。任一来源达到自身额度的 80%，或最老未投影事件超过五分钟时，在诊断中告警。运行诊断分别显示 `audit_source`、`audit_projection` 和 `identity_audit`；投影落后不直接撤销核心 readiness，源容量耗尽、主库不可用和完整性故障仍按接流策略处理。
-
 所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 
-运行配置和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
+运行配置、身份初始化/恢复和 `initialize-authorization` 配置必须显式填写 `audit`：Plain 为 `{"mode":"plain"}`；Ledger 为 `{"mode":"ledger","key_id":"部署提供的标识","key_file":"/run/mdm/audit-key"}`。密钥文件保存至少 32 字节的原始密钥，必须受文件权限保护；服务不自动生成、轮换或在错误时降级。所有运行角色使用 READ COMMITTED，恢复入口拒绝其他隔离级别。
 
 只支持 Nginx 公网网关。gateway 与各租户 server 使用受控主机上的隔离网络；Rust 只保留一个不公开的内部 HTTP 入口。Nginx 终止 TLS/mTLS，覆盖公开 origin、TLS 客户端叶证书和真实来源地址；Rust 先核验实际 TCP peer 等于 `trusted_gateway`，再按通道验证证书用途、撤销、租户和注册。设备路由清除管理会话 Cookie；Windows 原生 Entra 凭据由原生通道验证。
 
@@ -373,9 +367,9 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 ## 时间线索引恢复
 
-时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v1`，checkpoint 不持有后台健康状态；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才从 checkpoint 有界追赶，故障返回不可用，后续请求重新尝试。
+时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v1`，索引不维护消费 checkpoint；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才按事实身份有界查缺补齐，故障返回不可用，后续请求重新尝试。
 
-需要重建时先停止本安装的所有服务实例，由数据库 owner 在一个事务内设置目标租户上下文，删除该租户的 `mdm_timeline.facts`，将其 checkpoint 的 `position`、`source_through` 置为 -1，并为 `generation` 设置新的 UUID。保留既有游标签名秘密和全部 Audit/Ledger 数据，再启动服务并通过授权查询触发追赶。旧游标因世代变化被拒绝；历史追赶完成前，API 明确返回覆盖进度。不得删除 Audit 事实、修补审计回执或改写迁移清单来恢复索引。
+需要重建时先停止本安装的服务，由数据库 owner 删除目标租户的 `mdm_timeline.facts`，保留全部 Audit/Ledger 数据。重启后由授权查询有界查缺补齐。分页为普通导航，不提供索引 generation 或冻结窗口；重建后从第一页重新查询。不得删除 Audit 事实或改写安装清单来恢复索引。
 
 安装包含 `certificate-archive-schema-v1`。运行不需要存档主密码；存档通过现有租户授权管理授予独立权限，详见[证书目录](../../crates/certificate-archive-service/README.md)。
 

@@ -381,7 +381,7 @@ impl Service {
             let op=crate::operations::Operation{actor:crate::operations::Actor::from_authorized(p),key:input.operation_id,digest:d};
             if let Some(old)=crate::operations::replay(c,&op).await? {
                 let StoredReceipt::Save { revision } = serde_json::from_str(&old).map_err(|_|Error::Corrupt)? else { return Err(Error::Conflict) };
-                return Ok(Change{value:draft_on(c,p.tenant_id(),Some(revision)).await?.ok_or(Error::Corrupt)?,replay:true,digest:d.clone()});
+                return Ok(Change{value:draft_on(c,p.tenant_id(),Some(revision)).await?.ok_or(Error::Corrupt)?, replay:true});
             }
             let old=draft_on(c,p.tenant_id(),None).await?;
             let current=old.map_or(0,|v|v.configuration.revision);
@@ -393,7 +393,7 @@ impl Service {
             sqlx::query("INSERT INTO mdm_access.agent_connection_drafts(tenant_id,revision,document) VALUES($1::uuid,$2,$3)")
                 .bind(p.tenant_id()).bind((current+1) as i64).bind(serde_json::to_value(&out).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,&serde_json::to_string(&StoredReceipt::Save { revision: current+1 }).map_err(|_|Error::Corrupt)?,audit).await?;
-            Ok(Change{value:out,replay:false,digest:d.clone()})
+            Ok(Change{value:out, replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn publish_connections(
@@ -419,7 +419,7 @@ impl Service {
             let op=crate::operations::Operation{actor:crate::operations::Actor::from_authorized(p),key:input.operation_id,digest:d};
             if let Some(old)=crate::operations::replay(c,&op).await?{
                 let StoredReceipt::Publish { revision } = serde_json::from_str(&old).map_err(|_|Error::Corrupt)? else { return Err(Error::Conflict) };
-                return Ok(Change{value:published_on(c,p.tenant_id(),Some(revision)).await?.ok_or(Error::Corrupt)?,replay:true,digest:d.clone()});
+                return Ok(Change{value:published_on(c,p.tenant_id(),Some(revision)).await?.ok_or(Error::Corrupt)?, replay:true});
             }
             let draft=draft_on(c,p.tenant_id(),None).await?.ok_or(Error::Conflict)?;
             if draft.configuration.revision!=input.expected_revision{return Err(Error::Conflict)}
@@ -446,7 +446,7 @@ impl Service {
             sqlx::query("INSERT INTO mdm_access.agent_connection_versions(tenant_id,revision,document) VALUES($1::uuid,$2,$3)")
                 .bind(p.tenant_id()).bind(input.expected_revision as i64).bind(serde_json::to_value(&out).map_err(|_|Error::Malformed)?).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,&serde_json::to_string(&StoredReceipt::Publish { revision: input.expected_revision }).map_err(|_|Error::Corrupt)?,audit).await?;
-            Ok(Change{value:out,replay:false,digest:d.clone()})
+            Ok(Change{value:out, replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn connection_operation(
@@ -501,9 +501,9 @@ impl Service {
             "agent_connections_ack",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let d = digest(&(p.registration(), p.generation(), input))?;
-        self.write(audit,(self,p,input,d),|ctx,c|Box::pin(async move{
-            let(service,p,input,d)=ctx;
+
+        self.write(audit,(self,p,input),|ctx,c|Box::pin(async move{
+            let(service,p,input)=ctx;
             lock(c,&service.tenant.to_string()).await?;
             let current=current_on(c,&service.tenant.to_string()).await?;
             if !current.configuration.origins.contains(&input.origin) {return Err(Error::Conflict)}
@@ -514,14 +514,14 @@ impl Service {
                 .bind(service.tenant.to_string()).bind(p.registration()).bind(p.generation()).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?;
             if let Some(old)=old{
                 if old!=serde_json::to_value(input).map_err(|_|Error::Malformed)?{return Err(Error::Conflict)}
-                return Ok(Change{value:(),replay:true,digest:d.clone()});
+                return Ok(Change{value:(), replay:true});
             }
             let latest:Option<i64>=sqlx::query_scalar("SELECT max(revision) FROM mdm_access.agent_connection_observations WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3")
                 .bind(service.tenant.to_string()).bind(p.registration()).bind(p.generation()).fetch_one(&mut *c).await.map_err(db)?;
             if latest.is_some_and(|v|v>input.revision as i64){return Err(Error::Conflict)}
             sqlx::query("INSERT INTO mdm_access.agent_connection_observations(tenant_id,registration,generation,operation_id,revision,document,received_at) VALUES($1::uuid,$2,$3,$4,$5,$6,floor(extract(epoch FROM clock_timestamp()))::bigint)")
                 .bind(service.tenant.to_string()).bind(p.registration()).bind(p.generation()).bind(input.operation_id).bind(input.revision as i64).bind(serde_json::to_value(input).map_err(|_|Error::Malformed)?).execute(c).await.map_err(db)?;
-            Ok(Change{value:(),replay:false,digest:d.clone()})
+            Ok(Change{value:(), replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn report_connection_failure(
@@ -542,9 +542,8 @@ impl Service {
             "agent_connections_failure",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let fingerprint = digest(&(principal.registration(), principal.generation(), input))?;
-        self.write(audit,(self,principal,input,origin,fingerprint),|ctx,c|Box::pin(async move{
-            let(service,p,input,origin,digest)=ctx;
+        self.write(audit,(self,principal,input,origin),|ctx,c|Box::pin(async move{
+            let(service,p,input,origin)=ctx;
             crate::device::store::revalidate_source(c,p,rss_mdm_inventory::ReportSource::AgentBuiltin).await?;
             published_on(c,&service.tenant.to_string(),Some(input.revision)).await?.ok_or(Error::Conflict)?;
             let previous=sqlx::query("SELECT document FROM mdm_access.agent_connection_failures WHERE tenant_id=$1::uuid AND registration=$2 AND generation=$3 AND operation_id=$4")
@@ -552,11 +551,11 @@ impl Service {
             let document=serde_json::to_value(&**input).map_err(|_|Error::Malformed)?;
             if let Some(previous)=previous {
                 if previous.try_get::<serde_json::Value,_>("document").map_err(db)?!=document {return Err(Error::Conflict)}
-                return Ok(Change{value:(),replay:true,digest:digest.clone()});
+                return Ok(Change{value:(), replay:true});
             }
             sqlx::query("INSERT INTO mdm_access.agent_connection_failures(tenant_id,registration,generation,operation_id,revision,document,origin,received_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,floor(extract(epoch FROM clock_timestamp()))::bigint)")
                 .bind(service.tenant.to_string()).bind(p.registration()).bind(p.generation()).bind(input.operation_id).bind(input.revision as i64).bind(document).bind(origin.as_str()).execute(c).await.map_err(db)?;
-            Ok(Change{value:(),replay:false,digest:digest.clone()})
+            Ok(Change{value:(), replay:false})
         })).await.map_err(Into::into)
     }
     /// Bounded keyset page of active devices that have not confirmed this exact target.

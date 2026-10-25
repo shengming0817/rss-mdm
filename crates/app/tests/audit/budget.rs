@@ -17,14 +17,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         request.identify_service("service:collection-finalizer");
-        let fact = Fact::business(
-            &request,
-            "bounded-operation",
-            b"retired",
-            200,
-            "success",
-            None,
-        )?;
+        let fact = Fact::business(&request, "bounded-operation", 200, "success", None)?;
         let operation = SourceControl::new(
             &timer,
             total_cutoff,
@@ -39,7 +32,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
                 (&store, &fact, &reached),
                 |(store, fact, reached), tx| {
                     Box::pin(async move {
-                        store.append(tx, fact, false).await?;
+                        store.append(tx, fact).await?;
                         reached.store(true, std::sync::atomic::Ordering::Release);
                         std::future::pending::<Result<(), Error>>().await
                     })
@@ -62,7 +55,7 @@ async fn operation_cutoff_leaves_owner_time_to_rollback() -> Result<()> {
         ensure!(state(forbidden) == "not_started");
         let recovery = store
             .write(tenant, &total, (&store, &fact), |(store, fact), tx| {
-                Box::pin(async move { store.append(tx, fact, false).await })
+                Box::pin(async move { store.append(tx, fact).await })
             })
             .await;
         ensure!(state(recovery) == "committed");

@@ -175,14 +175,7 @@ impl Planning {
         {
             wire::Response::decode(old.clone())?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            crate::planning::receipts::audit(
-                tx,
-                &self.audit_store,
-                audit,
-                operation.zip(Some(fingerprint.as_slice())),
-                true,
-            )
-            .await?;
+            crate::planning::receipts::audit(tx, &self.audit_store, audit, operation, true).await?;
             authorize()?;
             return Ok(old);
         }
@@ -205,14 +198,7 @@ impl Planning {
             )
             .await?;
         }
-        crate::planning::receipts::audit(
-            tx,
-            &self.audit_store,
-            audit,
-            operation.zip(Some(fingerprint.as_slice())),
-            false,
-        )
-        .await?;
+        crate::planning::receipts::audit(tx, &self.audit_store, audit, operation, false).await?;
         authorize()?;
         Ok(value)
     }

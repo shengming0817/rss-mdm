@@ -60,7 +60,6 @@ impl Service {
                     return Ok(Change {
                         value: (),
                         replay: true,
-                        digest: d.clone(),
                     });
                 }
                 rss_mdm_pki_service::registry::Registry::acknowledge_in(
@@ -89,7 +88,6 @@ impl Service {
                 Ok(Change {
                     value: (),
                     replay: false,
-                    digest: d.clone(),
                 })
             })
         })
@@ -117,10 +115,9 @@ impl Service {
             "agent_trust_observe",
             rss_mdm_audit_integration::AuditIntent::Routine,
         );
-        let d = digest(&(p.registration(), input))?;
-        self.write(a, (self, p, input, d), |ctx, c| {
+        self.write(a, (self, p, input), |ctx, c| {
             Box::pin(async move {
-                let (service, p, input, d) = ctx;
+                let (service, p, input) = ctx;
                 crate::device::store::revalidate_source(
                     c,
                     p,
@@ -137,11 +134,7 @@ impl Service {
                     rss_mdm_pki_service::Error::Conflict => Error::Conflict,
                     _ => Error::Storage,
                 })?;
-                Ok(Change {
-                    value: (),
-                    replay,
-                    digest: d.clone(),
-                })
+                Ok(Change { value: (), replay })
             })
         })
         .await

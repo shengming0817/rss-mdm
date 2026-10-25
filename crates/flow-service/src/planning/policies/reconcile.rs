@@ -16,12 +16,6 @@ impl super::super::Planning {
         policy: Uuid,
         after: Option<String>,
     ) -> Result<PreparedAssignment> {
-        let terminal_partition = rss_mdm_audit_integration::source_partition(
-            tx.tenant_id(),
-            "policy",
-            &policy.to_string(),
-        )
-        .map_err(Error::from)?;
         let Some(p) = storage::read_in(
             &rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant),
             tx,
@@ -29,7 +23,6 @@ impl super::super::Planning {
         )
         .await?
         else {
-            tx.prepare_outbox_partitions(&[terminal_partition]).await?;
             return Ok(PreparedAssignment::Empty);
         };
         if matches!(p.definition.action, Action::UnmanageDevice { .. }) {
@@ -58,7 +51,7 @@ impl super::super::Planning {
             .map_err(rss_mdm_execution_service::Error::from)?;
         let more = assignments.len() > 64;
         assignments.truncate(64);
-        tx.prepare_outbox_partitions(&[terminal_partition]).await?;
+
         Ok(PreparedAssignment::Ordinary {
             policy: Box::new(p),
             assignments,

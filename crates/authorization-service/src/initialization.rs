@@ -115,12 +115,10 @@ pub async fn complete_verified_administrator(
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.require_final_request();
-    let bytes =
-        serde_json::to_vec(&("administrator-transfer", &user)).map_err(|_| Error::Malformed)?;
+
     let fact = rss_mdm_audit_integration::Fact::business(
         audit,
         &format!("authorization-transfer:{operation}"),
-        &bytes,
         200,
         "success",
         None,
@@ -144,7 +142,7 @@ pub async fn complete_verified_administrator(
             let receipt=crate::store::grant_verified_administrator_on(c,(*user).clone(),*operation).await?;
             Ok::<_,Error>((receipt,false))
         })).await?;
-        store.append(tx,fact,replay).await?;
+        (if replay { Ok(()) } else { store.append(tx, fact).await })?;
         audit.mark_commit_started();
         Ok(receipt)
     })).await;

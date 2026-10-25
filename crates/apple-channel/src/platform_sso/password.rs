@@ -136,12 +136,11 @@ pub(super) async fn login(
                     let fact = Fact::business(
                         audit,
                         &format!("psso-password-prepare:{operation}"),
-                        prepared.id.as_bytes(),
                         200,
                         "success",
                         None,
                     )?;
-                    app.audit_store.append(tx, &fact, false).await?;
+                    app.audit_store.append(tx, &fact).await?;
                     audit.mark_commit_started();
                     Ok(prepared)
                 })
@@ -188,7 +187,6 @@ pub(super) async fn login(
                     let fact = Fact::business(
                         audit,
                         &format!("psso-password-finish:{operation}"),
-                        prepared.id.as_bytes(),
                         if *state == "succeeded" {
                             200
                         } else if *state == "rejected" {
@@ -203,7 +201,7 @@ pub(super) async fn login(
                         },
                         None,
                     )?;
-                    app.audit_store.append(tx, &fact, false).await?;
+                    app.audit_store.append(tx, &fact).await?;
                     audit.mark_commit_started();
                     Ok(value)
                 })

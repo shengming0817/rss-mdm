@@ -124,7 +124,6 @@ impl Service {
         let fact = Fact::business(
             audit,
             &format!("tenant-provision:{operation}"),
-            digest.as_bytes(),
             202,
             "success",
             None,
@@ -158,7 +157,7 @@ impl Service {
                 Ok::<_,Reason>((receipt,administrator_operation,false))
             }.await.map_err(project) })).await?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
-            else {service.audit.append(tx,fact,false).await?;}
+            else {service.audit.append(tx, fact).await?;}
             audit.mark_commit_started();
             Ok::<_,Error>((receipt,administrator_operation))
         })).await;

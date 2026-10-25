@@ -13,8 +13,6 @@ pub struct Fact {
     snapshot: Snapshot,
     request: Option<Uuid>,
     payload: Vec<u8>,
-    fingerprint: [u8; 32],
-    base_fingerprint: [u8; 32],
     outcome: Outcome,
 }
 /// Closed producer-contract errors; never contain tenant, actor, key or payload values.
@@ -28,8 +26,6 @@ pub enum InvalidFact {
     Status,
     #[error("invalid audit outcome")]
     Outcome,
-    #[error("missing audit request fingerprint")]
-    Fingerprint,
     #[error("invalid audit actor")]
     Actor,
     #[error("invalid audit action")]
@@ -53,12 +49,11 @@ impl Fact {
     pub fn business(
         context: &RequestAudit,
         key: &str,
-        request_fingerprint: &[u8],
         status: u16,
         result: &str,
         registration: Option<Uuid>,
     ) -> Result<Self, InvalidFact> {
-        let mut fact = Self::new(
+        Self::new(
             context,
             "mdm.business",
             key,
@@ -66,16 +61,7 @@ impl Fact {
             status,
             result,
             registration,
-        )?;
-        if request_fingerprint.is_empty() {
-            return Err(InvalidFact::Fingerprint);
-        }
-        let mut hash = Sha256::new();
-        hash.update(fact.fingerprint);
-        hash.update(request_fingerprint);
-        fact.fingerprint = hash.finalize().into();
-        fact.base_fingerprint = fact.fingerprint;
-        Ok(fact)
+        )
     }
     pub fn request(context: &RequestAudit, status: u16, result: &str) -> Result<Self, InvalidFact> {
         let fact = Self::new(
@@ -118,19 +104,6 @@ impl Fact {
             "sensitiveAction": match snapshot.intent { crate::AuditIntent::Sensitive(action) => Some(action.as_str()), _ => None },
         }))
         .map_err(|_| InvalidFact::Payload)?;
-        let facts = serde_json::to_vec(&(
-            context.tenant(),
-            source,
-            key,
-            snapshot.actor.as_deref(),
-            snapshot.actor_kind,
-            snapshot.action,
-            snapshot.target_type,
-            snapshot.target.as_deref(),
-            &payload,
-        ))
-        .map_err(|_| InvalidFact::Payload)?;
-        let fingerprint = Sha256::digest(&facts).into();
         let source = SourceIdentity::new(
             SourceId::parse(source).map_err(|_| InvalidFact::Contract)?,
             SourceContract::new(
@@ -157,8 +130,6 @@ impl Fact {
             snapshot,
             request,
             payload,
-            fingerprint,
-            base_fingerprint: fingerprint,
             outcome,
         })
     }
@@ -168,17 +139,10 @@ impl Fact {
             serde_json::from_slice(&self.payload).map_err(|_| InvalidFact::Payload)?;
         payload["details"] = details;
         self.payload = serde_json::to_vec(&payload).map_err(|_| InvalidFact::Payload)?;
-        let mut hash = Sha256::new();
-        hash.update(self.base_fingerprint);
-        hash.update(&self.payload);
-        self.fingerprint = hash.finalize().into();
         Ok(self)
     }
     pub fn identity(&self) -> &RecordIdentity {
         &self.identity
-    }
-    pub fn fingerprint(&self) -> &[u8; 32] {
-        &self.fingerprint
     }
     pub fn event(&self, observed_at: Timepoint) -> Result<AuditEventV1, InvalidFact> {
         let actor = self.snapshot.actor.as_deref().unwrap_or("unidentified");

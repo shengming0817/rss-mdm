@@ -50,8 +50,6 @@ pub(super) async fn mutate(
         "apple_platform_sso",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fingerprint =
-        crypto::digest(&serde_json::to_string(&action).map_err(|_| Error::Malformed)?);
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(10));
     let outcome = app
@@ -59,8 +57,8 @@ pub(super) async fn mutate(
         .write(
             app.tenant,
             &budget.source_control(),
-            (app, principal, audit, &action, &fingerprint, operation),
-            |(app, principal, audit, action, fingerprint, operation), tx| {
+            (app, principal, audit, &action, operation),
+            |(app, principal, audit, action, operation), tx| {
                 Box::pin(async move {
                     let value = tx
                         .with_connection_context(
@@ -73,14 +71,13 @@ pub(super) async fn mutate(
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-platform-sso:{operation}"),
-                        fingerprint,
                         200,
                         "success",
                         None,
                     )
                     .map_err(Error::from)?;
                     app.audit_store
-                        .append(tx, &fact, false)
+                        .append(tx, &fact)
                         .await
                         .map_err(Error::from)?;
                     audit.mark_commit_started();

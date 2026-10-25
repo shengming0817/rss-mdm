@@ -221,8 +221,8 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 继续翻页时保留有效 filter/sort/fields，将 nextCursor 原样传回。相关数据、授权或人员资格变化使续页明确失效，
 应从首页重查；这不是历史快照。资产异步查询保持自身固定水位，见[资产指南](assets.md)。
-当前关联通过 `GET /device-associations` 发现；`/device-associations/changes` 保留固定审计窗口及 checkpoint，
-不作为当前关联目录。管理子列表使用各自声明的固定顺序和不透明游标。
+当前关联通过 `GET /device-associations` 发现；`/device-associations/changes` 仅提供普通审计历史导航，刷新从首页开始，
+不返回消费 checkpoint。后台关联 Group/Scope 触发使用设备 owner 的事务内 relation revision，不使用 Audit position。变化历史不作为当前关联目录。管理子列表使用各自声明的固定顺序和不透明游标。
 
 本次是当前后端契约替换；after/afterKind、独立 descending/固定过滤参数及旧 DTO 均退出，
 调用方必须使用新契约。原生设备协议不随管理目录改变。

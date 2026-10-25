@@ -243,7 +243,6 @@ pub(crate) async fn receive(
                 let fact = rss_mdm_audit_integration::Fact::business(
                     audit,
                     &format!("windows-push:{}:{revision}:route", p.registration()),
-                    &digest,
                     200,
                     "success",
                     None,

@@ -8,7 +8,6 @@ use rss_request_context::{Clock, Deadline, TenantId};
 use sha2::{Digest, Sha256};
 use sqlx::{Acquire, PgPool, Row};
 use std::{sync::Arc, time::Duration};
-use uuid::Uuid;
 /// Borrows the App-owned pool. Owns only the request-driven product projection.
 pub struct Timeline {
     pool: PgPool,
@@ -16,15 +15,10 @@ pub struct Timeline {
     tenant: TenantId,
     key: rss_mdm_query::cursor::CursorCodec,
 }
-type Prepared = ((i64, i64, Uuid), Vec<Projected>, i64);
+type Prepared = Vec<Projected>;
 struct Projected {
     view: FactView,
     devices: Vec<String>,
-}
-struct Window {
-    indexed: i64,
-    source: i64,
-    generation: Uuid,
 }
 impl Timeline {
     pub fn new(
@@ -43,24 +37,7 @@ impl Timeline {
             key: rss_mdm_query::cursor::CursorCodec::new(secret).map_err(|_| Error::Integrity)?,
         })
     }
-    /// Initialize only rebuildable product coordinates. Does not append an Audit fact.
-    pub async fn initialize(&self) -> Result<(), Error> {
-        let mut connection = None;
-        let result=tokio::time::timeout(Duration::from_secs(5),async{
-            connection=Some(self.pool.acquire().await?);
-            let mut tx=connection.as_mut().ok_or(Error::Storage)?.begin().await?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout','2000',true),set_config('lock_timeout','1000',true)").bind(self.tenant.to_string()).execute(&mut *tx).await?;
-            sqlx::query("INSERT INTO mdm_timeline.checkpoints(tenant_id,generation) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(self.tenant.to_string()).bind(Uuid::new_v4()).execute(&mut *tx).await?;
-            tx.commit().await?;Ok::<_,Error>(())
-        }).await.map_err(|_|Error::Deadline).and_then(|v|v);
-        if result.is_err()
-            && let Some(c) = &mut connection
-        {
-            c.close_on_drop()
-        }
-        result
-    }
-    /// Authorized reads advance at most one source batch before reading a frozen index window.
+    /// Authorized reads fill a bounded set of missing facts before ordinary keyset navigation.
     pub async fn query(
         &self,
         proof: &AuthorizedPrincipal,
@@ -88,27 +65,19 @@ impl Timeline {
             .transpose()?;
         // Reject immutable cursor bindings before any source read or projection write.
         if let Some(token) = &token {
-            self.validate_cursor(
-                proof,
-                family,
-                query,
-                Some(token),
-                token.generation,
-                token.through,
-            )?;
+            self.validate_cursor(proof, family, query, Some(token))?;
         }
         let start = RuntimeTimer.now();
         let budget = AuditBudget::new(Duration::from_secs(5));
         let total = Deadline::at(start + Duration::from_secs(2));
         let operation = Deadline::at(start + Duration::from_millis(1500));
         let control = budget.control_until(total, operation);
-        if let Some((checkpoint, batch, through)) = self
+        if let Some(batch) = self
             .prepare_batch(proof, family, query, token.as_ref(), &control)
             .await?
-            && (!batch.is_empty() || checkpoint.1 != through)
+            && !batch.is_empty()
         {
-            self.write_batch(checkpoint, &batch, through, total, operation)
-                .await?;
+            self.write_batch(&batch, total, operation).await?;
         }
         let control = budget.control();
         self.audit
@@ -118,28 +87,15 @@ impl Timeline {
                 (self, proof, family, query, token),
                 |ctx, tx| {
                     Box::pin(async move {
-                        let mut indexed = tx
+                        let indexed = tx
                             .with_connection_context(ctx, |ctx, c| {
                                 Box::pin(async move {
                                     ctx.0.read_index(c, ctx.1, ctx.3, ctx.4.as_ref()).await
                                 })
                             })
                             .await?;
-                        let head = tx
-                            .read_page(
-                                rss_audit_postgres::Cursor::start(ctx.0.tenant),
-                                rss_audit_postgres::ReadLimit::new(1, 131072)
-                                    .map_err(|_| Error::Integrity)?,
-                            )
-                            .await
-                            .map_err(audit_error)?;
-                        let source = source_through(&head);
-                        if source < indexed.0.source {
-                            return Err(Error::Integrity);
-                        }
-                        indexed.0.source = source;
                         ctx.0
-                            .page_in(ctx.1, ctx.2, ctx.3, ctx.4.as_ref(), &indexed.0, indexed.1)
+                            .page_in(ctx.1, ctx.2, ctx.3, ctx.4.as_ref(), indexed.0, indexed.1)
                     })
                 },
             )
@@ -163,28 +119,24 @@ impl Timeline {
     ) -> Result<Option<Prepared>, Error> {
         let attempt=self.audit.read(self.tenant,control,(self,proof,family,query,token),|(service,proof,family,query,token),tx|Box::pin(async move{
             let tenant=service.tenant.to_string();
-            let checkpoint:(i64,i64,Uuid)=tx.with_connection(|c|Box::pin(async move{
-                sqlx::query_as("SELECT position,source_through,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid").bind(tenant).fetch_one(c).await
+            service.validate_cursor(proof,family,query,*token)?;
+            let rows=tx.with_connection(|c|Box::pin(async move {
+                sqlx::query("WITH candidates AS MATERIALIZED (SELECT r.* FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id) ORDER BY r.position LIMIT 64), budget AS (SELECT coalesce(sum(octet_length(canonical)),0)<=8388608 AS fits FROM candidates) SELECT position,source_id,event_id,recorded_at,budget.fits,CASE WHEN budget.fits THEN canonical END AS canonical FROM candidates CROSS JOIN budget ORDER BY position")
+                    .bind(tenant).fetch_all(c).await
             })).await?;
-            let after=checkpoint.0;
-            service.validate_cursor(proof,family,query,*token,checkpoint.2,after)?;
-            let page=if after<0 {
-                tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?
-            } else {
-                let head=tx.read_page(rss_audit_postgres::Cursor::start(service.tenant),rss_audit_postgres::ReadLimit::new(1,131072).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?;
-                let through=source_through(&head);
-                if through<after || through<checkpoint.1 {return Err(Error::Integrity)}
-                if through==after {return Ok((checkpoint,Vec::new(),through))}
-                let cursor=rss_audit_postgres::Cursor::resume(service.tenant,after as u64,through as u64).map_err(|_|Error::Integrity)?;
-                tx.read_page(cursor,rss_audit_postgres::ReadLimit::new(64,8388608).map_err(|_|Error::Integrity)?).await.map_err(audit_error)?
-            };
-            let through=source_through(&page);
-            if through<after || through<checkpoint.1 {return Err(Error::Integrity)}
             let mut batch=Vec::new();
-            for record in page.records(){
-                let decoded=rss_audit_core::decode_untrusted(record.prepared().canonical_bytes()).map_err(|_|Error::Integrity)?;
+            for row in rows {
+                if !row.try_get::<bool,_>("fits")? { return Err(Error::Deadline); }
+                let bytes:Vec<u8>=row.try_get("canonical")?;
+                let decoded=rss_audit_core::decode_untrusted(&bytes).map_err(|_|Error::Integrity)?;
+                let id=decoded.event().identity();
+                let position:i64=row.try_get("position")?;
+                if id.tenant()!=service.tenant || position<0
+                    || id.source().source_id().as_str()!=row.try_get::<&str,_>("source_id")?
+                    || id.event_id().as_str()!=row.try_get::<&str,_>("event_id")?
+                    || decoded.recorded_at().unix_seconds()!=row.try_get::<i64,_>("recorded_at")? { return Err(Error::Integrity); }
                 let mut view=project(decoded.event())?;
-                view.position=record.position();view.recorded_at=decoded.recorded_at().unix_seconds();
+                view.position=position as u64;view.recorded_at=decoded.recorded_at().unix_seconds();
                 let identity=crate::projection::execution_identity(decoded.event(),&view)?;
                 let tenant=service.tenant.to_string();
                 let mut context=(tenant,view,identity);
@@ -203,7 +155,7 @@ impl Timeline {
                 })).await?;
                 batch.push(Projected{view:context.1,devices});
             }
-            Ok::<_,Error>((checkpoint,batch,through))
+            Ok::<_,Error>(batch)
         })).await;
         // Only acknowledged, ordinary budget exhaustion permits a partial indexed response.
         attempt.fold(
@@ -217,9 +169,7 @@ impl Timeline {
     }
     async fn write_batch(
         &self,
-        checkpoint: (i64, i64, Uuid),
         batch: &[Projected],
-        through: i64,
         total: Deadline,
         operation: Deadline,
     ) -> Result<(), Error> {
@@ -232,14 +182,7 @@ impl Timeline {
                 Err(_) => return Ok(()), // No product transaction was started.
             };
         let result = self
-            .write_batch_on(
-                &mut connection,
-                checkpoint,
-                batch,
-                through,
-                total,
-                operation,
-            )
+            .write_batch_on(&mut connection, batch, total, operation)
             .await;
         if result.is_err() {
             connection.close_on_drop();
@@ -249,9 +192,7 @@ impl Timeline {
     async fn write_batch_on(
         &self,
         connection: &mut sqlx::PgConnection,
-        checkpoint: (i64, i64, Uuid),
         batch: &[Projected],
-        through: i64,
         total: Deadline,
         operation: Deadline,
     ) -> Result<(), Error> {
@@ -261,18 +202,14 @@ impl Timeline {
         let result=tokio::time::timeout_at(operation.instant().into(),async{
             let milliseconds=operation.remaining(RuntimeTimer.now()).unwrap_or_default().as_millis().saturating_add(1).to_string();
             sqlx::query("SELECT set_config('rss.tenant_id',$1,true),set_config('statement_timeout',$2,true),set_config('lock_timeout',$2,true)").bind(self.tenant.to_string()).bind(milliseconds).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
-            let current:(i64,Uuid)=sqlx::query_as("SELECT position,generation FROM mdm_timeline.checkpoints WHERE tenant_id=$1::uuid FOR UPDATE").bind(self.tenant.to_string()).fetch_one(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
-            if current!=(checkpoint.0,checkpoint.2) {return Ok(false)}
             for row in batch {
                 let doc=serde_json::to_value(&row.view).map_err(|_|Error::Integrity)?;
                 let bytes=serde_json::to_vec(&doc).map_err(|_|Error::Integrity)?;
-                sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+                sqlx::query("INSERT INTO mdm_timeline.facts(tenant_id,position,source,event_id,recorded_at,instance_id,operation_id,actor,action,outcome,devices,operations,document,digest) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT (tenant_id,source,event_id) DO NOTHING")
                     .bind(self.tenant.to_string()).bind(row.view.position as i64).bind(&row.view.source).bind(&row.view.event_id)
                     .bind(row.view.recorded_at).bind(row.view.instance_id).bind(row.view.operation_id).bind(&row.view.actor).bind(&row.view.action)
                     .bind(&row.view.audit_outcome).bind(&row.devices).bind(&row.view.related_operation_ids).bind(doc).bind(Sha256::digest(&bytes).to_vec()).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             }
-            let next=batch.last().map_or(checkpoint.0,|v|v.view.position as i64);
-            sqlx::query("UPDATE mdm_timeline.checkpoints SET position=$2,source_through=$3 WHERE tenant_id=$1::uuid").bind(self.tenant.to_string()).bind(next).bind(through).execute(&mut *tx).await.map_err(|e|projection_error(e,operation))?;
             Ok::<_,Error>(true)
         }).await;
         match result {
@@ -314,8 +251,6 @@ impl Timeline {
         family: &str,
         query: &Query,
         token: Option<&cursor::Cursor>,
-        generation: Uuid,
-        indexed: i64,
     ) -> Result<(), Error> {
         if let Some(token) = token
             && (token.tenant != self.tenant.to_string()
@@ -327,11 +262,7 @@ impl Timeline {
                         .map_err(|_| Error::Forbidden)?
                 || token.family != family
                 || token.query != query.binding()
-                || token.generation != generation
-                || token.through > indexed
-                || token.through < 0
                 || token.after_position < 0
-                || token.after_position > token.through
                 || token.after_at < 0)
         {
             return Err(Error::Conflict);
@@ -344,7 +275,7 @@ impl Timeline {
         proof: &AuthorizedPrincipal,
         query: &Query,
         token: Option<&cursor::Cursor>,
-    ) -> Result<(Window, Vec<sqlx::postgres::PgRow>), Error> {
+    ) -> Result<(bool, Vec<sqlx::postgres::PgRow>), Error> {
         // Authorization is reloaded after acquiring the audit read transaction, before exposing facts.
         rss_mdm_authorization_service::lock_on(c, proof.tenant_id(), proof.instance_id())
             .await
@@ -364,17 +295,12 @@ impl Timeline {
         {
             return Err(Error::Conflict);
         }
-        // Checkpoint and facts share one READ COMMITTED statement snapshot, including empty pages.
-        let rows=sqlx::query("SELECT cp.position AS indexed,cp.source_through,cp.generation,f.document,f.digest,f.position,f.recorded_at FROM mdm_timeline.checkpoints cp LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=cp.tenant_id AND position<=COALESCE($2,cp.position) AND (instance_id=$3::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($4::text IS NULL OR devices @> ARRAY[$4]) AND ($5::uuid IS NULL OR operation_id=$5 OR operations @> ARRAY[$5]) AND ($6::text IS NULL OR actor=$6) AND ($7::text IS NULL OR action=$7) AND ($8::text IS NULL OR outcome=$8) AND ($9::bigint IS NULL OR recorded_at>=$9) AND ($10::bigint IS NULL OR recorded_at<$10) AND ($14::text IS NULL OR document->'target'->>'id'=$14) AND ($15::text IS NULL OR document->'target'->>'type'=$15) AND ($11::bigint IS NULL OR (recorded_at,position)<($11,$12)) ORDER BY recorded_at DESC,position DESC LIMIT $13) f ON true WHERE cp.tenant_id=$1::uuid ORDER BY f.recorded_at DESC,f.position DESC")
-            .bind(self.tenant.to_string()).bind(token.map(|v|v.through)).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
+        // Coverage and result rows share one statement snapshot, not a durable consumption offset.
+        let rows=sqlx::query("WITH coverage AS (SELECT NOT EXISTS(SELECT 1 FROM rss_audit.records r WHERE r.tenant_id=$1::uuid AND NOT EXISTS(SELECT 1 FROM mdm_timeline.facts f WHERE f.tenant_id=r.tenant_id AND f.source=r.source_id AND f.event_id=r.event_id)) AS complete) SELECT coverage.complete,f.document,f.digest,f.position,f.recorded_at FROM coverage LEFT JOIN LATERAL (SELECT document,digest,position,recorded_at FROM mdm_timeline.facts WHERE tenant_id=$1::uuid AND (instance_id=$2::uuid OR (instance_id IS NULL AND document->>'supported'='true' AND document->>'actorKind' IN ('service','device','unidentified'))) AND ($3::text IS NULL OR devices @> ARRAY[$3]) AND ($4::uuid IS NULL OR operation_id=$4 OR operations @> ARRAY[$4]) AND ($5::text IS NULL OR actor=$5) AND ($6::text IS NULL OR action=$6) AND ($7::text IS NULL OR outcome=$7) AND ($8::bigint IS NULL OR recorded_at>=$8) AND ($9::bigint IS NULL OR recorded_at<$9) AND ($13::text IS NULL OR document->'target'->>'id'=$13) AND ($14::text IS NULL OR document->'target'->>'type'=$14) AND ($10::bigint IS NULL OR (recorded_at,position)<($10,$11)) ORDER BY recorded_at DESC,position DESC LIMIT $12) f ON true ORDER BY f.recorded_at DESC,f.position DESC")
+            .bind(self.tenant.to_string()).bind(proof.instance_id()).bind(&query.device).bind(query.operation_id)
             .bind(&query.actor).bind(&query.action).bind(&query.outcome).bind(query.from).bind(query.until).bind(token.map(|v|v.after_at)).bind(token.map(|v|v.after_position)).bind((query.limit.unwrap_or(50)+1) as i64).bind(&query.target_id).bind(&query.target_type).fetch_all(c).await?;
-        let first = rows.first().ok_or(Error::Storage)?;
-        let window = Window {
-            indexed: first.try_get("indexed")?,
-            source: first.try_get("source_through")?,
-            generation: first.try_get("generation")?,
-        };
-        Ok((window, rows))
+        let complete = rows.first().ok_or(Error::Storage)?.try_get("complete")?;
+        Ok((complete, rows))
     }
     fn page_in(
         &self,
@@ -382,20 +308,11 @@ impl Timeline {
         family: &str,
         query: &Query,
         token: Option<&cursor::Cursor>,
-        window: &Window,
+        complete: bool,
         mut rows: Vec<sqlx::postgres::PgRow>,
     ) -> Result<Page, Error> {
         let tenant = self.tenant.to_string();
-        let Window {
-            indexed,
-            source,
-            generation,
-        } = *window;
-        self.validate_cursor(proof, family, query, token, generation, indexed)?;
-        if indexed > source {
-            return Err(Error::Integrity);
-        }
-        let through = token.map_or(indexed, |v| v.through);
+        self.validate_cursor(proof, family, query, token)?;
         let limit = query.limit.unwrap_or(50);
         if rows
             .first()
@@ -436,8 +353,6 @@ impl Timeline {
                                     .map_err(|_| Error::Forbidden)?,
                                 family: family.into(),
                                 query: query.binding(),
-                                generation,
-                                through,
                                 after_at: last.recorded_at,
                                 after_position: last.position as i64,
                             },
@@ -452,20 +367,9 @@ impl Timeline {
         Ok(Page {
             items,
             next_cursor,
-            coverage: Coverage {
-                indexed_through: (through >= 0).then_some(through as u64),
-                source_through: (source >= 0).then_some(source as u64),
-                complete: through == source,
-            },
+            coverage: Coverage { complete },
         })
     }
-}
-fn source_through(page: &rss_audit_postgres::Page) -> i64 {
-    page.next()
-        .and_then(|v| v.continuation())
-        .map(|(_, v)| v as i64)
-        .or_else(|| page.records().last().map(|v| v.position() as i64))
-        .unwrap_or(-1)
 }
 async fn correlate(
     c: &mut sqlx::PgConnection,

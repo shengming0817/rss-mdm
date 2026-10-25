@@ -11,6 +11,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub database: config::Database,
+    pub audit: config::AuditConfig,
     pub installation: crate::migration::Installation,
     pub tenant_id: String,
     pub expected_epoch: i64,
@@ -24,6 +25,9 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         return Err(invalid());
     }
     config.installation.validate().map_err(|_| invalid())?;
+    if config.audit.mode() != config.installation.audit_mode {
+        return Err(invalid());
+    }
     let instance = InstanceId::parse(&config.installation.instance_id).map_err(|_| invalid())?;
     let tenant = TenantId::parse(&config.tenant_id).map_err(|_| invalid())?;
     let key = AccountKey {
@@ -60,7 +64,7 @@ pub async fn run(config: Config, initialize: bool) -> Result<(), Error> {
         let authority = Authority::connect_maintenance(
             runtime.clone(),
             kdf.clone(),
-            crate::identity::authority_config(instance, vec![tenant])?,
+            crate::identity::authority_config(instance, vec![tenant], config.audit.integrity()?)?,
             crate::identity::deadline(),
         )
         .await

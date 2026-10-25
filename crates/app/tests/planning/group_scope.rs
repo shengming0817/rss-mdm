@@ -280,7 +280,9 @@ async fn group_scope_replay_and_audit_atomicity() {
     .unwrap();
     running.stop().await;
     let denied = Uuid::new_v4();
-    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+    );
     let result = execute(
         &m,
         &GroupCommand::Group {
@@ -300,7 +302,7 @@ async fn group_scope_replay_and_audit_atomicity() {
     )
     .await;
     sql(
-        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
     );
     assert!(matches!(
         result,
@@ -925,14 +927,8 @@ async fn superseded_group_links_reused_successor() {
                     };
                     // JobInput::audit_partition is crate-private; derive this fixture's
                     // group identity from the persisted job using the public source API.
-                    let audit_partition = rss_mdm_audit_integration::source_partition(
-                        tx.tenant_id(),
-                        "group",
-                        &job.target(),
-                    )?;
                     let group_partition = s.groups.partition(&group.to_string())?;
-                    tx.prepare_outbox_partitions(&[audit_partition, group_partition])
-                        .await?;
+                    tx.prepare_outbox_partitions(&[group_partition]).await?;
                     crate::automation::jobs::finish_job_in(
                         tx,
                         &s.audit_store,
@@ -1869,20 +1865,14 @@ async fn definition_validation_resumes_without_partial_publication() {
         .local_tx_with_context(
             service.tenant,
             deadline(),
-            (service.as_ref(), task, denied_group),
-            |(service, task, denied_group), tx| {
+            (service.as_ref(), task),
+            |(service, task), tx| {
                 Box::pin(async move {
                     service
                         .audit_store
                         .bind_in(tx)
                         .await
                         .map_err(rss_transactional_messaging_postgres::PgError::from)?;
-                    let partition = rss_mdm_audit_integration::source_partition(
-                        tx.tenant_id(),
-                        "group",
-                        &denied_group.to_string(),
-                    )?;
-                    tx.prepare_outbox_partitions(&[partition]).await?;
                     crate::automation::jobs::finish_job_in(
                         tx,
                         &service.audit_store,

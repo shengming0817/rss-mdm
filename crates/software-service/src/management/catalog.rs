@@ -243,12 +243,7 @@ pub async fn write_version<C: ManagementContentPort>(
                 } else {
                     Vec::new()
                 };
-                let partitions = records
-                    .iter()
-                    .map(|record| {
-                        rss_mdm_audit_integration::source_partition(tx.tenant_id(), "mdm", record)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let partitions = [];
                 let value = app
                     .catalog
                     .version_change_in(tx, audit, id, version, op, verified, &partitions)

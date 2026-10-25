@@ -65,7 +65,7 @@ pub enum ConfigIssue {
     ProductOrigin,
     Instance,
     IdentityDatabase,
-    IdentityAuditDatabase,
+
     IdentityConfiguration,
     Issuer,
     Tenant,
@@ -107,8 +107,7 @@ pub enum Failure {
     AuditIsolation,
     AuditAdmission,
     AuditContract,
-    AuditBackpressure,
-    AuditReserveExhausted,
+
     InventoryQuery,
     ManualQuery,
     CollectionQuery,

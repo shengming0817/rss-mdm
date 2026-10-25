@@ -41,6 +41,7 @@ impl Service {
                 crate::identity::authority_config(
                     self.installation.validate().map_err(|_| Error::Malformed)?,
                     vec![self.management, target],
+                    self.audit.integrity().clone(),
                 )?,
                 self.management,
                 self.policy.clone(),
@@ -136,7 +137,6 @@ impl Service {
         let fact = Fact::business(
             &target_audit,
             &format!("tenant-administrator:{operation}"),
-            digest.as_bytes(),
             200,
             "success",
             None,
@@ -189,7 +189,7 @@ impl Service {
                             .bind(operation).bind(&tenant).bind(request).bind(receipt_json).bind(operator).execute(c).await?;
                         Ok(())
                     })).await.map_err(pg_error)?;
-                    source.append_in(tx,fact,false).await?;
+                    source.append_in(tx, fact).await?;
                     audit.mark_commit_started();
                     Ok(receipt)
                 }.await;

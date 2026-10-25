@@ -41,7 +41,7 @@ fn accepted_request_does_not_prove_execution_and_details_are_not_exposed() {
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.target("device-a");
-    let fact=Fact::business(&audit,"accept",b"input",202,"success",None).unwrap()
+    let fact=Fact::business(&audit, "accept", 202, "success", None).unwrap()
         .with_details(serde_json::json!({"token":"secret","stdout":"secret","phase":"verified","effect":"success"})).unwrap();
     let event = fact
         .event(rss_contract::Timepoint::try_from(5i64).unwrap())
@@ -59,7 +59,7 @@ fn unknown_action_and_outcome_never_become_success() {
         "future_stage",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let event = Fact::business(&audit, "phase", b"input", 503, "unknown", None)
+    let event = Fact::business(&audit, "phase", 503, "unknown", None)
         .unwrap()
         .event(rss_contract::Timepoint::try_from(5i64).unwrap())
         .unwrap();
@@ -79,25 +79,9 @@ fn resource_namespace_is_part_of_identity_and_projection() {
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     audit.resource_target(TargetKind::Resource, "same-id");
-    let resource = Fact::business(
-        &audit,
-        "same-operation",
-        b"same-input",
-        200,
-        "success",
-        None,
-    )
-    .unwrap();
+    let resource = Fact::business(&audit, "same-operation", 200, "success", None).unwrap();
     audit.resource_target(TargetKind::Policy, "same-id");
-    let policy = Fact::business(
-        &audit,
-        "same-operation",
-        b"same-input",
-        200,
-        "success",
-        None,
-    )
-    .unwrap();
+    let policy = Fact::business(&audit, "same-operation", 200, "success", None).unwrap();
     let projected = project(
         &resource
             .event(rss_contract::Timepoint::try_from(5i64).unwrap())
@@ -128,7 +112,7 @@ fn missing_targets_project_as_request_resources() {
         "management_read",
         rss_mdm_audit_integration::AuditIntent::Routine,
     );
-    let fact = Fact::business(&audit, "missing-target", b"input", 400, "failed", None).unwrap();
+    let fact = Fact::business(&audit, "missing-target", 400, "failed", None).unwrap();
     let view = project(
         &fact
             .event(rss_contract::Timepoint::try_from(5i64).unwrap())

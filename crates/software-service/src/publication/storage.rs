@@ -114,19 +114,13 @@ pub(super) async fn lock(
     })
     .await
 }
-pub(super) fn audit_partition(
-    tenant: rss_request_context::TenantId,
-    target: &str,
-) -> std::result::Result<rss_transactional_messaging::message::PartitionIdentity, PgError> {
-    rss_mdm_audit_integration::source_partition(tenant, "mdm", target).map_err(PgError::from)
-}
+
 pub(super) fn fact(
     tenant: rss_request_context::TenantId,
     actor: &rel::ActorId,
     target: &str,
     action: &'static str,
     software: rss_mdm_audit_integration::SoftwareFact,
-    fingerprint: &[u8],
 ) -> std::result::Result<rss_mdm_audit_integration::Fact, PgError> {
     if actor.tenant() != tenant {
         return Err(fault());
@@ -163,57 +157,12 @@ pub(super) fn fact(
     };
     let key = format!("software:{}:{}", software.operation, software.stage);
     audit.software(software);
-    let result =
-        rss_mdm_audit_integration::Fact::business(&audit, &key, fingerprint, status, result, None)
-            .map_err(|_| fault());
+    let result = rss_mdm_audit_integration::Fact::business(&audit, &key, status, result, None)
+        .map_err(|_| fault());
     audit.finalize(None);
     result
 }
-/// App-owned binding of the complete public release request, independent of the component codec.
-pub(super) fn request_fingerprint(
-    record: &str,
-    r: &rel::Request,
-) -> std::result::Result<Vec<u8>, PgError> {
-    use serde_json::json;
-    let actor = |a: &rel::ActorId| json!([a.tenant().to_string(), a.value()]);
-    let evidence =
-        |e: &rel::Evidence| json!([actor(&e.actor), e.digest.bytes(), e.at.unix_seconds()]);
-    let operation = match &r.operation {
-        rel::Operation::Retry {
-            publication,
-            attempt,
-        } => json!(["retry", publication.digest().bytes(), attempt]),
-        rel::Operation::Record {
-            publication,
-            attempt,
-            outcome,
-        } => json!([
-            "record",
-            publication.digest().bytes(),
-            attempt,
-            result_tag(outcome),
-            evidence(outcome.evidence())
-        ]),
-        rel::Operation::Withdraw => json!(["withdraw"]),
-    };
-    encode(&json!([
-        "mdm.software.audit.request/v1",
-        record,
-        r.id.tenant().to_string(),
-        r.id.value(),
-        actor(&r.actor),
-        r.expected_revision,
-        r.as_of.unix_seconds(),
-        operation
-    ]))
-}
-fn result_tag(result: &rel::PublicationResult) -> &'static str {
-    match result {
-        rel::PublicationResult::Unknown(_) => "unknown",
-        rel::PublicationResult::Applied(_) => "applied",
-        rel::PublicationResult::NotApplied(_) => "not-applied",
-    }
-}
+
 pub(super) async fn register(
     audit_store: &dyn crate::AuditPort,
     tx: &mut PgTransaction<'_>,
@@ -274,17 +223,13 @@ pub(super) async fn register(
             &sources.logical,
             "software_binding",
             binding_fact(&b.identity),
-            &encode(&(
-                "binding/v1",
-                &sources.logical,
-                &b.identity,
-                &b.configuration,
-            ))?,
         )?;
-        audit_store
-            .append_in(tx, &fact, !created)
-            .await
-            .map_err(PgError::from)?;
+        (if !created {
+            Ok(())
+        } else {
+            audit_store.append_in(tx, &fact).await
+        })
+        .map_err(PgError::from)?;
     }
     Ok(Ok(()))
 }
@@ -898,13 +843,17 @@ pub(super) async fn queue_withdrawal_in(
         &target.record,
         "software_withdraw",
         target_fact(target, Table::Withdraw, "queue_withdrawal", "queued"),
-        &encode(target)?,
     )?;
-    audit
-        .append_in(tx, &fact, false)
-        .await
-        .map_err(PgError::from)?;
+    audit.append_in(tx, &fact).await.map_err(PgError::from)?;
     Ok(())
+}
+
+fn result_tag(result: &rel::PublicationResult) -> &'static str {
+    match result {
+        rel::PublicationResult::Unknown(_) => "unknown",
+        rel::PublicationResult::Applied(_) => "applied",
+        rel::PublicationResult::NotApplied(_) => "not-applied",
+    }
 }
 
 #[cfg(test)]
@@ -932,33 +881,6 @@ mod audit_tests {
         }
     }
     #[test]
-    fn software_request_fingerprint_binds_cas_actor_time_and_operation() {
-        let r = rel::Request {
-            id: rel::RequestId::new(tenant(), "request").unwrap(),
-            actor: rel::ActorId::new(tenant(), "actor").unwrap(),
-            expected_revision: 3,
-            as_of: Timepoint::try_from(10).unwrap(),
-            operation: rel::Operation::Withdraw,
-        };
-        let original = request_fingerprint("record", &r).unwrap();
-        assert_eq!(original, request_fingerprint("record", &r.clone()).unwrap());
-        let mut changed = r.clone();
-        changed.expected_revision += 1;
-        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
-        changed = r.clone();
-        changed.actor = rel::ActorId::new(tenant(), "other").unwrap();
-        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
-        changed = r.clone();
-        changed.as_of = Timepoint::try_from(11).unwrap();
-        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
-        changed = r;
-        changed.operation = rel::Operation::Retry {
-            publication: rel::PublicationId::from_digest(rel::Digest::from_bytes([8; 32])),
-            attempt: 1,
-        };
-        assert_ne!(original, request_fingerprint("record", &changed).unwrap());
-    }
-    #[test]
     fn new_external_call_has_new_fact_but_same_call_replay_keeps_identity() {
         let t = target();
         let actor = rel::ActorId::new(tenant(), "service").unwrap();
@@ -969,7 +891,6 @@ mod audit_tests {
                 &t.record,
                 "software_call",
                 call_fact(&t, Table::Withdraw, generation, "start_call", "attempted"),
-                &encode(&(&t, generation)).unwrap(),
             )
             .unwrap()
         };
@@ -980,7 +901,15 @@ mod audit_tests {
             first.identity().event_id().as_str(),
             retry.identity().event_id().as_str()
         );
-        assert_eq!(first.fingerprint(), retry.fingerprint());
+        let at = rss_contract::Timepoint::try_from(1i64).unwrap();
+        assert_eq!(
+            rss_audit_core::prepare(first.event(at).unwrap(), at)
+                .unwrap()
+                .canonical_bytes(),
+            rss_audit_core::prepare(retry.event(at).unwrap(), at)
+                .unwrap()
+                .canonical_bytes()
+        );
         assert_ne!(
             first.identity().event_id().as_str(),
             next.identity().event_id().as_str()

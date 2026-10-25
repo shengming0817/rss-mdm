@@ -36,7 +36,7 @@ impl Policies {
 
             let value=json!({"operationId":op.operation_id,"policyId":id,"versionId":policy.version,"deadline":op.input.deadline});
             checked(s.policy_store.receipt_in(tx,op.operation_id,&hash,&value).await?)?;
-            s.audit_store.append_in(tx,&Fact::business(audit,&format!("policy:{id}:rerun:{}",op.operation_id),&hash,200,"success",None)?,false).await?;
+            s.audit_store.append_in(tx, &Fact::business(audit, &format!("policy:{id}:rerun:{}",op.operation_id), 200, "success", None)?).await?;
             proof.check_live()?;Ok(value)
         }),TransactionOwner::Planning).await
     }

@@ -252,7 +252,7 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
     let operation = register();
     let tenant = pg::tenant();
     let audit_sql = format!(
-        "SELECT encode(source_bytes,'hex') FROM mdm_audit.receipts WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
     );
     let audit_before = pg::sql(&audit_sql);
     let outbox = || {

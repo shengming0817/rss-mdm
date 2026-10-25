@@ -79,11 +79,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2 FOR 
                             serde_json::from_value(result).map_err(|_| Error::Corrupt)?;
                         let p = device::agent_in(c, service.tenant, proof).await?;
                         a.registration(p.registration());
-                        return Ok(Change {
-                            value: out,
-                            replay: true,
-                            digest: digest.clone(),
-                        });
+                        return Ok(Change {value: out, replay: true});
                     }
                     crate::lifecycle::require_work_in(c, &tenant, &device).await?;
                     service.grant_live(c, &g).await?;
@@ -305,11 +301,7 @@ tenant_id=$1::uuid AND id=$2
                     .execute(c)
                     .await
                     .map_err(db)?;
-                    Ok(Change {
-                        value: out,
-                        replay: false,
-                        digest: digest.clone(),
-                    })
+                    Ok(Change {value: out, replay: false})
                 })
             },
         )

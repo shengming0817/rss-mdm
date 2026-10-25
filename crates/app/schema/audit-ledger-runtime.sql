@@ -1,0 +1,4 @@
+-- Optional Ledger enhancement; enabled only by the installation mode.
+GRANT USAGE ON SCHEMA rss_ledger TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT SELECT ON rss_ledger.heads,rss_ledger.entries TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;
+GRANT EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint),rss_ledger.insert_entry(uuid,text,text,bigint,bytea,bytea,bytea,text,smallint) TO mdm_access,mdm_flow_runtime,mdm_command_runtime,mdm_software_driver,mdm_tenant_registry,mdm_identity_provisioning,mdm_identity_runtime,mdm_identity_maintenance;

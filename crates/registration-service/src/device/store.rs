@@ -117,13 +117,13 @@ impl DeviceService {
                 ),
                 |(store, inputs), tx| {
                     Box::pin(async move {
-                        let (receipt, replayed, digest) = tx
+                        let (receipt, replayed) = tx
                             .with_connection_context(inputs, |inputs, c| {
                                 Box::pin(bind_on(c, inputs))
                             })
                             .await?;
                         for fact in &inputs.facts {
-                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                            store.append(tx, fact).await.map_err(Error::from)?;
                         }
                         let fact = rss_mdm_audit_integration::Fact::business(
                             inputs.audit,
@@ -132,16 +132,17 @@ impl DeviceService {
                                 inputs.admin.principal_id(),
                                 inputs.command.operation_id
                             ),
-                            digest.as_bytes(),
                             200,
                             "success",
                             Some(inputs.command.request_id),
                         )
                         .map_err(Error::from)?;
-                        store
-                            .append(tx, &fact, replayed)
-                            .await
-                            .map_err(Error::from)?;
+                        (if replayed {
+                            Ok(())
+                        } else {
+                            store.append(tx, &fact).await
+                        })
+                        .map_err(Error::from)?;
                         if replayed {
                             inputs.audit.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -204,7 +205,7 @@ impl DeviceService {
                             })
                             .await?;
                         for fact in &inputs.facts {
-                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                            store.append(tx, fact).await.map_err(Error::from)?;
                         }
                         let fact = rss_mdm_audit_integration::Fact::business(
                             inputs.audit,
@@ -213,16 +214,17 @@ impl DeviceService {
                                 inputs.admin.principal_id(),
                                 inputs.key
                             ),
-                            inputs.operation.digest.as_bytes(),
                             200,
                             "success",
                             None,
                         )
                         .map_err(Error::from)?;
-                        store
-                            .append(tx, &fact, replayed)
-                            .await
-                            .map_err(Error::from)?;
+                        (if replayed {
+                            Ok(())
+                        } else {
+                            store.append(tx, &fact).await
+                        })
+                        .map_err(Error::from)?;
                         if replayed {
                             inputs.audit.management_result(
                                 rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -627,7 +629,7 @@ struct BindingInputs<'a> {
 async fn bind_on(
     tx: &mut sqlx::PgConnection,
     inputs: &mut BindingInputs<'_>,
-) -> Result<(RegistrationReceipt, bool, String), Error> {
+) -> Result<(RegistrationReceipt, bool), Error> {
     let BindingInputs {
         retirement,
         admin,
@@ -670,7 +672,7 @@ async fn bind_on(
             serde_json::from_str(&old).map_err(|_| Error::Storage)?;
         audit.registration(receipt.registration);
         permission.check()?;
-        return Ok((receipt, true, digest));
+        return Ok((receipt, true));
     }
     let receipt = bind_in(
         tx,
@@ -691,7 +693,7 @@ async fn bind_on(
         audit,
     )
     .await?;
-    Ok((receipt, false, digest))
+    Ok((receipt, false))
 }
 
 /// Registry authority for a channel worker already operating under its owner's transaction.

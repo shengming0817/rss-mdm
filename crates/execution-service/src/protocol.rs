@@ -11,14 +11,7 @@ impl ExecutionService {
         bytes: &[u8],
         audit: &RequestAudit,
     ) -> std::result::Result<Vec<u8>, Error> {
-        let partitions = [
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", principal.device())
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "device", principal.device())
-                .map_err(Error::from)?,
-        ];
+        let partitions = [];
         crate::transaction::run(
             &self.audit_store,
             &self.runtime,
@@ -101,7 +94,7 @@ impl ExecutionService {
                     let super::channels::Reply { bytes, facts } = reply;
                     for fact in &facts {
                         s.audit_store
-                            .append_in(tx, fact, false)
+                            .append_in(tx, fact)
                             .await
                             .map_err(Error::from)?;
                     }
@@ -658,17 +651,16 @@ pub(super) async fn settle_dispatch_failures(
         if transition.outcome == dc::Outcome::OutOfOrder {
             return Err(Error::Conflict.into());
         }
-        let evidence = stored(serde_json::to_vec(&op.dispatch_failure))?;
+
         let fact = Fact::business(
             audit,
             &format!("native-dispatch-failure:{id}"),
-            &evidence,
             200,
             "failed",
             None,
         )?
         .with_details(json!({"operation":id,"failure":op.dispatch_failure}))?;
-        service.audit_store.append_in(tx, &fact, false).await?;
+        service.audit_store.append_in(tx, &fact).await?;
         crate::wake::wake_native_in(
             &service.reconcile_messaging,
             service.source.clone(),

@@ -207,23 +207,18 @@ async fn report_inner(
     )
     .map_err(Error::from)?;
     let batch = batch(&input)?;
-    let fingerprint: [u8; 32] = {
-        use sha2::{Digest, Sha256};
-        Sha256::digest(input.canonical().map_err(|_| Error::Malformed)?).into()
-    };
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(2));
     let attempt = app.audit_store.write(principal.tenant(),
             &budget.source_control(),
-        (&app.audit_store, &principal, &scope, &input, &batch, audit, &fingerprint),
-        |(store, principal, scope, input, batch, audit, fingerprint), tx| Box::pin(async move {
+        (&app.audit_store, &principal, &scope, &input, &batch, audit),
+        |(store, principal, scope, input, batch, audit), tx| Box::pin(async move {
             let (received_at, fresh) = tx.with_connection_context(&mut (*principal, *scope, *input, *batch),
                 |(principal, scope, input, batch), c| Box::pin(async move {crate::bindings::inventory_in(c,principal).await?;let accepted=crate::collection::agent::accept_in(c,principal,scope,batch,input).await.map_err(Error::from)?;crate::device::store::record_communication_in(c,principal).await?;Ok::<_,Error>(accepted)})).await?;
             let result = match input.body() { wire::ReportBody::Snapshot(_) => "snapshot", wire::ReportBody::Partial(_) => "partial", wire::ReportBody::Failed { .. } => "failed" };
-            let fact = rss_mdm_audit_integration::Fact::business(audit,
-                &format!("agent-report:{}", input.report_id()), fingerprint.as_slice(), 202, "success", None)
+            let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-report:{}", input.report_id()), 202, "success", None)
                 .and_then(|fact| fact.with_details(serde_json::json!({"reportId":input.report_id(),"collectionResult":result,"receivedAt":received_at})))
                 .map_err(Error::from)?;
-            store.append(tx, &fact, !fresh).await.map_err(Error::from)?;
+            (if !fresh { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;
             if !fresh { audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); }
             audit.mark_commit_started();
             Ok(received_at)

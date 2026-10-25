@@ -207,7 +207,7 @@ async fn prepare(
             })
         });
     let facts = if authenticated {
-        crate::notifications::facts(key, p, raw, bytes, audit)?
+        crate::notifications::facts(p, raw, audit)?
     } else {
         vec![]
     };

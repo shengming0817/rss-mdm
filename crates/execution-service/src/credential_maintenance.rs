@@ -94,9 +94,9 @@ impl ExecutionService {
                 cleared.push((id,version));
             }
             if rewrapped>0||!cleared.is_empty()||!purged.is_empty()||!examined.is_empty(){
-                let bytes=checked_input(serde_json::to_vec(&(rewrapped,&cleared,&purged,&examined)))?;
-                let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("recovery:maintenance:{}",audit.request_id()),&bytes,200,"success",None)?;
-                service.audit_store.append_in(tx,&fact,false).await?;
+
+                let fact=rss_mdm_audit_integration::Fact::business(audit, &format!("recovery:maintenance:{}",audit.request_id()), 200, "success", None)?;
+                service.audit_store.append_in(tx, &fact).await?;
             }
             Ok(())
         })).await;

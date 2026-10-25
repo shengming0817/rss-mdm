@@ -79,100 +79,19 @@ impl ObjectReader for PlanningObjects {
         Box::pin(snapshots::memberships(c, tenant, device))
     }
 
-    fn changes<'a>(
-        &'a self,
-        tenant: TenantId,
-        after: u64,
-        through: Option<u64>,
-    ) -> Pending<'a, ChangeWindow> {
+    fn relation_revision<'a>(&'a self, tenant: TenantId) -> Pending<'a, u64> {
         Box::pin(async move {
-            use rss_mdm_audit_integration::budget::AuditBudget;
-            let budget = AuditBudget::new(std::time::Duration::from_secs(5));
-            self.audit
-                .read(
-                    tenant,
-                    &budget.control(),
-                    (after, through),
-                    |(after, through), tx| {
-                        Box::pin(async move {
-                            let limit = rss_audit_postgres::ReadLimit::new(64, 8388608)
-                                .map_err(|_| crate::Error::Storage)?;
-                            let through = if let Some(through) = through {
-                                *through
-                            } else {
-                                let head = tx
-                                    .read_page(
-                                        rss_audit_postgres::Cursor::start(tenant),
-                                        rss_audit_postgres::ReadLimit::new(1, 131072)
-                                            .map_err(|_| crate::Error::Storage)?,
-                                    )
-                                    .await
-                                    .map_err(|e| crate::Error::Audit(e.into()))?;
-                                head.next()
-                                    .and_then(|c| c.continuation())
-                                    .map(|(_, through)| through)
-                                    .or_else(|| head.records().last().map(|r| r.position()))
-                                    .unwrap_or(*after)
-                            };
-                            if through == *after {
-                                return Ok::<_, crate::Error>(ChangeWindow {
-                                    after: *after,
-                                    through: None,
-                                    changed: false,
-                                });
-                            }
-                            let cursor = if *after == 0 {
-                                rss_audit_postgres::Cursor::start(tenant)
-                            } else {
-                                rss_audit_postgres::Cursor::resume(tenant, *after, through)
-                                    .map_err(|_| crate::Error::Storage)?
-                            };
-                            let page = tx
-                                .read_page(cursor, limit)
-                                .await
-                                .map_err(|e| crate::Error::Audit(e.into()))?;
-                            let mut changed = false;
-                            for record in page.records() {
-                                let decoded = rss_audit_core::decode_untrusted(
-                                    record.prepared().canonical_bytes(),
-                                )
-                                .map_err(|_| crate::Error::Storage)?;
-                                let event = decoded.event();
-                                if event.identity().source().source_id().as_str() == "mdm.business"
-                                    && [
-                                        "device_association_confirm",
-                                        "device_association_revoke",
-                                        "device_association_automatic",
-                                    ]
-                                    .contains(&event.facts().action().as_str())
-                                {
-                                    changed = true;
-                                }
-                            }
-                            Ok(ChangeWindow {
-                                after: page
-                                    .records()
-                                    .last()
-                                    .map(|r| r.position())
-                                    .unwrap_or(*after),
-                                through: page
-                                    .next()
-                                    .and_then(|c| c.continuation())
-                                    .map(|(_, through)| through),
-                                changed,
-                            })
-                        })
-                    },
-                )
-                .await
-                .fold(
-                    Ok,
-                    |e| Err(storage(crate::model::transaction_error(e))),
-                    |e| Err(storage(crate::model::transaction_error(e))),
-                    |_| Err(sqlx::Error::Protocol("audit read rollback".into())),
-                    |_| Err(sqlx::Error::Protocol("audit read unknown".into())),
-                    |e| Err(storage(crate::model::transaction_error(e))),
-                )
+            let budget = rss_mdm_audit_integration::budget::AuditBudget::new(
+                std::time::Duration::from_secs(5),
+            );
+            self.audit.read(tenant, &budget.control(), tenant, |tenant, tx| Box::pin(async move {
+                let tenant = tenant.to_string();
+                let revision: i64 = tx.with_connection(move |c| Box::pin(async move {
+                    sqlx::query_scalar("SELECT coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0)")
+                        .bind(tenant).fetch_one(c).await
+                })).await?;
+                u64::try_from(revision).map_err(|_| crate::Error::Storage)
+            })).await.fold(Ok, |e| Err(storage(crate::model::transaction_error(e))), |e| Err(storage(crate::model::transaction_error(e))), |_| Err(storage("read rollback")), |_| Err(storage("read unknown")), |e| Err(storage(crate::model::transaction_error(e))))
         })
     }
 

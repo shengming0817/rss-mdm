@@ -405,11 +405,11 @@ impl crate::Associations {
                 }
                 Ok::<_,Error>((rows.len(),facts))
             })).await?;
-            for fact in facts {service.audit.append(tx,&fact,false).await?;}
+            for fact in facts {service.audit.append(tx, &fact).await?;}
             if count>0 {
-                let id=Uuid::new_v4();let bytes=count.to_be_bytes();
-                let fact=Fact::business(audit,&format!("retirement:revoked:{id}"),&bytes,200,"success",None)?;
-                service.audit.append(tx,&fact,false).await?;
+                let id=Uuid::new_v4();
+                let fact=Fact::business(audit, &format!("retirement:revoked:{id}"), 200, "success", None)?;
+                service.audit.append(tx, &fact).await?;
             }
             audit.mark_commit_started();Ok(count)
         })).await;

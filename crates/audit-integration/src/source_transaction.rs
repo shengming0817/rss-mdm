@@ -9,8 +9,7 @@ use sqlx::PgConnection;
 /// A borrowed source transaction. Only RSS owns its connection lifetime and settlement.
 pub struct SourceTransaction<'a, 'tx> {
     pub(crate) inner: &'a mut PgTransaction<'tx>,
-    pub(crate) facts: Vec<crate::queue::StagedFact>,
-    pub(crate) partitions_declared: bool,
+    pub(crate) facts: Vec<rss_audit_core::PreparedAuditV1>,
 }
 impl SourceTransaction<'_, '_> {
     pub fn tenant_id(&self) -> TenantId {
@@ -115,7 +114,6 @@ where
                     let mut source = SourceTransaction {
                         inner: tx,
                         facts: Vec::new(),
-                        partitions_declared: false,
                     };
                     match control.run(operation(context, &mut source)).await {
                         Ok(value) => Ok(value),

@@ -386,8 +386,12 @@ impl Catalog {
             storage::receipt(tx, id, hash, value).await?;
             event::append(&self.writer, tx, key, id, value).await?;
         }
-        let fact = Fact::business(audit, &format!("software:{id}"), hash, 200, "success", None)?;
-        self.audit.append_in(tx, &fact, replayed).await?;
+        let fact = Fact::business(audit, &format!("software:{id}"), 200, "success", None)?;
+        (if replayed {
+            Ok(())
+        } else {
+            self.audit.append_in(tx, &fact).await
+        })?;
         Ok(())
     }
     pub async fn source_in(

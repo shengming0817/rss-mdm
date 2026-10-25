@@ -10,17 +10,13 @@ pub(crate) struct RuntimeDiagnostics {
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub apple_store: Arc<rss_mdm_apple_channel::Store>,
     pub access: sqlx::PgPool,
-    pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub telemetry: Option<Arc<rss_mdm_telemetry_service::Service>>,
     pub inventory: Arc<crate::inventory_runtime::InventoryRuntime>,
-    pub identity_audit: Arc<crate::audit_health::Readiness>,
-    pub mdm_audit: Arc<crate::audit_health::Readiness>,
     pub apple: Option<Arc<crate::apple::Apple>>,
     pub planning: Arc<rss_mdm_flow_service::planning::Planning>,
     pub execution: Arc<rss_mdm_execution_service::ExecutionService>,
     pub clock: Arc<dyn crate::clock::Clock>,
     pub tenant: rss_request_context::TenantId,
-    pub management_tenant: rss_request_context::TenantId,
     pub instance: String,
 }
 impl Source for RuntimeDiagnostics {
@@ -41,8 +37,6 @@ impl Source for RuntimeDiagnostics {
 impl RuntimeDiagnostics {
     pub(crate) async fn collect(&self, cutoff: Instant, detailed: bool) -> Snapshot {
         let mut inventory = self.inventory_health();
-        let audit = self.audit_health(ComponentName::IdentityAudit, &self.identity_audit);
-        let mdm_audit = self.audit_health(ComponentName::AuditProjection, &self.mdm_audit);
         let status = self.planning.automation_state();
         let mut automation = component(
             ComponentName::Automation,
@@ -85,8 +79,7 @@ impl RuntimeDiagnostics {
             self.enrich(cutoff, &mut inventory, &mut automation).await;
         }
         let execution = execution_component(self.execution.health());
-        let source = self.source_health(cutoff).await;
-        let mut components = vec![inventory, source, audit, mdm_audit, automation, execution];
+        let mut components = vec![inventory, automation, execution];
         if let Some(telemetry) = self.telemetry_component(cutoff, detailed).await {
             components.push(telemetry);
         }
@@ -327,103 +320,6 @@ impl RuntimeDiagnostics {
         }
         inventory
     }
-    async fn source_health(&self, cutoff: Instant) -> Component {
-        let mut component = component(ComponentName::AuditSource, false);
-        component.readiness = Readiness::Ready;
-        component.health = Health::Healthy;
-        let tenants = if self.tenant == self.management_tenant {
-            vec![self.tenant]
-        } else {
-            vec![self.tenant, self.management_tenant]
-        };
-        for tenant in tenants {
-            let remaining = cutoff
-                .saturating_duration_since(rss_request_context::Clock::now(
-                    &crate::lifecycle::RuntimeTimer,
-                ))
-                .min(std::time::Duration::from_secs(1));
-            match self
-                .audit_store
-                .backlog(
-                    tenant,
-                    rss_transactional_messaging::policy::OperationDeadline::from_remaining(
-                        remaining,
-                    ),
-                )
-                .await
-            {
-                Ok(backlog) => {
-                    if backlog.reserve_exhausted {
-                        component.readiness = Readiness::NotReady;
-                        component.reasons.push(Reason::AuditReserveExhausted);
-                    } else if backlog.admission_closed {
-                        component.readiness = Readiness::NotReady;
-                        component.reasons.push(Reason::AuditBackpressure);
-                    }
-                    if backlog.warning {
-                        component.reasons.push(Reason::AuditBacklogWarning);
-                    }
-                    // Host admission includes management operations; detailed counters remain tenant-scoped.
-                    if tenant == self.tenant {
-                        component.audit_backlog = Some(backlog);
-                    }
-                }
-                Err(_) => {
-                    component.readiness = Readiness::NotReady;
-                    component.reasons.push(Reason::DependencyUnavailable);
-                }
-            }
-        }
-        let mut unique = Vec::new();
-        component.reasons.retain(|reason| {
-            if unique.contains(reason) {
-                false
-            } else {
-                unique.push(*reason);
-                true
-            }
-        });
-        if !component.reasons.is_empty() {
-            component.health = Health::Degraded;
-        }
-        component
-    }
-    fn audit_health(
-        &self,
-        name: ComponentName,
-        health: &crate::audit_health::Readiness,
-    ) -> Component {
-        let audit_health = health.health();
-        let mut audit = component(name, audit_health.is_ready());
-        // Projection lag does not revoke reliable local source admission. Fatal faults stop the managed host.
-        audit.readiness = Readiness::NotApplicable;
-        audit.task = Some(task(audit_health.task));
-        audit.audit_progress = health.projection.lock().expect("projection health").clone();
-        if audit_health.task != Some(rss_runtime::TaskState::Running) {
-            audit.reasons.push(Reason::WorkerNotRunning);
-        }
-        use crate::audit_health::AuditPhase;
-        match audit_health.phase {
-            AuditPhase::Healthy => (),
-            AuditPhase::Initializing => {
-                audit.health = Health::Unknown;
-                audit.reasons.push(Reason::Initializing);
-            }
-            AuditPhase::Retrying => audit.reasons.push(Reason::DeliveryRetrying),
-            AuditPhase::DependencyUnavailable => audit.reasons.push(Reason::DependencyUnavailable),
-            AuditPhase::Stopped => {
-                if matches!(
-                    audit_health.task,
-                    Some(rss_runtime::TaskState::Stopped(
-                        rss_runtime::TaskExit::Cancelled
-                    ))
-                ) {
-                    audit.reasons.push(Reason::Stopping);
-                }
-            }
-        }
-        audit
-    }
     fn observe_trust(&self, channel: &mut ChannelStatus) -> Option<Reason> {
         use rss_mdm_agent_wire::pki::Purpose;
         let purpose = match channel.name {
@@ -649,8 +545,6 @@ fn component(name: ComponentName, ready: bool) -> Component {
         bridge: None,
         runner: None,
         dispatch: None,
-        audit_backlog: None,
-        audit_progress: None,
     }
 }
 fn task(status: Option<rss_runtime::TaskState>) -> Task {

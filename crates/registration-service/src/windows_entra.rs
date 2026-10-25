@@ -171,8 +171,8 @@ impl Management {
                 crate::windows_receipts::save(c,&op,&serde_json::to_string(&value).map_err(|_|Error::Malformed)?,a).await?;
                 Ok::<_,Error>((value,false))
             })).await?;
-            let fact=Fact::business(a,&format!("windows-entra-policy:{}",input.operation_id),digest.as_bytes(),200,"success",None).map_err(Error::from)?;
-            this.audit.append(tx,&fact,replayed).await.map_err(Error::from)?;
+            let fact=Fact::business(a, &format!("windows-entra-policy:{}",input.operation_id), 200, "success", None).map_err(Error::from)?;
+            (if replayed { Ok(()) } else { this.audit.append(tx, &fact).await }).map_err(Error::from)?;
             a.mark_commit_started();
             Ok(value)
         })).await;

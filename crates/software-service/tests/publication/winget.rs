@@ -278,8 +278,8 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
             .await
             .iter()
             .filter(|r| {
-                r.facts().action().as_str() == "software_publish"
-                    && r.facts().resource().id().as_str() == input.record.value()
+                r.event().facts().action().as_str() == "software_publish"
+                    && r.event().facts().resource().id().as_str() == input.record.value()
             })
             .count()
     };

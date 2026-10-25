@@ -105,7 +105,7 @@ pub(super) async fn replay(
     tenant: &str,
     id: Uuid,
     request: &[u8],
-) -> Result<Option<(Value, [u8; 32])>, Error> {
+) -> Result<Option<Value>, Error> {
     let row=sqlx::query("SELECT fingerprint_key,fingerprint,receipt FROM mdm_apple_runtime.operations WHERE tenant_id=$1::uuid AND operation_id=$2")
         .bind(tenant).bind(id).fetch_optional(c).await.map_err(db)?;
     let Some(row) = row else {
@@ -116,8 +116,7 @@ pub(super) async fn replay(
     app.protection
         .verify_mac_with_key(&key, request, &request_aad(tenant, id)?, &digest)
         .map_err(|_| Error::Conflict)?;
-    let original: [u8; 32] = digest.try_into().map_err(|_| Error::Conflict)?;
-    Ok(Some((row.try_get("receipt").map_err(db)?, original)))
+    Ok(Some(row.try_get("receipt").map_err(db)?))
 }
 pub(super) async fn save(
     c: &mut PgConnection,

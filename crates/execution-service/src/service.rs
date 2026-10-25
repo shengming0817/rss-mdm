@@ -65,19 +65,7 @@ impl ExecutionService {
         let fingerprint = create_fingerprint(self, proof, device, input)?;
         if let Some(value) = replay(tx, input.operation_id, &fingerprint, audit).await? {
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            let fact = Fact::business(
-                audit,
-                &format!(
-                    "command:{}:{}:accept",
-                    audit.snapshot().actor.ok_or(Error::Malformed)?,
-                    input.operation_id
-                ),
-                &fingerprint,
-                202,
-                "success",
-                None,
-            )?;
-            self.audit_store.append_in(tx, &fact, true).await?;
+
             return Ok(value);
         }
         reject_existing_operation(tx, input.operation_id).await?;
@@ -480,7 +468,7 @@ impl ExecutionService {
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
-            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}
+            if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed); return Ok(value);}
             let op=storage::load(tx,&service.protection,id).await?;
             if op.device!=device{return Err(Error::Forbidden.into());}
             if op.revision!=change.expected_revision{return Err(Error::Conflict.into());}
@@ -503,8 +491,8 @@ impl ExecutionService {
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::CommandRecovery).await?;
             crate::worker_wake::notify_in(tx, crate::worker_wake::Work::Apple).await?;
             let result=json!({"operationId":id,"revision":op.revision+1});
-            let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?;
-            service.audit_store.append_in(tx, &fact, false).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
+            let fact = Fact::business(audit, &event_key, 200, "success", None)?;
+            service.audit_store.append_in(tx, &fact).await?;receipt(tx,change.request_id,id,fingerprint,&result,audit).await?;proof.check_live()?;Ok(result)
         })).await
     }
 }
@@ -646,12 +634,11 @@ async fn created(
             "command:{}:{id}:accept",
             audit.snapshot().actor.ok_or(Error::Malformed)?
         ),
-        &fingerprint,
         202,
         "success",
         None,
     )?;
-    store.append_in(tx, &fact, false).await?;
+    store.append_in(tx, &fact).await?;
     receipt(tx, id, id, fingerprint, &response, audit).await?;
     Ok(response)
 }

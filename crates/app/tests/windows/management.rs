@@ -496,11 +496,7 @@ async fn native_notifications_are_acked_and_replayed_without_finishing_pending_q
             .await?,
         "Alert completed an unanswered capability query"
     );
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(case_tenant())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let records: Vec<Vec<u8>> =
         sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(case_tenant())

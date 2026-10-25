@@ -50,13 +50,13 @@ mod identity_read {
                 == StatusCode::FORBIDDEN
         );
         // Ordinary reads and authentication denials remain independent of audit storage.
-        pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access,mdm_flow_runtime")?;
+        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access,mdm_flow_runtime")?;
         let read = browser.call(&authorized, Method::GET, query, None).await?;
         let mut anonymous = Browser::default();
         let denied = anonymous
             .call(&authorized, Method::GET, query, None)
             .await?;
-        pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access,mdm_flow_runtime")?;
+        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access,mdm_flow_runtime")?;
         ensure!(read.0 == StatusCode::OK && read.1["asset"] == assets["asset"]);
         ensure!(denied.0 == StatusCode::UNAUTHORIZED);
         browser.operation = None;
@@ -261,7 +261,7 @@ mod storage {
         first.finalize(None);
         let canonical = || {
             sql(&format!(
-                "SELECT encode(source_bytes,'hex') FROM mdm_audit.receipts WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
+                "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{tenant}' ORDER BY source_id,event_id"
             ))
         };
         let original = canonical();
@@ -524,7 +524,7 @@ mod manual {
         );
         let failed_id = failed_write["operationId"].as_str().unwrap();
         let business_before = pg(&format!(
-            "SELECT event_id FROM mdm_audit.receipts WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
+            "SELECT event_id FROM rss_audit.records WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
             case_tenant()
         ))?;
         let rejected = browser
@@ -537,7 +537,7 @@ mod manual {
         ensure!(pg(&format!("SELECT count(*) FROM mdm_assets.operations WHERE tenant_id='{}' AND id='{failed_id}'", case_tenant()))?.trim() == "0");
         // Receipt rows include request facts too; compare only business identities.
         let business_after = pg(&format!(
-            "SELECT event_id FROM mdm_audit.receipts WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
+            "SELECT event_id FROM rss_audit.records WHERE tenant_id='{0}' AND source_id='mdm.business' ORDER BY event_id",
             case_tenant()
         ))?;
         ensure!(!business_before.trim().is_empty());

@@ -69,7 +69,6 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$
                         return Ok(Change {
                             value,
                             replay: true,
-                            digest: digest.clone(),
                         });
                     }
                     service.grant_live(c, &grant).await?;
@@ -186,7 +185,6 @@ UPDATE mdm_access.agent_grants SET state='consumed' WHERE tenant_id=$1::uuid AND
                     Ok(Change {
                         value: Claim::New(signing),
                         replay: false,
-                        digest: digest.clone(),
                     })
                 })
             })
@@ -254,7 +252,6 @@ state='signing'
                 Ok(Change {
                     value: (),
                     replay: n == 0,
-                    digest: digest(id)?,
                 })
             })
         })
@@ -320,11 +317,7 @@ UPDATE
                     if serde_json::from_str::<Uuid>(&previous).map_err(|_| Error::Corrupt)? != *id {
                         return Err(Error::Corrupt);
                     }
-                    return Ok(Change {
-                        value: candidate(&g, &old)?,
-                        replay: true,
-                        digest: digest.clone(),
-                    });
+                    return Ok(Change {value: candidate(&g, &old)?, replay: true});
                 }
                 if old.try_get::<String, _>("signing_issuer").map_err(db)?
                     != hex(certificate.metadata.issuer)
@@ -390,11 +383,7 @@ SELECT * FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND id=$2
                     // The immutable issuance owns the chain; the bounded receipt stores its identity only.
                     crate::operations::save(c, op, &serde_json::to_string(id).map_err(|_| Error::Corrupt)?, a).await?;
                 }
-                Ok(Change {
-                    value,
-                    replay: receipt.is_none() && replay,
-                    digest: digest.clone(),
-                })
+                Ok(Change {value, replay: receipt.is_none() && replay})
             })
         })
         .await

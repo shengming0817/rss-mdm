@@ -317,30 +317,11 @@ impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
     }
 }
 
-/// Source writes reach the directory trigger before their late audit flush. Native
-/// transactions must take the same row before declaring any outbox partitions.
-/// Caller already holds its actual device/operation fences.
-pub(crate) async fn lock_directory(tx: &mut PgTransaction<'_>) -> std::result::Result<(), PgError> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
-                .bind(tenant)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await
-}
 pub(crate) async fn prepare_audit_in(
     store: &rss_mdm_audit_integration::AuditStore,
     tx: &mut PgTransaction<'_>,
     audit: &RequestAudit,
     business: &[rss_transactional_messaging::message::PartitionIdentity],
 ) -> std::result::Result<(), rss_mdm_audit_integration::Error> {
-    lock_directory(tx)
-        .await
-        .map_err(rss_audit_postgres::Error::from)?;
     store.prepare_in(tx, audit, business).await
 }
