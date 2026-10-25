@@ -18,11 +18,31 @@ pub(super) async fn plan(
     tx: &mut PgTransaction<'_>,
     b: &access::Binding,
 ) -> Result<Option<wire::AccessWindowsPlan>> {
-    if b.intent.platform() != wire::TaskPlatform::Windows || b.state == access::State::Revoked {
+    if b.intent.platform() != wire::TaskPlatform::Windows {
+        return Ok(None);
+    }
+    if matches!(
+        b.configuration.windows,
+        wire::AccessWindowsConfiguration::Whfb
+    ) {
+        let previous_key = match &b.applied_windows {
+            Some(wire::AccessWindowsFacts::Whfb(f))
+                if f.factor_generation != b.factor_generation =>
+            {
+                f.key_id
+            }
+            _ => None,
+        };
+        return Ok(Some(wire::AccessWindowsPlan::Whfb {
+            retire: b.state == access::State::Revoked,
+            previous_key,
+        }));
+    }
+    if b.state == access::State::Revoked {
         return Ok(None);
     }
     let expected_subject = subject(b);
-    if let Some(facts) = &b.applied_windows
+    if let Some(wire::AccessWindowsFacts::RssFactor(facts)) = &b.applied_windows
         && facts.factor_generation == b.factor_generation
         && expected_subject.as_ref() == Some(&facts.recovery.subject)
     {
@@ -224,6 +244,17 @@ pub(crate) async fn finish(
     if task.platform != wire::TaskPlatform::Windows {
         return Ok(());
     }
+    if let wire::AccessEffect::WhfbRetired { account, facts, .. } = &report.effect {
+        if !matches!(
+            task.windows,
+            Some(wire::AccessWindowsPlan::Whfb { retire: true, .. })
+        ) || facts.factor_generation != task.factor_generation
+            || !matches!(&task.action, wire::AccessAction::Unbind { account: expected, .. } if expected == account)
+        {
+            return Err(Error::Conflict.into());
+        }
+        return Ok(());
+    }
     let wire::AccessEffect::Applied {
         account,
         windows: Some(facts),
@@ -232,9 +263,28 @@ pub(crate) async fn finish(
     else {
         return Ok(());
     };
-    if facts.factor_generation != task.factor_generation {
+    if facts.factor_generation() != task.factor_generation {
         return Err(Error::Conflict.into());
     }
+    if let wire::AccessWindowsFacts::Whfb(facts) = facts {
+        let Some(wire::AccessWindowsPlan::Whfb {
+            retire: false,
+            previous_key,
+        }) = task.windows
+        else {
+            return Err(Error::Conflict.into());
+        };
+        if previous_key.is_some()
+            && facts.key_id == previous_key
+            && facts.registration == wire::AccessObservation::Present
+        {
+            return Err(Error::Conflict.into());
+        }
+        return Ok(());
+    }
+    let wire::AccessWindowsFacts::RssFactor(facts) = facts else {
+        return Err(Error::Conflict.into());
+    };
     let wire::AccessAccount::Windows { sid, .. } = account else {
         return Err(Error::Malformed.into());
     };
@@ -317,7 +367,7 @@ pub(crate) async fn finish(
                     _ => return Err(vault::Error::Conflict),
                 }
                 if !project {
-                    access.applied_windows = Some(facts);
+                    access.applied_windows = Some(wire::AccessWindowsFacts::RssFactor(facts));
                     access::storage::save_in(c, &access, access.revision).await?;
                 }
                 Ok(())
@@ -339,7 +389,9 @@ pub(crate) async fn unresolved(
     terminal: bool,
 ) -> Result<bool> {
     let task = task(tx, run.id, attempt).await?;
-    if task.platform != wire::TaskPlatform::Windows {
+    if task.platform != wire::TaskPlatform::Windows
+        || matches!(task.windows, Some(wire::AccessWindowsPlan::Whfb { .. }))
+    {
         return Ok(false);
     }
     tx.with_connection(move |c| {

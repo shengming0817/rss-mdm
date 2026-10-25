@@ -74,6 +74,35 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "Native retirement observation; completion also requires credential removal.",
+          "properties": {
+            "account": {
+              "$ref": "#/$defs/AccessAccount",
+              "description": "Exact Entra account."
+            },
+            "disposition": {
+              "$ref": "#/$defs/AccessAccountDisposition",
+              "description": "Independently observed OS disposition."
+            },
+            "facts": {
+              "$ref": "#/$defs/AccessWhfbFacts",
+              "description": "Local observations, not directory revocation or a successful login."
+            },
+            "state": {
+              "const": "whfb_retired",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "account",
+            "disposition",
+            "facts"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "The exact requested configuration has been durably installed and read back.",
           "properties": {
             "account": {
@@ -281,6 +310,62 @@
         }
       ]
     },
+    "AccessWhfbFacts": {
+      "additionalProperties": false,
+      "description": "Native account-scoped observations, never a claim that LogonUI authenticated a user.",
+      "properties": {
+        "factorGeneration": {
+          "description": "Exact requested credential generation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "hardwareKey": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "TPM-backed native credential, independent of policy configuration."
+        },
+        "keyId": {
+          "description": "Current native key identity; no private or secret material.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "objectId": {
+          "description": "Current Entra account.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "observedAt": {
+          "description": "UTC seconds at native observation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "policy": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Effective policy after conflict checks and native readback."
+        },
+        "registration": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Current user's native registration observation."
+        },
+        "tenantId": {
+          "description": "Entra authority observed on this device.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "factorGeneration",
+        "tenantId",
+        "objectId",
+        "policy",
+        "registration",
+        "hardwareKey",
+        "observedAt"
+      ],
+      "type": "object"
+    },
     "AccessWindowsAuthority": {
       "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
       "oneOf": [
@@ -346,24 +431,95 @@
       ]
     },
     "AccessWindowsFacts": {
-      "additionalProperties": false,
-      "description": "Installed factor identity is independent of the account association and configuration revision.",
-      "properties": {
-        "factorGeneration": {
-          "description": "Exact installed factor generation.",
-          "format": "int64",
-          "type": "integer"
+      "description": "Mechanism-specific observations; an RSS escrow receipt cannot prove Hello registration.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "RSS factor and durable recovery custody.",
+          "properties": {
+            "factorGeneration": {
+              "description": "Exact installed factor generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "kind": {
+              "const": "rss_factor",
+              "type": "string"
+            },
+            "recovery": {
+              "$ref": "#/$defs/CredentialReceipt",
+              "description": "Exact recovery material retained on this endpoint."
+            }
+          },
+          "required": [
+            "kind",
+            "factorGeneration",
+            "recovery"
+          ],
+          "type": "object"
         },
-        "recovery": {
-          "$ref": "#/$defs/CredentialReceipt",
-          "description": "Exact recovery material retained on this endpoint."
+        {
+          "additionalProperties": false,
+          "description": "Windows-owned registration and configuration.",
+          "properties": {
+            "factorGeneration": {
+              "description": "Exact requested credential generation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "hardwareKey": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "TPM-backed native credential, independent of policy configuration."
+            },
+            "keyId": {
+              "description": "Current native key identity; no private or secret material.",
+              "format": "uuid",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "whfb",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Current Entra account.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "observedAt": {
+              "description": "UTC seconds at native observation.",
+              "format": "int64",
+              "type": "integer"
+            },
+            "policy": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Effective policy after conflict checks and native readback."
+            },
+            "registration": {
+              "$ref": "#/$defs/AccessObservation",
+              "description": "Current user's native registration observation."
+            },
+            "tenantId": {
+              "description": "Entra authority observed on this device.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "factorGeneration",
+            "tenantId",
+            "objectId",
+            "policy",
+            "registration",
+            "hardwareKey",
+            "observedAt"
+          ],
+          "type": "object"
         }
-      },
-      "required": [
-        "factorGeneration",
-        "recovery"
-      ],
-      "type": "object"
+      ]
     },
     "CredentialEnvelope": {
       "additionalProperties": false,

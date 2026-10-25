@@ -141,8 +141,9 @@ recoveryVersion，必须仍处于原自动投递窗口；`POST /deliveries/{id}/
 
 `unbind` 必须明确 `disposition: keep|disable|standard`；通常选择 keep 保留账号状态，禁用和降权由管理员显式选择。三种处置均不删除账号或数据。任务摘要绑定该意图，只有一致的原生回读结果才推进 appliedRevision。
 
-Policy action `device_access` 持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 windowsAccounts 来源集合（local/active_directory/entra）；沿用 Scope 分配、
+Policy action `device_access` 持有 selfEnrollment、可选 role（standard/administrator）、mac 登录配置与 Windows 机制配置（`windows.kind=disabled|rss_factor|whfb`）；沿用 Scope 分配、
 排除和 Policy 启停。role 为 null 时保留已有账号权限，新账号默认 standard。
+`rss_factor` 必须提供非空 `accounts` 来源集合（local/active_directory/entra）；`whfb` 固定纯 Entra joined、TPM 2.0 与 PIN，不能配置本地/AD 账号或创建目录账号。变更机制先完成原绑定退役，再建立新绑定；不自动迁移凭据。
 serverState、receivedRevision、appliedRevision、effect 各自表达不同事实。
 普通配置和角色更新只增加 revision；重新关联人员增加绑定代际及因子世代，Windows 的 `reset_factors` 显式增加因子世代。
 撤销立即停止服务端授权；离线本机保持原效果直到实际执行清理，不将接口成功视为即时端侧撤销。

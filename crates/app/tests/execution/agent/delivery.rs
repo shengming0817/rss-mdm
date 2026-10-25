@@ -1960,7 +1960,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy=Uuid::new_v4();
-        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}}})).await?;
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"device_access","mac":{"authentication":"secure_enclave","passwordProvider":null,"login":"local","unlock":"local","filevault":"local","offlineGraceSeconds":null,"registrationGraceSeconds":null,"maintenanceAccounts":[]},"windows":{"kind":"rss_factor","accounts":["local"]},"selfEnrollment":true,"role":null}}}})).await?;
         let binding=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{binding}",case_device_id());
         let associated=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"action":{"kind":"put","instance":identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"existing","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid}}}}))).await?;
         ensure!(associated.0==StatusCode::OK,"associate {associated:?}");
@@ -2004,7 +2004,7 @@ async fn rss_login_recovery_uses_exact_binding_and_original_candidate() -> Resul
         ensure!(reply.0==StatusCode::OK,"initial escrow {reply:?}");
         let ack:wire::TaskEventAck=serde_json::from_value(reply.1)?;
         let receipt=ack.credentials().first().context("initial custody receipt")?;
-        let event=json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":access.definition_digest,"effect":{"state":"applied","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid},"role":"standard","mac":null,"windows":{"factorGeneration":access.factor_generation,"recovery":receipt}}});
+        let event=json!({"kind":"device_access_result","bindingId":binding,"bindingGeneration":1,"revision":1,"definitionDigest":access.definition_digest,"effect":{"state":"applied","account":{"platform":"windows","authority":{"kind":"local"},"sid":sid},"role":"standard","mac":null,"windows":{"kind":"rss_factor","factorGeneration":access.factor_generation,"recovery":receipt}}});
         let reply=agent_call(&f.router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",access.task_id),Some(case_credential()),Some(json!({"wireVersion":1,"operationId":Uuid::new_v4(),"attemptId":access.attempt_id,"executionContext":context,"event":event}))).await?;
         ensure!(reply.0==StatusCode::OK,"access apply {reply:?}");
         credential_policy(&mut f,json!({"kind":"rotate_rss_login","binding":binding,"bindingGeneration":1,"sid":sid})).await?;

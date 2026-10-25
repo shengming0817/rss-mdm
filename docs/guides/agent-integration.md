@@ -244,11 +244,15 @@ Begin/confirm 在宿主同一 READ COMMITTED 写事务内调用 Identity 的 liv
 收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 passwordSync、keychainSync、Secure Token、volume ownership 和
 FileVault 解锁观察，未知必须保持 unknown。Password 模式必须分别确认密码和钥匙串；FileVault 强化还须确认卷所有权与解锁资格。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
 
-Windows 首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
+Windows RSS 附加因子首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
 以 `device_access_prepared` 报告真实 SID（尚非 Applied），再用既有加密 escrow 托管恢复材料。
 托管 ACK 的材料 ID/version 与签名任务的 factorGeneration 一起用于本机原子激活及读回，最终 Applied 必须回报这些精确坐标。
 中断后重放同一任务与候选，未决材料不能通过失败或取消回执丢弃。普通配置 revision 不重置因子；
 配置失败观察也不抹去最后已验证的因子事实。
+
+WHfB 需要 `device_access.v1` 与 `device_access.whfb.v1`，使用同一任务的 `windows.kind=whfb` 分支；不准备 TOTP、不托管 RSS 恢复材料、不要求 RSS CP。`previousKey` 是因子重置前已观察的原生 key ID；旧 key 不能作为新代际的注册完成证明。`effect.windows.kind=whfb` 分别报告策略、注册、TPM 凭据与 UTC 观察时间，并绑定 Entra tenant/object ID。配置存在不能证明登录成功。未知观察保持待完成。
+
+解绑任务的 `retire=true` 停止注册并核对凭据清理，结果为 `whfb_retired`；只有策略和注册均确认不存在且账号处置匹配时才完成。停止注册不删除已有凭据，目录撤销及已登录会话是独立生命周期事实。PIN 恢复由 Windows/Entra 执行，RSS 恢复材料不能用于 Hello。当前合同只证明服务端处理，Windows 原生调用、签名和真机均未验证。
 
 Windows RSS 恢复后续轮换/核对使用既有 Credential task 的 `rotate_rss_login`/`verify_rss_login` 和加密 escrow，
 每账号绑定及代际独立。材料是 CSPRNG 生成的 32 字节、规范无填充 base64url 编码；

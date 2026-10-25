@@ -29,7 +29,9 @@ fn task() -> AccessTaskSpec {
             },
             configuration: AccessConfiguration {
                 mac: Some(Default::default()),
-                windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+                    accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                },
                 self_enrollment: true,
                 enabled: true,
                 role: None,
@@ -73,7 +75,9 @@ fn access_signature_binds_account_generation_and_configuration() {
                 },
                 configuration: AccessConfiguration {
                     mac: Some(Default::default()),
-                    windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                    windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+                        accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+                    },
                     self_enrollment: true,
                     enabled: true,
                     role: Some(AccessRole::Administrator),
@@ -115,7 +119,9 @@ fn invalid_native_identity_and_cross_platform_tasks_are_rejected() {
         name: "../existing".into(),
         configuration: AccessConfiguration {
             mac: Some(Default::default()),
-            windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+            windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+                accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+            },
             self_enrollment: false,
             enabled: true,
             role: None,
@@ -127,7 +133,9 @@ fn invalid_native_identity_and_cross_platform_tasks_are_rejected() {
         name: "employee".into(),
         configuration: AccessConfiguration {
             mac: Some(Default::default()),
-            windows_accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+            windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+                accounts: vec![rss_mdm_agent_wire::runtime::AccessWindowsKind::Local],
+            },
             self_enrollment: false,
             enabled: true,
             role: None,
@@ -167,12 +175,12 @@ fn mac_application_requires_its_own_secure_token_observation() {
         };
         assert!(value.validate_for(TaskPlatform::Macos).is_ok());
         assert_eq!(
-            value.complete(&configuration()),
+            value.complete(&configuration(), TaskPlatform::Macos),
             state == AccessObservation::Present
         );
         assert!(value.validate_for(TaskPlatform::Windows).is_err());
     }
-    assert!(!AccessEffect::Unknown.complete(&configuration()));
+    assert!(!AccessEffect::Unknown.complete(&configuration(), TaskPlatform::Macos));
 }
 
 #[test]
@@ -298,7 +306,9 @@ fn configuration() -> AccessConfiguration {
         enabled: true,
         role: None,
         mac: Some(Default::default()),
-        windows_accounts: vec![AccessWindowsKind::Local],
+        windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration::RssFactor {
+            accounts: vec![AccessWindowsKind::Local],
+        },
     }
 }
 
@@ -375,7 +385,7 @@ fn password_application_requires_independent_password_keychain_and_volume_facts(
                 },
             }),
         };
-        assert_eq!(effect.complete(&config), missing == 4);
+        assert_eq!(effect.complete(&config, TaskPlatform::Macos), missing == 4);
     }
 }
 
@@ -403,4 +413,175 @@ fn mac_hardening_requires_password_provider_and_maintenance_path() {
     assert!(login.validate().is_ok());
     login.maintenance_accounts.push("maintenance".into());
     assert!(login.validate().is_err());
+}
+
+fn hello_task() -> AccessTaskSpec {
+    let mut task = task();
+    task.action = AccessAction::Apply {
+        account: AccessAccount::Windows {
+            sid: "S-1-12-1-1-2-3-4".into(),
+            authority: AccessWindowsAuthority::Entra {
+                tenant_id: Uuid::from_u128(40),
+                object_id: Uuid::from_u128(41),
+            },
+        },
+        configuration: AccessConfiguration {
+            mac: None,
+            windows: AccessWindowsConfiguration::Whfb,
+            self_enrollment: true,
+            enabled: true,
+            role: None,
+        },
+    };
+    task.windows = Some(AccessWindowsPlan::Whfb {
+        retire: false,
+        previous_key: None,
+    });
+    task
+}
+fn hello_facts() -> AccessWhfbFacts {
+    AccessWhfbFacts {
+        factor_generation: 1,
+        tenant_id: Uuid::from_u128(40),
+        object_id: Uuid::from_u128(41),
+        policy: AccessObservation::Present,
+        registration: AccessObservation::Present,
+        hardware_key: AccessObservation::Present,
+        key_id: Some(Uuid::from_u128(42)),
+        observed_at: 101,
+    }
+}
+#[test]
+fn hello_plan_has_no_escrow_and_cannot_select_local_accounts_or_rss_provisioning() {
+    let mut hello = hello_task();
+    hello.validate().unwrap();
+    let baseline = hello.signing_bytes("key").unwrap();
+    hello.windows = Some(AccessWindowsPlan::Whfb {
+        retire: false,
+        previous_key: Some(Uuid::from_u128(42)),
+    });
+    assert_ne!(baseline, hello.signing_bytes("key").unwrap());
+    hello.windows = task().windows;
+    assert!(hello.validate().is_err());
+    let mut hello = hello_task();
+    if let AccessAction::Apply { account, .. } = &mut hello.action {
+        *account = AccessAccount::Windows {
+            sid: "S-1-5-21-1-2-3-4".into(),
+            authority: AccessWindowsAuthority::Local,
+        };
+    }
+    assert!(hello.validate().is_err());
+    let config = AccessWindowsConfiguration::Whfb;
+    assert_eq!(config.accounts(), &[AccessWindowsKind::Entra]);
+}
+#[test]
+fn hello_policy_observation_cannot_substitute_for_registration_or_hardware_proof() {
+    let AccessAction::Apply {
+        account,
+        configuration,
+    } = hello_task().action
+    else {
+        panic!()
+    };
+    let full = hello_facts();
+    let effect = |facts| AccessEffect::Applied {
+        account: account.clone(),
+        role: AccessRole::Standard,
+        mac: None,
+        windows: Some(AccessWindowsFacts::Whfb(facts)),
+    };
+    effect(full.clone())
+        .validate_for(TaskPlatform::Windows)
+        .unwrap();
+    assert!(effect(full.clone()).complete(&configuration, TaskPlatform::Windows));
+    for observation in [
+        AccessObservation::Absent,
+        AccessObservation::Unknown,
+        AccessObservation::NeedsAdministrator,
+    ] {
+        let mut pending = full.clone();
+        pending.policy = observation;
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
+        let mut pending = full.clone();
+        pending.registration = observation;
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
+        let mut pending = full.clone();
+        pending.hardware_key = observation;
+        assert!(!effect(pending).complete(&configuration, TaskPlatform::Windows));
+    }
+    let mut wrong = full.clone();
+    wrong.tenant_id = Uuid::from_u128(43);
+    assert!(effect(wrong).validate_for(TaskPlatform::Windows).is_err());
+    let mut impossible = full;
+    impossible.key_id = None;
+    assert!(
+        effect(impossible)
+            .validate_for(TaskPlatform::Windows)
+            .is_err()
+    );
+    assert!(
+        effect(hello_facts())
+            .validate_for(TaskPlatform::Macos)
+            .is_err()
+    );
+}
+#[test]
+fn hello_retirement_requires_observed_policy_and_credential_removal() {
+    let AccessAction::Apply {
+        account,
+        mut configuration,
+    } = hello_task().action
+    else {
+        panic!()
+    };
+    configuration.enabled = false;
+    let mut facts = hello_facts();
+    facts.policy = AccessObservation::Absent;
+    let effect = |facts| AccessEffect::WhfbRetired {
+        account: account.clone(),
+        disposition: AccessAccountDisposition::Keep,
+        facts,
+    };
+    assert!(!effect(facts.clone()).complete(&configuration, TaskPlatform::Windows));
+    facts.registration = AccessObservation::Absent;
+    facts.hardware_key = AccessObservation::Absent;
+    facts.key_id = None;
+    effect(facts.clone())
+        .validate_for(TaskPlatform::Windows)
+        .unwrap();
+    assert!(effect(facts).complete(&configuration, TaskPlatform::Windows));
+    assert!(
+        !AccessEffect::Unbound {
+            disposition: AccessAccountDisposition::Keep
+        }
+        .complete(&configuration, TaskPlatform::Windows)
+    );
+    let mut task = hello_task();
+    task.action = AccessAction::Unbind {
+        account,
+        disposition: AccessAccountDisposition::Keep,
+    };
+    assert!(task.validate().is_err());
+    task.windows = Some(AccessWindowsPlan::Whfb {
+        retire: true,
+        previous_key: None,
+    });
+    task.validate().unwrap();
+}
+
+#[test]
+fn mixed_policy_retirement_uses_actual_platform() {
+    let AccessAction::Apply {
+        mut configuration, ..
+    } = hello_task().action
+    else {
+        panic!()
+    };
+    configuration.mac = Some(Default::default());
+    configuration.enabled = false;
+    let effect = AccessEffect::Unbound {
+        disposition: AccessAccountDisposition::Keep,
+    };
+    assert!(effect.complete(&configuration, TaskPlatform::Macos));
+    assert!(!effect.complete(&configuration, TaskPlatform::Windows));
 }

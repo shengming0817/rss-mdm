@@ -149,7 +149,8 @@ impl AccessTaskSpec {
                 if (self.platform == TaskPlatform::Macos && configuration.mac.is_none())
                     || (self.platform == TaskPlatform::Windows
                         && !configuration
-                            .windows_accounts
+                            .windows
+                            .accounts()
                             .contains(&AccessWindowsKind::Local))
                 {
                     return Err(WireError::InvalidValue);
@@ -158,12 +159,45 @@ impl AccessTaskSpec {
             _ => (),
         }
         let provisioning = self.platform == TaskPlatform::Windows
-            && !matches!(self.action, AccessAction::Unbind { .. });
+            && (!matches!(self.action, AccessAction::Unbind { .. })
+                || matches!(self.windows, Some(AccessWindowsPlan::Whfb { .. })));
         if self.windows.is_some() != provisioning {
             return Err(WireError::InvalidValue);
         }
         if let Some(plan) = &self.windows {
             plan.validate()?;
+            let hello = matches!(plan, AccessWindowsPlan::Whfb { .. });
+            match &self.action {
+                AccessAction::Apply { configuration, .. }
+                | AccessAction::Create { configuration, .. }
+                    if hello
+                        != matches!(configuration.windows, AccessWindowsConfiguration::Whfb) =>
+                {
+                    return Err(WireError::InvalidValue);
+                }
+                _ => (),
+            }
+            if let AccessWindowsPlan::Whfb { retire, .. } = plan
+                && (*retire != matches!(self.action, AccessAction::Unbind { .. })
+                    || !matches!(
+                        &self.action,
+                        AccessAction::Apply {
+                            account: AccessAccount::Windows {
+                                authority: AccessWindowsAuthority::Entra { .. },
+                                ..
+                            },
+                            ..
+                        } | AccessAction::Unbind {
+                            account: AccessAccount::Windows {
+                                authority: AccessWindowsAuthority::Entra { .. },
+                                ..
+                            },
+                            ..
+                        }
+                    ))
+            {
+                return Err(WireError::InvalidValue);
+            }
             if let AccessWindowsPlan::Preserve { facts } = plan {
                 let super::CredentialSubject::RssLogin {
                     binding,
@@ -353,7 +387,7 @@ pub struct AccessConfiguration {
     /// Device-wide Mac profile settings; absence excludes Mac integration from this policy.
     pub mac: Option<crate::platform_sso::LoginConfiguration>,
     /// Explicit admitted Windows account authorities.
-    pub windows_accounts: Vec<AccessWindowsKind>,
+    pub windows: AccessWindowsConfiguration,
     /// Permit the first association to the currently authenticated interactive local account.
     pub self_enrollment: bool,
     /// Enable the platform's RSS login integration.
@@ -440,6 +474,15 @@ pub enum AccessFailure {
     deny_unknown_fields
 )]
 pub enum AccessEffect {
+    /// Native retirement observation; completion also requires credential removal.
+    WhfbRetired {
+        /// Exact Entra account.
+        account: AccessAccount,
+        /// Independently observed OS disposition.
+        disposition: AccessAccountDisposition,
+        /// Local observations, not directory revocation or a successful login.
+        facts: AccessWhfbFacts,
+    },
     /// The exact requested configuration has been durably installed and read back.
     Applied {
         /// Identity actually changed or confirmed.
@@ -484,7 +527,7 @@ impl AccessEffect {
         }
         if let Self::Applied {
             account,
-            windows: Some(facts),
+            windows: Some(AccessWindowsFacts::RssFactor(facts)),
             ..
         } = self
         {
@@ -497,10 +540,27 @@ impl AccessEffect {
                 return Err(WireError::InvalidValue);
             }
         }
+        match self {
+            Self::Applied {
+                account,
+                windows: Some(AccessWindowsFacts::Whfb(facts)),
+                ..
+            }
+            | Self::WhfbRetired { account, facts, .. } => {
+                if platform != TaskPlatform::Windows {
+                    return Err(WireError::InvalidValue);
+                }
+                facts.validate(account)?;
+            }
+            _ => (),
+        }
         Ok(())
     }
     /// Application completion includes Secure Token confirmation on macOS.
-    pub fn complete(&self, configuration: &AccessConfiguration) -> bool {
+    pub fn complete(&self, configuration: &AccessConfiguration, platform: TaskPlatform) -> bool {
+        if self.validate_for(platform).is_err() {
+            return false;
+        }
         match self {
             Self::Applied { mac: Some(mac), .. } => {
                 let Some(login) = &configuration.mac else {
@@ -514,7 +574,39 @@ impl AccessEffect {
                         || (mac.filevault_unlock == AccessObservation::Present
                             && mac.volume_owner == AccessObservation::Present))
             }
-            Self::Applied { mac: None, .. } | Self::Unbound { .. } => true,
+            Self::Applied {
+                windows: Some(AccessWindowsFacts::Whfb(facts)),
+                ..
+            } => {
+                matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
+                    && facts.policy
+                        == if configuration.enabled {
+                            AccessObservation::Present
+                        } else {
+                            AccessObservation::Absent
+                        }
+                    && (!configuration.enabled
+                        || (facts.registration == AccessObservation::Present
+                            && facts.hardware_key == AccessObservation::Present))
+            }
+            Self::Applied {
+                windows: Some(AccessWindowsFacts::RssFactor(_)),
+                ..
+            } => matches!(
+                configuration.windows,
+                AccessWindowsConfiguration::RssFactor { .. }
+            ),
+            Self::WhfbRetired { facts, .. } => {
+                matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
+                    && !configuration.enabled
+                    && facts.policy == AccessObservation::Absent
+                    && facts.registration == AccessObservation::Absent
+            }
+            Self::Unbound { .. } => {
+                platform != TaskPlatform::Windows
+                    || !matches!(configuration.windows, AccessWindowsConfiguration::Whfb)
+            }
+            Self::Applied { .. } => false,
             Self::Unknown | Self::Failed { .. } => false,
         }
     }
@@ -586,6 +678,13 @@ impl AccessRecoveryUse {
     deny_unknown_fields
 )]
 pub enum AccessWindowsPlan {
+    /// Native Hello policy; no RSS credential material is provisioned.
+    Whfb {
+        /// Retire the binding: stop provisioning and observe removal independently.
+        retire: bool,
+        /// Last observed key, fenced by the signed task, for replacement detection.
+        previous_key: Option<Uuid>,
+    },
     /// Install a new factor generation after durable escrow acknowledgement.
     Initialize {
         /// Public encryption recipient; never used for offline verification.
@@ -596,13 +695,18 @@ pub enum AccessWindowsPlan {
     /// Apply configuration while preserving existing factors.
     Preserve {
         /// Last applied factor facts; the endpoint must independently read them back.
-        facts: AccessWindowsFacts,
+        facts: AccessRssFacts,
     },
 }
 impl AccessWindowsPlan {
     /// Structural validation does not establish task authority.
     pub fn validate(&self) -> Result<(), WireError> {
         match self {
+            Self::Whfb { previous_key, .. } => {
+                if previous_key.is_some_and(|key| key.is_nil()) {
+                    return Err(WireError::InvalidValue);
+                }
+            }
             Self::Initialize {
                 recipient,
                 expected_revision,
@@ -633,7 +737,7 @@ impl AccessWindowsPlan {
 /// Installed factor identity is independent of the account association and configuration revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AccessWindowsFacts {
+pub struct AccessRssFacts {
     /// Exact installed factor generation.
     pub factor_generation: i64,
     /// Exact recovery material retained on this endpoint.
@@ -786,15 +890,8 @@ impl AccessWindowsAuthority {
 impl AccessConfiguration {
     /// Check explicit platform policy and bounded settings.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.windows_accounts.len() > 3
-            || self
-                .windows_accounts
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != self.windows_accounts.len()
-            || (self.mac.is_none() && self.windows_accounts.is_empty())
-        {
+        self.windows.validate()?;
+        if self.mac.is_none() && matches!(self.windows, AccessWindowsConfiguration::Disabled) {
             return Err(WireError::InvalidValue);
         }
         if let Some(mac) = &self.mac {
@@ -807,9 +904,121 @@ impl AccessConfiguration {
         self.validate().is_ok()
             && match account {
                 AccessAccount::Windows { authority, .. } => {
-                    self.windows_accounts.contains(&authority.kind())
+                    self.windows.accounts().contains(&authority.kind())
                 }
                 AccessAccount::Macos { .. } => self.mac.is_some(),
             }
+    }
+}
+
+/// Current Windows policy, with no implicit fallback between authentication mechanisms.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum AccessWindowsConfiguration {
+    /// This policy does not target Windows.
+    Disabled,
+    /// Password plus the RSS offline factor.
+    RssFactor {
+        /// Explicit admitted account authorities.
+        accounts: Vec<AccessWindowsKind>,
+    },
+    /// Pure Entra join, TPM 2.0 and PIN; Windows owns enrollment and authentication.
+    Whfb,
+}
+impl AccessWindowsConfiguration {
+    /// Account admission is independent of display names.
+    pub fn accounts(&self) -> &[AccessWindowsKind] {
+        match self {
+            Self::Disabled => &[],
+            Self::RssFactor { accounts } => accounts,
+            Self::Whfb => &[AccessWindowsKind::Entra],
+        }
+    }
+    /// Reject empty and duplicate RSS account selections.
+    pub fn validate(&self) -> Result<(), WireError> {
+        if let Self::RssFactor { accounts } = self
+            && (accounts.is_empty()
+                || accounts.len() > 3
+                || accounts
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    != accounts.len())
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+}
+/// Mechanism-specific observations; an RSS escrow receipt cannot prove Hello registration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AccessWindowsFacts {
+    /// RSS factor and durable recovery custody.
+    RssFactor(AccessRssFacts),
+    /// Windows-owned registration and configuration.
+    Whfb(AccessWhfbFacts),
+}
+impl AccessWindowsFacts {
+    /// Credential replacement fence, distinct from policy revision.
+    pub fn factor_generation(&self) -> i64 {
+        match self {
+            Self::RssFactor(f) => f.factor_generation,
+            Self::Whfb(f) => f.factor_generation,
+        }
+    }
+    /// Facts must belong to the selected mechanism.
+    pub fn matches(&self, config: &AccessWindowsConfiguration) -> bool {
+        matches!(
+            (self, config),
+            (
+                Self::RssFactor(_),
+                AccessWindowsConfiguration::RssFactor { .. }
+            ) | (Self::Whfb(_), AccessWindowsConfiguration::Whfb)
+        )
+    }
+}
+/// Native account-scoped observations, never a claim that LogonUI authenticated a user.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessWhfbFacts {
+    /// Exact requested credential generation.
+    pub factor_generation: i64,
+    /// Entra authority observed on this device.
+    pub tenant_id: Uuid,
+    /// Current Entra account.
+    pub object_id: Uuid,
+    /// Effective policy after conflict checks and native readback.
+    pub policy: AccessObservation,
+    /// Current user's native registration observation.
+    pub registration: AccessObservation,
+    /// TPM-backed native credential, independent of policy configuration.
+    pub hardware_key: AccessObservation,
+    /// Current native key identity; no private or secret material.
+    pub key_id: Option<Uuid>,
+    /// UTC seconds at native observation.
+    pub observed_at: i64,
+}
+impl AccessWhfbFacts {
+    /// Match native observations to the exact account, not merely the task's tenant.
+    pub fn validate(&self, account: &AccessAccount) -> Result<(), WireError> {
+        account.validate()?;
+        if self.factor_generation < 1
+            || self.observed_at <= 0
+            || self.key_id.is_some_and(|v| v.is_nil())
+            || (self.registration == AccessObservation::Present && self.key_id.is_none())
+            || (self.registration == AccessObservation::Absent && self.key_id.is_some())
+            || (self.hardware_key == AccessObservation::Present
+                && self.registration != AccessObservation::Present)
+            || !matches!(account, AccessAccount::Windows { authority: AccessWindowsAuthority::Entra { tenant_id, object_id }, .. } if *tenant_id == self.tenant_id && *object_id == self.object_id)
+        {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
     }
 }

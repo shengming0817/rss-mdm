@@ -98,7 +98,14 @@ CREATE FUNCTION mdm_access.access_binding_ready(document jsonb) RETURNS boolean
   AND document->'account' IS NOT NULL AND document->'account'<>'null'::jsonb
   AND (document->>'appliedRevision')::bigint=(document->>'revision')::bigint
   AND CASE document#>>'{effect,state}'
-   WHEN 'applied' THEN document#>'{effect,mac}' IS NULL OR document#>'{effect,mac}'='null'::jsonb
+   WHEN 'applied' THEN ((document#>>'{account,platform}'='windows')
+     AND document#>>'{effect,windows,kind}'=document#>>'{configuration,windows,kind}'
+     AND document#>>'{effect,windows,factorGeneration}'=document->>'factorGeneration'
+     AND (document#>>'{configuration,windows,kind}'='rss_factor' OR
+       (document#>>'{configuration,windows,kind}'='whfb'
+        AND document#>>'{effect,windows,policy}'='present'
+        AND document#>>'{effect,windows,registration}'='present'
+        AND document#>>'{effect,windows,hardwareKey}'='present')))
     OR (document#>>'{effect,mac,secureToken}'='present'
      AND (document#>>'{configuration,mac,authentication}'<>'password' OR
        (document#>>'{effect,mac,passwordSync}'='present' AND document#>>'{effect,mac,keychainSync}'='present'))

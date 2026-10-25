@@ -221,7 +221,7 @@ impl Binding {
             && self
                 .effect
                 .as_ref()
-                .is_some_and(|effect| effect.complete(&self.configuration))
+                .is_some_and(|effect| effect.complete(&self.configuration, self.intent.platform()))
     }
 }
 
