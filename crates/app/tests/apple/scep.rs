@@ -1,6 +1,4 @@
-use super::{
-    Browser, Fixture, Method, StatusCode, case_tenant, lifecycle, protocol, scep_client,
-};
+use super::{Browser, Fixture, Method, StatusCode, case_tenant, lifecycle, protocol, scep_client};
 use anyhow::{Result, ensure};
 use serde_json::json;
 use sqlx::Connection;
