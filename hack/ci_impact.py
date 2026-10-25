@@ -802,14 +802,15 @@ def select(root, base):
             except SelectionError:
                 if (root / path).exists():
                     raise
-                # Deleted test carriers have no execution left. Their old target
-                # is still discovered to verify surviving ignored-test ownership.
-                old_tests = [m for m in before.modules.values()
-                             if matches(path, (*m['test_inputs'], *m['support_inputs']))]
-                if not old_tests and not matches(path, before.t1):
+                # Deleted registered inputs have no execution left. Their old
+                # targets still prove surviving ignored-test ownership.
+                old_owners = [m for m in before.modules.values()
+                              if matches(path, (*m['test_inputs'], *m['support_inputs'], *m['production_inputs']))]
+                if not old_owners and not matches(path, before.t1) and path not in before.tools:
                     raise
-                checks.extend(ownership_builds(old_tests, graphs[1] or metadata(root)))
-                impact = Inputs((), (), 'unit-test')
+                if old_owners:
+                    checks.extend(ownership_builds(old_owners, graphs[1] or metadata(root)))
+                impact = Inputs((), (), 'tool' if path in before.tools else 'unit-test')
             modules.update(impact.modules)
             active_tools = set(impact.tools) - retired_tools
             tools.update(active_tools)
