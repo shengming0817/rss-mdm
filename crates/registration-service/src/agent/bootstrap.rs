@@ -115,7 +115,7 @@ impl Service {
             let deadline = if replay { stored_deadline } else { stored_deadline.min(now + 1800) };
             if !replay { sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='signing',transaction_id=$3,csr_digest=$4,spki=$5,deadline=$6 WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(s.tenant.to_string()).bind(csr.attempt()).bind(&input.transaction).bind(csr.digest().as_slice()).bind(csr.spki().as_slice()).bind(deadline).execute(c).await.map_err(db)?; }
-            Ok(Change { value: serde_json::json!({"allow":true,"data":{"subject":{"commonName":rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()),"organizationalUnit":[certificate::PURPOSE]},"notAfter":time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)?}}), replay, digest: digest(&(csr.attempt(),csr.digest(),&input.transaction))? })
+            Ok(Change {value: serde_json::json!({"allow":true,"data":{"subject":{"commonName":rss_mdm_certificate::apple::subject(csr.installation(),csr.attempt()),"organizationalUnit":[certificate::PURPOSE]},"notAfter":time::OffsetDateTime::from_unix_timestamp(deadline).map_err(|_|Error::Corrupt)?.format(&time::format_description::well_known::Rfc3339).map_err(|_|Error::Corrupt)?}}), replay})
         })).await.map_err(Into::into)
     }
     pub async fn bootstrap_notify(
@@ -183,7 +183,7 @@ impl Service {
                 sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='issued',fingerprint=$3,certificate=$4 WHERE tenant_id=$1::uuid AND id=$2")
                     .bind(s.tenant.to_string()).bind(id).bind(fingerprint).bind(der).execute(c).await.map_err(db)?;
             } else {return Err(Error::Forbidden);}
-            Ok(Change {value:(),replay,digest:digest(&(id,fingerprint))?})
+            Ok(Change {value:(), replay})
         })).await.map_err(Into::into)
     }
     pub async fn native_grant(
@@ -229,7 +229,7 @@ impl Service {
             let (value,replay)=s.native.grant(c,&source,input).await?;
             sqlx::query("UPDATE mdm_access.agent_bootstraps SET state='consumed' WHERE tenant_id=$1::uuid AND id=$2")
                 .bind(s.tenant.to_string()).bind(id).execute(c).await.map_err(db)?;
-            Ok(Change {value,replay,digest:digest(input)?})
+            Ok(Change {value, replay})
         })).await.map_err(Into::into)
     }
 }

@@ -146,19 +146,6 @@ impl ExecutionService {
                     if let Some(value) =
                         crate::service::replay(tx, input.operation_id, &fingerprint, audit).await?
                     {
-                        let fact = rss_mdm_audit_integration::Fact::business(
-                            audit,
-                            &format!(
-                                "command:{}:{}:accept",
-                                proof.principal_id(),
-                                input.operation_id
-                            ),
-                            &fingerprint,
-                            202,
-                            "success",
-                            None,
-                        )?;
-                        service.audit_store.append_in(tx, &fact, true).await?;
                         return Ok(value);
                     }
                     crate::service::reject_existing_operation(tx, input.operation_id).await?;

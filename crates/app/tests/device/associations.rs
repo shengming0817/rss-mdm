@@ -352,11 +352,7 @@ async fn competing_confirmations_have_one_receipt_and_no_orphan_relation() -> an
             .state,
         State::Confirmed
     );
-    crate::audit_test_support::projection::drain(
-        TenantId::parse(case_a())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let mut changes = s.changes(&admin, &window(None)).await?;
     let mut found = 0;
     loop {
@@ -454,11 +450,7 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
     assert_eq!(counts, (2, 4, 2));
     let checkpoint:bool=sqlx::query_scalar("SELECT c.watermark=a.revision FROM mdm_devices.checkpoints c JOIN mdm.asset_clock a USING(tenant_id) WHERE tenant_id=$1::uuid").bind(case_a()).fetch_one(&mut c).await?;
     assert!(checkpoint);
-    crate::audit_test_support::projection::drain(
-        TenantId::parse(case_a())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let mut changes = s.changes(&admin, &window(None)).await?;
     let mut found = 0;
     loop {
@@ -537,11 +529,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     );
     request.association_id = Some(relation.id);
     request.expected_version = relation.version;
-    crate::audit_test_support::projection::drain(
-        TenantId::parse(case_a())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let first = service.changes(&admin, &window(Some(&empty))).await?;
     assert!(first["nextCursor"].is_string());
     // A write after the first page must wait for the next polling window.
@@ -577,11 +565,7 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         .as_u64()
         .context("position")?;
     let restarted = Associations::new(audit_store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
-    crate::audit_test_support::projection::drain(
-        TenantId::parse(case_a())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let (items, checkpoint) = drain(
         &restarted,
         &admin,

@@ -679,7 +679,7 @@ impl ResourceCatalog {
                             tx,
                             &s.audit_store,
                             audit,
-                            Some((id, &fingerprint)),
+                            Some(id),
                             true,
                         )
                         .await?;
@@ -712,7 +712,7 @@ impl ResourceCatalog {
                         tx,
                         &s.audit_store,
                         audit,
-                        operation.map(|id| (id, fingerprint.as_slice())),
+                        operation,
                         false,
                     )
                     .await?;

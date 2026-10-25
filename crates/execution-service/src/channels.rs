@@ -34,10 +34,6 @@ pub enum Rejection {
     AuditIntegrity,
     #[error("protocol audit contract failure")]
     AuditContract,
-    #[error("audit source backlog is full")]
-    AuditBackpressure,
-    #[error("audit failure-fact reserve is exhausted")]
-    AuditReserveExhausted,
     #[error("protocol audit unavailable")]
     Audit,
 }

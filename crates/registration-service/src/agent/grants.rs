@@ -23,7 +23,7 @@ impl Service {
                 let row=grant_row(c,&tenant,id).await?;
                 if row.try_get::<String,_>("request_digest").map_err(db)?!=*d{return Err(Error::Conflict);}
                 check_secret(&tenant,&row,&input.secret)?;
-                return Ok(Change{value:receipt(&row)?,replay:true,digest:d.clone()});
+                return Ok(Change{value:receipt(&row)?, replay:true});
             }
             crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
             let values=settings::admit_on(c,&tenant,input.platform).await?;
@@ -35,7 +35,7 @@ impl Service {
             sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at) VALUES($1::uuid,$2,$3,'browser',$4,$5,$6,$7,$8,'pending',statement_timestamp(),statement_timestamp()+make_interval(secs=>$9))")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(Uuid::new_v4().to_string()).bind(platform(input.platform))
                 .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*bound).bind(f64::from(values.grant_seconds)).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})
+            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?, replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn authorize(
@@ -85,11 +85,7 @@ impl Service {
                     digest: &d,
                 };
                 if let Some(old) = crate::operations::replay(c, &op).await? {
-                    return Ok(Change {
-                        value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,
-                        replay: true,
-                        digest: d,
-                    });
+                    return Ok(Change {value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?, replay: true});
                 }
                 let row = grant_row(c, &tenant, *id).await?;
                 if row.try_get::<String, _>("source").map_err(db)? != "browser" {
@@ -160,11 +156,7 @@ tenant_id=$1::uuid AND id=$2
                     a,
                 )
                 .await?;
-                Ok(Change {
-                    value,
-                    replay: false,
-                    digest: d,
-                })
+                Ok(Change {value, replay: false})
             })
         })
         .await
@@ -196,11 +188,7 @@ tenant_id=$1::uuid AND id=$2
                     digest: &d,
                 };
                 if let Some(old) = crate::operations::replay(c, &op).await? {
-                    return Ok(Change {
-                        value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?,
-                        replay: true,
-                        digest: d,
-                    });
+                    return Ok(Change {value: serde_json::from_str(&old).map_err(|_| Error::Corrupt)?, replay: true});
                 }
                 let row = grant_row(c, &tenant, *id).await?;
                 if matches!(row.try_get::<String,_>("source").map_err(db)?.as_str(),"configuration"|"native"){return Err(Error::Forbidden);}
@@ -226,11 +214,7 @@ UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND 
                     a,
                 )
                 .await?;
-                Ok(Change {
-                    value,
-                    replay: false,
-                    digest: d,
-                })
+                Ok(Change {value, replay: false})
             })
         })
         .await
@@ -335,7 +319,6 @@ operation_id=$2
                         return Ok(Change {
                             value: receipt(&old)?,
                             replay: true,
-                            digest: digest.clone(),
                         });
                     }
                     let seconds = settings::admit_on(c, &tenant, input.platform)
@@ -398,7 +381,6 @@ $13)
                     Ok(Change {
                         value: receipt(&grant_row(c, &tenant, id).await?)?,
                         replay: false,
-                        digest: digest.clone(),
                     })
                 })
             },
@@ -525,7 +507,6 @@ operation_id=$2
                     return Ok(Change {
                         value: receipt(&g)?,
                         replay: true,
-                        digest: d.clone(),
                     });
                 }
                 let seconds = settings::admit_on(c, &tenant, input.platform)
@@ -588,7 +569,6 @@ $13)
                 Ok(Change {
                     value: receipt(&grant_row(c, &tenant, id).await?)?,
                     replay: false,
-                    digest: d.clone(),
                 })
             })
         })

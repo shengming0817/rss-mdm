@@ -445,16 +445,19 @@ pub async fn record(
                     )
                     .await?;
                 }
-                let hash = transaction::fingerprint(&upload.binding)?;
+
                 let fact = rss_mdm_audit_integration::Fact::business(
                     audit,
                     &format!("content:{}:{}", upload.binding.actor, upload.id),
-                    &hash,
                     201,
                     "success",
                     None,
                 )?;
-                app.audit_store.append_in(tx, &fact, !fresh).await?;
+                (if !fresh {
+                    Ok(())
+                } else {
+                    app.audit_store.append_in(tx, &fact).await
+                })?;
                 proof.check_live()?;
                 Ok(())
             })

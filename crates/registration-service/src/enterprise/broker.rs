@@ -177,21 +177,7 @@ async fn qualify(
     }
     Ok(())
 }
-fn digest(context: &Context) -> Result<String, Error> {
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(
-            serde_json::to_vec(&(
-                context.id,
-                context.binding.id,
-                context.binding.generation,
-                context.relying_party.id.as_str(),
-                context.relying_party.revision
-            ))
-            .map_err(|_| Error::Malformed)?
-        )
-    ))
-}
+
 fn tenant(service: &Service) -> Result<Uuid, Error> {
     Uuid::parse_str(&service.tenant.to_string()).map_err(|_| Error::Configuration)
 }
@@ -234,7 +220,7 @@ impl Service {
             if exists {
                 let (old,_)=load(c,tenant,input.operation_id,true).await?;browser_matches(&old,browser)?;
                 if old.binding.id!=input.binding_id||old.relying_party.id!=input.relying_party||old.relying_party.target_fingerprint!=client.fingerprint(){return Err(Error::Conflict);}
-                return Ok(AuditedChange{digest:digest(&old)?,value:(old,false),replay:true});
+                return Ok(AuditedChange{value:(old,false), replay:true});
             }
             let now=rss_mdm_webhook_service::events::now_on(c).await.map_err(|_|Error::Storage)?;
             // Preserve operation receipts; expired backend tokens are the only material discarded here.
@@ -252,7 +238,7 @@ impl Service {
             qualify(c,&value,*admission).await?;
             sqlx::query("INSERT INTO mdm_enterprise.brokers(tenant_id,id,document,expires_at,phase) VALUES($1,$2,$3,$4,'preparing')")
                 .bind(tenant).bind(value.id).bind(serde_json::to_value(&value).map_err(|_|Error::Malformed)?).bind(value.expires_at).execute(c).await.map_err(db)?;
-            Ok(AuditedChange{digest:digest(&value)?,value:(value,true),replay:false})
+            Ok(AuditedChange{value:(value,true), replay:false})
         })).await
     }
     pub async fn broker_attach_challenge(
@@ -293,7 +279,6 @@ impl Service {
                     value.phase = wire::Phase::AwaitingProof;
                     save(c, &value, None).await?;
                     Ok(AuditedChange {
-                        digest: digest(&value)?,
                         value: response,
                         replay: false,
                     })
@@ -334,7 +319,6 @@ impl Service {
                 value.attempt = Some(Uuid::new_v4());
                 save(c, &value, None).await?;
                 Ok(AuditedChange {
-                    digest: digest(&value)?,
                     value,
                     replay: false,
                 })
@@ -372,7 +356,6 @@ impl Service {
                     save(c, &value, sealed.as_deref()).await?;
                 }
                 Ok(AuditedChange {
-                    digest: digest(&value)?,
                     value: (),
                     replay: false,
                 })
@@ -460,7 +443,6 @@ impl Service {
                         continuation: Some(continuation),
                     };
                     Ok(AuditedChange {
-                        digest: digest(&value)?,
                         value: status,
                         replay: false,
                     })
@@ -525,11 +507,7 @@ impl Service {
                 let replay = value.phase == wire::Phase::Cancelled;
                 value.phase = wire::Phase::Cancelled;
                 save(c, &value, None).await?;
-                Ok(AuditedChange {
-                    digest: digest(&value)?,
-                    value: (),
-                    replay,
-                })
+                Ok(AuditedChange { value: (), replay })
             })
         })
         .await
@@ -620,11 +598,7 @@ impl Service {
                     value.phase = wire::Phase::Consumed;
                     value.consume_operation = Some(*operation);
                     save(c, &value, Some(&sealed)).await?;
-                    Ok(AuditedChange {
-                        digest: digest(&value)?,
-                        value: (),
-                        replay,
-                    })
+                    Ok(AuditedChange { value: (), replay })
                 })
             },
         )

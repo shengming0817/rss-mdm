@@ -129,7 +129,6 @@ pub struct Assembly {
 pub(crate) struct Change<R> {
     pub(crate) value: R,
     pub(crate) replay: bool,
-    pub(crate) digest: String,
 }
 impl Service {
     pub fn new(a: Assembly) -> Result<Self, Error> {
@@ -226,15 +225,16 @@ impl Service {
                             let fact = Fact::business(
                                 a,
                                 &format!("agent-enroll:{}:{op}", snapshot.action),
-                                change.digest.as_bytes(),
                                 200,
                                 "success",
                                 None,
                             )?;
-                            store
-                                .append(tx, &fact, change.replay)
-                                .await
-                                .map_err(Error::from)?;
+                            (if change.replay {
+                                Ok(())
+                            } else {
+                                store.append(tx, &fact).await
+                            })
+                            .map_err(Error::from)?;
                         }
                         if change.replay {
                             a.management_result(

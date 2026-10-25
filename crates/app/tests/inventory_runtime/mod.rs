@@ -471,8 +471,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "MODULE=inventory.runtime: pure discovery does not create an Audit or Ledger head"]
-async fn empty_discovery_has_no_audit_head() -> Result<()> {
+#[ignore = "MODULE=inventory.runtime: pure discovery does not append Audit"]
+async fn empty_discovery_does_not_append_audit() -> Result<()> {
     let (pool, source, audit) = crate::audit_test_support::request_store().await?;
     let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(pool.clone()));
     let tenant = Uuid::new_v4().to_string();
@@ -481,11 +481,11 @@ async fn empty_discovery_has_no_audit_head() -> Result<()> {
     let mut tx = pool.begin().await?;
     crate::Database::configure_transaction(&mut tx, &tenant).await?;
     let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM rss_audit.heads WHERE tenant_id=$1::uuid")
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(&tenant)
             .fetch_one(&mut *tx)
             .await?;
-    ensure!(count == 0, "empty discovery created an Audit head");
+    ensure!(count == 0, "empty discovery appended audit");
     tx.rollback().await?;
     source.close().await;
     pool.close().await;

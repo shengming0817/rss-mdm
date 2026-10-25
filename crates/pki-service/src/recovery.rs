@@ -142,7 +142,6 @@ impl Registry {
                             value: serde_json::from_slice(&old).map_err(|_| Error::Storage)?,
                             replay: true,
                             key: format!("pki:{}:{phase}", input.operation),
-                            fingerprint: hash.clone(),
                         });
                     }
                     adopt_in(c, p.tenant_id(), input.attempt, binding, bytes).await?;
@@ -162,7 +161,6 @@ impl Registry {
                         },
                         replay: false,
                         key: format!("pki:{}:{phase}", input.operation),
-                        fingerprint: hash.clone(),
                     })
                 })
             },

@@ -217,11 +217,10 @@ pub async fn seal(
     audit.registration(Uuid::parse_str(run.scope.registration().as_str()).map_err(|_| corrupt())?);
     audit.identify_service("service:collection-finalizer");
     let details = serde_json::json!({"collectionResult":result,"reason":reason,"batchDigest":digest,"sealedAt":now});
-    let fingerprint = serde_json::to_vec(&details).expect("closed collection outcome");
+
     let fact = rss_mdm_audit_integration::Fact::business(
         &audit,
         &format!("collection:{}:finish", run.id),
-        &fingerprint,
         200,
         if result == "failed" {
             "failed"
@@ -430,10 +429,6 @@ impl Delivery {
                 (&self.audit_store, tenant, &audit),
                 |(store, tenant, audit), tx| {
                     Box::pin(async move {
-                        store
-                            .prepare_source(tx, audit, &[])
-                            .await
-                            .map_err(Error::from)?;
                         let mut facts = Vec::new();
                         let count = tx
                             .with_connection_context(
@@ -444,7 +439,7 @@ impl Delivery {
                             )
                             .await?;
                         for fact in &facts {
-                            store.append(tx, fact, false).await.map_err(Error::from)?;
+                            store.append(tx, fact).await.map_err(Error::from)?;
                         }
                         audit.mark_commit_started();
                         Ok(count)

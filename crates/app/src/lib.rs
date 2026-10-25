@@ -86,12 +86,9 @@ mod agent;
 mod api;
 #[path = "assembly/apple/mod.rs"]
 mod apple;
-mod audit_health;
-mod audit_projection;
 mod clock;
 pub mod config;
 mod identity;
-mod identity_audit;
 mod lifecycle;
 pub mod maintenance;
 pub mod migration;

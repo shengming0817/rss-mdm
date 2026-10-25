@@ -376,9 +376,9 @@ async fn key_scope_expiry_creator_independence_and_uncertain_issuance() -> Resul
         }
         // Real rollback after the key write: no metadata, operation receipt or secret escapes.
         let failed_id = Uuid::new_v4();
-        pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
+        pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")?;
         let failed = admin.call(&router, Method::POST, "/api/v1/api-keys", Some(json!({"id":failed_id,"operationId":Uuid::new_v4(),"metadata":scoped}))).await;
-        pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
+        pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")?;
         let (status, result) = failed?;
         ensure!(!status.is_success() && result.get("secret").is_none());
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.api_keys WHERE tenant_id='{}' AND id='{failed_id}'",case_tenant()))?.trim() == "0");
@@ -448,7 +448,6 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         tenant,
         &secret("timeline-cursor"),
     )?);
-    timeline.initialize().await?;
     let routes = rss_mdm_management_http::resource_catalog::http::routes()
         .with_state(Arc::new(
             rss_mdm_management_http::resource_catalog::http::HttpState {
@@ -559,7 +558,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         ensure!(call(&router, Method::POST, &resource_path, &[("x-api-key",secret)], Some(body)).await? == written);
         ensure!(call(&router, Method::GET, &resource_path, &[("x-api-key",secret)], None).await?.0 == StatusCode::OK);
         let actor = format!("api-key:{id}");
-        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.event.facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success").await? > 0);
+        ensure!(audit_count(|r| r.actor()==Some(actor.as_str()) && r.event.event().facts().actor().kind().as_str()=="api_key" && r.operation()==Some(operation.to_string().as_str()) && r.result()=="success").await? > 0);
         let enrollment_op = Uuid::new_v4().to_string();
         let enrollment = call(&router, Method::POST, "/api/v1/enrollments", &[("x-api-key",secret),("idempotency-key",&enrollment_op)], Some(json!({"deviceId":case::name("device-1"),"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?;
         ensure!(enrollment.0 == StatusCode::OK, "managed enrollment: {}", enrollment.0);

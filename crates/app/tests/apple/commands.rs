@@ -339,13 +339,13 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
             .await?;
     sqlx::query("UPDATE mdm_recovery.versions SET invalidated_at=floor(extract(epoch FROM clock_timestamp()))::bigint-7776001 WHERE tenant_id=$1::uuid AND entry=$2 AND version<3").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).execute(&mut pg).await?;
     let before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
             .fetch_one(&mut pg)
             .await?;
     f.commands.service.maintain_recovery_credentials().await?;
     let after: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
             .fetch_one(&mut pg)
             .await?;

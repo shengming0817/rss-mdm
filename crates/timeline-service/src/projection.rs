@@ -247,7 +247,7 @@ mod identity_tests {
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let event = Fact::business(&audit, key, b"input", 200, "success", None)
+        let event = Fact::business(&audit, key, 200, "success", None)
             .unwrap()
             .with_details(details)
             .unwrap()

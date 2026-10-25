@@ -148,7 +148,7 @@ pub async fn checkin(
                         })
                         .await?;
                     for fact in &inputs.facts {
-                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                        store.append(tx, fact).await.map_err(Error::from)?;
                     }
                     if let Some(result) = request_result {
                         inputs.audit.require_final_request();
@@ -361,16 +361,9 @@ async fn checkin_on(
             )
         }
     };
-    let fact = rss_mdm_audit_integration::Fact::business(
-        audit,
-        &key,
-        digest.as_bytes(),
-        200,
-        "success",
-        None,
-    )
-    .and_then(|fact| fact.with_details(details))
-    .map_err(Error::from)?;
+    let fact = rss_mdm_audit_integration::Fact::business(audit, &key, 200, "success", None)
+        .and_then(|fact| fact.with_details(details))
+        .map_err(Error::from)?;
     facts.push(fact);
     Ok(None)
 }

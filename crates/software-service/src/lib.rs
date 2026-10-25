@@ -20,12 +20,7 @@ pub trait AuditPort: Send + Sync {
         business: &'a [rss_transactional_messaging::message::PartitionIdentity],
     ) -> AuditFuture<'a>;
 
-    fn append_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        fact: &'a Fact,
-        replayed: bool,
-    ) -> AuditFuture<'a>;
+    fn append_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>, fact: &'a Fact) -> AuditFuture<'a>;
 }
 /// Resolves only a host-approved exact credential binding, without exposing credential files.
 pub trait Credentials: Send + Sync {
@@ -91,13 +86,8 @@ impl AuditPort for rss_mdm_audit_integration::AuditStore {
     fn bind_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>) -> AuditFuture<'a> {
         Box::pin(async move { self.bind_in(tx).await })
     }
-    fn append_in<'a>(
-        &'a self,
-        tx: &'a mut PgTransaction<'_>,
-        fact: &'a Fact,
-        replayed: bool,
-    ) -> AuditFuture<'a> {
-        Box::pin(async move { self.append_in(tx, fact, replayed).await })
+    fn append_in<'a>(&'a self, tx: &'a mut PgTransaction<'_>, fact: &'a Fact) -> AuditFuture<'a> {
+        Box::pin(async move { self.append_in(tx, fact).await })
     }
 }
 

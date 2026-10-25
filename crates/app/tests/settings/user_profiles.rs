@@ -493,7 +493,6 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                     p.principal_id(),
                     failed.operation_id
                 ),
-                b"different-command",
                 200,
                 "success",
                 None,
@@ -506,9 +505,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                     f.identity.tenant,
                     &budget.source_control(),
                     (&f.audit, &fact),
-                    |(store, fact), tx| {
-                        Box::pin(async move { store.append(tx, fact, false).await })
-                    },
+                    |(store, fact), tx| Box::pin(async move { store.append(tx, fact).await }),
                 )
                 .await;
             ensure!(staged.fold(

@@ -20,14 +20,7 @@ impl super::super::Planning {
         policy: &Policy,
         after: Option<String>,
     ) -> Result<Option<PreparedLifecycle>> {
-        let terminal_partition = rss_mdm_audit_integration::source_partition(
-            tx.tenant_id(),
-            "policy",
-            &policy.id.to_string(),
-        )
-        .map_err(Error::from)?;
         if !policy.state.is_enabled() {
-            tx.prepare_outbox_partitions(&[terminal_partition]).await?;
             return Ok(None);
         }
         let published = checked(
@@ -96,18 +89,6 @@ impl super::super::Planning {
             return Err(Error::Unavailable(crate::Failure::PlanningStorage).into());
         }
 
-        let mut partitions = vec![terminal_partition];
-        for item in &objects {
-            partitions.push(
-                rss_mdm_audit_integration::source_partition(
-                    tenant,
-                    "mdm",
-                    &item.object.object.key(),
-                )
-                .map_err(Error::from)?,
-            );
-        }
-        tx.prepare_outbox_partitions(&partitions).await?;
         Ok(Some(PreparedLifecycle {
             policy: policy.clone(),
             frozen: Frozen::UnmanageDevice {
@@ -211,20 +192,18 @@ impl super::super::Planning {
                     rss_mdm_audit_integration::AuditIntent::Management,
                 );
                 audit.target(&key);
-                let bytes = serde_json::to_vec(&(policy.id, version, &key, accepted.0))
-                    .map_err(|_| Error::Malformed)?;
+
                 let fact = Fact::business(
                     &audit,
                     &format!(
                         "retirement:{}:policy:{}:{version}:accepted",
                         accepted.0, policy.id
                     ),
-                    &bytes,
                     200,
                     "success",
                     None,
                 )?;
-                let appended = self.audit_store.append_in(tx, &fact, false).await;
+                let appended = self.audit_store.append_in(tx, &fact).await;
                 audit.finalize(
                     appended
                         .as_ref()

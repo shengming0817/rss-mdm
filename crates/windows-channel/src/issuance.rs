@@ -324,7 +324,7 @@ pub(crate) async fn complete(
                         })
                         .await?;
                     for fact in &inputs.facts {
-                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                        store.append(tx, fact).await.map_err(Error::from)?;
                     }
                     let fact = rss_mdm_audit_integration::Fact::business(
                         inputs.audit,
@@ -333,16 +333,17 @@ pub(crate) async fn complete(
                             inputs.authority.coordinates().actor,
                             inputs.authority.coordinates().operation
                         ),
-                        inputs.operation.digest().as_bytes(),
                         200,
                         "success",
                         Some(inputs.authority.coordinates().id),
                     )
                     .map_err(Error::from)?;
-                    store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         inputs.audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

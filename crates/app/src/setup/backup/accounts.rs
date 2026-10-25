@@ -61,8 +61,12 @@ pub(super) async fn verify_restored(
         let authority = rss_identity_postgres::Authority::connect_runtime(
             runtime.clone(),
             kdf.clone(),
-            crate::identity::authority_config(instance, vec![tenant_id])
-                .map_err(|_| Error::Input)?,
+            crate::identity::authority_config(
+                instance,
+                vec![tenant_id],
+                config.audit.integrity().map_err(|_| Error::Input)?,
+            )
+            .map_err(|_| Error::Input)?,
             policy,
             crate::identity::deadline(),
         )

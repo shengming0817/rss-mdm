@@ -79,7 +79,7 @@ LOCAL_PACKAGES = {
 
 IDENTITY_PACKAGES = {"rss-identity-core", "rss-identity-postgres", "rss-identity-http-axum", "rss-identity-oidc"}
 
-AUDIT_PACKAGES = {"rss-audit-core", "rss-audit-postgres"}
+AUDIT_PACKAGES = {"rss-audit-core", "rss-audit-postgres", "rss-ledger", "rss-ledger-postgres"}
 
 def audit_dependency(dep):
     require(isinstance(dep, dict) and set(dep) <= {'git','rev','features','default-features'} and {'git','rev'} <= set(dep), 'invalid Audit dependency')

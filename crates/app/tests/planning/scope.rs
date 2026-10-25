@@ -39,7 +39,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     sql(&format!(
         "UPDATE mdm_planning.operations SET response='[]' WHERE id='{operation}'"
     ));
-    let before = sql("SELECT count(*) FROM mdm_audit.receipts WHERE source_id='mdm.business'");
+    let before = sql("SELECT count(*) FROM rss_audit.records WHERE source_id='mdm.business'");
     assert!(
         matches!(
             execute(&m, &command).await,
@@ -51,7 +51,7 @@ async fn corrupt_scope_is_a_storage_failure_not_a_client_error() {
     );
     assert_eq!(
         before,
-        sql("SELECT count(*) FROM mdm_audit.receipts WHERE source_id='mdm.business'")
+        sql("SELECT count(*) FROM rss_audit.records WHERE source_id='mdm.business'")
     );
     let document = serde_json::to_string(&receipt).unwrap().replace('\'', "''");
     sql(&format!(
@@ -369,7 +369,7 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     worker.apply(&claim, diff, &control).await.unwrap();
     let state = || {
         sql(&format!(
-            "SELECT jsonb_build_array(phase,input,source_index,source_cursor,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{t}' AND target='{scope}'),(SELECT count(*) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND scope='{scope}'),(SELECT count(*) FROM mdm_audit.receipts WHERE source_id='mdm.business' AND tenant_id='{t}')) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND id='{task}'",
+            "SELECT jsonb_build_array(phase,input,source_index,source_cursor,(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{t}' AND target='{scope}'),(SELECT count(*) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND scope='{scope}'),(SELECT count(*) FROM rss_audit.records WHERE source_id='mdm.business' AND tenant_id='{t}')) FROM mdm_planning.scope_runs WHERE tenant_id='{t}' AND id='{task}'",
             t = tenant()
         ))
     };

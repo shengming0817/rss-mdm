@@ -1,32 +1,30 @@
-pub(crate) use crate::publication_support::pg::projection;
-// Business assertions read committed source facts without driving projections.
-use rss_audit_core::AuditEventV1;
+// Business assertions read the atomically committed final audit facts.
+use rss_audit_core::DecodedAuditV1;
 use serde_json::Value;
 
 pub(crate) struct Record {
-    pub event: AuditEventV1,
+    pub event: DecodedAuditV1,
     pub payload: Value,
 }
 impl Record {
-    fn from_source(bytes: &[u8]) -> anyhow::Result<Self> {
-        Self::from_event(rss_mdm_audit_integration::decode_source_event(bytes)?)
-    }
-    fn from_event(event: AuditEventV1) -> anyhow::Result<Self> {
-        let payload = serde_json::from_slice(event.context().payload().as_bytes())?;
+    fn from_canonical(bytes: &[u8]) -> anyhow::Result<Self> {
+        let event = rss_audit_core::decode_untrusted(bytes)?;
+        let payload = serde_json::from_slice(event.event().context().payload().as_bytes())?;
         Ok(Self { event, payload })
     }
     pub fn action(&self) -> &str {
-        self.event.facts().action().as_str()
+        self.event.event().facts().action().as_str()
     }
     pub fn target(&self) -> &str {
-        self.event.facts().resource().id().as_str()
+        self.event.event().facts().resource().id().as_str()
     }
     pub fn actor(&self) -> Option<&str> {
-        (self.event.facts().actor().kind().as_str() != "unidentified")
-            .then(|| self.event.facts().actor().id().as_str())
+        (self.event.event().facts().actor().kind().as_str() != "unidentified")
+            .then(|| self.event.event().facts().actor().id().as_str())
     }
     pub fn operation(&self) -> Option<&str> {
         self.event
+            .event()
             .context()
             .coordinates()
             .operation_id()
@@ -34,13 +32,14 @@ impl Record {
     }
     pub fn request(&self) -> Option<&str> {
         self.event
+            .event()
             .context()
             .coordinates()
             .request_id()
             .map(|v| v.as_str())
     }
     pub fn source(&self) -> &str {
-        self.event.identity().source().source_id().as_str()
+        self.event.event().identity().source().source_id().as_str()
     }
     pub fn result(&self) -> &str {
         self.payload["result"].as_str().expect("product result")
@@ -51,12 +50,11 @@ impl Record {
     }
 }
 pub(crate) async fn read(connection: &mut sqlx::PgConnection) -> anyhow::Result<Vec<Record>> {
-    let rows: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT source_bytes FROM mdm_audit.receipts ORDER BY tenant_id,source_id",
-    )
-    .fetch_all(connection)
-    .await?;
-    rows.iter().map(|row| Record::from_source(row)).collect()
+    let rows: Vec<Vec<u8>> =
+        sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY tenant_id,source_id")
+            .fetch_all(connection)
+            .await?;
+    rows.iter().map(|row| Record::from_canonical(row)).collect()
 }
 pub(crate) async fn request_store() -> anyhow::Result<(
     sqlx::PgPool,
@@ -91,7 +89,6 @@ pub(crate) async fn request_store() -> anyhow::Result<(
         Integrity::Plain,
         runtime.clone(),
         tenant,
-        Default::default(),
         &control,
     )
     .await?;
@@ -100,13 +97,19 @@ pub(crate) async fn request_store() -> anyhow::Result<(
 
 pub(crate) async fn audit_records() -> anyhow::Result<Vec<Record>> {
     let lines = crate::test_support::process::pg(&format!(
-        "SELECT convert_from(source_bytes,'UTF8') FROM mdm_audit.receipts WHERE tenant_id='{TENANT}' ORDER BY source_id,event_id",
+        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY source_id,event_id",
         TENANT = crate::test_support::runtime::case_tenant()
     ))?;
     lines
         .lines()
         .filter(|line| !line.is_empty())
-        .map(|line| Record::from_source(line.as_bytes()))
+        .map(|line| {
+            let bytes = (0..line.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&line[i..i + 2], 16))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Record::from_canonical(&bytes)
+        })
         .collect()
 }
 
@@ -133,8 +136,7 @@ impl crate::Database {
             .get_or_try_init(|| async { source_runtime(&self.archive_pool(), tenant).await })
             .await
             .map_err(|_| crate::Error::Unavailable(crate::Failure::Database))?;
-        self.audit_store(config, runtime.clone(), tenant, Default::default())
-            .await
+        self.audit_store(config, runtime.clone(), tenant).await
     }
 }
 

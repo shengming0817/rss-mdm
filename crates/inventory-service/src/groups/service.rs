@@ -158,14 +158,7 @@ impl Groups {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
                         );
-                        receipts::audit(
-                            tx,
-                            &s.audit_store,
-                            audit,
-                            operation.zip(Some(digest.as_slice())),
-                            true,
-                        )
-                        .await?;
+                        receipts::audit(tx, &s.audit_store, audit, operation, true).await?;
                         authorize()?;
                         return Ok(old);
                     }
@@ -201,14 +194,7 @@ impl Groups {
                     if let Some(id) = operation {
                         receipts::receipt(tx, actor, id, &digest, &result).await?;
                     }
-                    receipts::audit(
-                        tx,
-                        &s.audit_store,
-                        audit,
-                        operation.zip(Some(digest.as_slice())),
-                        false,
-                    )
-                    .await?;
+                    receipts::audit(tx, &s.audit_store, audit, operation, false).await?;
                     authorize()?;
                     Ok(result)
                 })

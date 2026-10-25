@@ -377,12 +377,15 @@ async fn commit(
                     let fact = Fact::business(
                         a,
                         &format!("{action}:{}", stored.id),
-                        stored.digest.as_bytes(),
                         302,
                         "success",
                         None,
                     )?;
-                    app.audit_store.append(tx, &fact, replayed).await?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })?;
                     a.mark_commit_started();
                     Ok(())
                 })

@@ -134,14 +134,13 @@ pub(crate) async fn issue(
                         let fact = rss_mdm_audit_integration::Fact::business(
                             audit,
                             &format!("windows-renewal:{id}:issued"),
-                            digest.as_slice(),
                             200,
                             "success",
                             None,
                         )
                         .map_err(Error::from)?;
                         app.audit_store
-                            .append(tx, &fact, false)
+                            .append(tx, &fact)
                             .await
                             .map_err(Error::from)?;
                     }
@@ -328,14 +327,13 @@ pub(crate) async fn activate(
                         let fact = rss_mdm_audit_integration::Fact::business(
                             audit,
                             &format!("windows-renewal:{id}:activated"),
-                            &leaf.fingerprint(),
                             200,
                             "success",
                             None,
                         )
                         .map_err(Error::from)?;
                         app.audit_store
-                            .append(tx, &fact, false)
+                            .append(tx, &fact)
                             .await
                             .map_err(Error::from)?;
                         audit.mark_commit_started();

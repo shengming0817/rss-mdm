@@ -38,7 +38,7 @@ make ci-full
 | `installation.migration` | App 正式安装、重放、损坏账本拒绝和 CLI 并发安装；安装使用空库。 |
 | `installation.registry` | 租户 CRUD、回执、容量竞争、first-use 与 RLS；从兼容 product baseline 克隆独立库，实际迁移动作仍由专项显式调用。 |
 | `audit.{receipts,integrity,recovery,budget}` | App 通用 Audit 组合、Plain/Ledger、ACK、进程中断和预算；业务模块保留自己事务的原子性证明。 |
-| `identity.{local,sso,audit}` | 身份生命周期、联合登录、Identity outbox→Audit worker；不承载资产或任务矩阵。 |
+| `identity.{local,sso}` | 身份生命周期、联合登录及同事务审计；不承载资产或任务矩阵。 |
 | `authorization.{rules,membership,capacity,initialization,admission}` | 规则与产品用户组、CAS/撤权、真实容量、初始化恢复和准入；路由权限交叉矩阵只在 rules 执行。 |
 | `enrollment.{http,recovery}`、`device.{binding,revocation,recovery,admission}` | 注册请求生命周期与回执；设备世代、凭据、来源、绑定竞争和撤销分别归属。 |
 | `agent.pki` | registration owner 的签发授权、真实固定 step-ca/JWK CSR 绑定、365/3650 天配置、双阶段审计、原 CA 数据库恢复及 TLS 用途隔离。 |
@@ -136,5 +136,4 @@ T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个�
 结果中的 `phase` 区分准备、执行和清理，`blocked` 引用原准备失败，`cancelled` 表示未完成的取消；
 清理失败独立记录，不覆盖原始业务失败，任何选中用例非通过都会使本次验证失败。
 
-普通业务审计断言读取 `mdm_audit.receipts` 的已提交源事实，不推进后台投影。
-投影测试显式驱动真实 projector；运行器接线测试仅观察最终审计记录。三者分别证明源事务、持久投影和自动推进。
+普通业务审计断言读取 `rss_audit.records` 的已提交最终事实，与业务操作回执一起证明原子性及回放；不再驱动审计后台投影。

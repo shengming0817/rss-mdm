@@ -25,6 +25,11 @@ pub enum AuditMode {
     Plain,
     Ledger,
 }
+impl Default for AuditMode {
+    fn default() -> Self {
+        Self::Plain
+    }
+}
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Installation {
@@ -150,7 +155,9 @@ async fn apply_unit(
         .begin()
         .await
         .map_err(|_| MigrationError::at(name, "begin"))?;
-    if matches!(name, "audit-v1" | "audit-ledger-v1") {
+    let enabled = installation.audit_mode == AuditMode::Ledger
+        || !matches!(name, "audit-ledger-v1" | "audit-ledger-runtime-v1");
+    if enabled && matches!(name, "audit-v1" | "audit-ledger-v1") {
         let role = if name == "audit-v1" {
             "mdm_audit_owner"
         } else {
@@ -170,7 +177,7 @@ async fn apply_unit(
         install_identity_in(&mut tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
-    } else if name != "identity-audit-runtime-v1" || installation.audit_mode == AuditMode::Ledger {
+    } else if enabled {
         execute_schema(
             &mut tx,
             name,
@@ -400,26 +407,11 @@ async fn install_identity_in(
         rss_identity_postgres::AuthorityProfile::Provisioning,
     )
     .await?;
-    rss_identity_postgres::audit::grant_worker(tx, crate::identity_audit::ROLE)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("identity audit grant rejected".into()))?;
-    rss_transactional_messaging_postgres::grant_local_projection(
-        tx,
-        crate::audit_projection::ROLE,
-        &rss_transactional_messaging::message::MessagingDomain::parse("mdm.audit")
-            .expect("fixed domain"),
-        &rss_transactional_messaging::inbox::ConsumerGroup::parse("mdm.audit.v1")
-            .expect("fixed group"),
-    )
-    .await
-    .map_err(|_| sqlx::Error::Protocol("MDM audit scope rejected".into()))?;
-    sqlx::query(
-        "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
-    )
-    .bind(installation.target.as_slice())
-    .bind(installation.lineage.as_slice())
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)")
+        .bind(installation.target.as_slice())
+        .bind(installation.lineage.as_slice())
+        .execute(&mut **tx)
+        .await?;
     // Installation allocates the reserved authentication/authorization tenant, never accounts.
     let management = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,used) VALUES($1,1,'Installation management',true)")
@@ -442,13 +434,12 @@ async fn install_identity_in(
             .bind(management)
             .execute(&mut **tx)
             .await?;
-    verify_profiles(tx, instance, installation.audit_mode).await?;
+    verify_profiles(tx, instance).await?;
     Ok(())
 }
 async fn verify_profiles(
     conn: &mut PgConnection,
     instance: rss_identity_core::InstanceId,
-    audit_mode: AuditMode,
 ) -> std::result::Result<(), sqlx::Error> {
     for (statement, profile) in [
         (
@@ -470,10 +461,6 @@ async fn verify_profiles(
     }
     // mdm_access deliberately has no role memberships. Its source-admission profile is
     // checked by database::admission using an actual access-role connection at startup.
-    crate::audit_projection::verify_profile(conn, audit_mode).await?;
-    crate::identity_audit::verify_profile(conn, audit_mode)
-        .await
-        .map_err(|_| sqlx::Error::Protocol("identity audit profile rejected".into()))?;
     Ok(())
 }
 async fn verify_installation(
@@ -505,7 +492,7 @@ async fn verify_installation(
                 "management tenant binding mismatch".into(),
             ));
         }
-        verify_profiles(&mut tx, instance, installation.audit_mode).await?;
+        verify_profiles(&mut tx, instance).await?;
         tx.rollback().await
     }
     verify(conn, installation, instance).await.map_err(|_| {

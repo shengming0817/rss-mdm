@@ -1,12 +1,12 @@
-//! Read-only final audit history, independent of source production and worker append authority.
+//! Read-only transactions over the host-owned Audit writer pool; this facade exposes no writes.
 use crate::Error;
-use rss_audit_postgres::{Control, Integrity, PgAuditReader, ReadAuditTransaction};
+use rss_audit_postgres::{Control, Integrity, PgAudit, ReadAuditTransaction};
 use rss_request_context::ExecutionTimer;
 use sqlx::{PgConnection, PgPool};
 
 #[derive(Clone)]
 pub struct AuditReadStore {
-    pub(crate) adapter: PgAuditReader,
+    pub(crate) adapter: PgAudit,
     ledger: bool,
 }
 impl AuditReadStore {
@@ -67,7 +67,7 @@ impl AuditReadStore {
             start = end.checked_add(1).ok_or(Error::Receipt)?;
         }
     }
-    /// Admit the host-owned read pool and explicit integrity mode. Does not close the pool.
+    /// Admit the host-owned pool and explicit integrity mode. Does not close the pool.
     /// Source production and its receipt admission belong to AuditStore.
     pub async fn new<T: ExecutionTimer>(
         pool: PgPool,
@@ -76,7 +76,7 @@ impl AuditReadStore {
     ) -> Result<Self, Error> {
         let ledger = matches!(integrity, Integrity::Ledger(_));
         Ok(Self {
-            adapter: PgAuditReader::new(pool, integrity, control).await?,
+            adapter: PgAudit::new(pool, integrity, control).await?,
             ledger,
         })
     }

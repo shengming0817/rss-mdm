@@ -450,7 +450,6 @@ impl Host {
         let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit.clone(), tenant,
             Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), execution.inputs.clone()));
         let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(pool.clone(), command_audit.clone(), tenant, &key)?);
-        timeline.initialize().await?;
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {

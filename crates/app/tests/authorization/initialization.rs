@@ -30,14 +30,14 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     let mut isolated = crate::test_support::identity::user(case_tenant(), case_admin());
     isolated.instance_id = Uuid::new_v4().to_string();
     let init_key = Uuid::new_v4();
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
+    pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")?;
     let failed = crate::authorization::store::initialize_authorization(
         &audit_store,
         isolated.clone(),
         init_key,
     )
     .await;
-    pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
+    pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")?;
     ensure!(matches!(failed, Err(rss_mdm_authorization_service::Error::Audit(_))));
     ensure!(audit_count(|r| r.source() == "mdm.business" && r.operation() == Some(init_key.to_string().as_str()) && r.result() == "success").await? == 0);
     for table in [

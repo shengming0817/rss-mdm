@@ -522,7 +522,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
     ensure!(scalar(&host,"SELECT count(*) FROM mdm_access.requests WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND authority_kind='windows_entra'").await?==0, "policy read fault committed admission");
     // Admission commits before issuance. A later intent failure must still settle the HTTP audit.
     fault.execute("CREATE FUNCTION mdm_access.reject_entra_intent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture issuance failure'; END $$; CREATE TRIGGER reject_entra_intent BEFORE INSERT ON mdm_access.enrollment_intents FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_entra_intent()").await?;
-    let requests_before=scalar(&host,"SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source_id='mdm.request'").await?;
+    let requests_before=scalar(&host,"SELECT count(*) FROM rss_audit.records WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source_id='mdm.request'").await?;
     let failed = send(&host, &valid).await?;
     fault.execute("DROP TRIGGER reject_entra_intent ON mdm_access.enrollment_intents; DROP FUNCTION mdm_access.reject_entra_intent()").await?;
     ensure!(
@@ -530,7 +530,7 @@ async fn consent_native_issuance_replay_scope_and_revocation() -> anyhow::Result
         "fixture did not fail after admission"
     );
     ensure!(scalar(&host,"SELECT count(*) FROM mdm_access.requests WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND authority_kind='windows_entra' AND state='pending'").await?==1,"admission did not commit before issuance failure");
-    ensure!(scalar(&host,"SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source_id='mdm.request'").await?==requests_before+1,"later issuance failure lost request audit");
+    ensure!(scalar(&host,"SELECT count(*) FROM rss_audit.records WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND source_id='mdm.request'").await?==requests_before+1,"later issuance failure lost request audit");
     let (status, first, _) = send(&host, &valid).await?;
     ensure!(
         status == StatusCode::OK,
@@ -785,7 +785,6 @@ async fn background_policy_does_not_enable_identity_jit() -> anyhow::Result<()> 
 #[tokio::test]
 #[ignore = "make t2 MODULE=windows.entra"]
 async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> {
-    use sha2::{Digest, Sha256};
     use sqlx::Executor;
     let authority = crate::test_support::authority::Authority::open().await?;
     let service = Arc::new(
@@ -867,13 +866,13 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
 
     // Missing source receipt privileges prevent the policy transaction from committing.
     owner
-        .execute("REVOKE SELECT ON mdm_audit.receipts FROM mdm_access")
+        .execute("REVOKE SELECT ON rss_audit.records FROM mdm_access")
         .await?;
     let failure = admin
         .call(&router, Method::PUT, path, Some(update(2, Uuid::new_v4())))
         .await;
     owner
-        .execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access")
+        .execute("GRANT SELECT ON rss_audit.records TO mdm_access")
         .await?;
     let (status, body) = failure?;
     ensure!(
@@ -882,28 +881,9 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     );
     ensure!(admin.call(&router, Method::GET, path, None).await?.1["revision"] == 2);
 
-    // Replay must reject a damaged business receipt as integrity, without revising policy.
-    let event = format!(
-        "e-{:x}",
-        Sha256::digest(format!("windows-entra-policy:{key}").as_bytes())
-    );
-    let original: Vec<u8> = sqlx::query_scalar("SELECT source_bytes FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
-        .bind(case_tenant()).bind(&event).fetch_one(&mut owner).await?;
-    sqlx::query("UPDATE mdm_audit.receipts SET source_bytes=decode('01','hex') WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
-        .bind(case_tenant()).bind(&event).execute(&mut owner).await?;
-    let failure = admin.call(&router, Method::PUT, path, Some(input)).await;
-    sqlx::query("UPDATE mdm_audit.receipts SET source_bytes=$3 WHERE tenant_id=$1::uuid AND source_id='mdm.business' AND event_id=$2")
-        .bind(case_tenant()).bind(&event).bind(original).execute(&mut owner).await?;
-    let (status, body) = failure?;
-    ensure!(
-        status == StatusCode::INTERNAL_SERVER_ERROR && body["code"] == "audit_integrity_error",
-        "integrity: {status} {body}"
-    );
-    ensure!(admin.call(&router, Method::GET, path, None).await?.1["revision"] == 2);
-
     // The business commit also makes request-settlement admission fail. Completion must
     // preserve the original unknown result instead of replacing it with audit_contract_error.
-    owner.execute("CREATE FUNCTION mdm_audit.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN REVOKE SELECT ON mdm_audit.receipts FROM mdm_access; RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER break_management_settlement AFTER UPDATE ON mdm_windows.entra_policy DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mdm_audit.break_management_settlement()").await?;
+    owner.execute("CREATE FUNCTION mdm_windows.break_management_settlement() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN REVOKE SELECT ON rss_audit.records FROM mdm_access; RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER break_management_settlement AFTER UPDATE ON mdm_windows.entra_policy DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION mdm_windows.break_management_settlement()").await?;
     authority.audit.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
@@ -911,7 +891,7 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
     let failure = admin
         .call(&router, Method::PUT, path, Some(unknown.clone()))
         .await;
-    owner.execute("GRANT SELECT ON mdm_audit.receipts TO mdm_access; DROP TRIGGER break_management_settlement ON mdm_windows.entra_policy; DROP FUNCTION mdm_audit.break_management_settlement()").await?;
+    owner.execute("GRANT SELECT ON rss_audit.records TO mdm_access; DROP TRIGGER break_management_settlement ON mdm_windows.entra_policy; DROP FUNCTION mdm_windows.break_management_settlement()").await?;
     let (status, body) = failure?;
     ensure!(
         status == StatusCode::SERVICE_UNAVAILABLE && body["code"] == "operation_unknown",

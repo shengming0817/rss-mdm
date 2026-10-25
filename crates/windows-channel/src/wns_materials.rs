@@ -423,9 +423,9 @@ async fn mutate(
             let value=match input {Change::Import(input)=>Operation::Material(prepare(c,p.tenant_id(),*id,&actor,input,&app.protection).await?),Change::Revoke(input)=>Operation::Revocation(revoke(c,p.tenant_id(),*id,&actor,input,&app.protection).await?)};
             p.check_live()?;Ok::<_,Error>((value,replayed))
         })).await?;
-        let bytes=serde_json::to_vec(&(*id,value.revision())).map_err(corrupt)?;
-        let fact=rss_mdm_audit_integration::Fact::business(audit,&format!("wns-material:{id}"),&bytes,202,"success",None).map_err(corrupt)?;
-        app.audit_store.append(tx,&fact,replayed).await?;
+
+        let fact=rss_mdm_audit_integration::Fact::business(audit, &format!("wns-material:{id}"), 202, "success", None).map_err(corrupt)?;
+        (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await })?;
         if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         audit.mark_commit_started();Ok(value)
     })).await;
@@ -489,14 +489,7 @@ pub enum Operation {
     Material(Receipt),
     Revocation(Revocation),
 }
-impl Operation {
-    fn revision(&self) -> i64 {
-        match self {
-            Self::Material(r) => r.revision,
-            Self::Revocation(r) => r.revision,
-        }
-    }
-}
+
 enum Change {
     Import(Request),
     Revoke(RevokeRequest),

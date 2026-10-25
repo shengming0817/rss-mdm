@@ -24,14 +24,7 @@ async fn audit_process_exit_fixture() -> Result<()> {
         "audit_recovery_test",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fact = Fact::business(
-        &request,
-        "process-interruption",
-        b"crash-device",
-        200,
-        "success",
-        None,
-    )?;
+    let fact = Fact::business(&request, "process-interruption", 200, "success", None)?;
     let attempt = store
         .write(tenant, &control, (&store, &fact), |(store, fact), tx| {
             Box::pin(async move {

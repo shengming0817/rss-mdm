@@ -74,7 +74,6 @@ impl Authority {
                             config.audit.integrity()?,
                             source,
                             tenant,
-                            Default::default(),
                             &budget.control(),
                         )
                         .await?,

@@ -169,18 +169,16 @@ pub async fn finish_job_in(
             action,
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let fingerprint =
-            serde_json::to_vec(&(id, &target, failure)).expect("closed automation result");
+
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
             &format!("automation:{id}:terminal"),
-            &fingerprint,
             200,
             outcome,
             None,
         )
         .map_err(Error::from)?;
-        let result = store.append_in(tx, &fact, false).await.map_err(Error::from);
+        let result = store.append_in(tx, &fact).await.map_err(Error::from);
         audit.finalize(
             result
                 .as_ref()

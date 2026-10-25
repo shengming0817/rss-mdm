@@ -79,30 +79,6 @@ impl DurableStore for PlanningWork {
                                 crate::transaction::lock(tx)
                                     .await
                                     .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                let partition = if let Some(id) = id {
-                                    let (job, _, _, _, _) =
-                                        crate::automation::jobs::read_in(tx, id)
-                                            .await
-                                            .map_err(|e| fault(e, &Mutex::new(None)))?;
-                                    Some(
-                                        job.audit_partition(tx.tenant_id())
-                                            .map_err(PgError::from)?,
-                                    )
-                                } else if completion != Completion::Converged {
-                                    Some(
-                                        rss_mdm_audit_integration::source_partition(
-                                            tx.tenant_id(),
-                                            "mdm",
-                                            "asset_ingress",
-                                        )
-                                        .map_err(PgError::from)?,
-                                    )
-                                } else {
-                                    None
-                                };
-                                if let Some(partition) = partition {
-                                    tx.prepare_outbox_partitions(&[partition]).await?;
-                                }
                                 service
                                     .reconcile_messaging
                                     .protect_in(tx, claim, context, |service, tx| {

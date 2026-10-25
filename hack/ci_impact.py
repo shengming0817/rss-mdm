@@ -805,7 +805,8 @@ def select(root, base):
                 # Deleted test carriers have no execution left. Their old target
                 # is still discovered to verify surviving ignored-test ownership.
                 old_tests = [m for m in before.modules.values()
-                             if matches(path, (*m['test_inputs'], *m['support_inputs']))]
+                             if matches(path, (*m['test_inputs'], *m['support_inputs'],
+                                 *(m['production_inputs'] if path.startswith('tests/') or '/tests/' in path else ())))]
                 if not old_tests and not matches(path, before.t1):
                     raise
                 checks.extend(ownership_builds(old_tests, graphs[1] or metadata(root)))

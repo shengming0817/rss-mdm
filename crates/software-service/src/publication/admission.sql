@@ -35,35 +35,22 @@ SELECT
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
 
- AND has_schema_privilege(current_user,'mdm_audit','USAGE')
- AND has_table_privilege(current_user,'mdm_audit.receipts','SELECT,INSERT')
- AND NOT has_table_privilege(current_user,'mdm_audit.receipts','UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
- AND (SELECT relrowsecurity AND relforcerowsecurity AND relowner<>(SELECT oid FROM pg_roles WHERE rolname=current_user) FROM pg_class WHERE oid='mdm_audit.receipts'::regclass)
  -- Final composition admission closes permissions outside the three owned surfaces.
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'
  AND c.relkind IN ('r','v','m','f')
  AND n.nspname NOT IN ('mdm_resource','mdm_software_release','mdm_software_composition')
- AND (n.nspname,c.relname) NOT IN (('rss_audit','heads'),('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_audit','receipts'),('mdm_audit','backlog'),('mdm_software','sources'),('mdm_software','versions'),('mdm_software','materials'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','api_keys'),('public','mdm_installation'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
+ AND (n.nspname,c.relname) NOT IN (('rss_audit','records'),('rss_ledger','heads'),('rss_ledger','entries'),('mdm_software','sources'),('mdm_software','versions'),('mdm_software','materials'),('mdm_access','authorization_rules'),('mdm_access','user_groups'),('mdm_access','api_keys'),('public','mdm_installation'),('mdm_content','manifests'),('rss_transactional_messaging','policy'),('rss_transactional_messaging','outbox'))
  AND (has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') OR has_any_column_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE c.relkind='S' AND n.nspname NOT IN ('pg_catalog','information_schema')
 
  AND has_sequence_privilege(current_user,c.oid,'SELECT,USAGE,UPDATE'))
  AND NOT EXISTS(SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
- WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+ WHERE n.nspname NOT IN ('pg_catalog','information_schema','rss_audit','rss_ledger')
  AND p.oid NOT IN ('mdm_access.operation_authority_valid(jsonb,text,bigint)'::regprocedure,'mdm_access.operation_authority_valid_until(jsonb,text,bigint)'::regprocedure,'mdm_content.reference_ready()'::regprocedure,'rss_transactional_messaging.check_execution()'::regprocedure,'rss_transactional_messaging.consumer_scope_domain()'::regprocedure,'rss_transactional_messaging.consumer_inbox_allowed(uuid,text,text)'::regprocedure,'rss_transactional_messaging.projection_scope_matches(text,text)'::regprocedure,'rss_transactional_messaging.prepare_outbox_partitions(jsonb)'::regprocedure,'rss_transactional_messaging.append_outbox(bytea,jsonb)'::regprocedure)
  AND has_function_privilege(current_user,p.oid,'EXECUTE'))
- AND (SELECT count(*)=1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass)
- AND EXISTS(SELECT 1 FROM pg_policy WHERE polrelid='mdm_audit.receipts'::regclass AND polname='tenant' AND polcmd='*' AND polpermissive AND polroles=ARRAY[0::oid]
- AND lower(replace(regexp_replace(pg_get_expr(polqual,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid'
- AND lower(replace(regexp_replace(pg_get_expr(polwithcheck,polrelid),'[[:space:]()]','','g'),'::text',''))='tenant_id=nullifcurrent_setting''rss.tenant_id'',true,''''::uuid')
  AND NOT EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE'))
- AND NOT EXISTS(SELECT 1 FROM pg_class c,LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a
- WHERE c.oid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
- AND NOT EXISTS(SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
- WHERE c.attrelid='mdm_audit.receipts'::regclass AND (a.grantee=0 OR (a.grantee IN(SELECT oid FROM reachable) AND a.is_grantable)))
-
  AND has_schema_privilege(current_user,'mdm_software','USAGE')
  AND NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
  WHERE n.nspname='mdm_software' AND c.relkind='r'

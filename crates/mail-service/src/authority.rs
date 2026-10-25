@@ -162,9 +162,9 @@ impl Authority {
                 let value=store::prepare(c,p.tenant_id(),*id,&actor,input,&service.protection).await.map_err(error)?;
                 p.check_live()?;Ok::<_,Error>((value,replayed))
             })).await?;
-            let fingerprint=serde_json::to_vec(&(value.operation_id,value.revision,&value.profile)).map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("smtp-qualification:{id}"),&fingerprint,202,"success",None)?;
-            service.audit.append(tx,&fact,replayed).await?;
+
+            let fact=Fact::business(audit, &format!("smtp-qualification:{id}"), 202, "success", None)?;
+            (if replayed { Ok(()) } else { service.audit.append(tx, &fact).await })?;
             if replayed{audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();Ok(value)
         })).await;

@@ -22,7 +22,7 @@ async fn history(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<Vec<Stri
         "mdm_access.enrollment_intents",
         "mdm_access.enrollment_certificates",
         "rss_audit.records",
-        "mdm_audit.receipts",
+        "rss_audit.records",
         "rss_ledger.entries",
     ] {
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
@@ -87,11 +87,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         .await?;
     ensure!(response.status() == StatusCode::OK);
     let mut pg = PgConnection::connect_with(&options("postgres")?).await?;
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(tenant)?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let before = history(&mut pg, tenant).await?;
     let live: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM mdm_access.management_sessions WHERE tenant_id=$1::uuid",
@@ -148,11 +144,9 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         .0 == 0
     );
     let mut held_head = pg.begin().await?;
-    let _: i32 =
-        sqlx::query_scalar("SELECT 1 FROM rss_audit.heads WHERE tenant_id=$1::uuid FOR UPDATE")
-            .bind(tenant)
-            .fetch_one(&mut *held_head)
-            .await?;
+    sqlx::raw_sql("LOCK TABLE rss_audit.records IN SHARE MODE")
+        .execute(&mut *held_head)
+        .await?;
     ensure!(
         tokio::time::timeout(
             Duration::from_millis(500),
@@ -164,7 +158,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         )
         .await??
             == 0,
-        "idle retention must not wait on the audit head"
+        "idle retention must not wait on audit appends"
     );
     held_head.rollback().await?;
     seed(&mut pg, tenant, registration, 1064).await?;

@@ -433,7 +433,6 @@ impl Service {
         let fact = rss_mdm_audit_integration::Fact::business(
             &audit,
             &format!("telemetry-maintenance:{}", input.id),
-            &binding,
             202,
             "success",
             None,
@@ -462,7 +461,7 @@ impl Service {
                 }.await;
                 result.map_err(|e|{*rejected.lock().expect("maintenance intent")=Some(e);sqlx::Error::Protocol("maintenance intent rejected".into())})
             })).await?;
-            service.planning.audit_store.append_in(tx,&fact,replayed).await.map_err(crate::storage_error)?;
+            (if replayed { Ok(()) } else { service.planning.audit_store.append_in(tx, &fact).await }).map_err(crate::storage_error)?;
             audit.mark_commit_started();
             Ok(())
         })).await.fold(|v|{settlement_audit.mark_committed();Ok(v)},|_|Err(Error::Storage),|_|{settlement_audit.mark_rolled_back();Err(rejection.lock().expect("maintenance intent").unwrap_or(Error::Storage))},|_|{settlement_audit.mark_rollback_failed();Err(Error::Unknown)},|_|Err(Error::Unknown),|_|Err(Error::Storage))?;

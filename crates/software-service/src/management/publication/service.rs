@@ -404,7 +404,7 @@ impl PublicationDirectory {
                     audit.snapshot().instance, source, id, request,
                 )))?).to_vec();
                 if let Some(old) = super::receipts::replay(tx, audit, request.operation_id, &hash).await? {
-                    super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), true).await?;
+                    super::receipts::audit(tx, &*s.audit_store, audit, Some(request.operation_id), true).await?;
                     proof.check_live()?;
                     return Ok((old, true));
                 }
@@ -421,7 +421,7 @@ impl PublicationDirectory {
                         "attempt": snapshot.attempt.attempt, "withdrawn": snapshot.withdrawn});
                 }
                 super::receipts::receipt(tx, audit, request.operation_id, &hash, &value).await?;
-                super::receipts::audit(tx, &*s.audit_store, audit, Some((request.operation_id, &hash)), false).await?;
+                super::receipts::audit(tx, &*s.audit_store, audit, Some(request.operation_id), false).await?;
                 proof.check_live()?;
                 Ok((value, false))
             }), crate::management::transaction::TransactionOwner::Publication,

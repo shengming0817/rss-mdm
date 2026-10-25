@@ -159,8 +159,8 @@ pub(super) async fn update(
             p.check_live()?;
             Ok((receipt,false))
         })).await?;
-        let fact=Fact::business(audit,&format!("first-use:{}:{}:{id}",p.instance_id(),p.principal_id()),fingerprint,200,"success",None)?;
-        store.append(tx,&fact,replayed).await?;
+        let fact=Fact::business(audit, &format!("first-use:{}:{}:{id}",p.instance_id(),p.principal_id()), 200, "success", None)?;
+        (if replayed { Ok(()) } else { store.append(tx, &fact).await })?;
         if replayed {audit.management_result(ManagementResult::Replayed);}
         audit.mark_commit_started();
         Ok::<_,Error>(receipt)

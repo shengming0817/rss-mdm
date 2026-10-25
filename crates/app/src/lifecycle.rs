@@ -92,17 +92,18 @@ pub async fn serve(
                         execution,
                         automation,
                         publications,
-                        identity_audit,
-                        audit_projection,
                         archive,
                         associations,
                         notifications,
                         gateway,
                     ) = tokio::time::timeout(compiled.config.flow.startup_budget(), async {
                         let access = Arc::new(
-                            crate::Database::connect(compiled.config.access_options().map_err(
-                                |e| ProcessError::at("startup.access_configuration", e),
-                            )?)
+                            crate::Database::connect(
+                                compiled.config.access_options().map_err(|e| {
+                                    ProcessError::at("startup.access_configuration", e)
+                                })?,
+                                &compiled.config.audit,
+                            )
                             .await
                             .map_err(|e| ProcessError::at("startup.access_store", e))?,
                         );
@@ -178,7 +179,7 @@ pub async fn serve(
                             })?,
                         )
                         .await
-                        .map_err(|e| ProcessError::at("startup.audit_source", e))?;
+                        .map_err(|e| ProcessError::at("startup.access_transaction", e))?;
                         let mut audit_tenants =
                             vec![(audit_tenant, compiled.config.flow.storage.epoch)];
                         if management_tenant != audit_tenant {
@@ -194,22 +195,14 @@ pub async fn serve(
                             &audit_tenants,
                         )
                         .await
-                        .map_err(|e| ProcessError::at("startup.audit_source", e))?;
-                        startup.stage_resource(DynManagedResource::new_box(AuditSourceResource(
-                            source_runtime.clone(),
-                        )));
-                        let audit_store =
-                            access
-                                .audit_store(
-                                    &compiled.config.audit,
-                                    source_runtime,
-                                    audit_tenant,
-                                    compiled.config.audit_projection.limits().map_err(|e| {
-                                        ProcessError::at("startup.audit_capacity", e)
-                                    })?,
-                                )
-                                .await
-                                .map_err(|e| ProcessError::at("startup.audit", e))?;
+                        .map_err(|e| ProcessError::at("startup.access_transaction", e))?;
+                        startup.stage_resource(DynManagedResource::new_box(
+                            AccessTransactionResource(source_runtime.clone()),
+                        ));
+                        let audit_store = access
+                            .audit_store(&compiled.config.audit, source_runtime, audit_tenant)
+                            .await
+                            .map_err(|e| ProcessError::at("startup.audit", e))?;
                         let runtime = Arc::new(InventoryRuntime::new(
                             observation_store,
                             projection_store,
@@ -273,10 +266,6 @@ pub async fn serve(
                         )
                         .await
                         .map_err(|error| ProcessError::at("startup.identity", error))?;
-                        let notifications = notifications.with_identity(
-                            identity.instance,
-                            [identity.tenant, identity.management_tenant],
-                        );
                         let audit_budget =
                             rss_mdm_audit_integration::budget::AuditBudget::with_cancellation(
                                 Duration::from_secs(5),
@@ -345,21 +334,6 @@ pub async fn serve(
                         let listen = compiled.config.listen;
                         let tenant = compiled.config.identity.tenant_id.clone();
                         let gateway = compiled.config.trusted_gateway;
-                        let identity_audit = crate::identity_audit::Worker::open(
-                            &compiled.config,
-                            identity.audit_readiness.clone(),
-                            notifications.signals.audit.clone(),
-                            |resource| startup.stage_resource(resource),
-                        )
-                        .await
-                        .map_err(|error| ProcessError::at("startup.identity_audit", error))?;
-                        let audit_projection = crate::audit_projection::Worker::open(
-                            &compiled.config,
-                            notifications.signals.mdm_audit.clone(),
-                            |resource| startup.stage_resource(resource),
-                        )
-                        .await
-                        .map_err(|error| ProcessError::at("startup.audit_projection", error))?;
                         let associations = Arc::new(
                             rss_mdm_device_service::Associations::new(
                                 audit_store.clone(),
@@ -376,12 +350,6 @@ pub async fn serve(
                         let timeline = access
                             .timeline(audit_store.clone(), identity.tenant, &planning.cursor_key)
                             .map_err(|e| ProcessError::at("startup.timeline", e))?;
-                        timeline.initialize().await.map_err(|_| {
-                            ProcessError::at(
-                                "startup.timeline",
-                                Error::Unavailable(Failure::Database),
-                            )
-                        })?;
                         let archive = crate::certificate_archive::assemble(
                             &access,
                             audit_store.clone(),
@@ -398,7 +366,6 @@ pub async fn serve(
                                 timeline: timeline.clone(),
                                 associations: associations.clone(),
                                 audit_store: audit_store.clone(),
-                                audit_projection_health: audit_projection.health.clone(),
                                 clock: Arc::new(crate::clock::SystemClock),
                                 monotonic,
                                 access: access.clone(),
@@ -448,8 +415,6 @@ pub async fn serve(
                             execution,
                             automation,
                             planning.publications.clone(),
-                            identity_audit,
-                            audit_projection,
                             archive,
                             associations,
                             notifications,
@@ -503,9 +468,6 @@ pub async fn serve(
                         );
                     }
                     launch.stage_deferred_task_with_token(publications.registration().critical());
-                    launch.stage_deferred_task_with_token(identity_audit.registration().critical());
-                    launch
-                        .stage_deferred_task_with_token(audit_projection.registration().critical());
                     launch.stage_deferred_task_with_token(
                         associations.registration(Arc::new(crate::registration_lifecycle::Bridge)),
                     );
@@ -665,8 +627,8 @@ pub async fn signal() -> Result<(), std::io::Error> {
 #[path = "../tests/lifecycle/unit.rs"]
 mod tests;
 
-struct AuditSourceResource(Arc<rss_transactional_messaging_postgres::PgRuntime>);
-impl ManagedResource for AuditSourceResource {
+struct AccessTransactionResource(Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl ManagedResource for AccessTransactionResource {
     fn name(&self) -> &str {
         "audit-source-runtime"
     }

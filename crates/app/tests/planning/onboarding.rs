@@ -648,7 +648,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         }).await??;
-        crate::audit_test_support::projection::drain(rss_request_context::TenantId::parse(case_tenant())?, rss_audit_postgres::Integrity::Plain).await?;
+
         ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirement_policies p JOIN rss_audit.records r ON r.tenant_id=p.tenant_id AND r.source_id='mdm.business' AND r.event_id='e-'||encode(sha256(convert_to('retirement:'||p.operation::text||':policy:'||p.policy::text||':'||p.version::text||':accepted','UTF8')),'hex') WHERE p.tenant_id='{}' AND p.operation='{retirement}'",case_tenant()))?.trim()=="2","each new Policy reference needs its own audited fact");
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{a}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":{"scope":case_empty_scope(),"action":action}}})).await?;
         let (status,page)=f.author.call(&f.router,Method::GET,&format!("/api/v1/policies/{a}/assignments"),None).await?;

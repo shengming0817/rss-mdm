@@ -97,20 +97,21 @@ pub(super) async fn start(
                             },
                         )
                         .await?;
-                    let digest = rss_mdm_registration_service::enrollment::digest(&(*id, *name));
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-account-browser:{id}"),
-                        digest.as_bytes(),
                         200,
                         "success",
                         Some(*id),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,
@@ -240,24 +241,21 @@ pub(super) async fn finish(
                             },
                         )
                         .await?;
-                    let digest = rss_mdm_registration_service::enrollment::digest(&(
-                        *id,
-                        enrollment,
-                        proof.principal_id(),
-                    ));
+
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-account-authorize:{id}"),
-                        digest.as_bytes(),
                         308,
                         "success",
                         Some(enrollment),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

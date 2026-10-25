@@ -4,7 +4,6 @@ use super::*;
 #[ignore = "MODULE=audit.integrity: full original-key history verification binds the captured head"]
 async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_head() -> Result<()>
 {
-    crate::planning::test_support::sql(include_str!("../../schema/identity-audit-runtime.sql"));
     let pool = pool("mdm_access").await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
     let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
@@ -15,16 +14,7 @@ async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_h
         rss_mdm_audit_integration::AuditIntent::Management,
     );
     let facts = (0u32..65)
-        .map(|i| {
-            Fact::business(
-                &request,
-                &format!("restore:{i}"),
-                &i.to_be_bytes(),
-                200,
-                "success",
-                None,
-            )
-        })
+        .map(|i| Fact::business(&request, &format!("restore:{i}"), 200, "success", None))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let result = store
         .write(
@@ -34,7 +24,7 @@ async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_h
             |(store, facts), tx| {
                 Box::pin(async move {
                     for fact in *facts {
-                        store.append(tx, fact, false).await?;
+                        store.append(tx, fact).await?;
                     }
                     Ok::<_, Error>(())
                 })
@@ -42,11 +32,11 @@ async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_h
         )
         .await;
     ensure!(state(result) == "committed");
-    crate::audit_test_support::projection::drain(tenant, integrity(true)?).await?;
+
     let terminal = crate::planning::test_support::sql(&format!(
-        "SELECT count(*)=65 AND bool_and(r.projected_at IS NOT NULL AND o.status='published' AND i.disposition='succeeded' AND a.ledger_sequence IS NOT NULL) FROM mdm_audit.receipts r JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(r.tenant_id,r.message_id) JOIN rss_transactional_messaging.inbox i ON(i.tenant_id,i.message_id)=(r.tenant_id,r.message_id) AND i.consumer_group='mdm.audit.v1' JOIN rss_audit.records a ON(a.tenant_id,a.source_id,a.event_id)=(r.tenant_id,r.source_id,r.event_id) WHERE r.tenant_id='{tenant}'"
+        "SELECT count(*)=65 AND bool_and(ledger_sequence IS NOT NULL) FROM rss_audit.records WHERE tenant_id='{tenant}'"
     ));
-    ensure!(terminal == "t", "joint projection terminal state");
+    ensure!(terminal == "t", "final audit and ledger commit together");
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(tenant.to_string())
@@ -97,54 +87,6 @@ async fn original_key_verifies_multiple_pages_and_rejects_replacement_or_wrong_h
     );
     request.finalize(None);
     pool.close().await;
-    Ok(())
-}
-
-async fn reject_damaged_receipt<T: rss_request_context::ExecutionTimer>(
-    store: &AuditStore,
-    tenant: TenantId,
-    fact: &Fact,
-    _control: &SourceControl<'_, T>,
-) -> Result<()> {
-    use sqlx::Connection;
-    let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
-        .ssl_mode(PgSslMode::VerifyFull)
-        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-    let mut owner = sqlx::PgConnection::connect_with(&options).await?;
-    // Deliberate corruption by the installation owner in this disposable database.
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
-        .bind(tenant.to_string())
-        .execute(&mut owner)
-        .await?;
-    let original: Vec<u8> =
-        sqlx::query_scalar("SELECT source_bytes FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
-            .bind(tenant.to_string())
-            .fetch_one(&mut owner)
-            .await?;
-    for damage in [
-        "UPDATE mdm_audit.receipts SET source_bytes=decode('01','hex') WHERE tenant_id=$1::uuid",
-        "DELETE FROM mdm_audit.receipts WHERE tenant_id=$1::uuid",
-    ] {
-        sqlx::query("UPDATE mdm_audit.receipts SET source_bytes=$2 WHERE tenant_id=$1::uuid")
-            .bind(tenant.to_string())
-            .bind(&original)
-            .execute(&mut owner)
-            .await?;
-        sqlx::query(damage)
-            .bind(tenant.to_string())
-            .execute(&mut owner)
-            .await?;
-        let attempt = store
-            .write(tenant, _control, (store, fact), |(store, fact), tx| {
-                Box::pin(async move { store.append(tx, fact, true).await })
-            })
-            .await;
-        ensure!(state(attempt) == "rolled_back");
-        let source_messages:i64=sqlx::query_scalar("SELECT count(*) FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND domain='mdm.audit'")
-            .bind(tenant.to_string()).fetch_one(&mut owner).await?;
-        ensure!(source_messages == 1);
-    }
-    owner.close().await?;
     Ok(())
 }
 
@@ -202,17 +144,12 @@ async fn empty_reads_preserve_heads(
         .bind(tenant.to_string())
         .execute(&mut *tx)
         .await?;
-    let heads: (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM rss_audit.heads WHERE tenant_id=$1::uuid), \
-         (SELECT count(*) FROM rss_ledger.heads WHERE tenant_id=$1::uuid)",
-    )
-    .bind(tenant.to_string())
-    .fetch_one(&mut *tx)
-    .await?;
-    ensure!(
-        heads == (0, 0),
-        "read created Audit or Ledger heads: {heads:?}"
-    );
+    let heads: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid")
+            .bind(tenant.to_string())
+            .fetch_one(&mut *tx)
+            .await?;
+    ensure!(heads == 0, "read created Audit or Ledger heads: {heads:?}");
     tx.rollback().await?;
     Ok(())
 }
@@ -236,7 +173,7 @@ async fn storage_integrity_is_enforced() -> Result<()> {
             "audit_integrity_test",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let fact = Fact::business(&request, "integrity", b"initial", 200, "success", None)?;
+        let fact = Fact::business(&request, "integrity", 200, "success", None)?;
         let source_budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
         let source_control = source_budget.source_control();
@@ -245,13 +182,12 @@ async fn storage_integrity_is_enforced() -> Result<()> {
                 tenant,
                 &source_control,
                 (&store, &fact),
-                |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+                |(store, fact), tx| Box::pin(async move { store.append(tx, fact).await }),
             )
             .await;
         ensure!(state(written) == "committed");
-        crate::audit_test_support::projection::drain(tenant, Integrity::Plain).await?;
+
         startup_integrity(&pool, &store, tenant, &control).await?;
-        reject_damaged_receipt(&store, tenant, &fact, &source_control).await?;
         request.finalize(None);
         pool.close().await;
     }

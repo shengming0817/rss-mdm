@@ -338,16 +338,9 @@ pub(crate) async fn audit_store_with_integrity(
         .await
         .unwrap();
     Arc::new(
-        rss_mdm_audit_integration::AuditStore::new(
-            pool,
-            integrity,
-            runtime,
-            tenant(),
-            Default::default(),
-            &control,
-        )
-        .await
-        .unwrap(),
+        rss_mdm_audit_integration::AuditStore::new(pool, integrity, runtime, tenant(), &control)
+            .await
+            .unwrap(),
     )
 }
 
@@ -661,8 +654,7 @@ pub(crate) async fn seed_group(
                         .map_err(|e| {
                             sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
                         })?;
-                    let partition = owner.groups.partition(&id.to_string())?;
-                    tx.prepare_outbox_partitions(&[partition]).await?;
+
                     owner
                         .publish_change_in(
                             tx,

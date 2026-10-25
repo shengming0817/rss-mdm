@@ -228,7 +228,7 @@ impl Service {
                 .bind(tenant_uuid(device.tenant())?).bind(input.operation_id).bind(device.device()).bind(device.registration()).bind(device.generation())
                 .bind(who.instance).bind(who.principal).bind(nonce_digest(&nonce).as_slice()).bind(serde_json::to_value(&local).map_err(|_| Error::Malformed)?)
                 .bind(selection.policy).bind(selection.version).bind(expires_at).execute(c).await.map_err(|e| if e.as_database_error().is_some_and(|e| e.is_unique_violation()) { Error::Conflict } else { db(e) })?;
-            Ok(AuditedChange { digest: digest(&(*input,&*who,device.registration(),&local))?, replay: false, value: AccessChallenge { id: input.operation_id, nonce, expires_at, local_session: local } })
+            Ok(AuditedChange {replay: false, value: AccessChallenge { id: input.operation_id, nonce, expires_at, local_session: local }})
         })).await
     }
 
@@ -267,7 +267,7 @@ impl Service {
                 let saved:Binding=serde_json::from_str(&old).map_err(|_|Error::Corrupt)?;
                 saved.validate()?;
                 if saved.device!=device.device() || saved.registration!=device.registration() || saved.registration_generation!=device.generation() || saved.person!=*who {return Err(Error::Forbidden);}
-                return Ok(AuditedChange{value:saved,digest:hash,replay:true});
+                return Ok(AuditedChange{value:saved, replay:true});
             }
             super::lifecycle::require_subject_on(c,tenant_uuid(device.tenant())?,who).await?;
             let time=now(c).await?;
@@ -293,7 +293,7 @@ impl Service {
             super::lifecycle::emit_on(c,&binding,None,input.operation_id,"accepted").await?;
             sqlx::query("UPDATE mdm_access.device_access_ceremonies SET consumed=$3 WHERE tenant_id=$1 AND id=$2").bind(binding.tenant).bind(input.challenge).bind(binding.id).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,&serde_json::to_string(&binding).map_err(|_|Error::Corrupt)?,audit).await?;
-            Ok(AuditedChange{value:binding,digest:hash,replay:false})
+            Ok(AuditedChange{value:binding, replay:false})
         })).await
     }
 
@@ -541,11 +541,7 @@ impl Service {
                         audit,
                     )
                     .await?;
-                    Ok(AuditedChange {
-                        value,
-                        digest: hash,
-                        replay: false,
-                    })
+                    Ok(AuditedChange {value, replay: false})
                 })
             },
         )

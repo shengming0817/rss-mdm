@@ -75,8 +75,8 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         audit_records()
             .await
             .iter()
-            .filter(|r| r.facts().action().as_str() == "software_result"
-                && r.facts().resource().id().as_str() == input.record.value())
+            .filter(|r| r.event().facts().action().as_str() == "software_result"
+                && r.event().facts().resource().id().as_str() == input.record.value())
             .count(),
         1
     );
@@ -98,8 +98,8 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         audit_records()
             .await
             .iter()
-            .filter(|r| r.facts().action().as_str() == "software_result"
-                && r.facts().resource().id().as_str() == input.record.value())
+            .filter(|r| r.event().facts().action().as_str() == "software_result"
+                && r.event().facts().resource().id().as_str() == input.record.value())
             .count(),
         1
     );

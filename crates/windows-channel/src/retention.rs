@@ -41,7 +41,7 @@ pub async fn prune_management(
                         )
                         .await?;
                     for fact in &facts {
-                        store.append(tx, fact, false).await.map_err(Error::from)?;
+                        store.append(tx, fact).await.map_err(Error::from)?;
                     }
                     audit.mark_commit_started();
                     Ok(count)

@@ -8,8 +8,6 @@ pub(crate) struct Cursor {
     pub authority: String,
     pub family: String,
     pub query: Query,
-    pub generation: uuid::Uuid,
-    pub through: i64,
     pub after_at: i64,
     pub after_position: i64,
 }

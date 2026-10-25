@@ -64,12 +64,7 @@ fn classify(error: Option<&Error>) -> Option<ResponseFailure> {
         Some(Error::Unavailable(
             Failure::AuditContract | Failure::AuditIsolation | Failure::AuditAdmission,
         )) => Some(ResponseFailure::AuditContract),
-        Some(Error::Unavailable(Failure::AuditBackpressure)) => {
-            Some(ResponseFailure::AuditBackpressure)
-        }
-        Some(Error::Unavailable(Failure::AuditReserveExhausted)) => {
-            Some(ResponseFailure::AuditReserveExhausted)
-        }
+
         Some(Error::Unavailable(Failure::Audit)) => Some(ResponseFailure::AuditUnavailable),
         _ => None,
     }

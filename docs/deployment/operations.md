@@ -53,12 +53,12 @@ lagging 是位置比较，不是精确事件数或原子快照。invocationAgeMs
 
 SIGINT/SIGTERM 先停止接入并排空，再取消和 join 工作任务，最后关闭存储及认证 KDF/runtime，整体关闭预算 40 秒。命令 worker 停止领取后等待在途 relay 完成 gateway 事务与 outbox 结算，单任务关闭上限二十秒覆盖领取、接受、结算各六秒的预算；任一并行分支退出会取消另一分支并等待它结算。关键任务异常或关闭失败返回非零；进程重启由部署 owner 决定。被动查询不延长认证 idle，组件事务使用自身预算完成，宿主不以请求 timeout 丢弃其提交结果。
 
-审计恢复要求各产品运行连接使用 `READ COMMITTED`；启动与每次借用事务均检查，组件不替调用方修改隔离级别。业务事务先取得 Audit head，以及 Ledger 模式下固定审计链的 head，再取得业务和 Outbox 锁。提交未知后使用原操作身份和原请求重试，锁后的新语句快照同时核对业务回执、产品审计回执与组件记录；恢复原 canonical bytes 和 recorded_at，不生成新的事件身份。单边缺失、指纹或字节冲突均拒绝并要求修复，不能补造记录。两者都不存在也只有在成功取得同一锁、确认先前数据库事务已结束后才允许重新判定业务；这不证明设备或软件源的外部副作用回滚。锁或读取超时继续保留未知状态。注册替换、撤销、Apple CheckOut 和共用退役策略的 Windows 路径保留六秒总上限，业务窗口最多四点五秒，余下四分之一留给原 Audit owner 提交/回滚；已有更早调用方 deadline 时同步收紧。截止时间在入口一次冻结，下游和逐事件追加不续期。这个兼容策略不保证任意采集积压能在六秒完成，也不是吞吐 SLO。业务超时后停止新增工作并等待原 owner 结算；上游 Acquire/Begin/Setup 尚未进入产品回调，仍受原总截止时间约束，Setup 耗尽预算仍可能回滚未确认。按实际结算状态处理，不分批伪装成完整退役。
+审计与业务状态在原 RSS 事务中直接提交。运行连接使用 `READ COMMITTED`，启动校验实际 writer 权限；Plain 不取得租户审计头锁，Ledger 在业务和 Outbox 锁之前取得所选链锁。提交未知沿原操作身份和原请求由业务回执恢复，不直接重执行业务，也不重新生成审计时间或复制回执。暂时缺失不能证明回滚；锁或读取超时继续保留未知状态。既有业务截止时间不续期，由原事务 owner 完成提交或回滚；这些资源边界不是吞吐或设备容量承诺。
 
-Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。关键动作拒绝、敏感查询、多阶段最终结果及其重放与未知结果使用独立请求事实，在受保护响应释放前完成可靠入队；普通读取与轮询不写管理审计。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。
+Ledger 启动会校验既有链身份并认证有界记录窗口，同 key ID 配错密钥也拒绝启动。新空链没有历史密钥认证证据，部署方仍须保管最初配置的秘密。运行时不自动生成密钥、轮转或降级 Plain；当前部署不支持更换既有审计完整性模式。关键动作拒绝、敏感查询、多阶段最终结果及其重放与未知结果使用独立请求事实，在受保护响应释放前完成可靠提交；普通读取与轮询不写管理审计。`RollbackFailed` 与 `CommitUnknown` 均不是成功回滚证明，日志也不替代持久审计。
 收到 `operation_rollback_unconfirmed` 时保留原 operation 身份及原请求，按同一锁协议重试/读取原回执；
 不得更换 UUID 或把暂时 404 当作回滚证明。持续不可核对时停止自动重试并由部署 owner 检查业务、
-审计回执及记录的一致性，不补造记录。Agent 通道将它与 CommitUnknown 一并映射为 `operation_unknown`，
+最终审计记录的一致性，不补造记录。Agent 通道将它与 CommitUnknown 一并映射为 `operation_unknown`，
 设备端使用相同 operationId 和原内容恢复，不重新执行已开始但结果未知的外部动作。
 
 审计持久记录不一致返回 HTTP 500 `audit_integrity_error`，日志原因同名；隔离级别、权限准入或
@@ -89,7 +89,6 @@ relay 的完整 messageId 保留类型前缀：`dispatch.<UUID>` 关联同 UUID 
 
 `identity-audit` 使用与 Identity 同库的独立 consumer 连接，复用产品 Plain/Ledger 模式、实例、租户和 storage lineage/epoch。每批至多两条，与 Audit 连接池容量一致；成功投递后立即继续；空闲等待通知、持久化重试/租约最近期限或三十秒恢复补扫。复用产品唯一 LISTEN 连接，监听可信实例的业务与管理租户 Identity 频道；空 payload 只作唤醒提示，不作为提交、领取或授权证明。所有订阅完成后及重连后补扫；空领取即使仍有到期候选也仅立即复查一次，随后有界等待，避免行锁竞争自旋。基础设施暂时失败保留至多一秒退避，由已知更早持久期限收紧，通知不能绕过退避。租约六十秒、发布五秒、结算一秒、安全余量一秒；关闭停止领取新批，等待当前组件调用结算，任务关闭限十五秒并受全局四十秒限制。中断不意味着回滚，重启保留原消息身份。
 
-组件日志 `component=identity-audit event=audit_projection` 使用 `phase=transaction` 的 `status=commit_unknown|rollback_failed` 报告事务不确定性，使用 `phase=resolve` 的 `status=confirmed|unresolved|failed` 报告持久恢复核对结果。提交未知后保留原事件身份，先观察 resolve，再核对 Outbox 终态与 Inbox 回执，不将 unknown 或 unresolved 当作回滚或成功。正常投影与空闲轮询不逐条输出日志；宿主 `mdm_identity_audit_failure.kind` 只含闭合错误类别。暂时领取故障或事件重试令投影 health 降级，后续成功处理后恢复；退避中的空轮询不清除重试状态。Identity 与 MDM 审计投影的 readiness 均为 NotApplicable，投影延迟本身不关闭可靠源入队。audit_source 汇总业务及管理租户的容量告警与接流状态；普通容量或失败事实保留额度耗尽时 readiness 关闭，投影释放额度后可恢复。诊断中的积压明细仅展示当前业务租户，不公开管理租户计数。永久投影故障由关键任务监督关闭宿主；就绪不等于积压清零。使用已有授权运维连接，按实际 tenant 与 `identity.security` domain 只读查看 Outbox 的 `status` 分布和对应 Inbox 回执，禁止给 worker 增加 operator 权限或导出事件 payload。
 
 只读查询示例（psql 的 `tenant_id` 变量由已授权操作员提供）：
 
@@ -371,9 +370,7 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 
 ### MDM 审计投影调度
 
-`audit_projection.max_inflight` 默认 9，是执行与待核对恢复身份的共同容量；消息 runtime 额外保留一个控制连接。worker 按空闲容量一次批量领取，各事件独立结算。领取、事件执行和恢复各自使用新建的单操作预算，不共享整轮截止。提交后通知只是提示，30 秒持久补查覆盖丢通知和重连；依赖失败复用 RSS 有上限指数退避，通知不能绕过退避。
 
-`mdm_audit_projection_progress` 聚合阶段耗时、推进数、恢复数量、连续失败和最后推进年龄，不含载荷。`resolve` 无终态证明时仍只能由新的持久 claim 决定重执行；关闭或超时不证明回滚。当前候选仅支持全新部署，使用当前 schema 安装；不修改旧部署迁移摘要或导入旧积压。
 
 
 ### 配置状态与完整历史

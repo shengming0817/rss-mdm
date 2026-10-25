@@ -393,7 +393,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
     ensure!(member.call(&router, Method::GET, &path, None).await?.0 == StatusCode::OK);
     // Failed audit rolls the lifecycle mutation back, even through the narrow router.
     member.operation = Some(Uuid::new_v4());
-    pg("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")?;
+    pg("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")?;
     let cancel_key = member.operation.unwrap();
     let rejected = member
         .call(
@@ -403,7 +403,7 @@ async fn capability_routes_without_application_preserve_revocation_and_atomicity
             Some(json!({})),
         )
         .await;
-    pg("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")?;
+    pg("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")?;
     let rejected = rejected?;
     ensure!(rejected.0 == StatusCode::SERVICE_UNAVAILABLE);
     ensure!(rejected.1["code"] == "service_unavailable");

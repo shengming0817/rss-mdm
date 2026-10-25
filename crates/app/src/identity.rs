@@ -19,7 +19,7 @@ use rss_mdm_authorization_service::context::Principal;
 use rss_request_context::TenantId;
 use rss_transactional_messaging::{
     fence::{Epoch, ExecutionBinding, StorageIdentity},
-    policy::{DeliveryBudget, OperationDeadline},
+    policy::OperationDeadline,
 };
 use rss_transactional_messaging_postgres::{PgConfig, PgPassword, PgPrivateCa, PgRuntime};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
@@ -73,7 +73,6 @@ pub(crate) struct Identity {
     pub(crate) tenant: TenantId,
     pub(crate) management_tenant: TenantId,
     pub(crate) tenant_administration: Option<Arc<crate::tenant_registry::http::Service>>,
-    pub(crate) audit_readiness: Arc<crate::audit_health::Readiness>,
     pub(crate) federation: Option<rss_identity_postgres::Federation>,
     routes: Router,
     bearer_routes: Router,
@@ -159,6 +158,7 @@ impl Identity {
         let mut options = authority_config(
             instance,
             tenants.iter().map(|(tenant, _)| *tenant).collect(),
+            config.audit.integrity()?,
         )?;
         let mut enterprise_clients: BTreeMap<
             String,
@@ -314,7 +314,6 @@ impl Identity {
             tenant,
             management_tenant,
             tenant_administration,
-            audit_readiness: Arc::default(),
             federation: configured_federation,
             routes,
             bearer_routes,
@@ -372,18 +371,13 @@ impl Identity {
 pub(crate) fn authority_config(
     instance: InstanceId,
     tenants: Vec<TenantId>,
+    integrity: rss_audit_postgres::Integrity,
 ) -> Result<AuthorityConfig, Error> {
     AuthorityConfig::new(
         instance,
         tenants,
         SessionPolicy::new(900, 14400).map_err(|_| invalid())?,
-        DeliveryBudget::new(
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-        )
-        .map_err(|_| invalid())?,
+        integrity,
     )
     .map_err(failure)
 }
@@ -395,18 +389,6 @@ pub(crate) async fn open_runtime(
 ) -> Result<Arc<PgRuntime>, Error> {
     let (pg, binding) = runtime_inputs(database, target, lineage, tenants)?;
     PgRuntime::connect_producer(pg, crate::lifecycle::RuntimeTimer, binding)
-        .await
-        .map(Arc::new)
-        .map_err(|_| Error::Unavailable(Failure::IdentityStorage))
-}
-pub(crate) async fn open_consumer_runtime(
-    database: &config::Database,
-    target: &[u8; 16],
-    lineage: &[u8; 16],
-    tenants: &[(TenantId, i64)],
-) -> Result<Arc<PgRuntime>, Error> {
-    let (pg, binding) = runtime_inputs(database, target, lineage, tenants)?;
-    PgRuntime::connect_consumer(pg, crate::lifecycle::RuntimeTimer, binding)
         .await
         .map(Arc::new)
         .map_err(|_| Error::Unavailable(Failure::IdentityStorage))

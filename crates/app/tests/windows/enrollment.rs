@@ -70,11 +70,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
     };
     // Issuance commits a durable Outbox fact. Drive the existing real consumer
     // before asserting its audit read model, rather than racing the shared worker.
-    crate::audit_test_support::projection::drain(
-        rss_request_context::TenantId::parse(case_tenant())?,
-        rss_audit_postgres::Integrity::Plain,
-    )
-    .await?;
+
     let (status, timeline) = admin
         .call(
             &host.browser,

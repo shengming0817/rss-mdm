@@ -69,8 +69,8 @@ pub async fn enroll(
             Ok::<_,Error>((bytes,id,false))
         })).await?;
         audit.operation(id,"apple_ade_enrollment", rss_mdm_audit_integration::AuditIntent::Management);
-        let fact=Fact::business(audit,&format!("ade-enroll:{id}"),machine.digest(),200,"success",Some(id))?;
-        app.audit_store.append(tx,&fact,replayed).await.map_err(Error::from)?;audit.mark_commit_started();Ok(bytes)
+        let fact=Fact::business(audit, &format!("ade-enroll:{id}"), 200, "success", Some(id))?;
+        (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await }).map_err(Error::from)?;audit.mark_commit_started();Ok(bytes)
     })).await;
     let bytes = crate::operations::settle(result, &audit)?;
     Ok((

@@ -131,14 +131,13 @@ pub(super) async fn enroll(
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-account-flow:{flow}"),
-                        digest.as_bytes(),
                         401,
                         "success",
                         Some(*flow),
                     )
                     .map_err(Error::from)?;
                     app.audit_store
-                        .append(tx, &fact, false)
+                        .append(tx, &fact)
                         .await
                         .map_err(Error::from)?;
                     audit.mark_commit_started();
@@ -213,16 +212,17 @@ async fn profile(
                             admission.coordinates().id,
                             admission.coordinates().version
                         ),
-                        digest.as_bytes(),
                         200,
                         "success",
                         Some(admission.coordinates().id),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

@@ -388,14 +388,7 @@ impl AssetService {
         {
             stored(serde_json::from_value::<AssetEnvelope>(old.clone()))?;
             audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-            crate::assets::receipts::audit(
-                tx,
-                &self.audit_store,
-                audit,
-                operation.zip(Some(fingerprint.as_slice())),
-                true,
-            )
-            .await?;
+            crate::assets::receipts::audit(tx, &self.audit_store, audit, operation, true).await?;
             authorize()?;
             return Ok(old);
         }
@@ -410,14 +403,7 @@ impl AssetService {
         if let Some(id) = operation {
             crate::assets::receipts::receipt(tx, audit, id, &fingerprint, &value).await?;
         }
-        crate::assets::receipts::audit(
-            tx,
-            &self.audit_store,
-            audit,
-            operation.zip(Some(fingerprint.as_slice())),
-            false,
-        )
-        .await?;
+        crate::assets::receipts::audit(tx, &self.audit_store, audit, operation, false).await?;
         authorize()?;
         Ok(value)
     }

@@ -253,7 +253,7 @@ impl Service {
                 .bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
                 let old=row(c,&tenant,id).await?;check_configuration_secret(&tenant,&old,&input.secret)?;
                 if old.try_get::<String,_>("request_digest").map_err(db)?!=*d || old.try_get::<String,_>("creator").map_err(db)?!=p.principal_id() || old.try_get::<String,_>("instance").map_err(db)?!=p.instance_id(){return Err(Error::Conflict);}
-                return Ok(Change{value:(document(&old)?,old.try_get::<String,_>("signature").map_err(db)?),replay:true,digest:d.clone()});
+                return Ok(Change{value:(document(&old)?,old.try_get::<String,_>("signature").map_err(db)?), replay:true});
             }
             crate::admission::require_new_in(c, &tenant, crate::quotas::Channel::Agent).await?;
             let mut defaults=None;
@@ -271,7 +271,7 @@ impl Service {
             sqlx::query("INSERT INTO mdm_access.agent_configurations(tenant_id,id,operation_id,creator,instance,secret_digest,request_digest,signature,document,quantity,state,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,'available',to_timestamp($11))")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(p.principal_id()).bind(p.instance_id()).bind(configuration_secret(&tenant,id,&input.secret)).bind(&*d).bind(&signature).bind(serde_json::to_value(&config).map_err(|_|Error::Malformed)?).bind(quantity).bind(expires_at as f64).execute(&mut *c).await.map_err(db)?;
             p.manage(Permission::AgentEnrollmentWrite)?;
-            Ok(Change{value:(config,signature),replay:false,digest:d.clone()})
+            Ok(Change{value:(config,signature), replay:false})
         })).await?;
         Ok(wire_config::ConfigurationFile {
             configuration: config.0,
@@ -345,11 +345,11 @@ impl Service {
             let (service,p,id,d,operation,a)=ctx;let tenant=service.tenant.to_string();
             authorize_on(c,p,Permission::AgentEnrollmentWrite).await?;
             let op=crate::operations::Operation{actor:crate::operations::Actor::from_authorized(p),key:*operation,digest:d};
-            if crate::operations::replay(c,&op).await?.is_some(){return Ok(Change{value:(),replay:true,digest:d.clone()});}
+            if crate::operations::replay(c,&op).await?.is_some(){return Ok(Change{value:(), replay:true});}
             row(c,&tenant,*id).await?;
             sqlx::query("UPDATE mdm_access.agent_configurations SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(*id).execute(&mut *c).await.map_err(db)?;
             crate::operations::save(c,&op,"null",a).await?;
-            Ok(Change{value:(),replay:false,digest:d.clone()})
+            Ok(Change{value:(), replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn exchange_configuration(
@@ -387,7 +387,7 @@ impl Service {
                 .bind(&tenant).bind(input.operation_id).fetch_optional(&mut *c).await.map_err(db)?{
                 let old=grant_row(c,&tenant,id).await?;check_secret(&tenant,&old,&input.secret)?;
                 if old.try_get::<String,_>("request_digest").map_err(db)?!=*d || old.try_get::<Option<Uuid>,_>("configuration_id").map_err(db)?!=Some(cfg.configuration_id){return Err(Error::Conflict);}
-                return Ok(Change{value:receipt(&old)?,replay:true,digest:d.clone()});
+                return Ok(Change{value:receipt(&old)?, replay:true});
             }
             if config.try_get::<String,_>("state").map_err(db)?!="available"{return Err(Error::Agent(wire::ErrorCode::GrantRevoked));}
             if cfg.expires_at<=now(c).await?{return Err(Error::Agent(wire::ErrorCode::GrantExpired));}
@@ -407,7 +407,7 @@ impl Service {
             sqlx::query("INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,spki,state,created_at,expires_at,configuration_id,configuration_binding) VALUES($1::uuid,$2,$3,'configuration',$4,$5,$6,$7,$8,$9,$10,'available',statement_timestamp(),statement_timestamp()+make_interval(secs=>$11),$12,$13)")
                 .bind(&tenant).bind(id).bind(input.operation_id).bind(config.try_get::<String,_>("creator").map_err(db)?).bind(config.try_get::<String,_>("instance").map_err(db)?).bind(Uuid::new_v4().to_string()).bind(platform(input.runtime.platform))
                 .bind(secret_digest(&tenant,id,&input.secret)).bind(&*d).bind(&*spki).bind(f64::from(values.grant_seconds)).bind(cfg.configuration_id).bind(binding).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?,replay:false,digest:d.clone()})
+            Ok(Change{value:receipt(&grant_row(c,&tenant,id).await?)?, replay:false})
         })).await.map_err(Into::into)
     }
     pub async fn configuration_exchange_status(
@@ -435,16 +435,16 @@ impl Service {
             "agent_reservation_cancel",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        let d = digest(input)?;
-        self.write(a,(self,input,d),|ctx,c|Box::pin(async move {
-            let (service,input,d)=ctx;let tenant=service.tenant.to_string();let row=grant_row(c,&tenant,input.grant_id).await?;
+
+        self.write(a,(self,input),|ctx,c|Box::pin(async move {
+            let (service,input)=ctx;let tenant=service.tenant.to_string();let row=grant_row(c,&tenant,input.grant_id).await?;
             check_secret(&tenant,&row,&input.secret)?;
             if row.try_get::<Uuid,_>("operation_id").map_err(db)?!=input.creation_operation_id{return Err(Error::Conflict);}
             let issued:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.agent_issuances WHERE tenant_id=$1::uuid AND grant_id=$2)").bind(&tenant).bind(input.grant_id).fetch_one(&mut *c).await.map_err(db)?;
             if issued{return Err(Error::Conflict);}
             let replay=row.try_get::<String,_>("state").map_err(db)?=="revoked";
             sqlx::query("UPDATE mdm_access.agent_grants SET state='revoked' WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(input.grant_id).execute(&mut *c).await.map_err(db)?;
-            Ok(Change{value:receipt(&grant_row(c,&tenant,input.grant_id).await?)?,replay,digest:d.clone()})
+            Ok(Change{value:receipt(&grant_row(c,&tenant,input.grant_id).await?)?, replay})
         })).await.map_err(Into::into)
     }
 }

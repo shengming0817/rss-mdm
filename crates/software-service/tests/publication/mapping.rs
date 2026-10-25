@@ -64,17 +64,19 @@ async fn record_receipts_and_persisted_source_admission() {
     sql("REVOKE SELECT ON mdm_access.credentials FROM mdm_software_driver");
     assert!(extra.is_err());
     assert!(connect().await.is_ok());
-    sql("GRANT INSERT ON mdm_audit.receipts TO mdm_software_driver WITH GRANT OPTION");
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_software_driver WITH GRANT OPTION",
+    );
     let delegation = connect().await;
     sql(
-        "REVOKE INSERT ON mdm_audit.receipts FROM mdm_software_driver; GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_software_driver",
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_software_driver; GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_software_driver",
     );
     assert!(delegation.is_err());
     assert!(connect().await.is_ok());
-    sql("ALTER POLICY tenant ON mdm_audit.receipts USING(true) WITH CHECK(true)");
+    sql("ALTER POLICY tenant ON rss_audit.records USING(true) WITH CHECK(true)");
     let broad = connect().await;
     sql(
-        "ALTER POLICY tenant ON mdm_audit.receipts USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+        "ALTER POLICY tenant ON rss_audit.records USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
     );
     assert!(broad.is_err());
     assert!(connect().await.is_ok());

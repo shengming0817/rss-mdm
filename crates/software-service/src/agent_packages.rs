@@ -513,12 +513,15 @@ pub async fn publish<C: ManagementContentPort>(
                 let fact = Fact::business(
                     a,
                     &format!("agent-package:{}", i.operation_id),
-                    hash,
                     200,
                     "success",
                     None,
                 )?;
-                app.audit.append_in(tx, &fact, replayed).await?;
+                (if replayed {
+                    Ok(())
+                } else {
+                    app.audit.append_in(tx, &fact).await
+                })?;
                 p.check_live()?;
                 Ok(package)
             })
@@ -676,8 +679,8 @@ pub async fn withdraw<C: ManagementContentPort>(
    Ok(None)
   })).await?;
   if old.as_ref().is_some_and(|v|v!=hash){return Err(Error::Conflict.into());}
-  let fact=Fact::business(a,&format!("agent-package-withdraw:{operation}"),hash,200,"success",None)?;
-  app.audit.append_in(tx,&fact,old.is_some()).await?;p.check_live()?;Ok(())
+  let fact=Fact::business(a, &format!("agent-package-withdraw:{operation}"), 200, "success", None)?;
+  (if old.is_some() { Ok(()) } else { app.audit.append_in(tx, &fact).await })?;p.check_live()?;Ok(())
  }),TransactionOwner::SoftwareCatalog).await
 }
 

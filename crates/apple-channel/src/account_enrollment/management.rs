@@ -177,7 +177,6 @@ async fn change(
         "apple_account_configuration",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fingerprint = rss_mdm_registration_service::enrollment::digest(&(id, &input));
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(2));
     let outcome = app
@@ -185,8 +184,8 @@ async fn change(
         .write(
             app.identity.tenant(),
             &budget.source_control(),
-            (app, proof, audit, id, operation, &input, &fingerprint),
-            |(app, proof, audit, id, operation, input, fingerprint), tx| {
+            (app, proof, audit, id, operation, &input),
+            |(app, proof, audit, id, operation, input), tx| {
                 Box::pin(async move {
                     let (value, replayed) = tx
                         .with_connection_context(
@@ -199,16 +198,17 @@ async fn change(
                     let fact = rss_mdm_audit_integration::Fact::business(
                         audit,
                         &format!("apple-account-configuration:{id}:{operation}"),
-                        fingerprint.as_bytes(),
                         200,
                         "success",
                         Some(*id),
                     )
                     .map_err(Error::from)?;
-                    app.audit_store
-                        .append(tx, &fact, replayed)
-                        .await
-                        .map_err(Error::from)?;
+                    (if replayed {
+                        Ok(())
+                    } else {
+                        app.audit_store.append(tx, &fact).await
+                    })
+                    .map_err(Error::from)?;
                     if replayed {
                         audit.management_result(
                             rss_mdm_audit_integration::ManagementResult::Replayed,

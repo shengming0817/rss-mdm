@@ -82,24 +82,18 @@ impl ExecutionService {
                 }
                 crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-                let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
-                service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
+
+                return Ok(response);
             }
             let binding=crate::channels::agent_binding_in(tx,service.agent_store.clone(),p.registration()).await?.ok_or(Error::Forbidden)?;
             let (software_capable,enrollment_capable)=(binding.software(),binding.enrollment());
             let versions = crate::sources::admission::agent_versions_in(tx,p.registration()).await?
                 .into_iter().map(|version| (version, Uuid::new_v4())).collect::<Vec<_>>();
             let existing = super::poll::offer_candidates(tx,p.registration(),now).await?;
-            let mut partitions = vec![
-                rss_mdm_audit_integration::source_partition(tx.tenant_id(), "device", p.device())?,
-                rss_mdm_audit_integration::source_partition(tx.tenant_id(), "mdm", "request")?,
-            ];
-            for id in existing.iter().cloned().chain(versions.iter().map(|(_, id)| id.to_string())) {
-                partitions.push(rss_mdm_audit_integration::source_partition(tx.tenant_id(), "mdm", &id)?);
-            }
+            let partitions = [];
+
             let access = if binding.capabilities.contains(&wire::Capability::DeviceAccessV1) {
                 let prepared=crate::device_access::prepare_reconciliation_in(service,tx,p).await?;
-                partitions.extend(prepared.partitions.iter().cloned());
                 Some(prepared)
             } else { None };
             crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&partitions).await?;
@@ -153,9 +147,9 @@ impl ExecutionService {
             let has_offer=offer.is_some();
             let response=checked_input(serde_json::to_value(checked_input(wire::TaskClaimResponse::new(offer,cancellations))?))?;
             if has_offer{
-                let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
+                let fact=Fact::business(audit, &event_key, 200, "success", None)?;
                 db::receipt(tx,&actor,input.operation_id(),hash,&response,None).await?;
-                service.audit_store.append_in(tx,&fact,false).await?;
+                service.audit_store.append_in(tx, &fact).await?;
             }
             Ok(response)
         })).await
@@ -168,12 +162,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
         audit.target(&id.to_string());
-        let partitions = [
-            rss_mdm_audit_integration::source_partition(self.tenant, "mdm", "request")
-                .map_err(Error::from)?,
-            rss_mdm_audit_integration::source_partition(self.tenant, "device", p.device())
-                .map_err(Error::from)?,
-        ];
+        let partitions = [];
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit,&partitions),|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit,partitions)=*ctx;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;if matches!(input.event(),wire::TaskEvent::Start|wire::TaskEvent::Received) {crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;}
             let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
@@ -183,9 +172,9 @@ impl ExecutionService {
             let event_key = format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id());
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
-                let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
-                let fact=if let Some(details)=db::audit_details(tx,&actor,input.operation_id()).await? {fact.with_details(details)?}else{fact};
-                service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);}
+
+
+                return Ok(response);}
             let requires_start_authority = matches!(input.event(), wire::TaskEvent::Start | wire::TaskEvent::Received) || run.state.started_at.is_none();
             let allowed = if requires_start_authority { plan.authorized_run_in(service,tx,&run,now).await? } else { plan.completion_authorized_in(service,tx,&run.target,now).await? };
             let effect_allowed = allowed && run.state.cancellation == Cancellation::None;
@@ -329,10 +318,10 @@ impl ExecutionService {
                 },
             }
             db::save_run(tx,&run).await?;crate::unmanage::wake_device_in(&service.reconcile_messaging, tx,&run.target.device).await?;let response=checked_input(serde_json::to_value(wire::TaskEventAck::new(permit,!allowed || run.state.cancellation!=Cancellation::None).with_credentials(credentials)))?;
-            let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
+            let fact=Fact::business(audit, &event_key, 200, "success", None)?;
             let fact=if let Some(details)=software_audit.clone() {fact.with_details(details)?}else{fact};
             db::receipt(tx,&actor,input.operation_id(),hash,&response,software_audit).await?;
-            service.audit_store.append_in(tx,&fact,false).await?;Ok(response)
+            service.audit_store.append_in(tx, &fact).await?;Ok(response)
         })).await
     }
     pub async fn action_content(

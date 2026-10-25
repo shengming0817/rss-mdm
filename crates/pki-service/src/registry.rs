@@ -254,7 +254,7 @@ impl Registry {
                 let replay=crate::mutation::replay(c,&next.tenant.to_string(),"service:device-pki","",*id,"admit",hash).await?.is_some();
                 persist(c,next).await?;
                 if !replay {crate::mutation::save(c,(&next.tenant.to_string(),"service:device-pki",""),*id,"admit",hash,b"null").await?;}
-                Ok(crate::mutation::Change{value:(),replay,key:format!("pki:{id}:admit"),fingerprint:hash.clone()})
+                Ok(crate::mutation::Change{value:(), replay, key:format!("pki:{id}:admit")})
             })).await;
             a.finalize(
                 result
@@ -544,7 +544,6 @@ impl Registry {
                         value: Some(receipt),
                         replay: true,
                         key: format!("pki:{id}:{phase}"),
-                        fingerprint: hash.to_vec(),
                     })
                 })
             },
@@ -575,8 +574,7 @@ impl Registry {
                 live(c,p).await?;
                 sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2639))").bind(p.tenant_id()).execute(&mut *c).await.map_err(|_|Error::Storage)?;
                 if let Some(bytes)=crate::mutation::replay(c,p.tenant_id(),p.principal_id(),p.instance_id(),*id,phase,hash).await? {
-                    return Ok(crate::mutation::Change{value:serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?,replay:true,
-                        key:format!("pki:{id}:{phase}"),fingerprint:hash.to_vec()});
+                    return Ok(crate::mutation::Change{value:serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?, replay:true, key:format!("pki:{id}:{phase}")});
                 }
                     let revision:i64=sqlx::query_scalar("SELECT revision FROM mdm_pki.trust WHERE tenant_id=$1::uuid AND purpose=$2 FOR UPDATE")
                         .bind(p.tenant_id()).bind(purpose(trust.purpose)).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
@@ -620,7 +618,7 @@ impl Registry {
                     crate::mutation::save(c,(p.tenant_id(),p.principal_id(),p.instance_id()),*id,phase,hash,
                         &serde_json::to_vec(&receipt).map_err(|_|Error::Storage)?).await?;
 
-                Ok(crate::mutation::Change{value:receipt,replay:false,key:format!("pki:{id}:{phase}"),fingerprint:hash.to_vec()})
+                Ok(crate::mutation::Change{value:receipt, replay:false, key:format!("pki:{id}:{phase}")})
             })).await
     }
 }

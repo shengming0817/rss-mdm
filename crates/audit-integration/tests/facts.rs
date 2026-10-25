@@ -1,4 +1,11 @@
 use rss_mdm_audit_integration::{Fact, RequestAudit};
+fn canonical(fact: &Fact) -> Vec<u8> {
+    let time = rss_contract::Timepoint::try_from(1i64).unwrap();
+    rss_audit_core::prepare(fact.event(time).unwrap(), time)
+        .unwrap()
+        .canonical_bytes()
+        .to_vec()
+}
 #[test]
 fn business_retries_ignore_new_request_identity_but_detect_changed_facts() {
     let first = RequestAudit::new(
@@ -11,53 +18,15 @@ fn business_retries_ignore_new_request_identity_but_detect_changed_facts() {
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let a = Fact::business(
-        &first,
-        "operation.phase",
-        b"request-A",
-        200,
-        "success",
-        None,
-    )
-    .unwrap();
-    let b = Fact::business(
-        &second,
-        "operation.phase",
-        b"request-A",
-        200,
-        "success",
-        None,
-    )
-    .unwrap();
-    assert_eq!(a.fingerprint(), b.fingerprint());
+    let a = Fact::business(&first, "operation.phase", 200, "success", None).unwrap();
+    let b = Fact::business(&second, "operation.phase", 200, "success", None).unwrap();
+    assert_eq!(canonical(&a), canonical(&b));
     assert_eq!(
         a.identity().event_id().as_str(),
         b.identity().event_id().as_str()
     );
-    let changed = Fact::business(
-        &second,
-        "operation.phase",
-        b"request-A",
-        503,
-        "unknown",
-        None,
-    )
-    .unwrap();
-    assert_ne!(a.fingerprint(), changed.fingerprint());
-    let changed_request = Fact::business(
-        &second,
-        "operation.phase",
-        b"request-B",
-        200,
-        "success",
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        a.identity().event_id().as_str(),
-        changed_request.identity().event_id().as_str()
-    );
-    assert_ne!(a.fingerprint(), changed_request.fingerprint());
+    let changed = Fact::business(&second, "operation.phase", 503, "unknown", None).unwrap();
+    assert_ne!(canonical(&a), canonical(&changed));
     let request = Fact::request(&first, 503, "unknown").unwrap();
     assert_ne!(
         a.identity().source().source_id().as_str(),
@@ -74,8 +43,7 @@ fn detail_replacement_depends_only_on_final_facts() {
         "device_action",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let fact =
-        || Fact::business(&audit, "operation.phase", b"request", 200, "success", None).unwrap();
+    let fact = || Fact::business(&audit, "operation.phase", 200, "success", None).unwrap();
     let direct = fact()
         .with_details(serde_json::json!({"value": 2}))
         .unwrap();
@@ -84,15 +52,8 @@ fn detail_replacement_depends_only_on_final_facts() {
         .unwrap()
         .with_details(serde_json::json!({"value": 2}))
         .unwrap();
-    assert_eq!(direct.fingerprint(), replaced.fingerprint());
-    assert_ne!(fact().fingerprint(), direct.fingerprint());
-    assert_ne!(
-        fact()
-            .with_details(serde_json::json!({"value": 1}))
-            .unwrap()
-            .fingerprint(),
-        direct.fingerprint()
-    );
+    assert_eq!(canonical(&direct), canonical(&replaced));
+    assert_ne!(canonical(&fact()), canonical(&direct));
     let event = direct
         .event(rss_contract::Timepoint::try_from(1_i64).unwrap())
         .unwrap();
@@ -128,12 +89,8 @@ fn invalid_facts_expose_closed_categories_without_input_values() {
         Err(InvalidFact::Outcome)
     ));
     assert!(matches!(
-        Fact::business(&valid, "", b"fingerprint", 200, "success", None),
+        Fact::business(&valid, "", 200, "success", None),
         Err(InvalidFact::Identity)
-    ));
-    assert!(matches!(
-        Fact::business(&valid, "key", b"", 200, "success", None),
-        Err(InvalidFact::Fingerprint)
     ));
     context.finalize(None);
     valid.finalize(None);

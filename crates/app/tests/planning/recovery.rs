@@ -257,7 +257,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
             }
         };
         let before = sql(&format!(
-            "SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id='{}' AND source_id='mdm.business'",
+            "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",
             tenant()
         ));
         let release = async {
@@ -286,7 +286,7 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
         ));
         assert_eq!(
             sql(&format!(
-                "SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id='{}' AND source_id='mdm.business'",
+                "SELECT count(*) FROM rss_audit.records WHERE tenant_id='{}' AND source_id='mdm.business'",
                 tenant()
             )),
             before
@@ -530,7 +530,9 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
     let cancel = tokio_util::sync::CancellationToken::new();
     let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
     // Failure of the companion audit must leave both job and RSS claim retryable.
-    sql("REVOKE INSERT ON mdm_audit.receipts FROM mdm_flow_runtime");
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_flow_runtime",
+    );
     let result = worker
         .finish(
             &claim,
@@ -539,7 +541,7 @@ async fn rss_exhaustion_records_failed_task_and_atomic_audit() {
         )
         .await;
     sql(
-        "GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_flow_runtime",
+        "GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_flow_runtime",
     );
     assert!(result.is_err());
     assert_eq!(

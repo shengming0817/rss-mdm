@@ -95,7 +95,6 @@ pub async fn retire_in(
                 Fact::business(
                     &audit,
                     &format!("registration-retirement:{registration}:command:{id}"),
-                    id.as_bytes(),
                     200,
                     "success",
                     None,
@@ -138,7 +137,6 @@ pub async fn retire_in(
                 Fact::business(
                     &audit,
                     &format!("registration-retirement:{registration}:action:{id}"),
-                    id.as_bytes(),
                     200,
                     "success",
                     None,

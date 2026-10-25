@@ -409,12 +409,12 @@ async fn write(
     let outcome=app.audit_store.write(app.identity.tenant(),&budget.source_control(),(app,p,audit,id,purpose,expected,request,change,fingerprint),|ctx,tx|Box::pin(async move{
         let(app,p,audit,id,purpose,expected,request,change,fingerprint)=ctx;
         let mut context=(*app,*p,*id,*purpose,*expected,*request,&*change,*fingerprint);
-        let (value,replayed,original_fingerprint)=tx.with_connection_context(&mut context,|(app,p,id,purpose,expected,request,change,fingerprint),c|Box::pin(async move{
+        let (value,replayed)=tx.with_connection_context(&mut context,|(app,p,id,purpose,expected,request,change,fingerprint),c|Box::pin(async move{
             rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
             let rules=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
             rules.require(p,Permission::RegistrationConfigurationWrite,None)?;
             storage::lock(c,p.tenant_id(),*purpose).await?;
-            if let Some((value,original))=storage::replay(c,app,p.tenant_id(),*id,request).await? {return Ok((value,true,original));}
+            if let Some(value)=storage::replay(c,app,p.tenant_id(),*id,request).await? {return Ok((value,true));}
             let(current,desired)=storage::head(c,p.tenant_id(),*purpose).await?;
             if current!=*expected{return Err(Error::Conflict);}
             let revision=current.checked_add(1).ok_or(Error::Conflict)?;
@@ -461,10 +461,10 @@ async fn write(
                 }
             };
             storage::save(c,p.tenant_id(),*id,app.protection.fingerprint_id(),fingerprint,&value).await?;
-            p.check_live()?;Ok::<_,Error>((value,false,*fingerprint))
+            p.check_live()?;Ok::<_,Error>((value,false))
         })).await?;
-        let fact=Fact::business(audit,&format!("apple-runtime:{id}"),&original_fingerprint,200,"success",None).map_err(|_|Error::Malformed)?;
-        app.audit_store.append(tx,&fact,replayed).await?;
+        let fact=Fact::business(audit, &format!("apple-runtime:{id}"), 200, "success", None).map_err(|_|Error::Malformed)?;
+        (if replayed { Ok(()) } else { app.audit_store.append(tx, &fact).await })?;
         if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
         audit.mark_commit_started();Ok(value)
     })).await;

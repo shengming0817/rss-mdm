@@ -9,8 +9,7 @@ pub enum ResponseFailure {
     Forbidden,
     AuditIntegrity,
     AuditContract,
-    AuditBackpressure,
-    AuditReserveExhausted,
+
     AuditUnavailable,
 }
 pub enum Replacement {
@@ -98,7 +97,6 @@ fn requires_fact(snapshot: &crate::Snapshot, status: u16) -> bool {
             snapshot.final_request
                 || status >= 400
                 || snapshot.write_outcome != WriteOutcome::Committed
-                || matches!(snapshot.management_result, Some(ManagementResult::Replayed))
         }
     }
 }

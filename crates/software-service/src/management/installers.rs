@@ -167,23 +167,15 @@ pub async fn save<C: ManagementContentPort>(
             &app.runtime,
             app.tenant,
             audit,
-            (app, p, audit, input, hash, value),
+            (app, p, audit, value),
             |ctx, tx| {
                 Box::pin(async move {
-                    let (app, p, audit, input, hash, value) = ctx;
+                    let (app, p, audit, value) = ctx;
                     app.audit.prepare_in(tx, audit, &[]).await?;
                     let snapshot = transaction::current(tx, p).await?;
                     snapshot.require(p, Permission::SoftwareWrite, None)?;
                     snapshot.require(p, Permission::ResourceWrite, None)?;
-                    let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
-                        &format!("software:{}", input.operation_id),
-                        hash,
-                        200,
-                        "success",
-                        None,
-                    )?;
-                    app.audit.append_in(tx, &fact, true).await?;
+
                     p.check_live()?;
                     Ok(value.clone())
                 })

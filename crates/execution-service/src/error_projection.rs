@@ -57,8 +57,7 @@ impl From<&rss_mdm_audit_integration::Error> for Error {
             C::AuditAdmission => Self::Unavailable(Failure::AuditAdmission),
             C::AuditIsolation => Self::Unavailable(Failure::AuditIsolation),
             C::AuditContract => Self::Unavailable(Failure::AuditContract),
-            C::AuditBackpressure => Self::Unavailable(Failure::AuditBackpressure),
-            C::AuditReserveExhausted => Self::Unavailable(Failure::AuditReserveExhausted),
+
             C::Audit => Self::Unavailable(Failure::Audit),
         }
     }
@@ -146,8 +145,6 @@ impl From<rss_mdm_inventory_service::Error> for Error {
                 F::AuditAdmission => crate::Failure::AuditAdmission,
                 F::AuditIsolation => crate::Failure::AuditIsolation,
                 F::AuditContract => crate::Failure::AuditContract,
-                F::AuditBackpressure => crate::Failure::AuditBackpressure,
-                F::AuditReserveExhausted => crate::Failure::AuditReserveExhausted,
             }),
         }
     }
@@ -181,8 +178,7 @@ impl From<crate::channels::Rejection> for Error {
             R::Deadline => Self::Unavailable(crate::Failure::RequestDeadline),
             R::AuditIntegrity => Self::Unavailable(crate::Failure::AuditIntegrity),
             R::AuditContract => Self::Unavailable(crate::Failure::AuditContract),
-            R::AuditBackpressure => Self::Unavailable(crate::Failure::AuditBackpressure),
-            R::AuditReserveExhausted => Self::Unavailable(crate::Failure::AuditReserveExhausted),
+
             R::Audit => Self::Unavailable(crate::Failure::Audit),
         }
     }
@@ -203,10 +199,7 @@ impl From<Error> for crate::channels::Rejection {
             Error::Unavailable(crate::Failure::RequestDeadline) => Self::Deadline,
             Error::Unavailable(crate::Failure::AuditIntegrity) => Self::AuditIntegrity,
             Error::Unavailable(crate::Failure::AuditContract) => Self::AuditContract,
-            Error::Unavailable(crate::Failure::AuditBackpressure) => Self::AuditBackpressure,
-            Error::Unavailable(crate::Failure::AuditReserveExhausted) => {
-                Self::AuditReserveExhausted
-            }
+
             Error::Unavailable(crate::Failure::Audit) => Self::Audit,
             _ => Self::Storage,
         }

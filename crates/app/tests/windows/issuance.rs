@@ -508,7 +508,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
     )
     .await?;
     let c = sign_certificate(&pool, audit_store.clone(), &w.channel.ca, &i).await?;
-    pg.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
+    pg.execute("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")
         .await?;
     let failed = complete(&audit_store, &w, &a, &proof, &i, &c).await;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
@@ -517,12 +517,11 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
         rss_audit_postgres::Integrity::Plain,
         source.clone(),
         rss_request_context::TenantId::parse(case_tenant())?,
-        Default::default(),
         &budget.control(),
     )
     .await
     .is_err();
-    pg.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
+    pg.execute("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")
         .await?;
     ensure!(rejected);
     ensure!(matches!(

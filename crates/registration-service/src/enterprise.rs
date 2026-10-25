@@ -295,7 +295,7 @@ impl Service {
                     }
                 };
                 crate::operations::save(c,&op,&serde_json::to_string(&record).map_err(|_|Error::Corrupt)?,audit).await?;
-                Ok(AuditedChange{value:record,digest:(*digest).clone(),replay:false})
+                Ok(AuditedChange{value:record, replay:false})
             })).await;
         match outcome {
             Ok(value) => Ok(value),

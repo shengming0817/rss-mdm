@@ -85,9 +85,9 @@ pub async fn cycle(
                         .bind(*tenant).bind(*registration).bind(*generation).bind(*revision).bind(configuration.as_slice()).bind(*id).bind(*material_revision).fetch_optional(c).await.map_err(db)
                 })).await?;
                 if sealed.is_some() {
-                    let input=serde_json::to_vec(&(registration,generation,revision,id)).map_err(|_|Error::Malformed)?;
-                    let fact=Fact::business(audit,&format!("windows-push:{id}:lease"),&input,200,"success",None).map_err(Error::from)?;
-                    store.append(tx,&fact,false).await.map_err(Error::from)?;audit.mark_commit_started();
+
+                    let fact=Fact::business(audit, &format!("windows-push:{id}:lease"), 200, "success", None).map_err(Error::from)?;
+                    store.append(tx, &fact).await.map_err(Error::from)?;audit.mark_commit_started();
                 }
                 Ok(sealed)
             })).await;
@@ -166,9 +166,9 @@ async fn settle(
             Ok(Some(true))
         })).await?;
         if let Some(changed)=changed {
-            let input=serde_json::to_vec(&(wake.registration,wake.revision,wake.id,status,outcome,retry_after)).map_err(|_|Error::Malformed)?;
-            let fact=Fact::business(audit,&format!("windows-push:{}:settle",wake.id),&input,200,"success",None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
-            store.append(tx,&fact,!changed).await.map_err(Error::from)?;audit.mark_commit_started();
+
+            let fact=Fact::business(audit, &format!("windows-push:{}:settle",wake.id), 200, "success", None).and_then(|f|f.with_details(serde_json::json!({"status":status,"outcome":outcome,"channelRevision":wake.revision,"retryAfter":retry_after}))).map_err(Error::from)?;
+            (if !changed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;audit.mark_commit_started();
         }
         Ok(())
     })).await;

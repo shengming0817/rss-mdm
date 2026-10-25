@@ -343,30 +343,27 @@ async fn current_user_read_skips_audit_even_with_business_contention() -> Result
         f.register_profile(json!(["inventory.collect.v1"])).await?;
         let mut owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let mut hold = owner.begin().await?;
-        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id,source_id) VALUES($1::uuid,'mdm.business') ON CONFLICT DO NOTHING")
-            .bind(case_tenant()).execute(&mut *hold).await?;
-        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
-            .bind(case_tenant()).fetch_one(&mut *hold).await?;
+        sqlx::raw_sql("LOCK TABLE rss_audit.records IN SHARE MODE").execute(&mut *hold).await?;
         let request = Request::get(CURRENT).header("host", "mdm.example.test:9445")
             .extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap())
             .body(Body::empty())?;
         let response = tokio::time::timeout(Duration::from_secs(1), f.router.clone().oneshot(request)).await??;
-        ensure!(response.status() == StatusCode::OK, "ordinary read waited for audit quota");
+        ensure!(response.status() == StatusCode::OK, "ordinary read waited for audit writes");
         let id = response.headers()["x-request-id"].to_str()?.to_owned();
         response.into_body().collect().await?;
         hold.rollback().await?;
         let count = |id: String| async move {
             let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
-            Ok::<i64, anyhow::Error>(sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND convert_from(source_bytes,'UTF8')::jsonb->>'request'=$2")
+            Ok::<i64, anyhow::Error>(sqlx::query_scalar("SELECT count(*) FROM rss_audit.records WHERE tenant_id=$1::uuid AND source_id='mdm.request' AND event_id='e-'||encode(sha256(convert_to($2,'UTF8')),'hex')")
                 .bind(case_tenant()).bind(id).fetch_one(&mut c).await?)
         };
-        ensure!(count(id).await? == 0, "ordinary read enqueued a persistent fact");
+        ensure!(count(id).await? == 0, "ordinary read appended a persistent fact");
         let response = f.router.clone().oneshot(Request::get(CURRENT)
             .header("host", "mdm.example.test:9445").body(Body::empty())?).await?;
         ensure!(response.status() == StatusCode::UNAUTHORIZED);
         let id = response.headers()["x-request-id"].to_str()?.to_owned();
         response.into_body().collect().await?;
-        ensure!(count(id).await? == 0, "ordinary authentication denial enqueued a persistent fact");
+        ensure!(count(id).await? == 0, "ordinary authentication denial appended a persistent fact");
         Ok(())
     }).await
 }
@@ -389,10 +386,7 @@ async fn slow_login_preflight_preserves_source_settlement() -> Result<()> {
             .bind(case_tenant()).fetch_one(&mut *identity_hold).await?;
         let mut quota_hold = quota_owner.begin().await?;
         let quota_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *quota_hold).await?;
-        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id,source_id) VALUES($1::uuid,'mdm.business') ON CONFLICT DO NOTHING")
-            .bind(case_tenant()).execute(&mut *quota_hold).await?;
-        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
-            .bind(case_tenant()).fetch_one(&mut *quota_hold).await?;
+        sqlx::raw_sql("LOCK TABLE rss_audit.records IN SHARE MODE").execute(&mut *quota_hold).await?;
         let router=f.router.clone();
         let token=f.author.cookies["__Host-identity-session"].clone();
         let operation=Uuid::new_v4();

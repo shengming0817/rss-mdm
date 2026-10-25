@@ -22,7 +22,6 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         lineage: [2; 16],
     };
     migrate(&options, &installation).await?;
-    audit_privilege_drift(&options, &installation, false).await?;
     let mut owner = PgConnection::connect_with(&options).await?;
     let before: Vec<(String, String, bool)> =
         sqlx::query_as("SELECT name,digest,complete FROM public.mdm_migrations ORDER BY name")
@@ -57,14 +56,6 @@ async fn fresh_installation_replay_and_mismatch_rejection() -> Result<()> {
         );
     }
     for (grant, revoke) in [
-        (
-            "GRANT SELECT ON identity_authority.accounts TO mdm_identity_audit",
-            "REVOKE SELECT ON identity_authority.accounts FROM mdm_identity_audit",
-        ),
-        (
-            "GRANT INSERT ON rss_audit.records TO mdm_identity_audit",
-            "REVOKE INSERT ON rss_audit.records FROM mdm_identity_audit",
-        ),
         (
             "GRANT DELETE ON identity_authority.accounts TO mdm_identity_runtime",
             "REVOKE DELETE ON identity_authority.accounts FROM mdm_identity_runtime",
@@ -188,90 +179,9 @@ fn installation_validates_stable_coordinates() {
     assert!(installation.validate().is_err());
 }
 
-async fn audit_privilege_drift(
-    options: &PgConnectOptions,
-    installation: &Installation,
-    ledger: bool,
-) -> Result<()> {
-    let admin_options = PgConnectOptions::from_str(&std::env::var("MDM_ADMIN_URL")?)?
-        .database(options.get_database().unwrap())
-        .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
-        .ssl_root_cert(std::env::var("PG_CA_FILE")?);
-    let mut admin = PgConnection::connect_with(&admin_options).await?;
-    let observer = &mut admin;
-    let role = format!("audit_set_{}", uuid::Uuid::new_v4().simple());
-    for (grant, revoke) in [
-        (
-            "GRANT CREATE ON SCHEMA rss_ledger TO mdm_identity_audit",
-            "REVOKE CREATE ON SCHEMA rss_ledger FROM mdm_identity_audit",
-        ),
-        (
-            "GRANT INSERT ON rss_ledger.entries TO mdm_identity_audit",
-            "REVOKE INSERT ON rss_ledger.entries FROM mdm_identity_audit",
-        ),
-        (
-            "GRANT UPDATE(tag) ON rss_ledger.entries TO mdm_identity_audit",
-            "REVOKE UPDATE(tag) ON rss_ledger.entries FROM mdm_identity_audit",
-        ),
-        (
-            "CREATE ROLE audit_set_only NOLOGIN; GRANT audit_set_only TO mdm_identity_audit WITH INHERIT FALSE; GRANT DELETE ON rss_ledger.entries TO audit_set_only",
-            "REVOKE DELETE ON rss_ledger.entries FROM audit_set_only; REVOKE audit_set_only FROM mdm_identity_audit; DROP ROLE audit_set_only",
-        ),
-        (
-            "GRANT INSERT ON rss_ledger.entries TO PUBLIC",
-            "REVOKE INSERT ON rss_ledger.entries FROM PUBLIC",
-        ),
-        (
-            "CREATE FUNCTION rss_ledger.unexpected() RETURNS integer LANGUAGE sql AS 'SELECT 1'",
-            "DROP FUNCTION rss_ledger.unexpected()",
-        ),
-    ] {
-        let grant = grant.replace("audit_set_only", &role);
-        let revoke = revoke.replace("audit_set_only", &role);
-        sqlx::raw_sql(sqlx::AssertSqlSafe(grant.clone()))
-            .execute(&mut *observer)
-            .await?;
-        rejected(
-            crate::migration::migrate(options, installation).await,
-            "instance, storage binding or runtime profiles differ",
-        );
-        sqlx::raw_sql(sqlx::AssertSqlSafe(revoke))
-            .execute(&mut *observer)
-            .await?;
-        crate::migration::migrate(options, installation).await?;
-    }
-    if !ledger {
-        for (grant, revoke) in [
-            (
-                "GRANT USAGE ON SCHEMA rss_ledger TO mdm_identity_audit",
-                "REVOKE USAGE ON SCHEMA rss_ledger FROM mdm_identity_audit",
-            ),
-            (
-                "GRANT SELECT ON rss_ledger.entries TO mdm_identity_audit",
-                "REVOKE SELECT ON rss_ledger.entries FROM mdm_identity_audit",
-            ),
-            (
-                "GRANT EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) TO mdm_identity_audit",
-                "REVOKE EXECUTE ON FUNCTION rss_ledger.prepare_append(uuid,text,text,smallint) FROM mdm_identity_audit",
-            ),
-        ] {
-            sqlx::raw_sql(grant).execute(&mut *observer).await?;
-            rejected(
-                crate::migration::migrate(options, installation).await,
-                "instance, storage binding or runtime profiles differ",
-            );
-            sqlx::raw_sql(revoke).execute(&mut *observer).await?;
-            crate::migration::migrate(options, installation).await?;
-        }
-    }
-    crate::migration::migrate(options, installation).await?;
-    admin.close().await?;
-    Ok(())
-}
-
 #[tokio::test]
 #[ignore = "make t2 MODULE=installation.migration: Ledger installer privileges"]
-async fn ledger_installation_rejects_audit_privilege_drift() -> Result<()> {
+async fn ledger_installation_grants_actual_business_writers() -> Result<()> {
     let options = PgConnectOptions::from_str(&std::env::var("MDM_OWNER_URL")?)?
         .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
@@ -282,7 +192,11 @@ async fn ledger_installation_rejects_audit_privilege_drift() -> Result<()> {
         lineage: [2; 16],
     };
     migrate(&options, &installation).await?;
-    audit_privilege_drift(&options, &installation, true).await
+    let mut owner = PgConnection::connect_with(&options).await?;
+    let granted: bool = sqlx::query_scalar("SELECT has_function_privilege('mdm_identity_runtime','rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[])','EXECUTE') AND has_function_privilege('mdm_identity_runtime','rss_ledger.prepare_append(uuid,text,text,smallint)','EXECUTE')").fetch_one(&mut owner).await?;
+    ensure!(granted);
+    owner.close().await?;
+    Ok(())
 }
 
 #[test]

@@ -157,8 +157,8 @@ impl Admission {
                 crate::operations::save(c,op,&revision.to_string(),audit).await?;
                 Ok((revision,false))
             })).await?;
-            let fact=Fact::business(audit,&format!("registration-admission:{}:{}",p.principal_id(),op.key),op.digest.as_bytes(),200,"success",None)?;
-            store.append(tx,&fact,replayed).await.map_err(Error::from)?;
+            let fact=Fact::business(audit, &format!("registration-admission:{}:{}",p.principal_id(),op.key), 200, "success", None)?;
+            (if replayed { Ok(()) } else { store.append(tx, &fact).await }).map_err(Error::from)?;
             if replayed {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);}
             audit.mark_commit_started();
             Ok(Setting{channel,revision,admission:change.admission})

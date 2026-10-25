@@ -196,8 +196,8 @@ impl Associations {
         .bind(p.tenant_id()).bind(change.operation()).bind(p.principal_id()).bind(p.instance_id()).bind(*digest).bind(result.clone()).execute(c).await?;
       Ok::<_,Error>((result,false))
     })).await?;
-    let fact=Fact::business(audit,&format!("device-lifecycle:{}",change.operation()),digest,200,"success",None)?.with_details(result.clone())?;
-    s.audit.append(tx,&fact,replay).await?;p.check_live()?;audit.mark_commit_started();Ok(result)
+    let fact=Fact::business(audit, &format!("device-lifecycle:{}",change.operation()), 200, "success", None)?.with_details(result.clone())?;
+    (if replay { Ok(()) } else { s.audit.append(tx, &fact).await })?;p.check_live()?;audit.mark_commit_started();Ok(result)
   })).await;
         attempt.fold(
             |v| {

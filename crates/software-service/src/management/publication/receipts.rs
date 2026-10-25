@@ -11,7 +11,7 @@ pub async fn audit(
     tx: &mut PgTransaction<'_>,
     store: &dyn crate::AuditPort,
     audit: &RequestAudit,
-    operation: Option<(Uuid, &[u8])>,
+    operation: Option<Uuid>,
     replayed: bool,
 ) -> Result<()> {
     let admitted = audit
@@ -24,20 +24,23 @@ pub async fn audit(
     } else {
         (200, "success")
     };
-    let result = if let Some((id, fingerprint)) = operation {
+    let result = if let Some(id) = operation {
         let fact = rss_mdm_audit_integration::Fact::business(
             audit,
             &format!(
                 "software_publication:{}:{id}",
                 audit.snapshot().actor.as_deref().unwrap_or("")
             ),
-            fingerprint,
             status,
             result,
             None,
         )
         .map_err(Error::from)?;
-        store.append_in(tx, &fact, replayed).await
+        if replayed {
+            Ok(())
+        } else {
+            store.append_in(tx, &fact).await
+        }
     } else {
         {
             if admitted {

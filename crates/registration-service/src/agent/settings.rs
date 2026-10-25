@@ -155,7 +155,7 @@ impl Service {
             sqlx::query("SELECT tenant_id FROM mdm_access.agent_enrollment_settings WHERE tenant_id=$1::uuid FOR UPDATE")
                 .bind(service.tenant.to_string()).fetch_one(&mut *c).await.map_err(db)?;
             if let Some(old)=crate::operations::replay(c,&op).await? {
-                return Ok(Change{value:serde_json::from_str(&old).map_err(|_|Error::Corrupt)?,replay:true,digest:d.clone()});
+                return Ok(Change{value:serde_json::from_str(&old).map_err(|_|Error::Corrupt)?, replay:true});
             }
             let current=read_on(c,p.tenant_id()).await?;
             if current.revision!=input.expected_revision || current.revision>=i64::MAX as u64{return Err(Error::Conflict);}
@@ -164,7 +164,7 @@ impl Service {
             p.manage(Permission::AgentEnrollmentWrite)?;
             let out=read_on(c,p.tenant_id()).await?;
             crate::operations::save(c,&op,&serde_json::to_string(&out).map_err(|_|Error::Corrupt)?,a).await?;
-            Ok(Change{value:out,replay:false,digest:d.clone()})
+            Ok(Change{value:out, replay:false})
         })).await.map_err(Into::into)
     }
 }

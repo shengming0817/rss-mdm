@@ -336,9 +336,9 @@ async fn commit_unknown_recovers_original_receipt_and_audit_failure_rolls_back()
         let conflict_id=Uuid::new_v4();
         let conflict_audit=RequestAudit::new(case_tenant().into(),"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
         proof.bind_audit(&conflict_audit)?;conflict_audit.operation(conflict_id,"first_use_update", rss_mdm_audit_integration::AuditIntent::Management);
-        let fact=rss_mdm_audit_integration::Fact::business(&conflict_audit,&format!("first-use:{}:{}:{conflict_id}",proof.instance_id(),proof.principal_id()),b"different-request",200,"success",None)?;
+        let fact=rss_mdm_audit_integration::Fact::business(&conflict_audit, &format!("first-use:{}:{}:{conflict_id}",proof.instance_id(),proof.principal_id()), 200, "success", None)?;
         let budget=rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(6));
-        let staged=fixture.audit.write(fixture.identity.tenant,&budget.source_control(),(&fixture.audit,&fact),|(store,fact),tx|Box::pin(async move {store.append(tx,fact,false).await})).await;
+        let staged=fixture.audit.write(fixture.identity.tenant,&budget.source_control(),(&fixture.audit,&fact),|(store,fact),tx|Box::pin(async move {store.append(tx, fact).await})).await;
         ensure!(staged.fold(|_|true,|_|false,|_|false,|_|false,|_|false,|_|false));
         let conflict_input:Update=serde_json::from_value(input(1,false))?;
         let conflict_digest=store::fingerprint(&proof,&conflict_input)?;

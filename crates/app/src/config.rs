@@ -40,62 +40,6 @@ impl AuditConfig {
     }
 }
 
-/// Independent recovery encryption keys. These never protect device credentials.
-#[derive(Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AuditRecoveryKeys {
-    pub active_file: PathBuf,
-    pub historical_files: Vec<PathBuf>,
-}
-impl AuditRecoveryKeys {
-    pub(crate) fn load(&self) -> Result<Arc<rss_mdm_native_protection::Protector>, Error> {
-        let invalid = || Error::Configuration(ConfigIssue::Audit);
-        if self.historical_files.len() > 15 {
-            return Err(invalid());
-        }
-        let active = read(&self.active_file, 32, true)?;
-        let historical = self
-            .historical_files
-            .iter()
-            .map(|p| read(p, 32, true))
-            .collect::<Result<Vec<_>, _>>()?;
-        let refs = historical
-            .iter()
-            .map(|key| key.as_slice())
-            .collect::<Vec<_>>();
-        rss_mdm_native_protection::Protector::with_history(&active, &refs)
-            .map(Arc::new)
-            .map_err(|_| invalid())
-    }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AuditProjectionConfig {
-    #[serde(default = "audit_capacity")]
-    pub max_inflight: u32,
-    pub database: Database,
-    pub recovery_keys: AuditRecoveryKeys,
-    #[serde(default = "audit_events")]
-    pub max_events: u64,
-    #[serde(default = "audit_bytes")]
-    pub max_bytes: u64,
-}
-fn audit_capacity() -> u32 {
-    9
-}
-fn audit_events() -> u64 {
-    100_000
-}
-fn audit_bytes() -> u64 {
-    1_073_741_824
-}
-impl AuditProjectionConfig {
-    pub(crate) fn limits(&self) -> Result<rss_mdm_audit_integration::BacklogLimits, Error> {
-        rss_mdm_audit_integration::BacklogLimits::new(self.max_events, self.max_bytes)
-            .map_err(|_| Error::Configuration(ConfigIssue::Audit))
-    }
-}
-
 #[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Database {
@@ -140,8 +84,6 @@ pub struct Identity {
     pub instance_id: String,
     pub tenant_id: String,
     pub database: Database,
-    pub audit_worker: Database,
-    pub audit_recovery_keys: AuditRecoveryKeys,
     pub oidc: Option<crate::identity::OidcConfig>,
     pub enterprise: Option<crate::identity::EnterpriseDeployment>,
 }
@@ -201,7 +143,6 @@ pub struct Config {
     pub native_protection: NativeProtection,
     pub recovery_credentials: Option<crate::recovery_credentials::Config>,
     pub audit: AuditConfig,
-    pub audit_projection: AuditProjectionConfig,
     pub listen: SocketAddr,
     pub product_origin: String,
     #[serde(default)]
@@ -291,75 +232,7 @@ impl Config {
         {
             return Err(Error::Configuration(ConfigIssue::IdentityDatabase));
         }
-        let worker = &self.identity.audit_worker;
-        if worker.user != crate::identity_audit::ROLE
-            || worker.host != self.identity.database.host
-            || worker.port != self.identity.database.port
-            || worker.name != self.identity.database.name
-        {
-            return Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase));
-        }
-        let worker = &self.audit_projection.database;
-        if worker.user != "mdm_audit_worker"
-            || worker.host != self.access_database.host
-            || worker.port != self.access_database.port
-            || worker.name != self.access_database.name
-        {
-            return Err(Error::Configuration(ConfigIssue::Audit));
-        }
-        self.audit_projection.limits()?;
-        if self.audit_projection.max_inflight == 0
-            || self.audit_projection.max_inflight.checked_add(1).is_none()
-        {
-            return Err(Error::Configuration(ConfigIssue::Audit));
-        }
-        self.audit_projection.recovery_keys.load()?;
-        self.identity.audit_recovery_keys.load()?;
         self.native_protector()?;
-        let mdm_keys = key_fingerprints(
-            std::iter::once(&self.audit_projection.recovery_keys.active_file)
-                .chain(&self.audit_projection.recovery_keys.historical_files),
-        )?;
-        let identity_keys = key_fingerprints(
-            std::iter::once(&self.identity.audit_recovery_keys.active_file)
-                .chain(&self.identity.audit_recovery_keys.historical_files),
-        )?;
-        let native_keys = key_fingerprints(
-            [
-                &self.native_protection.active_file,
-                &self.native_protection.fingerprint_file,
-            ]
-            .into_iter()
-            .chain(&self.native_protection.historical_files),
-        )?;
-        if !mdm_keys.is_disjoint(&identity_keys)
-            || !mdm_keys.is_disjoint(&native_keys)
-            || !identity_keys.is_disjoint(&native_keys)
-        {
-            return Err(Error::Configuration(ConfigIssue::Audit));
-        }
-        let mdm_password = secret(&self.audit_projection.database.password_file)?;
-        let identity_password = secret(&self.identity.audit_worker.password_file)?;
-        if mdm_password == identity_password {
-            return Err(Error::Configuration(ConfigIssue::Audit));
-        }
-        let mut producers = vec![
-            &self.access_database,
-            &self.identity.database,
-            &self.flow.storage.database,
-            &self.flow.publication.database,
-            &self.execution.database,
-            &self.runtime_database,
-        ];
-        if let Some(admin) = &self.tenant_administration {
-            producers.extend([&admin.registry_database, &admin.provisioning_database]);
-        }
-        for database in producers {
-            let password = secret(&database.password_file)?;
-            if password == mdm_password || password == identity_password {
-                return Err(Error::Configuration(ConfigIssue::Audit));
-            }
-        }
         let tenant = uuid::Uuid::parse_str(&self.identity.tenant_id)
             .map_err(|_| Error::Configuration(ConfigIssue::Tenant))?;
         if tenant.is_nil() || tenant.to_string() != self.identity.tenant_id {
@@ -401,33 +274,11 @@ impl Config {
             crate::authorization::identity_management::IdentityManagementPolicy::new(
                 &self.identity.instance_id,
             )?;
-        let worker = &self.identity.audit_worker;
-        let runtime = &self.identity.database;
-        if worker.password_file == runtime.password_file
-            || secret(&worker.password_file)
-                .map_err(|_| Error::Configuration(ConfigIssue::IdentityAuditDatabase))?
-                == secret(&runtime.password_file)
-                    .map_err(|_| Error::Configuration(ConfigIssue::IdentityAuditDatabase))?
-        {
-            return Err(Error::Configuration(ConfigIssue::IdentityAuditDatabase));
-        }
         Ok(Compiled {
             config: self,
             identity_management: Arc::new(identity_management),
         })
     }
-}
-fn key_fingerprints<'a>(
-    paths: impl Iterator<Item = &'a PathBuf>,
-) -> Result<std::collections::BTreeSet<Vec<u8>>, Error> {
-    paths
-        .map(|path| {
-            let key = read(path, 32, true)?;
-            Ok(ring::digest::digest(&ring::digest::SHA256, &key)
-                .as_ref()
-                .to_vec())
-        })
-        .collect()
 }
 
 pub(crate) fn https_url(value: &str) -> Result<url::Url, Error> {

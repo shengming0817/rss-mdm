@@ -1001,7 +1001,7 @@ impl Fixture {
                 // Only preparation is batched; the worker recovers each run in its own production transaction.
                 rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(30)),
                 &self.commands.service, |service, tx| Box::pin(async move {
-                    let partitions=pending.iter().map(|id|rss_mdm_audit_integration::source_partition(tx.tenant_id(),"mdm",&id.to_string())).collect::<std::result::Result<Vec<_>,_>>().map_err(|e|rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))?;
+                    let partitions = [];
                     tx.prepare_outbox_partitions(&partitions).await?;
                     for id in pending {
                         rss_mdm_execution_service::actions::production::queue_run_in(service, tx,

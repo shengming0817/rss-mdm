@@ -88,9 +88,7 @@ impl Associations {
                                     },
                                 )
                                 .await?;
-                            let result = service
-                                .record_change(tx, &change, audit, &digest, outcome)
-                                .await?;
+                            let result = service.record_change(tx, &change, audit, outcome).await?;
                             proof.check_live()?;
                             audit.mark_commit_started();
                             request.association_id = Some(result.id);

@@ -167,15 +167,8 @@ impl Policies {
                             .receipt_in(tx, op.operation_id, &hash, &value)
                             .await?,
                     )?;
-                    let fact = Fact::business(
-                        audit,
-                        &format!("policy:{id}:{}", op.operation_id),
-                        &hash,
-                        200,
-                        "success",
-                        None,
-                    )?;
-                    s.audit_store.append_in(tx, &fact, false).await?;
+                    let fact = Fact::business(audit, &format!("policy:{id}:{}", op.operation_id), 200, "success", None)?;
+                    s.audit_store.append_in(tx, &fact).await?;
                     p.check_live()?;
                     Ok(value)
                 })

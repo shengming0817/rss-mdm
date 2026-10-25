@@ -157,7 +157,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
-    root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
+    root.execute("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")
         .await?;
     assert!(matches!(
         service.bind(&admin_a, &third_proof, pending.clone()).await,
@@ -174,7 +174,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::Audit(_))
     ));
-    root.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
+    root.execute("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")
         .await?;
     assert!(
         service
@@ -228,7 +228,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
-    root.execute("REVOKE INSERT ON mdm_audit.receipts FROM mdm_access")
+    root.execute("REVOKE EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) FROM mdm_access")
         .await?;
     assert!(matches!(
         service
@@ -236,7 +236,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::Audit(_))
     ));
-    root.execute("GRANT INSERT(tenant_id,source_id,event_id,fingerprint,source_bytes,message_id,reserved,enqueued_at) ON mdm_audit.receipts TO mdm_access")
+    root.execute("GRANT EXECUTE ON FUNCTION rss_audit.append_batch(uuid,text[],text[],bigint[],bytea[],bigint[]) TO mdm_access")
         .await?;
     assert!(
         service

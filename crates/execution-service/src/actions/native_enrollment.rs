@@ -117,16 +117,9 @@ impl ExecutionService {
                             )
                         }
                     };
-                    let fingerprint = crate::transaction::fingerprint(&(task, input))?;
-                    let fact = rss_mdm_audit_integration::Fact::business(
-                        audit,
-                        &format!("agent-native:{task}:{}", input.operation_id),
-                        &fingerprint,
-                        200,
-                        "success",
-                        Some(receipt.enrollment_id),
-                    )?;
-                    s.audit_store.append_in(tx, &fact, replay).await?;
+
+                    let fact = rss_mdm_audit_integration::Fact::business(audit, &format!("agent-native:{task}:{}", input.operation_id), 200, "success", Some(receipt.enrollment_id))?;
+                    (if replay { Ok(()) } else { s.audit_store.append_in(tx, &fact).await })?;
                     Ok(NativeEnrollmentReceipt {
                         enrollment_id: receipt.enrollment_id,
                         expires_at: receipt.expires_at,

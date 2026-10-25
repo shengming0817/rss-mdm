@@ -784,23 +784,10 @@ pub(super) async fn query_and_project(
                         ));
                     }
                     if !done {
-                        let rss_mdm_inventory_service::tasks::JobInput::AssetQuery {
-                            scope, ..
-                        } = &job
+                        let rss_mdm_inventory_service::tasks::JobInput::AssetQuery { .. } = &job
                         else {
                             unreachable!()
                         };
-                        let partition = rss_mdm_audit_integration::source_partition(
-                            tenant,
-                            "mdm",
-                            &scope.subject,
-                        )
-                        .map_err(|e| {
-                            rss_transactional_messaging_postgres::PgError::from(
-                                sqlx::Error::Protocol(e.to_string()),
-                            )
-                        })?;
-                        tx.prepare_outbox_partitions(&[partition]).await?;
                         assets
                             .advance_asset_query_in(tx, task, &job, cursor)
                             .await

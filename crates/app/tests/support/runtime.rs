@@ -12,7 +12,7 @@ pub(crate) fn case_device() -> &'static str {
 pub(crate) async fn database(value: &Value) -> Result<Arc<crate::Database>> {
     let config: Config = serde_json::from_value(value.clone())?;
     Ok(Arc::new(
-        crate::Database::connect(config.access_options()?)
+        crate::Database::connect(config.access_options()?, &config.audit)
             .await
             .map_err(|error| anyhow::anyhow!("access database rejected: {error:?}"))?,
     ))
@@ -87,7 +87,6 @@ pub(crate) async fn start_automation(value: &Value) -> Result<Option<rss_runtime
             config.audit.integrity()?,
             source,
             tenant,
-            Default::default(),
             &budget.control(),
         )
         .await?,
