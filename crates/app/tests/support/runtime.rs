@@ -183,6 +183,12 @@ pub(crate) fn secret(label: &str) -> [u8; 32] {
 #[must_use = "fixture resources must be explicitly shut down"]
 pub(crate) struct Resources(pub(super) Vec<Box<rss_runtime::DynManagedResource<'static>>>);
 impl Resources {
+    pub(crate) fn native_router(&mut self, router: axum::Router) -> axum::Router {
+        let requests = NativeRequests::new();
+        let router = requests.wrap(router);
+        self.resource(requests);
+        router
+    }
     pub(crate) fn extend(&mut self, mut other: Self) {
         self.0.append(&mut other.0);
     }
@@ -387,13 +393,14 @@ impl rss_runtime::ManagedResource for SourceResource {
 }
 
 /// Fixtures use the same RSS admission/drain owner as the product process.
+#[derive(Clone)]
 pub(crate) struct NativeRequests {
-    control: rss_runtime::AdmissionControl,
+    control: Arc<rss_runtime::AdmissionControl>,
     pub(crate) gate: rss_runtime::AdmissionGate,
-    owner: tokio::sync::Mutex<Option<rss_runtime::ShutdownStack>>,
+    owner: Arc<tokio::sync::Mutex<Option<rss_runtime::ShutdownStack>>>,
 }
 impl NativeRequests {
-    pub(crate) fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Self {
         let mut owner = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(40)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),
@@ -405,13 +412,13 @@ impl NativeRequests {
             .commit()
             .finish_with_admission("native-fixture", Duration::from_secs(35));
         control.open().unwrap();
-        Arc::new(Self {
-            control,
+        Self {
+            control: Arc::new(control),
             gate,
-            owner: tokio::sync::Mutex::new(Some(owner)),
-        })
+            owner: Arc::new(tokio::sync::Mutex::new(Some(owner))),
+        }
     }
-    pub(crate) fn wrap(self: &Arc<Self>, router: axum::Router) -> axum::Router {
+    pub(crate) fn wrap(&self, router: axum::Router) -> axum::Router {
         router
             .layer(axum::Extension(self.gate.clone()))
             .layer(axum::Extension(self.clone()))
@@ -424,7 +431,7 @@ impl NativeRequests {
         Ok(())
     }
 }
-impl rss_runtime::ManagedResource for Arc<NativeRequests> {
+impl rss_runtime::ManagedResource for NativeRequests {
     fn name(&self) -> &str {
         "native-fixture"
     }

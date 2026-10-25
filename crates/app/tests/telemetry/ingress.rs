@@ -99,6 +99,7 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 .clone()
                 .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?)
                 .merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
+            f.router = resources.native_router(f.router);
             Ok(f)
         })
     })

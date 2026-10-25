@@ -598,6 +598,8 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     let mut resources = crate::test_support::runtime::Resources::default();
     resources.resource(crate::test_support::runtime::PoolResource(pool.clone()));
     resources.resource(crate::test_support::runtime::SourceResource(source));
+    let lifecycle = crate::test_support::runtime::NativeRequests::new();
+    resources.resource(lifecycle.clone());
     resources
         .finish(async {
             use axum::{body::Body, http::Request, middleware};
@@ -647,7 +649,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
             )
             .layer(middleware::from_fn(crate::native::admission::admit_agent))
             .into_axum();
-            let router = crate::test_support::runtime::native_router(router);
+            let router = lifecycle.wrap(router);
             let mut running = Vec::new();
             for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
                 let request = Request::get("/held")

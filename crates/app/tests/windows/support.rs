@@ -532,7 +532,7 @@ impl Host {
                 crate::device::test_support::options("mdm_access")?,
                 rss_request_context::TenantId::parse(case_tenant())?,
             ),
-            browser,
+            browser: resources.native_router(browser),
             runtime,
             ingress_clock,
             root_cert,

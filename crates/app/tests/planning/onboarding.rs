@@ -92,6 +92,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
     f.router = f
         .router
         .merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
+    f.router = f.resources.native_router(f.router);
     let inventory_worker = crate::inventory_runtime::test_support::start(runtime).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {

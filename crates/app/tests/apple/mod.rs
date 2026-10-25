@@ -452,7 +452,7 @@ impl Fixture {
             resources: Default::default(),
             authority, commands: execution, planning, assets, compliance, apple, devices, associations, clock, inventory: runtime, requests, agent_enrollment, agent_channel,
             browser,
-            router,
+            router: resources.native_router(router),
             owner: Some(owner),
             execution_owner: Some(execution_owner),
             signals,

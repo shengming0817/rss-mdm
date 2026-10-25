@@ -156,7 +156,7 @@ def audit_backpressure(fixture):
         encoded=json.dumps(rule).replace("'","''")
         h.sql(f"SET rss.tenant_id='{h.business}'; INSERT INTO mdm_access.authorization_rules VALUES('{h.business}','{INSTANCE}','{uuid.uuid4()}',1,'{encoded}'::jsonb)")
         h.host.close()
-        _audit_backpressure(h.config,h.admin,h.normal,h.management,h.business,h.password,h.sql,h.builds,h.root,h.stack,fixture.owner,fixture.database,h.write)
+        _audit_backpressure(h.config,h.admin,h.normal,h.management,h.business,h.password,h.sql,h.builds,h.root,h.stack,fixture.owner,fixture.database)
 
 
 def lost_commit_ack(fixture):
@@ -234,9 +234,13 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
                     require(sql(f"SELECT reserved_events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}' AND source_id='{source}'") == '0', 'failure reserve was already consumed')
                     break
                 # Normal business and request capacity are independent. Fill each through its real owner.
-                status = (write(browser, str(uuid.uuid4()), 0, None)[0]
-                          if source == 'mdm.business' else browser.call('GET', route)[0])
-                require(status == 200, source + ' fill rejected before capacity')
+                if source == 'mdm.business':
+                    current = json.loads(sql(f"SELECT jsonb_build_object('id',id,'revision',revision,'value',document) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant_id}' AND document IS NOT NULL ORDER BY id LIMIT 1"))
+                    prefix = BASE + '/authorization/rules/' if tenant_id == management else '/api/v1/authorization/rules/'
+                    change = dict(operationId=str(uuid.uuid4()), expectedRevision=current['revision'], value=current['value'])
+                    require(browser.call('PUT', prefix + current['id'], change)[0] == 200, source + ' fill rejected before capacity')
+                else:
+                    require(browser.call('GET', route)[0] == 200, source + ' fill rejected before capacity')
             else:
                 raise RuntimeError(source + ' did not fill its source quota')
 
