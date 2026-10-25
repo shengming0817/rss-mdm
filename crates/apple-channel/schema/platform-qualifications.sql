@@ -78,3 +78,35 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
 $$;
 REVOKE ALL ON FUNCTION mdm_apple.platform_session_qualifications(uuid,jsonb,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_apple.platform_session_qualifications(uuid,jsonb,bigint) TO mdm_access,mdm_identity_runtime;
+
+-- Correlate a task observation without a readiness cycle. The caller holds the asset fence.
+-- ref: Apple AuthenticationServices/ASAuthorizationProviderExtensionLoginManager.h.
+CREATE FUNCTION mdm_apple.platform_registration_matches(p_source uuid,p_version bigint,binding jsonb)
+RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS $$
+ SELECT EXISTS (
+  SELECT FROM mdm_apple.psso_sources u
+  JOIN mdm_apple.psso_sources d ON(d.tenant_id,d.id)=(u.tenant_id,u.parent)
+  CROSS JOIN LATERAL (SELECT mdm_devices.object_current(u.document->'object','mdm') AS member) o
+  WHERE u.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
+   AND u.tenant_id::text=binding->>'tenant'
+   AND u.id=p_source AND u.version=p_version AND u.kind='user' AND NOT u.revoked
+   AND u.binding::text=binding->>'id'
+   AND u.document->>'bindingGeneration'=binding->>'generation'
+   AND u.document->'loginConfiguration'=binding#>'{configuration,mac}'
+   AND d.kind='device' AND NOT d.revoked
+   AND d.version=(u.document->>'parentVersion')::bigint
+   AND d.registration=u.registration AND d.document->'object'=u.document->'object'
+   AND d.document->>'configuration'=u.document->>'configuration'
+   AND d.document->'loginConfiguration'=u.document->'loginConfiguration'
+   AND d.document->'profileUuid'=u.document->'profileUuid'
+   AND o.member->>'registrationId'=u.registration::text
+   AND EXISTS(SELECT FROM mdm_apple.devices x WHERE (x.tenant_id,x.registration)=(u.tenant_id,u.registration) AND x.state='active')
+   AND EXISTS(SELECT FROM jsonb_array_elements(u.document#>'{object,members}') m
+    WHERE m->>'registrationId'=binding->>'registration'
+     AND m->>'generation'=binding->>'registrationGeneration' AND m->>'device'=binding->>'device')
+   AND u.document#>>'{subject,account,principal}'=binding#>>'{person,principal}'
+   AND u.document#>>'{subject,instance}'=binding#>>'{person,instance}'
+ )
+$$;
+REVOKE ALL ON FUNCTION mdm_apple.platform_registration_matches(uuid,bigint,jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_apple.platform_registration_matches(uuid,bigint,jsonb) TO mdm_command_runtime;

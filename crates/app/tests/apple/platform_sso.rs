@@ -573,6 +573,33 @@ async fn applied_binding(id: Uuid) -> Result<()> {
         .execute(&mut *tx)
         .await?;
     let mut b = storage::locked_in(&mut tx, Uuid::parse_str(case_tenant())?, id).await?;
+    let source:Option<(Uuid,i64)>=sqlx::query_as("SELECT id,version FROM mdm_apple.psso_sources WHERE tenant_id=$1::uuid AND binding=$2 AND kind='user' AND NOT revoked")
+        .bind(case_tenant()).bind(id).fetch_optional(&mut *tx).await?;
+    if let Some((source_id, source_version)) = source {
+        let document = serde_json::to_value(&b)?;
+        let valid: bool =
+            sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
+                .bind(source_id)
+                .bind(source_version)
+                .bind(&document)
+                .fetch_one(&mut *tx)
+                .await?;
+        ensure!(
+            valid,
+            "current PSSO registration must qualify before Applied"
+        );
+        let old: bool =
+            sqlx::query_scalar("SELECT mdm_apple.platform_registration_matches($1,$2,$3)")
+                .bind(source_id)
+                .bind(source_version + 1)
+                .bind(&document)
+                .fetch_one(&mut *tx)
+                .await?;
+        ensure!(
+            !old,
+            "different source generation cannot complete configuration"
+        );
+    }
     // The task/result protocol has its own P1 proof. This test consumes its legal Applied fact.
     b.state = access::State::Active;
     b.applied_revision = Some(b.revision);
@@ -582,8 +609,15 @@ async fn applied_binding(id: Uuid) -> Result<()> {
         account: b.account.clone().context("local account")?,
         role: AccessRole::Standard,
         mac: Some(AccessMacFacts {
-            password_sync: AccessObservation::Present,
-            keychain_sync: AccessObservation::Present,
+            platform_sso: source.map(|(user_source_id, user_source_version)| {
+                rss_mdm_agent_wire::runtime::AccessMacPlatformSsoFacts {
+                    configuration: AccessObservation::Present,
+                    device_registered: AccessObservation::Present,
+                    user_registered: AccessObservation::Present,
+                    user_source_id,
+                    user_source_version,
+                }
+            }),
             secure_token: AccessObservation::Present,
             volume_owner: AccessObservation::Unknown,
             filevault_unlock: AccessObservation::Unknown,

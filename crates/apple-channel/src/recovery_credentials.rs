@@ -62,24 +62,20 @@ pub(crate) async fn receive(
                     .map_err(failed)?;
                 return Ok(());
             };
-            let secret = protection
-                .recipient(&action.recipient)
-                .map_err(failed)?
-                .decrypt(&action.recipient, cms)
-                .map_err(failed)?;
             let operation = vault::source_operation_in(c, &coordinates)
                 .await
                 .map_err(failed)?;
-            if action.action == "rotate_filevault" {
-                vault::unknown_in(c, tenant, operation)
-                    .await
-                    .map_err(failed)?;
-            }
-            vault::ingest_in(c, &protection.keys, &coordinates, operation, &secret)
-                .await
-                .map_err(failed)?;
-            // A decryptable escrow is not proof of an actual recovery unlock.
-            vault::settled_in(c, &coordinates, operation)
+            let value = rss_mdm_recovery_credentials::filevault::receive_reserved_cms(
+                c,
+                protection,
+                &coordinates,
+                operation,
+                &action.recipient,
+                cms,
+            )
+            .await
+            .map_err(failed)?;
+            vault::replace_native_coordinates_in(c, tenant, command.operation, &value)
                 .await
                 .map_err(failed)?;
         }

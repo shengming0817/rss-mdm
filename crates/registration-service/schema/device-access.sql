@@ -106,9 +106,15 @@ CREATE FUNCTION mdm_access.access_binding_ready(document jsonb) RETURNS boolean
         AND document#>>'{effect,windows,policy}'='present'
         AND document#>>'{effect,windows,registration}'='present'
         AND document#>>'{effect,windows,hardwareKey}'='present')))
-    OR (document#>>'{effect,mac,secureToken}'='present'
+    OR (coalesce(document#>>'{configuration,role}',document#>>'{effect,role}')=document#>>'{effect,role}'
+     AND document#>>'{effect,mac,secureToken}'='present'
      AND (document#>>'{configuration,mac,authentication}'<>'password' OR
-       (document#>>'{effect,mac,passwordSync}'='present' AND document#>>'{effect,mac,keychainSync}'='present'))
+       (document#>>'{configuration,enabled}'='false' OR
+        (document#>>'{effect,mac,platformSso,configuration}'='present'
+         AND document#>>'{effect,mac,platformSso,deviceRegistered}'='present'
+         AND document#>>'{effect,mac,platformSso,userRegistered}'='present'
+         AND document#>>'{effect,mac,platformSso,userSourceId}'<>'00000000-0000-0000-0000-000000000000'
+         AND (document#>>'{effect,mac,platformSso,userSourceVersion}')::bigint>0)))
      AND (document#>>'{configuration,mac,filevault}'='local' OR (document#>>'{effect,mac,filevaultUnlock}'='present' AND document#>>'{effect,mac,volumeOwner}'='present')))
    ELSE false END,false)
 $$;

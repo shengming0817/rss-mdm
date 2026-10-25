@@ -29,6 +29,7 @@ pub struct Services {
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
     pub pki_clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
     pub agent_enrollment: Option<Arc<rss_mdm_registration_service::agent::Service>>,
+    pub filevault: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Credentials>>,
     pub certificate_archive: Arc<rss_mdm_certificate_archive_service::Archive>,
     pub timeline: Arc<rss_mdm_timeline_service::Timeline>,
@@ -150,6 +151,9 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::certificate_archive::routes(state.query_cursor.clone())
                 .with_state(state.certificate_archive),
         )
+        .merge(crate::recovery_credentials::filevault_routes(
+            state.filevault.clone(),
+        ))
         .merge(crate::recovery_credentials::routes(
             state.recovery_credentials.clone(),
             state.query_cursor.clone(),

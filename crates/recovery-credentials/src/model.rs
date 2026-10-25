@@ -94,8 +94,11 @@ pub enum Subject {
     LocalAdministrator {
         sid: String,
     },
-    /// Apple native PRK commands address the startup volume, not a caller-selected disk.
-    Filevault,
+    /// Startup-volume recovery custody, independent of either transport registration.
+    Filevault {
+        custody: Uuid,
+        epoch: i64,
+    },
     RecoveryLock,
     LockPin {
         operation: Uuid,
@@ -115,7 +118,7 @@ impl Subject {
                     && *binding_generation > 0
                     && rss_mdm_agent_wire::runtime::valid_windows_account_sid(sid)
             }
-            Self::Filevault => true,
+            Self::Filevault { custody, epoch } => !custody.is_nil() && *epoch > 0,
             Self::LocalAdministrator { sid } => {
                 sid.starts_with("S-1-5-")
                     && bounded(sid)

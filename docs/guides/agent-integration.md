@@ -241,8 +241,7 @@ Begin/confirm 在宿主同一 READ COMMITTED 写事务内调用 Identity 的 liv
 签名 `device_access` task 复用 Offer/Received/Start，包含人员、注册/绑定代际、配置 revision 和摘要。
 收到 Offer 不能执行；Start 前重新核验目标、权限及本机条件。Create 的系统密码只经本机交互设置，
 同名冲突必须失败，不能自动关联现有账号。Unbind 明确携带 disposition（keep/disable/standard）；保留数据，按原意图保留、禁用账号或移除管理员权限，结果 unbound 必须携带同一 disposition。
-收到/实际应用分别上报；`device_access_result` 的 Mac 结果单独携带 passwordSync、keychainSync、Secure Token、volume ownership 和
-FileVault 解锁观察，未知必须保持 unknown。Password 模式必须分别确认密码和钥匙串；FileVault 强化还须确认卷所有权与解锁资格。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
+收到/实际应用分别上报；`device_access_result` 的 Mac 结果携带系统 PSSO 配置/注册观察、注册来源、Secure Token、卷所有权和 FileVault 解锁资格。Password 完成要求当前原生配置和设备/用户注册已确认；密码与登录钥匙串同步由 macOS 执行，接口不报告独立同步结果。FileVault 强化还须确认卷所有权与解锁资格。安全限制（最后管理员/恢复账号）失败使用闭合错误类别。
 
 Windows RSS 附加因子首次开通和显式因子重置在同一个 Device Access task 内完成：本机交互准备 TOTP 和新账号密码后才 Start，
 以 `device_access_prepared` 报告真实 SID（尚非 Applied），再用既有加密 escrow 托管恢复材料。
@@ -304,3 +303,16 @@ Preparing/Completing 中断须查询原 operation；120 秒准备窗口或原始
 RP 自己建立应用会话，每次使用前调用 GET `/relying-parties/{rp}/sessions/{session}` 复核。
 该 session 是产品业务定位符，不能用于 Identity 登录。当前交付互操作范围为受控 `rp-a`、`rp-b`，
 不声明任意外部应用或独立 Agent 已完成接入。
+
+
+### 独立 FileVault CMS 托管
+
+Agent runtime 的 `GET /filevault/configuration` 返回当前设备的采集授权与公开收件证书；默认关闭。
+管理者通过设备恢复凭据的 `filevault/configuration` 操作显式授权，提供当前注册代际、配置 revision、收件证书指纹及幂等 operation。
+端上系统服务只读 Apple 生成的 `/var/db/FileVaultPRK.dat`，通过 `POST /filevault/escrows` 上传原始 CMS；
+`GET /filevault/operations/{id}` 恢复未知提交结果。此路径不依赖普通任务或 MDM 注册，不接收员工 bearer、任意文件路径或目标 URL。
+文件缺失或证书不匹配必须等待合法平台材料，采集不能自动安装 profile、生成/轮换 PRK 或改变账号密码。
+
+FileVault 托管身份独立于采集通道；MDM 与 Agent 可以分别使用。同一设备已验证关联后，具有两侧安全操作权限的管理者
+可使用 `filevault/link` 明确关联来源。待决轮换和收件人冲突会阻止归并；不按序列号或相同密文自动归并。
+托管回执仅证明材料已受保护保存，不能证明它是当前可用于恢复解锁的密钥。普通诊断不返回 PRK 或 CMS。

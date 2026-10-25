@@ -224,7 +224,7 @@ impl Credentials {
                 let (_,principal,device,id,version,_,_)=context;
                 lock_publication(c, principal.tenant_id()).await?;
                 // Read metadata first, then acquire authorization and registration before material locks.
-                let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.device=$2 AND e.id=$3 AND v.version=$4")).bind(principal.tenant_id()).bind(*device).bind(*id).bind(*version).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
+                let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4")).bind(principal.tenant_id()).bind(*device).bind(*id).bind(*version).fetch_optional(&mut *c).await?.ok_or(Error::NotFound)?;
                 let material=storage::decode(&row)?;
                 authorize(c,principal,device,material.binding.subject.permission()).await?;
                 read_locked(c,principal.tenant_id(),device,*id,*version).await?;
@@ -255,7 +255,7 @@ async fn lock_publication(c: &mut PgConnection, tenant: &str) -> Result<(), Erro
     Ok(())
 }
 
-async fn authorize(
+pub(crate) async fn authorize(
     c: &mut PgConnection,
     p: &AuthorizedPrincipal,
     device: &str,
@@ -280,7 +280,7 @@ async fn read_locked(
         return Err(Error::Malformed);
     }
     let statement = storage::select_material!(
-        " WHERE e.tenant_id=$1::uuid AND e.device=$2 AND e.id=$3 AND v.version=$4 AND NOT e.retired"
+        " WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4 AND NOT e.retired"
     );
     let row = sqlx::query(statement)
         .bind(tenant)
@@ -297,7 +297,7 @@ async fn read_locked(
         &material.binding,
     )
     .await?;
-    let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND e.device=$2 AND e.id=$3 AND v.version=$4 AND NOT e.retired FOR UPDATE OF e,v")).bind(tenant).bind(device).bind(id).bind(version).fetch_optional(c).await?.ok_or(Error::NotFound)?;
+    let row=sqlx::query(storage::select_material!(" WHERE e.tenant_id=$1::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=$2) OR mdm_recovery.filevault_accessible(e.subject,$2)) AND e.id=$3 AND v.version=$4 AND NOT e.retired FOR UPDATE OF e,v")).bind(tenant).bind(device).bind(id).bind(version).fetch_optional(c).await?.ok_or(Error::NotFound)?;
     Ok((
         storage::decode(&row)?,
         row.try_get("key_id")?,
@@ -305,7 +305,7 @@ async fn read_locked(
     ))
 }
 
-fn finish<R>(
+pub(crate) fn finish<R>(
     attempt: rss_transactional_messaging::transaction::LocalTxAttempt<
         R,
         rss_mdm_audit_integration::TransactionError<Error>,

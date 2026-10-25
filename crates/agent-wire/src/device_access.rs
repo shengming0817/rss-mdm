@@ -435,16 +435,47 @@ pub enum AccessObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccessMacFacts {
-    /// Native account password synchronization, never inferred from the IdP exchange.
-    pub password_sync: AccessObservation,
-    /// Native login keychain synchronization, independent of account password success.
-    pub keychain_sync: AccessObservation,
+    /// System configuration and registration readback. None means not yet observed.
+    /// Password and login-keychain synchronization are owned by macOS, not inferred here.
+    pub platform_sso: Option<AccessMacPlatformSsoFacts>,
     /// The account's Secure Token status, not Bootstrap Token custody.
     pub secure_token: AccessObservation,
     /// Apple silicon volume ownership.
     pub volume_owner: AccessObservation,
     /// Actual FileVault unlock eligibility, not merely the disk encryption setting.
     pub filevault_unlock: AccessObservation,
+}
+
+/// Native PSSO readback for one exact user source; the server verifies its current parent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccessMacPlatformSsoFacts {
+    /// Both system login configurations match the requested configuration.
+    pub configuration: AccessObservation,
+    /// System LoginManager device registration, independent from the server receipt.
+    pub device_registered: AccessObservation,
+    /// System LoginManager user registration, independent from token issuance.
+    pub user_registered: AccessObservation,
+    /// Exact server-admitted user registration observed by the extension.
+    pub user_source_id: Uuid,
+    /// Source generation, not the account binding revision.
+    pub user_source_version: i64,
+}
+impl AccessMacPlatformSsoFacts {
+    /// Structural validation does not attest native execution or current source ownership.
+    pub fn validate(&self) -> Result<(), WireError> {
+        if self.user_source_id.is_nil() || self.user_source_version < 1 {
+            return Err(WireError::InvalidValue);
+        }
+        Ok(())
+    }
+    /// Only all independently observed prerequisites establish Password setup.
+    pub fn ready(&self) -> bool {
+        self.validate().is_ok()
+            && self.configuration == AccessObservation::Present
+            && self.device_registered == AccessObservation::Present
+            && self.user_registered == AccessObservation::Present
+    }
 }
 
 /// Closed native failure classes; never include command output or user credentials.
@@ -518,6 +549,9 @@ impl AccessEffect {
         } = self
         {
             account.validate()?;
+            if let Some(facts) = mac.as_ref().and_then(|m| m.platform_sso.as_ref()) {
+                facts.validate()?;
+            }
             if account.platform() != platform
                 || mac.is_some() != (platform == TaskPlatform::Macos)
                 || windows.is_some() != (platform == TaskPlatform::Windows)
@@ -562,14 +596,28 @@ impl AccessEffect {
             return false;
         }
         match self {
-            Self::Applied { mac: Some(mac), .. } => {
+            Self::Applied {
+                mac: Some(mac),
+                role,
+                ..
+            } => {
+                if configuration.role.is_some_and(|expected| expected != *role) {
+                    return false;
+                }
+                if !configuration.enabled {
+                    // The native producer separately verifies retirement before reporting Applied.
+                    return true;
+                }
                 let Some(login) = &configuration.mac else {
                     return false;
                 };
                 mac.secure_token == AccessObservation::Present
                     && (login.authentication != crate::platform_sso::AuthenticationMode::Password
-                        || (mac.password_sync == AccessObservation::Present
-                            && mac.keychain_sync == AccessObservation::Present))
+                        || !configuration.enabled
+                        || mac
+                            .platform_sso
+                            .as_ref()
+                            .is_some_and(AccessMacPlatformSsoFacts::ready))
                     && (login.filevault == crate::platform_sso::LoginPolicy::Local
                         || (mac.filevault_unlock == AccessObservation::Present
                             && mac.volume_owner == AccessObservation::Present))

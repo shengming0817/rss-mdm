@@ -63,7 +63,10 @@ fn stored_material_survives_restart_and_rotation_but_not_coordinate_substitution
     v.version += 1;
     mutations.push(v);
     let mut v = c.clone();
-    v.binding.subject = Subject::Filevault;
+    v.binding.subject = Subject::Filevault {
+        custody: Uuid::new_v4(),
+        epoch: 1,
+    };
     mutations.push(v);
     for modified in mutations {
         assert!(rotated.open("first", &modified, &original).is_err());

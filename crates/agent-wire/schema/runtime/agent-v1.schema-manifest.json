@@ -152,6 +152,18 @@
     {
       "type": "SelfServiceDirectoryItem",
       "file": "self-service-directory-item-v1.schema.json"
+    },
+    {
+      "type": "FilevaultConfiguration",
+      "file": "filevault-configuration-v1.schema.json"
+    },
+    {
+      "type": "FilevaultUpload",
+      "file": "filevault-upload-v1.schema.json"
+    },
+    {
+      "type": "FilevaultReceipt",
+      "file": "filevault-receipt-v1.schema.json"
     }
   ],
   "apiVersion": 1

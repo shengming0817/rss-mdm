@@ -2,6 +2,7 @@
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 mod diagnostic;
 mod error;
+pub mod filevault;
 pub use diagnostic::{ConfigIssue, Failure};
 pub use error::Error;
 use error::Missing;

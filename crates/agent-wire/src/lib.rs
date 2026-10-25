@@ -29,3 +29,6 @@ pub mod platform_sso;
 
 /// Native proofs and RP Broker interaction contracts.
 pub mod enterprise;
+
+/// Independent, device-authenticated FileVault CMS custody.
+pub mod filevault;

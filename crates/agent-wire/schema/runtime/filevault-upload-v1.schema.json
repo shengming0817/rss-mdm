@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One frozen native CMS submission; it carries no plaintext recovery key.",
+  "properties": {
+    "cms": {
+      "description": "Original Apple CMS bytes, base64 encoded; never log the carrier.",
+      "type": "string"
+    },
+    "cmsDigest": {
+      "description": "Lowercase SHA-256 of the decoded original CMS bytes.",
+      "type": "string"
+    },
+    "configurationRevision": {
+      "description": "Exact authorization revision selected before reading the file.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "custodyEpoch": {
+      "description": "Recovery-owner generation, fenced independently from device enrollment.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "custodyId": {
+      "description": "Recovery-owner identity, independent from transport registration.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "expectedRevision": {
+      "description": "Material revision observed before this submission.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "operationId": {
+      "description": "Stable idempotency identity retained before sending.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "recipientId": {
+      "description": "Exact configured escrow certificate fingerprint.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operationId",
+    "custodyId",
+    "custodyEpoch",
+    "configurationRevision",
+    "expectedRevision",
+    "recipientId",
+    "cmsDigest",
+    "cms"
+  ],
+  "title": "Upload",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/filevault-upload.schema.json"
+}

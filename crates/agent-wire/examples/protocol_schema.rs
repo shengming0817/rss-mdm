@@ -44,6 +44,9 @@ fn main() {
             "Acknowledgement": schemars::schema_for!(pki::Acknowledgement),
         },
         "runtime": {
+            "FilevaultConfiguration": schemars::schema_for!(rss_mdm_agent_wire::filevault::Configuration),
+            "FilevaultUpload": schemars::schema_for!(rss_mdm_agent_wire::filevault::Upload),
+            "FilevaultReceipt": schemars::schema_for!(rss_mdm_agent_wire::filevault::Receipt),
             "AccessDirectory": schemars::schema_for!(runtime::AccessDirectory),
             "AccessBindingStatus": schemars::schema_for!(runtime::AccessBindingStatus),
             "AccessBegin": schemars::schema_for!(runtime::AccessBegin),

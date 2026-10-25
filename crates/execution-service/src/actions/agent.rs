@@ -201,7 +201,7 @@ impl ExecutionService {
                     let db::ScheduledPolicy::DeviceAccess(access_plan) = &plan else { return Err(Error::Forbidden.into()); };
                     let access_complete = value.effect.complete(&access_plan.binding.configuration, access_plan.binding.intent.platform());
                     if !matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) || !matches!(run.state.execution,Execution::Running|Execution::Unknown) || run.state.started_at.is_none() { return Err(Error::Forbidden.into()); }
-                    crate::device_access::finish_in(tx,&run,input,value,effect_allowed).await?;
+                    crate::device_access::finish_in(service,tx,&run,input,value,effect_allowed).await?;
                     if crate::device_access::provisioning::unresolved(tx,&run,input.attempt_id(),!matches!(value.effect,wire::AccessEffect::Unknown) && (!matches!(value.effect,wire::AccessEffect::Applied { .. } | wire::AccessEffect::WhfbRetired { .. }) || access_complete)).await? || matches!(value.effect,wire::AccessEffect::Unknown) || matches!(value.effect,wire::AccessEffect::Applied{..} | wire::AccessEffect::WhfbRetired { .. }) && !access_complete {run.state.uncertain_result(input.attempt_id())?;}
                     else {run.state.result(input.attempt_id(),access_complete)?;}
                     run.result=Some(checked_input(serde_json::to_value(value))?);

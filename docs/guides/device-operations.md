@@ -188,3 +188,12 @@ RP assertion issuer 必须各自独立；Keycloak 专用 client 信任对应 ES2
 operationId/expectedRevision 保护幂等和 CAS。RP 固定 HTTPS callback、能力和部署指纹；
 修改部署配置后先显式更新 RP revision，旧交接立即拒绝。稳定 IdP sub 永久归属其人员，不能重新分配给另一主体。
 Windows key 登记使用 wire 的 KeyRegistration.signing_bytes，证明只覆盖持钥，不替代原生用户在场证明。
+
+
+### FileVault 独立托管来源
+
+FileVault 元数据的 subject 包含独立 custody 及 epoch；外层注册字段记录材料最初来源，不再决定 FileVault 托管的生命周期。
+材料目录与授权披露通过当前来源映射访问：撤销一个采集来源不撤销另一个有效来源的材料。
+`POST /devices/{device}/recovery-credentials/filevault/configuration` 只配置已有 CMS 的采集授权，不安装 profile 或轮换密钥。
+`POST /devices/{device}/recovery-credentials/filevault/link` 要求已验证的 MDM/Agent 设备关联和两侧 SecurityOperate 权限；
+归并在同一事务中重新保护材料并保留历史，不能按接收顺序决定哪个 PRK 有效。真实恢复解锁仍须独立验证。

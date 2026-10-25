@@ -285,6 +285,27 @@ async fn prepare(
         coordinates: None,
         recipient: recipient.id().into(),
     };
+    let filevault = if matches!(
+        input.action,
+        Action::ConfigureFilevault
+            | Action::CollectFilevault { .. }
+            | Action::RotateFilevault { .. }
+            | Action::ReconcileFilevault { .. }
+    ) {
+        credentials::filevault::source_binding(
+            c,
+            &credentials::filevault::Source {
+                tenant,
+                device: device.into(),
+                registration: input.registration,
+                generation: input.generation,
+            },
+            true,
+        )
+        .await?
+    } else {
+        None
+    };
     let binding = |subject| Binding {
         device: device.into(),
         registration: input.registration,
@@ -341,10 +362,7 @@ async fn prepare(
         } => {
             let coordinates =
                 vault::coordinates_in(c, tenant, device, material.id, material.version).await?;
-            if coordinates.binding.registration != input.registration
-                || coordinates.binding.generation != input.generation
-                || !matches!(coordinates.binding.subject, Subject::Filevault)
-            {
+            if filevault.as_ref() != Some(&coordinates.binding) {
                 return Err(E::Conflict);
             }
             link.action = "collect_filevault".into();
@@ -362,7 +380,16 @@ async fn prepare(
             if let Some(selected) = selected {
                 link.recipient = protection.recipient(selected)?.id().into();
             }
-            link.coordinates = Some(reserve(c, Subject::Filevault, *expected_revision).await?);
+            link.coordinates = Some(
+                vault::reserve_in(
+                    c,
+                    tenant,
+                    filevault.as_ref().ok_or(E::Conflict)?,
+                    input.operation_id,
+                    *expected_revision,
+                )
+                .await?,
+            );
             command("SecurityInfo", vec![])
         }
         Action::RotateFilevault {
@@ -373,7 +400,16 @@ async fn prepare(
                 return Err(E::Malformed);
             }
             link.action = "rotate_filevault".into();
-            link.coordinates = Some(reserve(c, Subject::Filevault, *expected_revision).await?);
+            link.coordinates = Some(
+                vault::reserve_in(
+                    c,
+                    tenant,
+                    filevault.as_ref().ok_or(E::Conflict)?,
+                    input.operation_id,
+                    *expected_revision,
+                )
+                .await?,
+            );
             command(
                 "RotateFileVaultKey",
                 vec![
