@@ -273,7 +273,7 @@ GRANT SELECT,INSERT ON TABLE mdm_flow.cursor_keys TO mdm_flow_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
-GRANT UPDATE(relation_after,relation_through,relation_cursor,relation_page_after,relation_page_through) ON mdm_planning.asset_dispatch TO mdm_flow_runtime;
+GRANT UPDATE(relation_revision,relation_cursor,relation_pending_revision) ON mdm_planning.asset_dispatch TO mdm_flow_runtime;
 GRANT UPDATE(consumed) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;
 
 GRANT UPDATE(watermark) ON TABLE mdm_planning.asset_dispatch TO mdm_flow_runtime;

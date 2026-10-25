@@ -7,19 +7,10 @@
   "columns": [
     [
       "asset_dispatch",
-      "relation_after",
+      "relation_revision",
       "bigint",
       true,
       "0",
-      "",
-      ""
-    ],
-    [
-      "asset_dispatch",
-      "relation_through",
-      "bigint",
-      false,
-      null,
       "",
       ""
     ],
@@ -34,16 +25,7 @@
     ],
     [
       "asset_dispatch",
-      "relation_page_after",
-      "bigint",
-      false,
-      null,
-      "",
-      ""
-    ],
-    [
-      "asset_dispatch",
-      "relation_page_through",
+      "relation_pending_revision",
       "bigint",
       false,
       null,
@@ -1079,9 +1061,9 @@
     ],
     [
       "asset_dispatch",
-      "asset_dispatch_relation_after_check",
+      "asset_dispatch_relation_revision_check",
       "c",
-      "CHECK ((relation_after >= 0))",
+      "CHECK ((relation_revision >= 0))",
       true
     ],
     [

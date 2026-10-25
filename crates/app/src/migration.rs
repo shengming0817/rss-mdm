@@ -19,16 +19,12 @@ impl MigrationError {
     }
 }
 type Result<T> = std::result::Result<T, MigrationError>;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditMode {
+    #[default]
     Plain,
     Ledger,
-}
-impl Default for AuditMode {
-    fn default() -> Self {
-        Self::Plain
-    }
 }
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
@@ -155,6 +151,25 @@ async fn apply_unit(
         .begin()
         .await
         .map_err(|_| MigrationError::at(name, "begin"))?;
+    apply_schema(&mut tx, installation, instance, name, sql).await?;
+    sqlx::query("INSERT INTO public.mdm_migrations(name,digest,complete) VALUES($1,$2,true)")
+        .bind(name)
+        .bind(digest)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MigrationError::at(name, "recording completion"))?;
+    tx.commit()
+        .await
+        .map_err(|_| MigrationError::at(name, "commit acknowledgement unknown"))
+}
+
+async fn apply_schema(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    installation: &Installation,
+    instance: rss_identity_core::InstanceId,
+    name: &'static str,
+    sql: &'static str,
+) -> Result<()> {
     let enabled = installation.audit_mode == AuditMode::Ledger
         || !matches!(name, "audit-ledger-v1" | "audit-ledger-runtime-v1");
     if enabled && matches!(name, "audit-v1" | "audit-ledger-v1") {
@@ -165,36 +180,28 @@ async fn apply_unit(
         };
         sqlx::query("SELECT set_config('role',$1,true)")
             .bind(role)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| MigrationError::at(name, "owner role"))?;
-        execute_schema(&mut tx, name, sql, "component schema").await?;
+        execute_schema(tx, name, sql, "component schema").await?;
         sqlx::query("SET LOCAL ROLE mdm_owner")
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| MigrationError::at(name, "restore installer role"))?;
     } else if name == "identity-authority-v17" {
-        install_identity_in(&mut tx, installation, instance)
+        install_identity_in(tx, installation, instance)
             .await
             .map_err(|_| MigrationError::at(name, "identity installation"))?;
     } else if enabled {
         execute_schema(
-            &mut tx,
+            tx,
             name,
             sql,
             "component SQL failed; original transaction rolled back",
         )
         .await?;
     }
-    sqlx::query("INSERT INTO public.mdm_migrations(name,digest,complete) VALUES($1,$2,true)")
-        .bind(name)
-        .bind(digest)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| MigrationError::at(name, "recording completion"))?;
-    tx.commit()
-        .await
-        .map_err(|_| MigrationError::at(name, "commit acknowledgement unknown"))
+    Ok(())
 }
 
 /// Adapt the fixed, pinned component scripts to the installer's transaction. Some components

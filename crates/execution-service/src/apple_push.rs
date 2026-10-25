@@ -84,9 +84,6 @@ impl ExecutionService {
                         prepared.push((row, needed));
                     }
                     let rows = prepared;
-                    let partitions = [];
-                    crate::transaction::lock_directory(tx).await?;
-                    tx.prepare_outbox_partitions(&partitions).await?;
                     for (row, needed) in rows {
                         let registration = row.registration;
                         let user_key = row.user_key.clone();

@@ -495,7 +495,10 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
             let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres").unwrap()).await.unwrap();
             for _ in 0..20 {
                 let cycle:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity a JOIN pg_stat_activity b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database() AND a.pid=ANY(pg_blocking_pids(b.pid)))").fetch_one(&mut c).await.unwrap();
-                assert!(!cycle,"claim and retirement formed a database lock cycle");
+                if cycle {
+                    let waits: Vec<(String,String)> = sqlx::query_as("SELECT a.query,b.query FROM pg_stat_activity a JOIN pg_stat_activity b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database() AND a.pid=ANY(pg_blocking_pids(b.pid))").fetch_all(&mut c).await.unwrap();
+                    panic!("claim and retirement formed a database lock cycle: {waits:?}");
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         });

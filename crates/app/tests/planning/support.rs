@@ -654,6 +654,8 @@ pub(crate) async fn seed_group(
                         .map_err(|e| {
                             sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
                         })?;
+                    let partition = owner.groups.partition(&id.to_string())?;
+                    tx.prepare_outbox_partitions(&[partition]).await?;
 
                     owner
                         .publish_change_in(

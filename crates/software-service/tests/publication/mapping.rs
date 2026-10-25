@@ -73,10 +73,10 @@ async fn record_receipts_and_persisted_source_admission() {
     );
     assert!(delegation.is_err());
     assert!(connect().await.is_ok());
-    sql("ALTER POLICY tenant ON rss_audit.records USING(true) WITH CHECK(true)");
+    sql("ALTER POLICY tenant_scope ON rss_audit.records USING(true) WITH CHECK(true)");
     let broad = connect().await;
     sql(
-        "ALTER POLICY tenant ON rss_audit.records USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
+        "ALTER POLICY tenant_scope ON rss_audit.records USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
     );
     assert!(broad.is_err());
     assert!(connect().await.is_ok());

@@ -1,9 +1,10 @@
 use super::*;
 fn independent_secrets(value: &mut serde_json::Value) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let root = std::env::temp_dir().join(format!("worker-config-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("identity-config-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
-    for role in ["database"] {
+    {
+        let role = "database";
         let path = root.join(role);
         std::fs::write(&path, role).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();

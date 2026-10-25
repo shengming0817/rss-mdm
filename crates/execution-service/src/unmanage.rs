@@ -252,12 +252,10 @@ impl ExecutionService {
                         })
                     })
                     .await?;
-                for fact in facts {
-                    self.audit_store
-                        .append_in(tx, &fact)
-                        .await
-                        .map_err(Error::from)?;
-                }
+                self.audit_store
+                    .append_batch_in(tx, &facts)
+                    .await
+                    .map_err(Error::from)?;
                 if channel.channel == rss_mdm_inventory::Channel::Mdm {
                     let t = tenant.to_string();
                     let device = channel.device.clone();

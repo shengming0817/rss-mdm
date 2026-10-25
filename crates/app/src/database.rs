@@ -164,15 +164,7 @@ pub(crate) fn db(error: sqlx::Error) -> Error {
     Error::Unavailable(Failure::Database)
 }
 
-async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<(), Error> {
-    let mut tx = pool.begin().await.map_err(db)?;
-    sqlx::query("SET LOCAL statement_timeout='1s'")
-        .execute(&mut *tx)
-        .await
-        .map_err(db)?;
-    verify_product_storage(&mut tx)
-        .await
-        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
+fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
     let mut contracts = vec![
         crate::first_use::ACCESS_CONTRACT,
         crate::user_profiles::ACCESS_CONTRACT,
@@ -200,6 +192,19 @@ async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<
     if matches!(audit, crate::config::AuditConfig::Ledger { .. }) {
         contracts.push(r#"{"tables":[],"functions":[{"name":"rss_ledger.prepare_append","search_path":"search_path=pg_catalog, rss_ledger"},{"name":"rss_ledger.insert_entry","search_path":"search_path=pg_catalog, rss_ledger"}],"external_relations":["rss_ledger.heads","rss_ledger.entries"],"verified_schemas":[]}"#);
     }
+    contracts
+}
+
+async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<(), Error> {
+    let mut tx = pool.begin().await.map_err(db)?;
+    sqlx::query("SET LOCAL statement_timeout='1s'")
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+    verify_product_storage(&mut tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
+    let contracts = access_contracts(audit);
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,
         "mdm_access",

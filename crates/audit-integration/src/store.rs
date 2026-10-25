@@ -246,17 +246,34 @@ impl AuditStore {
     }
     /// Stage on the caller's already-bound business transaction; the caller alone settles.
     pub async fn append_in(&self, tx: &mut PgTransaction<'_>, fact: &Fact) -> Result<(), Error> {
+        self.append_batch_in(tx, std::slice::from_ref(fact)).await
+    }
+    /// Append a prepared group of business facts on the original owner’s connection.
+    pub async fn append_batch_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        facts: &[Fact],
+    ) -> Result<(), Error> {
         self.runtime
             .validate_transaction(tx)
             .map_err(rss_audit_postgres::Error::from)?;
-        if tx.tenant_id() != fact.identity().tenant() {
-            return Err(Error::Receipt);
+        if facts.is_empty() {
+            return Ok(());
         }
         let now = source_time(tx).await?;
-        let prepared = rss_audit_core::prepare(fact.event(now)?, now)
-            .map_err(rss_audit_postgres::Error::from)?;
-        let appended = rss_audit_postgres::append_in(tx, &self.integrity, &prepared).await?;
-        require_new_business_fact(&appended)?;
+        let prepared = facts
+            .iter()
+            .map(|fact| {
+                if tx.tenant_id() != fact.identity().tenant() {
+                    return Err(Error::Receipt);
+                }
+                Ok(rss_audit_core::prepare(fact.event(now)?, now)
+                    .map_err(rss_audit_postgres::Error::from)?)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        for appended in rss_audit_postgres::append_batch_in(tx, &self.integrity, &prepared).await? {
+            require_new_business_fact(&appended)?;
+        }
         Ok(())
     }
     /// Commit a necessary final request outcome before releasing its response.

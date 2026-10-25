@@ -848,6 +848,14 @@ pub(super) async fn queue_withdrawal_in(
     Ok(())
 }
 
+fn result_tag(result: &rel::PublicationResult) -> &'static str {
+    match result {
+        rel::PublicationResult::Unknown(_) => "unknown",
+        rel::PublicationResult::Applied(_) => "applied",
+        rel::PublicationResult::NotApplied(_) => "not-applied",
+    }
+}
+
 #[cfg(test)]
 mod audit_tests {
     use super::*;
@@ -914,13 +922,5 @@ mod audit_tests {
                 .outcome(),
             rss_audit_core::Outcome::Unknown
         );
-    }
-}
-
-fn result_tag(result: &rel::PublicationResult) -> &'static str {
-    match result {
-        rel::PublicationResult::Unknown(_) => "unknown",
-        rel::PublicationResult::Applied(_) => "applied",
-        rel::PublicationResult::NotApplied(_) => "not-applied",
     }
 }

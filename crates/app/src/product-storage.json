@@ -89,7 +89,7 @@
   "mdm_pki.revocations": "2a8dc6c270737b08269b55f72780a699dcf401b31c70879e5c1de61a2fcb4165",
   "mdm_pki.rotations": "d1300556bf89f5db16be472ec1bca21081328b56d5f316ab9d814a6f247e7c11",
   "mdm_pki.trust": "0cbb700c8ba02b6d71a4902f715a592cb621da96c26ca4e2e8d84bac44ed37d2",
-  "mdm_planning.asset_dispatch": "912fcf84ae1c50d6f78c932011ca3cd4cb34739c0c6daabbe0b6cb5e1cab2b04",
+  "mdm_planning.asset_dispatch": "bcfdf85a3c04342a12957bccbef4f6227c7cc65bb61947989a13d873248c084d",
   "mdm_planning.channel_admission(p_scope uuid, p_channel text, p_device text)": "390567942ca9570eb1a0d66e6f60e37298ab8514f78a36189250a631d0be5c45",
   "mdm_planning.configuration_claims": "a1b3fe8d74c22126cc381f8c087bda829275a9b130582d252aed695548f970c7",
   "mdm_planning.configuration_devices": "4e816c4171b2726859f8362ae7839e1640df1541f963b1b343bcd2b5cf126901",

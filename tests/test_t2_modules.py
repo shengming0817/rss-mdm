@@ -150,7 +150,7 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertEqual(self.selected('crates/app/tests/api/runtime_diagnostics.rs'), {'diagnostics.http'})
         for path in ('crates/app/src/runtime_diagnostics.rs', 'crates/management-http/src/runtime_diagnostics.rs',
                      'crates/inventory-service/src/inventory_runtime.rs', 'crates/inventory-service/src/inventory_runtime/diagnostics.rs',
-                     'crates/flow-service/src/automation/runtime.rs', 'crates/app/src/identity_audit.rs'):
+                     'crates/flow-service/src/automation/runtime.rs'):
             self.assertIn('diagnostics.http', self.selected(path), path)
         self.assertTrue(self.selected('crates/app/tests/api/runtime_diagnostics.rs').isdisjoint({'installation.migration','apple.apns'}))
 

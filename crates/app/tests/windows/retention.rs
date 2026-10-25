@@ -22,8 +22,6 @@ async fn history(pg: &mut PgConnection, tenant: &str) -> anyhow::Result<Vec<Stri
         "mdm_access.enrollment_intents",
         "mdm_access.enrollment_certificates",
         "rss_audit.records",
-        "rss_audit.records",
-        "rss_ledger.entries",
     ] {
         let mut query = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'')) FROM ",

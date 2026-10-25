@@ -111,7 +111,7 @@ impl ExecutionService {
             }
             if let Some(prepared)=access { crate::device_access::reconcile_in(service,tx,prepared,now,audit).await?; }
             // A relay may accept another run while this Read Committed transaction is open.
-            // Offer only the captured candidates whose audit partitions were prepared above.
+            // Offer only the captured candidates for this poll.
             let ids=existing;
             let mut offer=None;
             for id in ids {

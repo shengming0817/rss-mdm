@@ -309,7 +309,7 @@ async fn existing_business_facts_are_queryable_over_real_http() -> Result<()> {
             "missing {action}: {items:?}"
         );
     }
-    ensure!(items.iter().any(|v| v["source"] == "mdm.request"
+    ensure!(!items.iter().any(|v| v["source"] == "mdm.request"
         && v["operationId"] == manual.to_string()
         && v["deviceId"] == device));
     ensure!(items.iter().any(|v| v["source"] == "mdm.request"

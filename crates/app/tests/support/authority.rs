@@ -209,7 +209,18 @@ impl Authority {
                         requests,
                         tenant: self.identity.tenant.to_string(),
                     },
-                    Arc::new(Vec::new()),
+                    Arc::new(
+                        crate::enrollment::http::routes()
+                            .endpoints()
+                            .iter()
+                            .chain(crate::authorization::http::routes().endpoints())
+                            .cloned()
+                            .map(|mut endpoint| {
+                                endpoint.path = format!("/api/v1{}", endpoint.path);
+                                endpoint
+                            })
+                            .collect(),
+                    ),
                 ),
                 rss_mdm_management_http::boundary::admit,
             ))

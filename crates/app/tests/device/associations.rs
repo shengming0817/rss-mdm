@@ -467,46 +467,43 @@ async fn confirmation_and_worker_recover_unknown_commit_without_duplicate_facts(
 }
 
 #[tokio::test]
-#[ignore = "MODULE=device.associations: signed checkpoints span empty and frozen audit windows"]
-async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Result<()> {
+#[ignore = "MODULE=device.associations: ordinary navigation, refresh and authorization binding"]
+async fn change_navigation_refreshes_and_revalidates_authorization() -> anyhow::Result<()> {
+    use rss_mdm_inventory_service::objects::ObjectReader;
     let (access, service, admin, mut c, audit_store) = setup().await?;
     async fn drain(
         service: &Associations,
         admin: &AuthorizedPrincipal,
         mut page: serde_json::Value,
-    ) -> anyhow::Result<(Vec<serde_json::Value>, String)> {
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
         let mut items = Vec::new();
         loop {
+            assert!(page.get("checkpoint").is_none());
             items.extend(page["items"].as_array().context("items")?.iter().cloned());
             if let Some(next) = page["nextCursor"].as_str() {
-                assert!(page["checkpoint"].is_null());
                 page = service.changes(admin, &window(Some(next))).await?;
             } else {
-                return Ok((
-                    items,
-                    page["checkpoint"]
-                        .as_str()
-                        .context("terminal checkpoint")?
-                        .into(),
-                ));
+                return Ok(items);
             }
         }
     }
-    let (items, empty) = drain(
-        &service,
-        &admin,
-        service.changes(&admin, &window(None)).await?,
-    )
-    .await?;
-    assert!(items.is_empty());
-    let idle = service.changes(&admin, &window(Some(&empty))).await?;
-    assert_eq!(idle["items"], json!([]));
-    assert_eq!(idle["checkpoint"], empty);
-    let mdm = crate::test_support::case::name("checkpoint-mdm");
-    let agent = crate::test_support::case::name("checkpoint-agent");
-    seed(mdm, "mdm", "checkpoint-serial")?;
-    seed(agent, "agent", "checkpoint-serial")?;
-    let mut request = Confirm {
+    assert!(
+        drain(
+            &service,
+            &admin,
+            service.changes(&admin, &window(None)).await?
+        )
+        .await?
+        .is_empty()
+    );
+    let mdm = crate::test_support::case::name("navigation-mdm");
+    let agent = crate::test_support::case::name("navigation-agent");
+    seed(mdm, "mdm", "navigation-serial")?;
+    seed(agent, "agent", "navigation-serial")?;
+    let objects = rss_mdm_device_service::planning::PlanningObjects::new(audit_store.clone());
+    let tenant = TenantId::parse(case_a())?;
+    let before = objects.relation_revision(tenant).await?;
+    let request = Confirm {
         operation_id: Uuid::new_v4(),
         association_id: None,
         expected_version: 0,
@@ -514,77 +511,53 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
         agent: member(&mut c, agent, Channel::Agent).await?,
         evidence: "verified by operator".into(),
     };
-    let clock = crate::test_support::runtime::monotonic();
-    let started = clock.now();
     let relation = service
-        .seed_confirmation_history(&admin, request.clone(), 66)
+        .seed_confirmation_history(&admin, request, 66)
         .await?;
-    println!(
-        "CHECKPOINT_PREPARATION confirmations=66 transactions=1 seconds={:.3}",
-        clock
-            .now()
-            .checked_duration_since(started)
-            .context("fixture clock moved backwards")?
-            .as_secs_f64()
-    );
-    request.association_id = Some(relation.id);
-    request.expected_version = relation.version;
-
-    let first = service.changes(&admin, &window(Some(&empty))).await?;
-    assert!(first["nextCursor"].is_string());
-    // A write after the first page must wait for the next polling window.
+    let revision = objects.relation_revision(tenant).await?;
+    assert!(revision > before);
+    let first = service.changes(&admin, &window(None)).await?;
+    let cursor = first["nextCursor"]
+        .as_str()
+        .context("next page")?
+        .to_owned();
     let event = audit("device_association_revoke");
     service
         .revoke(
             &admin,
-            request.association_id.context("relation")?,
+            relation.id,
             &Revoke {
                 operation_id: Uuid::new_v4(),
-                expected_version: request.expected_version,
+                expected_version: relation.version,
                 reason: "verified separate instances".into(),
             },
             &event,
         )
         .await?;
     event.finalize(None);
-    let (items, checkpoint) = drain(&service, &admin, first).await?;
-    assert_eq!(items.len(), 66);
-    assert!(
-        items
-            .iter()
-            .all(|item| item["action"] == "device_association_confirm")
+    assert!(objects.relation_revision(tenant).await? > revision);
+    // A later commit can appear on a later navigation page; there is no frozen membership.
+    let items = drain(&service, &admin, first).await?;
+    assert_eq!(items.len(), 67);
+    let versions = items
+        .iter()
+        .map(|item| item["association"]["version"].as_i64().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(versions, (1..=67).collect());
+    for pair in items.windows(2) {
+        assert!(pair[1]["position"].as_u64() > pair[0]["position"].as_u64());
+    }
+    let restarted = Associations::new(audit_store, tenant, &[7; 32])?;
+    assert_eq!(
+        drain(
+            &restarted,
+            &admin,
+            restarted.changes(&admin, &window(None)).await?
+        )
+        .await?
+        .len(),
+        67
     );
-    for (index, item) in items.iter().enumerate() {
-        assert_eq!(item["association"]["id"], relation.id.to_string());
-        assert_eq!(item["association"]["version"], index as i64 + 1);
-        if index > 0 {
-            assert!(item["position"].as_u64() > items[index - 1]["position"].as_u64());
-        }
-    }
-    let last = items.last().context("last event")?["position"]
-        .as_u64()
-        .context("position")?;
-    let restarted = Associations::new(audit_store.clone(), TenantId::parse(case_a())?, &[7; 32])?;
-
-    let (items, checkpoint) = drain(
-        &restarted,
-        &admin,
-        restarted
-            .changes(&admin, &window(Some(&checkpoint)))
-            .await?,
-    )
-    .await?;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["action"], "device_association_revoke");
-    assert!(items[0]["position"].as_u64().context("position")? > last);
-    for _ in 0..2 {
-        let page = restarted
-            .changes(&admin, &window(Some(&checkpoint)))
-            .await?;
-        assert_eq!(page["items"], json!([]));
-        assert!(page["nextCursor"].is_null());
-        assert_eq!(page["checkpoint"], checkpoint);
-    }
     crate::test_support::identity::change_grants(
         case_a(),
         admin.principal_id(),
@@ -592,24 +565,13 @@ async fn change_checkpoints_resume_after_empty_pages_and_restart() -> anyhow::Re
     )
     .await?;
     assert!(matches!(
-        restarted.changes(&admin, &window(Some(&checkpoint))).await,
+        restarted.changes(&admin, &window(Some(&cursor))).await,
         Err(rss_mdm_device_service::Error::CursorInvalidated)
     ));
     let hidden_first = restarted.changes(&admin, &window(None)).await?;
     assert_eq!(hidden_first["items"], json!([]));
-    assert!(
-        hidden_first["nextCursor"].is_string(),
-        "filtered page must advance through real history"
-    );
-    assert!(hidden_first["checkpoint"].is_null());
-    let (hidden, checkpoint) = drain(&restarted, &admin, hidden_first).await?;
-    assert!(hidden.is_empty());
-    assert_eq!(
-        restarted
-            .changes(&admin, &window(Some(&checkpoint)))
-            .await?["items"],
-        json!([])
-    );
+    assert!(hidden_first["nextCursor"].is_string());
+    assert!(drain(&restarted, &admin, hidden_first).await?.is_empty());
     access.finish(async { Ok(()) }).await?;
     Ok(())
 }
