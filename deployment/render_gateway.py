@@ -42,7 +42,7 @@ def write(path, content):
 
 
 def proxy_headers(authority, public_origin, device=False, agent=False):
-    fields = {'Host': '"'+authority+'"', 'X-RSS-Public-Origin': '"'+public_origin+'"',
+    fields = {'X-Request-ID': '$request_id', 'Host': '"'+authority+'"', 'X-RSS-Public-Origin': '"'+public_origin+'"',
               'X-RSS-Client-Cert': '$ssl_client_escaped_cert', 'X-Forwarded-For': '$remote_addr'}
     for name in ('Forwarded', 'X-Real-IP', 'X-Forwarded-Host', 'X-Forwarded-Proto', 'X-Forwarded-Port',
                  'X-Client-Cert', 'X-Device-ID', 'X-Tenant-ID'):
@@ -232,7 +232,7 @@ def render(root, publish_address='0.0.0.0'):
 error_log stderr crit;
 events { worker_connections 1024; }
 http {
-    log_format mdm_safe escape=json '{"event":"mdm_gateway","status":$status,"request_id":"$request_id"}';
+    log_format mdm_safe escape=json '{"event":"mdm_gateway","status":$status,"request_id":"$request_id","backend_request_id":"$upstream_http_x_request_id","utc":"$time_iso8601","method":"$request_method","path":"$uri","duration":"$request_time"}';
     access_log /dev/stdout mdm_safe;
     limit_req_zone $binary_remote_addr zone=mdm_login:10m rate=20r/m;
     limit_req_zone $binary_remote_addr zone=mdm_api:10m rate=10r/s;

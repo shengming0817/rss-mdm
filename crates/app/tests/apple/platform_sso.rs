@@ -133,6 +133,7 @@ async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
         },
     )
     .into_axum();
+    let router = resources.native_router(router);
     resources.finish(async {
         let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
         let response = router.clone().oneshot(association).await?;

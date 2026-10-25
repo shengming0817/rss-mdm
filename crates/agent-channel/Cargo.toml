@@ -26,6 +26,7 @@ rss-mdm-audit-integration.workspace=true
 rss-audit-postgres.workspace=true
 rss-observation.workspace=true
 rss-request-context.workspace=true
+rss-runtime.workspace=true
 rss-transactional-messaging.workspace=true
 sqlx.workspace=true
 serde.workspace=true

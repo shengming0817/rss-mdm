@@ -490,20 +490,26 @@ async fn login_user(
     headers: HeaderMap,
     input: Body<wire::CurrentUserChange>,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
-    crate::bounded(async {
-        let input = body(input)?;
+    let input = body(input)?;
+    let (p, user) = crate::bounded(async {
+        current_user_stage(&audit, "device_authentication");
         let p =
             authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
+        current_user_stage(&audit, "employee_authentication");
         let user = employee(&app, &headers, &audit)
             .await?
             .ok_or(Error::Unauthorized)?;
-        app.enrollment
-            .change_current_user(&p, Some(&user), &input, &app.identity, &audit)
-            .await
-            .map(Json)
-            .map_err(|e| Error::from(e).into())
+        Ok((p, user))
     })
-    .await
+    .await?;
+    // Preflight may expire; an entered source transaction owns its settlement budget.
+    current_user_stage(&audit, "binding_write");
+    let result = app
+        .enrollment
+        .change_current_user(&p, Some(&user), &input, &app.identity, &audit)
+        .await;
+    current_user_stage(&audit, "binding_finished");
+    result.map(Json).map_err(|e| Error::from(e).into())
 }
 async fn logout_user(
     State(app): State<Arc<TaskState>>,
@@ -512,17 +518,22 @@ async fn logout_user(
     headers: HeaderMap,
     input: Body<wire::CurrentUserChange>,
 ) -> Result<Json<wire::CurrentUser>, crate::AgentError> {
-    crate::bounded(async {
-        let input = body(input)?;
-        let p =
-            authenticate_for(&app, &headers, peer.as_ref().map(|p| &p.0), &audit, false).await?;
-        app.enrollment
-            .change_current_user(&p, None, &input, &app.identity, &audit)
-            .await
-            .map(Json)
-            .map_err(|e| Error::from(e).into())
-    })
-    .await
+    let input = body(input)?;
+    let p = crate::bounded(authenticate_for(
+        &app,
+        &headers,
+        peer.as_ref().map(|p| &p.0),
+        &audit,
+        false,
+    ))
+    .await?;
+    current_user_stage(&audit, "binding_write");
+    let result = app
+        .enrollment
+        .change_current_user(&p, None, &input, &app.identity, &audit)
+        .await;
+    current_user_stage(&audit, "binding_finished");
+    result.map(Json).map_err(|e| Error::from(e).into())
 }
 
 async fn access_begin(
@@ -616,4 +627,11 @@ async fn access_directory(
         Ok(response)
     })
     .await
+}
+
+fn current_user_stage(audit: &RequestAudit, stage: &'static str) {
+    eprintln!(
+        "{}",
+        serde_json::json!({"event":"mdm_current_user_stage","request_id":audit.request_id(),"stage":stage})
+    );
 }

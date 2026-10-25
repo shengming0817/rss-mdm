@@ -23,9 +23,9 @@ SELECT
  WHERE r.relname='receipts' AND a.attnum>0 AND a.attname<>'projected_at')
  AND NOT EXISTS(SELECT FROM reachable r WHERE has_column_privilege(r.oid,'mdm_audit.receipts','projected_at','INSERT'))
  AND (SELECT array_agg(r.relname||':'||a.attname||':'||format_type(a.atttypid,a.atttypmod)||':'||a.attnotnull::text ORDER BY r.relname,a.attnum)
- = ARRAY['backlog:tenant_id:uuid:true','backlog:events:bigint:true','backlog:bytes:bigint:true','backlog:reserved_events:bigint:true','backlog:reserved_bytes:bigint:true',
+ = ARRAY['backlog:tenant_id:uuid:true','backlog:source_id:text:true','backlog:events:bigint:true','backlog:bytes:bigint:true','backlog:reserved_events:bigint:true','backlog:reserved_bytes:bigint:true',
  'receipts:tenant_id:uuid:true','receipts:source_id:text:true','receipts:event_id:text:true','receipts:fingerprint:bytea:true','receipts:source_bytes:bytea:true','receipts:message_id:text:true','receipts:projected_at:bigint:false','receipts:reserved:boolean:true','receipts:enqueued_at:bigint:true']
- AND bool_and(NOT a.attisdropped AND a.attgenerated='' AND a.attidentity='' AND a.atthasdef=(r.relname='backlog' AND a.attname<>'tenant_id'))
+ AND bool_and(NOT a.attisdropped AND a.attgenerated='' AND a.attidentity='' AND a.atthasdef=(r.relname='backlog' AND a.attname NOT IN ('tenant_id','source_id')))
  FROM pg_attribute a JOIN relations r ON r.oid=a.attrelid WHERE a.attnum>0)
  AND (SELECT count(*)=4 AND bool_and(pg_get_expr(d.adbin,d.adrelid)='0') FROM pg_attrdef d JOIN relations r ON r.oid=d.adrelid)
  AND (SELECT count(*)=2 AND bool_and(p.polname='tenant' AND p.polcmd='*' AND p.polpermissive AND p.polroles=ARRAY[0::oid]
@@ -39,13 +39,13 @@ SELECT
  AND NOT EXISTS(SELECT FROM pg_attribute c JOIN relations r ON r.oid=c.attrelid,LATERAL aclexplode(c.attacl) a WHERE a.grantee=0 OR a.is_grantable)
  AND (SELECT bool_and(valid) AND array_agg(shape ORDER BY shape COLLATE "C") = ARRAY(
  SELECT shape FROM (VALUES
- ('backlog:primarykeytenant_id'),('backlog:checkevents>=0andbytes>=0andreserved_events>=0andreserved_bytes>=0'),
+ ('backlog:primarykeytenant_id,source_id'),('backlog:checksource_id=anyarray[''mdm.business''::text,''mdm.request''::text]'),('backlog:checkevents>=0andbytes>=0andreserved_events>=0andreserved_bytes>=0'),
  ('receipts:primarykeytenant_id,source_id,event_id'),('receipts:checkoctet_lengthfingerprint=32'),
  ('receipts:checkoctet_lengthsource_bytes>=1andoctet_lengthsource_bytes<=262144'),
  ('receipts:checkoctet_lengthmessage_id>=1andoctet_lengthmessage_id<=255'),
  ('receipts:checkprojected_atisnullorprojected_at>=0'),('receipts:checkenqueued_at>=0')) expected(shape) ORDER BY shape COLLATE "C") FROM constraints)
  AND (SELECT count(*)=2 FROM pg_index i JOIN relations r ON r.oid=i.indrelid WHERE i.indisprimary AND i.indisvalid AND i.indisready AND i.indislive)
  AND EXISTS(SELECT FROM pg_index i JOIN relations r ON r.oid=i.indrelid WHERE r.relname='receipts'
- AND i.indisvalid AND i.indisready AND i.indislive AND i.indkey::text='1 9'
+ AND i.indisvalid AND i.indisready AND i.indislive AND i.indkey::text='1 2 9'
  AND lower(regexp_replace(pg_get_expr(i.indpred,i.indrelid),'[[:space:]()]','','g'))='projected_atisnull')
  AND NOT EXISTS(SELECT FROM pg_namespace n,LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE n.nspname='mdm_audit' AND (a.grantee=0 OR a.is_grantable))

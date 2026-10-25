@@ -533,7 +533,7 @@ impl ExecutionService {
             let subject = access::qualify_in(service, tx, config, &basis).await?.ok_or(Error::Forbidden)?;
             let actor = actor(p, &subject); let hash = fingerprint(input)?; let event_key = format!("{actor}:{}", input.operation_id); let now = storage::now(tx).await?;
             let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
-            service.audit_store.prepare_in(tx,audit,std::slice::from_ref(partition)).await?;
+            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,std::slice::from_ref(partition)).await?;
             if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {
                 let run = db::load_run(tx, checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?).await?;
                 crate::actions::agent::belongs(&run, p)?;

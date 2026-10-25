@@ -1,5 +1,6 @@
 //! MDM facts and request settlement over the public Audit component.
 #![forbid(unsafe_code)]
+
 mod context;
 pub use context::{
     AuthenticationKind, FailureReason, ManagementResult, RequestAudit, Snapshot, SoftwareFact,

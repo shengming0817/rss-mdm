@@ -156,7 +156,8 @@ impl Client {
             read
         );
         // Bind the wake to the restarted runtime before corrupting the catalog.
-        // Make an actual operation due so the worker must reject its claim.
+        // The runtime is already admitted; a schema comment is not a hot-path probe.
+        // Revoke the actual claim capability so PostgreSQL must reject the due work.
         let reconcile = rss_reconcile_postgres::PgMessagingStore::new(
             restarted_runtime.clone(), self.tenant, deadline(),
         ).await?;

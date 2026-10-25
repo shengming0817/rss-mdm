@@ -47,32 +47,45 @@ impl AuditStore {
         tenant: TenantId,
         deadline: OperationDeadline,
     ) -> Result<BacklogSnapshot, Error> {
-        let raw = self.runtime.local_tx(tenant, deadline, |tx| Box::pin(async move {
+        let rows = self.runtime.local_tx(tenant, deadline, |tx| Box::pin(async move {
             let tenant = tx.tenant_id().to_string();
             tx.with_connection(move |c| Box::pin(async move {
-                sqlx::query("SELECT coalesce(b.events,0) AS events,coalesce(b.bytes,0) AS bytes,coalesce(b.reserved_events,0) AS reserved_events,coalesce(b.reserved_bytes,0) AS reserved_bytes, (SELECT greatest(0,floor(extract(epoch FROM clock_timestamp()))::bigint-enqueued_at) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND projected_at IS NULL ORDER BY enqueued_at LIMIT 1) AS oldest FROM (SELECT 1) seed LEFT JOIN mdm_audit.backlog b ON b.tenant_id=$1::uuid")
-                    .bind(tenant).fetch_one(c).await
+                sqlx::query("SELECT s.source_id,coalesce(b.events,0) AS events,coalesce(b.bytes,0) AS bytes,coalesce(b.reserved_events,0) AS reserved_events,coalesce(b.reserved_bytes,0) AS reserved_bytes, (SELECT greatest(0,floor(extract(epoch FROM clock_timestamp()))::bigint-enqueued_at) FROM mdm_audit.receipts r WHERE r.tenant_id=$1::uuid AND r.source_id=s.source_id AND projected_at IS NULL ORDER BY enqueued_at LIMIT 1) AS oldest FROM (VALUES ('mdm.business'),('mdm.request')) s(source_id) LEFT JOIN mdm_audit.backlog b ON b.tenant_id=$1::uuid AND b.source_id=s.source_id")
+                    .bind(tenant).fetch_all(c).await
             })).await
         })).await.fold(Ok, |e| Err(Error::Audit(e.into())), |e| Err(Error::Audit(e.into())),
             |_| Err(Error::RollbackFailed), |_| Err(Error::CommitUnknown), |e| Err(Error::Audit(e.into())))?;
-        let count = |name| -> Result<u64, Error> {
-            u64::try_from(raw.try_get::<i64, _>(name)?).map_err(|_| Error::Receipt)
-        };
-        let values = [
-            count("events")?,
-            count("bytes")?,
-            count("reserved_events")?,
-            count("reserved_bytes")?,
-        ];
-        let oldest = raw
-            .try_get::<Option<i64>, _>("oldest")?
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| Error::Receipt)?;
-        if (values[0] > 0 || values[2] > 0) != oldest.is_some() {
-            return Err(Error::Receipt);
+        let mut total = BacklogSnapshot::new([0; 4], None, self.limits);
+        for raw in rows {
+            let count = |name| -> Result<u64, Error> {
+                u64::try_from(raw.try_get::<i64, _>(name)?).map_err(|_| Error::Receipt)
+            };
+            let values = [
+                count("events")?,
+                count("bytes")?,
+                count("reserved_events")?,
+                count("reserved_bytes")?,
+            ];
+            let oldest = raw
+                .try_get::<Option<i64>, _>("oldest")?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| Error::Receipt)?;
+            if (values[0] > 0 || values[2] > 0) != oldest.is_some() {
+                return Err(Error::Receipt);
+            }
+            let limits = self.limits.for_source(raw.try_get("source_id")?)?;
+            let source = BacklogSnapshot::new(values, oldest, limits);
+            total.events += source.events;
+            total.source_bytes += source.source_bytes;
+            total.reserved_events += source.reserved_events;
+            total.reserved_source_bytes += source.reserved_source_bytes;
+            total.oldest_seconds = total.oldest_seconds.max(source.oldest_seconds);
+            total.warning |= source.warning;
+            total.admission_closed |= source.admission_closed;
+            total.reserve_exhausted |= source.reserve_exhausted;
         }
-        Ok(BacklogSnapshot::new(values, oldest, self.limits))
+        Ok(total)
     }
 }
 

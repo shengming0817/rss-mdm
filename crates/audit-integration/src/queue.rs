@@ -21,7 +21,7 @@ impl BacklogLimits {
     pub fn new(events: u64, bytes: u64) -> Result<Self, Error> {
         let events = i64::try_from(events).map_err(|_| Error::Admission)?;
         let bytes = i64::try_from(bytes).map_err(|_| Error::Admission)?;
-        if events < 1 || bytes < 1 {
+        if events < 2 || bytes < 2 {
             return Err(Error::Admission);
         }
         Ok(Self { events, bytes })
@@ -31,6 +31,19 @@ impl BacklogLimits {
     }
     pub fn bytes(self) -> u64 {
         self.bytes as u64
+    }
+    /// The two fixed sources own disjoint quota rows and cannot consume each other's capacity.
+    /// Their ordinary budgets sum to the configured tenant bound, including odd limits.
+    pub(crate) fn for_source(self, source: &str) -> Result<Self, Error> {
+        let remainder = match source {
+            "mdm.business" => 1,
+            "mdm.request" => 0,
+            _ => return Err(Error::Receipt),
+        };
+        Ok(Self {
+            events: self.events / 2 + remainder * (self.events % 2),
+            bytes: self.bytes / 2 + remainder * (self.bytes % 2),
+        })
     }
     fn reserved(self) -> Self {
         Self {
@@ -97,7 +110,14 @@ pub(crate) async fn append(
         return Err(Error::Receipt);
     }
     let size = i64::try_from(frozen.bytes().len()).map_err(|_| Error::Receipt)?;
-    let reserved = reserve(tx, limits, size, frozen.reserve_eligible()).await?;
+    let reserved = reserve(
+        tx,
+        &source,
+        limits.for_source(&source)?,
+        size,
+        frozen.reserve_eligible(),
+    )
+    .await?;
     let outcome = writer
         .append(tx, message)
         .await
@@ -117,49 +137,52 @@ pub(crate) async fn append(
 
 async fn reserve(
     tx: &mut PgTransaction<'_>,
+    source: &str,
     limits: BacklogLimits,
     size: i64,
     eligible: bool,
 ) -> Result<bool, Error> {
     let tenant = tx.tenant_id().to_string();
-    let held = tx.with_connection_context(&mut tenant.clone(), |tenant, c| Box::pin(async move {
-        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id) VALUES($1::uuid) ON CONFLICT DO NOTHING")
-            .bind(&*tenant).execute(&mut *c).await?;
+    let held = tx.with_connection_context(&mut (&tenant, source), |(tenant, source), c| Box::pin(async move {
+        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id,source_id) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING")
+            .bind(*tenant).bind(*source).execute(&mut *c).await?;
         Ok(())
     })).await.map_err(rss_audit_postgres::Error::from);
     held?;
-    if charge(tx, &tenant, limits, size, false).await? {
+    if charge(tx, &tenant, source, limits, size, false).await? {
         return Ok(false);
     }
     if !eligible {
         return Err(Error::BacklogFull);
     }
-    if charge(tx, &tenant, limits.reserved(), size, true).await? {
+    if charge(tx, &tenant, source, limits.reserved(), size, true).await? {
         return Ok(true);
     }
     Err(Error::ReserveExhausted)
 }
 async fn charge(
     tx: &mut PgTransaction<'_>,
-    mut tenant: &str,
+    tenant: &str,
+    source: &str,
     limits: BacklogLimits,
     size: i64,
     reserved: bool,
 ) -> Result<bool, Error> {
     // Static SQL choices are product quota classes, never caller-supplied column names.
     let sql = if reserved {
-        "UPDATE mdm_audit.backlog SET reserved_events=reserved_events+1,reserved_bytes=reserved_bytes+$2 WHERE tenant_id=$1::uuid AND reserved_events<$3 AND reserved_bytes<=$4-$2"
+        "UPDATE mdm_audit.backlog SET reserved_events=reserved_events+1,reserved_bytes=reserved_bytes+$2 WHERE tenant_id=$1::uuid AND source_id=$5 AND reserved_events<$3 AND reserved_bytes<=$4-$2"
     } else {
-        "UPDATE mdm_audit.backlog SET events=events+1,bytes=bytes+$2 WHERE tenant_id=$1::uuid AND events<$3 AND bytes<=$4-$2"
+        "UPDATE mdm_audit.backlog SET events=events+1,bytes=bytes+$2 WHERE tenant_id=$1::uuid AND source_id=$5 AND events<$3 AND bytes<=$4-$2"
     };
     let affected = tx
-        .with_connection_context(&mut tenant, |tenant, c| {
+        .with_connection_context(&mut (tenant, source), |(tenant, source), c| {
             Box::pin(async move {
                 Ok(sqlx::query(sqlx::AssertSqlSafe(sql))
                     .bind(*tenant)
                     .bind(size)
                     .bind(limits.events)
                     .bind(limits.bytes)
+                    .bind(*source)
                     .execute(c)
                     .await?
                     .rows_affected())
@@ -205,11 +228,11 @@ pub(crate) async fn projected(
     let size = i64::try_from(frozen.bytes().len()).map_err(|_| Error::Receipt)?;
     let changed = tx.with_connection_context(&mut key, |(tenant, source, event), c| Box::pin(async move {
         let sql = if reserved {
-            "UPDATE mdm_audit.backlog SET reserved_events=reserved_events-1,reserved_bytes=reserved_bytes-$2 WHERE tenant_id=$1::uuid AND reserved_events>0 AND reserved_bytes>=$2"
+            "UPDATE mdm_audit.backlog SET reserved_events=reserved_events-1,reserved_bytes=reserved_bytes-$2 WHERE tenant_id=$1::uuid AND source_id=$3 AND reserved_events>0 AND reserved_bytes>=$2"
         } else {
-            "UPDATE mdm_audit.backlog SET events=events-1,bytes=bytes-$2 WHERE tenant_id=$1::uuid AND events>0 AND bytes>=$2"
+            "UPDATE mdm_audit.backlog SET events=events-1,bytes=bytes-$2 WHERE tenant_id=$1::uuid AND source_id=$3 AND events>0 AND bytes>=$2"
         };
-        let released = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(&*tenant).bind(size).execute(&mut *c).await?.rows_affected();
+        let released = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(&*tenant).bind(size).bind(&*source).execute(&mut *c).await?.rows_affected();
         if released != 1 { return Ok(false); }
         let marked = sqlx::query("UPDATE mdm_audit.receipts SET projected_at=$4 WHERE tenant_id=$1::uuid AND source_id=$2 AND event_id=$3 AND projected_at IS NULL")
             .bind(&*tenant).bind(&*source).bind(&*event).bind(recorded_at).execute(c).await?.rows_affected();
@@ -219,4 +242,22 @@ pub(crate) async fn projected(
         return Err(Error::Receipt);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sources_share_the_exact_tenant_bound_without_shared_locks() {
+        for value in [2, 3, 100_000, i64::MAX as u64] {
+            let limits = BacklogLimits::new(value, value).unwrap();
+            let business = limits.for_source("mdm.business").unwrap();
+            let request = limits.for_source("mdm.request").unwrap();
+            assert!(business.events() > 0 && request.events() > 0);
+            assert_eq!(business.events() + request.events(), value);
+            assert_eq!(business.bytes() + request.bytes(), value);
+        }
+        assert!(BacklogLimits::new(1, 1000).is_err());
+        assert!(BacklogLimits::new(1000, 1).is_err());
+    }
 }

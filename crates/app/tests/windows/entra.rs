@@ -241,6 +241,7 @@ async fn tou_flow(host: &Host, token: &str) -> anyhow::Result<String> {
         },
     )
     .into_axum();
+    let refreshed = crate::test_support::runtime::native_router(refreshed);
     let retry = refreshed
         .clone()
         .oneshot(request("https://mdm.example.test", form)?)

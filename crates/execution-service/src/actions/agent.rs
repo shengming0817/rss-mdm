@@ -80,7 +80,7 @@ impl ExecutionService {
                     let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                     if signed.payload.expires_at()<=now || run.state.attempt()!=Some(signed.payload.attempt_id()) || !plan.authorized_run_in(service,tx,&run,now).await?{return Err(Error::Conflict.into());}
                 }
-                service.audit_store.prepare_in(tx,audit,&[]).await?;
+                crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 service.audit_store.append_in(tx,&fact,true).await?;return Ok(response);
@@ -102,7 +102,7 @@ impl ExecutionService {
                 partitions.extend(prepared.partitions.iter().cloned());
                 Some(prepared)
             } else { None };
-            service.audit_store.prepare_in(tx,audit,&partitions).await?;
+            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&partitions).await?;
             for (id, run_id) in versions {
                 let policy=db::load_policy_version(&service.policy_reader,tx,id).await?;
                 let target=crate::Target {device:p.device().into(),registration:p.registration(),generation:p.generation()};
@@ -173,7 +173,7 @@ impl ExecutionService {
         ];
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,p,id,input,audit,&partitions),|ctx,tx|Box::pin(async move{
             let (service,p,id,input,audit,partitions)=*ctx;crate::transaction::lock_authority(service,tx).await?;super::native_recovery::lock_device(tx,p.device()).await?;principal(service,tx,p).await?;crate::channels::agent_context_in(tx,service.agent_store.clone(),p.registration(),input.execution_context()).await?;
-            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;service.audit_store.prepare_in(tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
+            let mut run=db::load_run(tx,id).await?;belongs(&run,p)?;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,partitions).await?;run.source.audit(audit);audit.target(&id.to_string());let plan=db::load_source(&service.policy_reader,tx,run.source).await?;let now=storage::now(tx).await?;
             let requires_start_authority = matches!(input.event(), wire::TaskEvent::Start | wire::TaskEvent::Received) || run.state.started_at.is_none();
             let allowed = if requires_start_authority { plan.authorized_run_in(service,tx,&run,now).await? } else { plan.completion_authorized_in(service,tx,&run.target,now).await? };
             let effect_allowed = allowed && run.state.cancellation == Cancellation::None;

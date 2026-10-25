@@ -125,6 +125,10 @@ pub async fn resolve_on(
     use rss_mdm_execution_service::source_authority::{Channel, ScopeAdmission, SourceAuthority};
     use sqlx::Row;
     let tenant = planning.tenant;
+    // Inventory publication takes this owner fence before author, Policy and source locks.
+    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+        .await
+        .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?;
     let row = sqlx::query("SELECT p.definition,v.frozen FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.current_version=$3 AND p.state='enabled' AND v.action_kind='telemetry_profile'")
         .bind(tenant.to_string()).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?.ok_or(Error::Forbidden)?;
     let definition: rss_mdm_policy::Definition =
@@ -151,7 +155,7 @@ pub async fn resolve_on(
         if !grant
             .valid(c, permission, now)
             .await
-            .map_err(|_| Error::Forbidden)?
+            .map_err(authority_error)?
         {
             return Err(Error::Forbidden);
         }
@@ -166,7 +170,13 @@ pub async fn resolve_on(
         source
             .admission_on(c, tenant, definition.scope, Channel::Agent, device)
             .await
-            .map_err(|_| Error::Forbidden)?,
+            .map_err(|error| match error {
+                rss_mdm_execution_service::source_authority::SourceError::Conflict =>
+                    Error::Conflict,
+                rss_mdm_execution_service::source_authority::SourceError::Missing =>
+                    Error::Forbidden,
+                _ => Error::Unavailable(crate::Failure::FlowStorage),
+            })?,
         ScopeAdmission::Eligible { .. }
     ) {
         return Err(Error::Forbidden);
@@ -257,4 +267,12 @@ pub async fn preview_targets_on(
         .map_err(|_| Error::Conflict)?
         .result;
     Ok((targets, result))
+}
+
+fn authority_error(error: rss_mdm_authorization_service::Error) -> Error {
+    match error {
+        rss_mdm_authorization_service::Error::Unauthorized => Error::Unauthorized,
+        rss_mdm_authorization_service::Error::Forbidden => Error::Forbidden,
+        _ => Error::Unavailable(crate::Failure::FlowStorage),
+    }
 }

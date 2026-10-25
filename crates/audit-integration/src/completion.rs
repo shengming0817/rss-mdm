@@ -37,10 +37,6 @@ pub async fn complete(
     status: u16,
     failure: Option<ResponseFailure>,
 ) -> Option<Replacement> {
-    if failure == Some(ResponseFailure::AuditReserveExhausted) {
-        audit.finalize(Some(FailureReason::Persistent));
-        return Some(Replacement::Audit(Error::ReserveExhausted));
-    }
     let snapshot = audit.snapshot();
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
         protected_result(failure, snapshot.write_outcome)

@@ -168,6 +168,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             json!({"action":"put","enabled":true,"definition":definition}),
         )
         .await?;
+        // The scenario starts from a published Agent policy; settle preparation before authentication.
+        crate::test_support::planning_http::await_ingress().await?;
         let task = software_execution::claim_with(
             &client.router,
             &label,

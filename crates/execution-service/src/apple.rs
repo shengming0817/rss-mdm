@@ -192,10 +192,13 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     actions::native_recovery::lock_device(tx, p.device()).await?;
-                    service
-                        .audit_store
-                        .prepare_in(tx, audit, *partitions)
-                        .await?;
+                    crate::transaction::prepare_audit_in(
+                        &service.audit_store,
+                        tx,
+                        audit,
+                        *partitions,
+                    )
+                    .await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let user_key = exchange.user_key().to_owned();
                     let principal = p.clone();
@@ -589,10 +592,13 @@ impl ExecutionService {
                     .await??;
                     crate::transaction::lock(tx).await?;
                     actions::native_recovery::lock_device(tx, p.device()).await?;
-                    service
-                        .audit_store
-                        .prepare_in(tx, audit, *partitions)
-                        .await?;
+                    crate::transaction::prepare_audit_in(
+                        &service.audit_store,
+                        tx,
+                        audit,
+                        *partitions,
+                    )
+                    .await?;
                     let exchange = exchange.take().ok_or(Error::Conflict)?;
                     let principal = p.clone();
                     let (exchange, ids) = tx

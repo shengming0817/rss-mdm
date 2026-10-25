@@ -360,7 +360,10 @@ pub(crate) async fn router(
         "/api/v1",
         rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())).into_axum(),
     );
-    Ok((fixture.router_with_public(browser, public)?, service))
+    Ok((
+        crate::test_support::runtime::native_router(fixture.router_with_public(browser, public)?),
+        service,
+    ))
 }
 
 pub(crate) fn fixture_signing_input() -> Result<Value> {
