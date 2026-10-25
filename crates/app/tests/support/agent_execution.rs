@@ -211,6 +211,7 @@ impl Fixture {
                         publications.services.clone(), runtime.clone(), channels, signer, None, sessions,
                         config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?,
                         rss_device_command_postgres::CommandClock::Postgres,
+                        cursor_key.clone(),
                     ).await?;
                     Ok::<_, anyhow::Error>((service, queries, inputs))
                     }.await;

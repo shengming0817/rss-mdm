@@ -132,7 +132,7 @@
           "type": "string"
         },
         "policyRevision": {
-          "description": "Configuration revision approved at invocation.",
+          "description": "Configuration revision observed at acceptance, retained as provenance only.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"

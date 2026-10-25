@@ -135,6 +135,7 @@ pub(crate) async fn application_fixture(
                     identity.tenant,
                 ),
             ),
+            planning.cursor_key.clone(),
         )
         .await?;
         resources.resource(rss_mdm_execution_service::Resource(

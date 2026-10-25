@@ -39,17 +39,6 @@
       "format": "uuid",
       "type": "string"
     },
-    "policyRevision": {
-      "description": "Current configuration CAS.",
-      "format": "uint64",
-      "minimum": 0,
-      "type": "integer"
-    },
-    "policyVersion": {
-      "description": "Immutable execution version returned by the directory.",
-      "format": "uuid",
-      "type": "string"
-    },
     "source": {
       "$ref": "#/$defs/SelfServiceCaller",
       "description": "Caller origin attested by the device service."
@@ -58,8 +47,6 @@
   "required": [
     "operationId",
     "policyId",
-    "policyRevision",
-    "policyVersion",
     "source",
     "confirmed",
     "parameters"

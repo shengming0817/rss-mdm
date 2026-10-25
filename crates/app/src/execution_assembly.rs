@@ -64,6 +64,7 @@ pub(crate) async fn open(
     >,
     command_clock: rss_device_command_postgres::CommandClock,
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    cursor_key: Vec<u8>,
 ) -> std::result::Result<Assembly, Error> {
     let bad = || Error::Configuration(crate::ConfigIssue::Execution);
     let database = &config.execution.database;
@@ -143,6 +144,7 @@ pub(crate) async fn open(
                 .map(crate::recovery_credentials::Config::open)
                 .transpose()?,
             command_clock,
+            cursor_key,
         )
         .await?;
         Ok(Assembly {
@@ -185,6 +187,7 @@ pub(crate) async fn assemble(
     sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
     recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     command_clock: rss_device_command_postgres::CommandClock,
+    cursor_key: Vec<u8>,
 ) -> Result<
     (
         Arc<ExecutionService>,
@@ -262,6 +265,7 @@ pub(crate) async fn assemble(
     ));
     let service = Arc::new(ExecutionService::new(
         rss_mdm_execution_service::Dependencies {
+            cursor_key,
             recovery_credentials,
             sessions,
             source,

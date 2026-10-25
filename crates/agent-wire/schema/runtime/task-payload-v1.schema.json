@@ -4002,6 +4002,79 @@
         }
       ]
     },
+    "SoftwareStepDefinition": {
+      "additionalProperties": false,
+      "description": "Immutable producer coordinates of one software execution node.",
+      "properties": {
+        "digest": {
+          "description": "Complete resource version digest.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "resource": {
+          "description": "Logical resource in the task tenant.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact target variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource",
+        "version",
+        "variant",
+        "digest"
+      ],
+      "type": "object"
+    },
     "SoftwareTaskAction": {
       "additionalProperties": false,
       "description": "Complete executable action. No independently selectable format or executor.",
@@ -5695,9 +5768,61 @@
           "minItems": 1,
           "type": "array"
         },
+        "definition": {
+          "$ref": "#/$defs/SoftwareStepDefinition",
+          "description": "Immutable coordinates used to generate the identity."
+        },
         "export": {
           "$ref": "#/$defs/SoftwareTaskExport",
           "description": "Frozen readonly native source or direct native artifact consumption."
+        },
+        "stepId": {
+          "description": "Producer-generated stable node identity.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
         },
         "target": {
           "$ref": "#/$defs/SoftwareExecutionTarget",
@@ -5705,6 +5830,8 @@
         }
       },
       "required": [
+        "stepId",
+        "definition",
         "action",
         "artifacts",
         "export",
@@ -5879,7 +6006,7 @@
               "type": "string"
             },
             "policyRevision": {
-              "description": "Configuration revision approved at invocation.",
+              "description": "Configuration revision observed at acceptance, retained as provenance only.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"

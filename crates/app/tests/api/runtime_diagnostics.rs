@@ -105,6 +105,7 @@ impl Fixture {
                     authority.identity.tenant,
                 ),
             ),
+            vec![1; 32],
         )
         .await?;
         let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(

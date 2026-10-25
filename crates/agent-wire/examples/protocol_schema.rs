@@ -1,4 +1,5 @@
 //! Generate protocol documentation directly from the current Rust DTOs.
+#![recursion_limit = "256"]
 use rss_mdm_agent_wire::{enroll, pki, runtime};
 fn main() {
     let schemas = serde_json::json!({
@@ -72,6 +73,10 @@ fn main() {
             "TaskEventAck": schemars::schema_for!(runtime::TaskEventAck),
             "TaskAuthorization": schemars::schema_for!(runtime::TaskAuthorization),
             "TaskResource": schemars::schema_for!(runtime::TaskResource),
+            "CapabilitySelector": schemars::schema_for!(runtime::CapabilitySelector),
+            "CapabilityDescriptor": schemars::schema_for!(runtime::CapabilityDescriptor),
+            "SelfServiceResolve": schemars::schema_for!(runtime::SelfServiceResolve),
+            "SelfServiceDirectoryItem": schemars::schema_for!(runtime::SelfServiceDirectoryItem),
             "SelfServiceInvoke": schemars::schema_for!(runtime::SelfServiceInvoke),
             "SelfServiceDirectory": schemars::schema_for!(runtime::SelfServiceDirectory),
             "SelfServiceDirectoryResponse": schemars::schema_for!(runtime::SelfServiceDirectoryResponse),

@@ -1040,6 +1040,17 @@
                     }
                   ]
                 },
+                "alias": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PolicyAlias"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional unique tenant-local address, distinct from presentation text."
+                },
                 "scope": {
                   "description": "Opaque Scope identity; Scope alone owns membership and entry coordinates.",
                   "format": "uuid",
@@ -1538,6 +1549,10 @@
           "type": "string"
         }
       ]
+    },
+    "PolicyAlias": {
+      "description": "Tenant-local canonical Policy alias.",
+      "type": "string"
     },
     "Schedule": {
       "additionalProperties": false,

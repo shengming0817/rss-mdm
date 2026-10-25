@@ -20,9 +20,39 @@
   "additionalProperties": false,
   "description": "Bounded directory pagination; source is attested by the authenticated service.",
   "properties": {
-    "after": {
-      "description": "Last examined Policy identity.",
-      "format": "uuid",
+    "cursor": {
+      "description": "Opaque query and identity-bound continuation.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fields": {
+      "description": "Selected directory fields.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "filter": {
+      "description": "Supported RSQL filter.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "limit": {
+      "description": "Candidate page budget, at most 64.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sort": {
+      "description": "Stable field ordering.",
       "type": [
         "string",
         "null"

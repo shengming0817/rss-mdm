@@ -136,6 +136,22 @@
     {
       "type": "AccessBindingStatus",
       "file": "access-binding-status-v1.schema.json"
+    },
+    {
+      "type": "CapabilitySelector",
+      "file": "capability-selector-v1.schema.json"
+    },
+    {
+      "type": "CapabilityDescriptor",
+      "file": "capability-descriptor-v1.schema.json"
+    },
+    {
+      "type": "SelfServiceResolve",
+      "file": "self-service-resolve-v1.schema.json"
+    },
+    {
+      "type": "SelfServiceDirectoryItem",
+      "file": "self-service-directory-item-v1.schema.json"
     }
   ],
   "apiVersion": 1

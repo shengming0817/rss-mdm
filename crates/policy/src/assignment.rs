@@ -323,6 +323,8 @@ fn default_schedule() -> Schedule {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete authored Policy definition, without execution progress.
 pub struct Definition {
+    /// Optional unique tenant-local address, distinct from presentation text.
+    pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
     /// Opaque Scope identity; Scope alone owns membership and entry coordinates.
     pub scope: Uuid,
     /// Closed action or configuration semantics.

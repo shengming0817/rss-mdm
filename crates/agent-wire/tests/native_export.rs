@@ -25,6 +25,20 @@ fn frozen_source_binds_tenant_material_and_scoped_credentials_without_a_token_fi
         }],
     };
     let mut step = SoftwareTaskStep {
+        step_id: SoftwareStepDefinition {
+            resource: "acme".into(),
+            version: "v1".into(),
+            variant: "default".into(),
+            digest: [3; 32],
+        }
+        .step_id()
+        .unwrap(),
+        definition: SoftwareStepDefinition {
+            resource: "acme".into(),
+            version: "v1".into(),
+            variant: "default".into(),
+            digest: [3; 32],
+        },
         action,
         artifacts: vec![SoftwareTaskArtifact {
             key: "0/installer".into(),
@@ -81,6 +95,20 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
         let action:SoftwareTaskAction=serde_json::from_value(serde_json::json!({"package":"App","version":"1","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"}}})).unwrap();
         let id = uuid::Uuid::new_v4();
         let steps = vec![SoftwareTaskStep {
+            step_id: SoftwareStepDefinition {
+                resource: "acme".into(),
+                version: "v1".into(),
+                variant: "default".into(),
+                digest: [3; 32],
+            }
+            .step_id()
+            .unwrap(),
+            definition: SoftwareStepDefinition {
+                resource: "acme".into(),
+                version: "v1".into(),
+                variant: "default".into(),
+                digest: [3; 32],
+            },
             action,
             artifacts: vec![SoftwareTaskArtifact {
                 key: "0/package".into(),

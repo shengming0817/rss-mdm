@@ -22,6 +22,7 @@ CREATE TABLE mdm_policy.versions (
  FOREIGN KEY(tenant_id,policy) REFERENCES mdm_policy.policies(tenant_id,id)
 );
 ALTER TABLE mdm_policy.policies ADD FOREIGN KEY(tenant_id,current_version) REFERENCES mdm_policy.versions(tenant_id,id) DEFERRABLE INITIALLY DEFERRED;
+CREATE UNIQUE INDEX policy_alias_unique ON mdm_policy.policies(tenant_id, (definition->>'alias')) WHERE state<>'archived' AND definition->>'alias' IS NOT NULL;
 CREATE INDEX policy_scope ON mdm_policy.policies(tenant_id,((definition->>'scope')::uuid),id);
 CREATE TABLE mdm_policy.triggers (
  tenant_id uuid NOT NULL,id uuid NOT NULL,version uuid NOT NULL,created_at bigint NOT NULL,deadline bigint NOT NULL CHECK(deadline>created_at),

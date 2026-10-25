@@ -127,6 +127,8 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
     use rss_mdm_agent_wire::runtime::*;
     let id = Uuid::new_v4();
     let steps = vec![SoftwareTaskStep {
+        step_id: SoftwareStepDefinition {resource:"test".into(),version:"1".into(),variant:"default".into(),digest:[1;32]}.step_id().unwrap(),
+        definition: SoftwareStepDefinition {resource:"test".into(),version:"1".into(),variant:"default".into(),digest:[1;32]},
         action: serde_json::from_value(json!({"package":"acme.editor","version":"2","reboot":"report","downgrade":"deny","behavior":{"kind":"msi","installer":"installer","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"2"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[]})).unwrap(),
         artifacts: vec![SoftwareTaskArtifact {
             key: "0/installer".into(),
@@ -581,7 +583,7 @@ fn software_support_is_a_closed_format_scope_context_profile() {
     );
 }
 #[test]
-fn self_service_directory_requires_a_closed_subject() {
+fn self_service_directory_projects_fields_with_closed_subject_values() {
     use rss_mdm_agent_wire::runtime::*;
     let id = Uuid::new_v4();
     let schema: serde_json::Value = serde_json::from_str(include_str!(
@@ -612,10 +614,9 @@ fn self_service_directory_requires_a_closed_subject() {
             .as_object_mut()
             .unwrap()
             .remove("subject");
-        assert!(!validator.is_valid(&missing));
-        assert!(serde_json::from_value::<SelfServiceDirectoryResponse>(missing).is_err());
+        assert!(validator.is_valid(&missing));
+        assert!(serde_json::from_value::<SelfServiceDirectoryResponse>(missing).is_ok());
         for invalid_subject in [
-            serde_json::Value::Null,
             json!({"kind":"authenticated_user"}),
             json!({"kind":"user"}),
             json!({"kind":"device","user":{"tenantId":id,"instanceId":id,"principalId":id}}),
@@ -688,7 +689,8 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
         assert_eq!(generated, payload["$defs"][name], "embedded {name}");
     }
     let id = Uuid::new_v4();
-    let input = json!({"operationId":id,"policyId":id,"policyRevision":1,"policyVersion":id,"source":"ai","confirmed":true,"parameters":{}});
+    let input =
+        json!({"operationId":id,"policyId":id,"source":"ai","confirmed":true,"parameters":{}});
     let schema = serde_json::from_str::<serde_json::Value>(include_str!(
         "../schema/runtime/self-service-invoke-v1.schema.json"
     ))

@@ -455,6 +455,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 std::collections::BTreeMap::new(),
                 rss_device_command_postgres::CommandClock::Postgres,
                 sessions,
+                vec![1; 32],
             )
             .await?;
             resources.resource(rss_mdm_execution_service::Resource(

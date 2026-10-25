@@ -441,6 +441,14 @@
     ],
     [
       "policies",
+      "policy_alias_unique",
+      "CREATE UNIQUE INDEX policy_alias_unique ON mdm_policy.policies USING btree (tenant_id, ((definition ->> 'alias'::text))) WHERE ((state <> 'archived'::text) AND ((definition ->> 'alias'::text) IS NOT NULL))",
+      true,
+      true,
+      true
+    ],
+    [
+      "policies",
       "policy_scope",
       "CREATE INDEX policy_scope ON mdm_policy.policies USING btree (tenant_id, (((definition ->> 'scope'::text))::uuid), id)",
       true,

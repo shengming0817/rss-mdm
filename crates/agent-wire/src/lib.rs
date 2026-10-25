@@ -1,6 +1,7 @@
 #![deny(missing_docs)]
 //! Agent API families. Enrollment and runtime evolve independently.
 //! HTTP API versions do not select task payload or signature versions.
+mod addressing;
 /// Persistent bootstrap, certificate activation and recovery contracts.
 pub mod enroll;
 /// Immutable producer baselines shipped with the protocol package; never execution grants.
