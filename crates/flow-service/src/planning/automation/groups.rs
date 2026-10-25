@@ -397,9 +397,7 @@ impl Planning {
                 let raw_result = tx
                     .with_connection(move |c| {
                         Box::pin(async move {
-                            Ok(reader
-                                .devices_on(c, watermark, &ids, &read_catalog, true)
-                                .await)
+                            Ok(reader.devices_on(c, watermark, &ids, &read_catalog).await)
                         })
                     })
                     .await?;
@@ -527,7 +525,6 @@ impl Planning {
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
                             subject: "group".into(),
                             authority: "internal".into(),
-                            sensitive: true,
                             devices: build
                                 .request
                                 .changed_devices

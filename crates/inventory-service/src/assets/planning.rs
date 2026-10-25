@@ -76,7 +76,7 @@ impl SnapshotReader {
             .asset_devices_at_in(tx, watermark, &ids, &catalog, &scope.collection_scope)
             .await?;
         for device in &mut devices {
-            restrict_fields(device, &catalog, scope.sensitive);
+            restrict_fields(device, &catalog);
         }
         Ok(AssetPage {
             devices,
@@ -102,7 +102,7 @@ impl SnapshotReader {
         tx.with_connection(move |c| {
             Box::pin(async move {
                 Ok(reader
-                    .scoped_devices_on(c, watermark, &ids, &catalog, true, &collection_scope)
+                    .scoped_devices_on(c, watermark, &ids, &catalog, &collection_scope)
                     .await)
             })
         })
@@ -117,14 +117,12 @@ impl SnapshotReader {
         watermark: i64,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
-        sensitive: bool,
     ) -> Result<Vec<DeviceView>> {
         self.scoped_devices_on(
             c,
             watermark,
             ids,
             catalog,
-            sensitive,
             &rss_mdm_inventory::CollectionScope::Device,
         )
         .await
@@ -136,7 +134,7 @@ impl SnapshotReader {
         watermark: i64,
         ids: &[String],
         catalog: &rss_mdm_inventory::Catalog,
-        sensitive: bool,
+
         collection_scope: &rss_mdm_inventory::CollectionScope,
     ) -> Result<Vec<DeviceView>> {
         if ids.len() > 1000 {
@@ -161,7 +159,7 @@ impl SnapshotReader {
             .collect();
         let fields = catalog
             .fields()
-            .filter(|f| fields::visible(f, sensitive))
+            .filter(|f| fields::visible(f))
             .map(|f| f.key)
             .collect::<Vec<_>>();
         let selected_sources = self
@@ -246,7 +244,7 @@ impl SnapshotReader {
                 });
         }
         for (id, device) in &mut devices {
-            for definition in catalog.fields().filter(|f| fields::visible(f, sensitive)) {
+            for definition in catalog.fields().filter(|f| fields::visible(f)) {
                 let field = definition.key;
                 device.fields.insert(
                     field,
@@ -263,7 +261,7 @@ impl SnapshotReader {
             }
         }
         for device in devices.values_mut() {
-            restrict_fields(device, catalog, sensitive);
+            restrict_fields(device, catalog);
         }
         let result: Vec<_> = devices.into_values().collect();
         if stored(serde_json::to_vec(&result))?.len() > 64 * 1024 * 1024 {
@@ -310,7 +308,7 @@ impl SnapshotReader {
         {
             return Err(Error::Forbidden.into());
         }
-        filter::require_visible_rule(catalog, rule, authorization.sensitive)?;
+        filter::require_visible_rule(catalog, rule)?;
         let scopes = if rule.view().fields.is_empty() {
             vec![S::Device]
         } else {
@@ -386,7 +384,7 @@ impl SnapshotReader {
                 .asset_devices_at_in(tx, watermark, &ids, catalog, &scope)
                 .await?;
             for device in &mut scoped {
-                restrict_fields(device, catalog, authorization.sensitive);
+                restrict_fields(device, catalog);
             }
             bytes = bytes
                 .checked_add(stored(serde_json::to_vec(&scoped))?.len())

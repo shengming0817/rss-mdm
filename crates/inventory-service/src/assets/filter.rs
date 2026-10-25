@@ -370,8 +370,8 @@ pub struct FactPage {
     pub objects: Vec<g::ObjectSnapshot>,
 }
 
-/// Sensitive fields require an explicit grant when configuring a condition or executing a search.
-pub fn require_visible(catalog: &Catalog, criteria: &Criteria, sensitive: bool) -> Result<()> {
+/// Secret fields cannot enter ordinary conditions or searches.
+pub fn require_visible(catalog: &Catalog, criteria: &Criteria) -> Result<()> {
     let mut pending = vec![(criteria, 1)];
     let mut nodes = 0;
     while let Some((current, depth)) = pending.pop() {
@@ -381,9 +381,8 @@ pub fn require_visible(catalog: &Catalog, criteria: &Criteria, sensitive: bool) 
         }
         match current {
             Criteria::Predicate { field, .. } => {
-                if !sensitive
-                    && checked_input(catalog.path(*field))?.root.sensitivity
-                        == rss_mdm_inventory::Sensitivity::Sensitive
+                if checked_input(catalog.path(*field))?.root.sensitivity
+                    == rss_mdm_inventory::Sensitivity::Secret
                 {
                     return Err(Error::Forbidden.into());
                 }
@@ -400,12 +399,11 @@ pub fn require_visible(catalog: &Catalog, criteria: &Criteria, sensitive: bool) 
 }
 
 /// Check the actual field dependencies of a compiled rule, including a group rule.
-pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule, sensitive: bool) -> Result<()> {
+pub fn require_visible_rule(catalog: &Catalog, rule: &g::Rule) -> Result<()> {
     for name in rule.view().fields.keys() {
         let key = checked_input(FieldKey::parse(name))?;
-        if !sensitive
-            && checked_input(catalog.path(key))?.root.sensitivity
-                == rss_mdm_inventory::Sensitivity::Sensitive
+        if checked_input(catalog.path(key))?.root.sensitivity
+            == rss_mdm_inventory::Sensitivity::Secret
         {
             return Err(Error::Forbidden.into());
         }

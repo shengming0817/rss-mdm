@@ -321,8 +321,10 @@ pub enum Platform {
 pub enum Sensitivity {
     /// Ordinary inventory.
     Standard,
-    /// Requires the sensitive inventory permission.
+    /// Privacy classification; ordinary resource authorization still applies.
     Sensitive,
+    /// Secret material belongs to dedicated custody, never ordinary inventory or Group input.
+    Secret,
 }
 /// A published field version. No time-based expiry and no execution permission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

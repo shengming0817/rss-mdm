@@ -48,6 +48,6 @@ pub struct GroupStart {
 pub struct DefinitionEdit {
     pub group: Uuid,
     pub change: Operation<GroupChange>,
-    pub sensitive: bool,
+
     pub at: i64,
 }

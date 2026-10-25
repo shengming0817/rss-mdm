@@ -96,11 +96,12 @@ impl Queries {
             storage::authorized(tx,proof,&run.target.device,Permission::OperationRead).await?;
             let collection = match &plan { db::ScheduledPolicy::Script(script) => script.frozen.collection.as_ref(), _ => None };
             let native = matches!(&plan, db::ScheduledPolicy::AgentCollection(_));
+            if native {
+                // Unmapped native evidence is not a classified inventory field.
+                crate::action_admission::current(tx,proof).await?.require(proof,Permission::InventorySensitiveRead,None)?;
+            }
             if native || collection.is_some() {
                 storage::authorized(tx,proof,&run.target.device,Permission::InventoryRead).await?;
-                if native || collection.is_some_and(|c| c.fields().any(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive)) {
-                    crate::action_admission::current(tx,proof).await?.require(proof,Permission::InventorySensitiveRead,None)?;
-                }
             }
 
             if let Some(native)=super::output::restore_native(tx,&plan,&run).await? {

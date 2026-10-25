@@ -747,7 +747,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         .filter(|g| g.operation != Permission::InventoryRead)
         .cloned()
         .collect();
-    for grants in [no_read, f.grants.clone()] {
+    for grants in [no_read] {
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
         let denied = call(&f, Method::GET, &path, None, true, true).await?;
         ensure!(
@@ -758,7 +758,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             "read denied without leakage: {denied:?}"
         );
     }
-    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, full).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let permitted = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
         permitted.0 == StatusCode::OK
@@ -766,7 +766,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && permitted.1["result"]["evidence"]["diagnostics"]["stdout"] == canary
             && permitted.1["result"]["evidence"]["diagnostics"]["stderr"] == canary
     );
-    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.iter().filter(|g|g.operation != Permission::InventoryRead).cloned().collect())
         .await?;
     let denied = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(

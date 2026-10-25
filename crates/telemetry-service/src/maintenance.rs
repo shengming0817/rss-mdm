@@ -239,10 +239,8 @@ async fn authorize(
         .await
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Invalid)?;
-    if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
-        snapshot
-            .require(proof, Permission::InventorySensitiveRead, None)
-            .map_err(|_| Error::Denied)?;
+    if field.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
+        return Err(Error::Denied);
     }
     field.time_series.as_ref().ok_or(Error::Invalid)?;
     match &input.action {
@@ -260,10 +258,8 @@ async fn authorize(
                     .await
                     .map_err(|_| Error::Storage)?
                     .ok_or(Error::Storage)?;
-                if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
-                    snapshot
-                        .require(proof, Permission::InventorySensitiveRead, None)
-                        .map_err(|_| Error::Denied)?;
+                if field.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
+                    return Err(Error::Denied);
                 }
             }
             if let Action::ExpireReceipts { before_micros, .. } = &input.action {

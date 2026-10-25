@@ -74,9 +74,6 @@ impl Groups {
                         None
                     };
                     let selecting = context.is_some() || q.query.mentions("assetContext");
-                    let sensitive = current
-                        .require(p, Permission::InventorySensitiveRead, None)
-                        .is_ok();
                     let mut items = Vec::new();
                     loop {
                         let page = group_checked(
@@ -103,9 +100,7 @@ impl Groups {
                                     group_checked(s.groups.rule_in(tx, group.id, version).await?)?
                                         .ok_or(Error::Conflict)?;
                                 let catalog = assets::catalog_in(tx, s.tenant, i64::MAX).await?;
-                                match assets::filter::require_visible_rule(
-                                    &catalog, &rule, sensitive,
-                                ) {
+                                match assets::filter::require_visible_rule(&catalog, &rule) {
                                     Err(Fault::Request(Error::Forbidden)) => continue,
                                     result => result?,
                                 }

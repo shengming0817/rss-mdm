@@ -11,6 +11,7 @@ pub struct Report {
     pub now: i64,
     pub observed_at: i64,
     pub project: bool,
+    pub trusted: bool,
 }
 pub async fn accept_in(
     c: &mut sqlx::PgConnection,
@@ -25,6 +26,7 @@ pub async fn accept_in(
         now,
         observed_at,
         project,
+        trusted,
     } = report;
     let definition = progress.definition();
     let body = progress
@@ -45,7 +47,7 @@ pub async fn accept_in(
     rss_mdm_inventory_postgres::register_collection_in(c, tenant, definition)
         .await
         .map_err(|_| sqlx::Error::Protocol("invalid task collector".into()))?;
-    let row = sqlx::query("SELECT scope,sequence,attempts,sealed_at,evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 FOR UPDATE")
+    let row = sqlx::query("SELECT scope,sequence,attempts,sealed_at,reason,batch,evidence FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2 AND registration=$3 FOR UPDATE")
         .bind(tenant.to_string()).bind(attempt).bind(registration).fetch_one(&mut *c).await?;
     let frozen: CollectionProgress = serde_json::from_str(row.try_get("attempts")?)
         .map_err(|_| sqlx::Error::Protocol("invalid reserved collection".into()))?;
@@ -56,8 +58,13 @@ pub async fn accept_in(
             "collection reservation mismatch".into(),
         ));
     }
-    // Cancellation/revocation already sealed this attempt. Late transport evidence cannot reopen it.
-    if row.try_get::<Option<i64>, _>("sealed_at")?.is_some() {
+    // A transport timeout without device evidence is not an immutable result. The command
+    // owner proves original-attempt timing and independently decides current applicability.
+    // Never replace published evidence or reopen cancellation/revocation.
+    let late_timeout = trusted
+        && row.try_get::<Option<&str>, _>("reason")? == Some("timeout")
+        && row.try_get::<Option<Vec<u8>>, _>("batch")?.is_none();
+    if row.try_get::<Option<i64>, _>("sealed_at")?.is_some() && !late_timeout {
         return Ok(());
     }
     let scope: rss_observation::Scope = serde_json::from_str(row.try_get("scope")?)
@@ -93,7 +100,7 @@ pub async fn accept_in(
         .map(|v| format!("{v:02x}"))
         .collect::<String>();
     let quality = progress;
-    sqlx::query("UPDATE mdm_access.collection_runs SET sealed_at=$3,attempts=$4,result=$5,reason='complete',batch=$6,digest=$7,delivery_pending=$8 WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL")
+    sqlx::query("UPDATE mdm_access.collection_runs SET sealed_at=$3,attempts=$4,result=$5,reason='complete',batch=$6,digest=$7,delivery_pending=$8 WHERE tenant_id=$1::uuid AND id=$2 AND (sealed_at IS NULL OR (reason='timeout' AND batch IS NULL))")
         .bind(tenant.to_string()).bind(id).bind(now).bind(serde_json::to_string(&quality).expect("closed quality"))
         .bind(result).bind(batch.encode()).bind(digest).bind(project).execute(&mut *c).await?;
     crate::wake::notify(c).await?;

@@ -37,7 +37,7 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-        context: (Timepoint, bool),
+        at: Timepoint,
         flow: &dyn Flow,
     ) -> Result<Value> {
         if matches!(
@@ -47,21 +47,20 @@ impl Groups {
                 ..
             } | GroupChange::Rule { .. }
         ) {
-            self.definition_references_in(tx, id, op, context.1).await?;
+            self.definition_references_in(tx, id, op).await?;
             return flow
                 .define(
                     tx,
                     DefinitionEdit {
                         group: id,
                         change: op.clone(),
-                        sensitive: context.1,
-                        at: context.0.unix_seconds(),
+                        at: at.unix_seconds(),
                     },
                 )
                 .await
                 .map_err(Into::into);
         }
-        self.publish_change_in(tx, id, op, context, flow).await
+        self.publish_change_in(tx, id, op, at, flow).await
     }
     /// Publish an already validated definition in the graph-fenced owner transaction.
     pub async fn publish_change_in(
@@ -69,10 +68,9 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-        context: (Timepoint, bool),
+        at: Timepoint,
         flow: &dyn Flow,
     ) -> Result<Value> {
-        let (at, sensitive) = context;
         let group = checked_input(pg::GroupId::parse(&id.to_string()))?;
         let operation = checked_input(pg::OperationId::parse(&op.operation_id.to_string()))?;
         let expected = || {
@@ -90,7 +88,6 @@ impl Groups {
                 assets::filter::require_visible_rule(
                     &catalog,
                     &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
-                    sensitive,
                 )?
             }
             _ => (),
@@ -102,9 +99,7 @@ impl Groups {
                 ..
             } | GroupChange::Rule { .. }
         ) {
-            self.definition_references_in(tx, id, op, sensitive)
-                .await?
-                .1
+            self.definition_references_in(tx, id, op).await?.1
         } else {
             vec![]
         };

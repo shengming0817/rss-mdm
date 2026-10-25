@@ -139,6 +139,14 @@ pub async fn finish_job_in(
             return Err(Error::NotFound.into());
         }
     }
+    // Traversal rows only support unfinished definitions. Cleanup shares terminal settlement,
+    // including replay, failure and owner-conflict paths, under the same tenant transaction.
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| Box::pin(async move {
+        sqlx::query("DELETE FROM mdm_planning.group_definition_walk WHERE tenant_id=$1::uuid AND task_id=$2")
+            .bind(tenant).bind(id).execute(c).await?;
+        Ok(())
+    })).await?;
     if let Some((target, kind)) = target {
         let audit = RequestAudit::new(
             tx.tenant_id().to_string(),

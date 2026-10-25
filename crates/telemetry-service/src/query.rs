@@ -217,10 +217,8 @@ async fn read_on(
         .await
         .map_err(|_| Error::Storage)?
         .ok_or(Error::Invalid)?;
-    if field.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive {
-        authorization
-            .require(proof, Permission::InventorySensitiveRead, None)
-            .map_err(|_| Error::Denied)?;
+    if field.sensitivity == rss_mdm_inventory::Sensitivity::Secret {
+        return Err(Error::Denied);
     }
     if field.time_series.is_none() && !matches!(kind, ReadKind::Health) {
         return Err(Error::Invalid);

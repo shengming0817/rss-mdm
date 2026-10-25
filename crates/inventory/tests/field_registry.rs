@@ -310,3 +310,37 @@ fn empty_catalog_represents_uninitialized_tenant_without_inventing_fields() {
         .is_err()
     );
 }
+
+#[test]
+fn secret_metadata_cannot_become_ordinary_inventory_material() {
+    use rss_mdm_inventory::*;
+    let mut field = definition();
+    field.sensitivity = Sensitivity::Sensitive;
+    assert!(field.validate_scalar(&Scalar::Boolean(true)).is_ok());
+    field.sensitivity = Sensitivity::Secret;
+    assert!(field.validate().is_err(), "secret cannot be searchable");
+    field.searchable = false;
+    assert!(
+        Catalog::new(vec![field.clone()]).is_ok(),
+        "classification metadata is legal"
+    );
+    assert!(field.validate_scalar(&Scalar::Boolean(true)).is_err());
+    assert!(
+        CollectionDefinition::new(
+            "secret",
+            "1",
+            Source::AgentScript,
+            vec![CollectionField {
+                definition: field.clone(),
+                scope: CollectionScope::Device
+            }]
+        )
+        .is_err()
+    );
+    field.manual = true;
+    field.sources.insert(Source::Manual, 0);
+    assert!(
+        field.validate().is_err(),
+        "secret cannot be manually assigned"
+    );
+}

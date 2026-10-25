@@ -6,7 +6,6 @@ pub enum Command {
     Group {
         id: Uuid,
         change: Box<Operation<GroupChange>>,
-        sensitive: bool,
     },
     GroupRead {
         id: Uuid,
@@ -176,13 +175,8 @@ impl Groups {
                             .ok_or(Error::Unavailable(Failure::Clock))?,
                     ))?;
                     let result = match command {
-                        Command::Group {
-                            id,
-                            change,
-                            sensitive,
-                        } => {
-                            s.group_change(tx, *id, change, (at, *sensitive), flow)
-                                .await?
+                        Command::Group { id, change } => {
+                            s.group_change(tx, *id, change, at, flow).await?
                         }
                         Command::GroupRead { id } => s.group_read(tx, *id, flow).await?,
                         Command::GroupPreview {

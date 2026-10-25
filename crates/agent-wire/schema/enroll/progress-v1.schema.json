@@ -665,7 +665,12 @@
         },
         {
           "const": "sensitive",
-          "description": "Requires the sensitive inventory permission.",
+          "description": "Privacy classification; ordinary resource authorization still applies.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "Secret material belongs to dedicated custody, never ordinary inventory or Group input.",
           "type": "string"
         }
       ]

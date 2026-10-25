@@ -24,7 +24,7 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
         case_tenant(),
     )?)
     .await;
-    let created=crate::planning::test_support::seed_group(&planning,&rss_mdm_inventory_service::groups::Command::Group {id:group,sensitive:true,change:Box::new(crate::planning::test_support::group_operation(0,serde_json::from_value(json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}}))?))}).await?;
+    let created=crate::planning::test_support::seed_group(&planning,&rss_mdm_inventory_service::groups::Command::Group {id:group,change:Box::new(crate::planning::test_support::group_operation(0,serde_json::from_value(json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}}))?))}).await?;
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
     pg(&format!(

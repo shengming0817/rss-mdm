@@ -522,15 +522,14 @@ impl ExecutionService {
             let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
             if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
             let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
-            // Current authenticated ownership and sensitive-read permissions govern history.
+            // Current authenticated ownership and ordinary inventory permissions govern history.
             let result = match (&plan, run.result.as_ref()) {
-                (db::ScheduledPolicy::Script(script), Some(result)) => {
+                (db::ScheduledPolicy::Script(_), Some(result)) => {
                     let can_read = match proof {
                         Some(proof) => {
                             let auth = crate::action_admission::current(tx, proof).await?;
                             let basic = auth.require(proof, Permission::InventoryRead, Some(p.device())).is_ok();
-                            let sensitive = script.frozen.collection.as_ref().is_some_and(|c| c.fields().any(|f| f.sensitivity == rss_mdm_inventory::Sensitivity::Sensitive));
-                            basic && (!sensitive || auth.require(proof, Permission::InventorySensitiveRead, None).is_ok())
+                            basic
                         }
                         None => false,
                     };

@@ -399,7 +399,7 @@ pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
             scope: assets::ReadScope {
                 authority: "internal".into(),
                 collection_scope: rss_mdm_inventory::CollectionScope::Device,
-                sensitive: true,
+
                 subject: prefix.to_string(),
                 devices: Some(
                     (1..=count)
@@ -473,7 +473,7 @@ pub(crate) async fn frozen_device(service: &Planning, device: &str, watermark: i
                         &assets::ReadScope {
                             authority: "internal".into(),
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
-                            sensitive: true,
+
                             subject: "history-evidence".into(),
                             devices: Some([device].into()),
                         },
@@ -640,12 +640,7 @@ pub(crate) async fn seed_group(
     m: &Planning,
     command: &GroupCommand,
 ) -> std::result::Result<Value, Error> {
-    let GroupCommand::Group {
-        id,
-        change,
-        sensitive,
-    } = command
-    else {
+    let GroupCommand::Group { id, change } = command else {
         panic!("group baseline requires a mutation");
     };
     let owner = groups(m).await;
@@ -653,8 +648,8 @@ pub(crate) async fn seed_group(
         .local_tx_with_context(
             m.tenant,
             deadline(),
-            (&owner, m, *id, change.as_ref(), *sensitive),
-            |(owner, m, id, change, sensitive), tx| {
+            (&owner, m, *id, change.as_ref()),
+            |(owner, m, id, change), tx| {
                 Box::pin(async move {
                     owner
                         .audit_store
@@ -673,11 +668,8 @@ pub(crate) async fn seed_group(
                             tx,
                             *id,
                             change,
-                            (
-                                rss_contract::Timepoint::try_from(m.clock.unix_seconds().unwrap())
-                                    .unwrap(),
-                                *sensitive,
-                            ),
+                            rss_contract::Timepoint::try_from(m.clock.unix_seconds().unwrap())
+                                .unwrap(),
                             *m,
                         )
                         .await

@@ -494,12 +494,8 @@ pub async fn catalog_in(
     .map_err(Into::into)
 }
 
-fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog, sensitive: bool) {
-    let allowed = |key: &FieldKey| {
-        catalog
-            .definition(*key)
-            .is_ok_and(|f| fields::visible(f, sensitive))
-    };
+fn restrict_fields(device: &mut DeviceView, catalog: &rss_mdm_inventory::Catalog) {
+    let allowed = |key: &FieldKey| catalog.definition(*key).is_ok_and(|f| fields::visible(f));
     device.fields.retain(|key, _| allowed(key));
     device.revisions.retain(|key, _| allowed(key));
     for run in &mut device.quality {

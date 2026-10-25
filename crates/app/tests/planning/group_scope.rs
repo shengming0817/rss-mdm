@@ -56,7 +56,6 @@ async fn durable_asset_group_scope_pipeline() {
     let created = seed_group(
         &service,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,
@@ -224,7 +223,6 @@ async fn group_scope_replay_and_audit_atomicity() {
     seed_device(&device);
     let group = Uuid::new_v4();
     let create = GroupCommand::Group {
-        sensitive: true,
         id: group,
         change: Box::new(group_operation(
             0,
@@ -244,7 +242,6 @@ async fn group_scope_replay_and_audit_atomicity() {
     let members = execute(
         &m,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 1,
@@ -287,7 +284,6 @@ async fn group_scope_replay_and_audit_atomicity() {
     let result = execute(
         &m,
         &GroupCommand::Group {
-            sensitive: true,
             id: denied,
             change: Box::new(group_operation(
                 0,
@@ -335,7 +331,6 @@ async fn group_scope_revision_competition() {
     execute(
         &m,
         &GroupCommand::Group {
-            sensitive: true,
             id: g,
             change: Box::new(group_operation(
                 0,
@@ -416,7 +411,6 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     execute(
         &m,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,
@@ -436,7 +430,6 @@ async fn registration_replacement_invalidates_direct_and_group_admission() {
     let membership = execute(
         &m,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 1,
@@ -573,7 +566,6 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         execute(
             &first,
             &GroupCommand::Group {
-                sensitive: true,
                 id: group,
                 change: Box::new(group_operation(
                     0,
@@ -591,7 +583,6 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         .await
         .unwrap();
         let delete = GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(1, GroupChange::Delete)),
         };
@@ -750,7 +741,6 @@ async fn ingress_batches_reuse_published_group_coverage() {
     let accepted = seed_group(
         &service,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,
@@ -876,7 +866,6 @@ async fn superseded_group_links_reused_successor() {
     let created = seed_group(
         &service,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,
@@ -908,7 +897,6 @@ async fn superseded_group_links_reused_successor() {
     let next = execute(
         &service,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(1, GroupChange::Recompute {})),
         },
@@ -995,7 +983,7 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
             &first,
             &GroupCommand::Group {
                 id,
-                sensitive: true,
+
                 change: Box::new(group_operation(
                     0,
                     GroupChange::Create {
@@ -1023,7 +1011,7 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     }
     let change = |id, target| GroupCommand::Group {
         id,
-        sensitive: true,
+
         change: Box::new(group_operation(
             1,
             GroupChange::Rule {
@@ -1121,7 +1109,6 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         &service,
         &GroupCommand::Group {
             id: source,
-            sensitive: true,
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
@@ -1286,7 +1273,6 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         &service,
         &GroupCommand::Group {
             id: target,
-            sensitive: true,
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {
@@ -1508,7 +1494,6 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         proof.bind_audit(&audit).unwrap();
         let command = GroupCommand::Group {
             id: group,
-            sensitive: false,
             change: Box::new(group_operation(
                 0,
                 GroupChange::CreateSystem {
@@ -1654,7 +1639,7 @@ async fn definition_validation_resumes_without_partial_publication() {
     };
     let create = |id, source| GroupCommand::Group {
         id,
-        sensitive: true,
+
         change: Box::new(group_operation(
             0,
             GroupChange::Create {
@@ -1677,7 +1662,6 @@ async fn definition_validation_resumes_without_partial_publication() {
     seed_group(&service, &create(root, None)).await.unwrap();
     let change = GroupCommand::Group {
         id: root,
-        sensitive: true,
         change: Box::new(group_operation(
             1,
             GroupChange::Rule {
@@ -1725,6 +1709,7 @@ async fn definition_validation_resumes_without_partial_publication() {
         )),
         "f"
     );
+    assert!(sql(&format!("SELECT count(*) FROM mdm_planning.group_definition_walk WHERE tenant_id='{}' AND task_id='{task}'", tenant())).parse::<usize>().unwrap() > 0);
     worker.release(&claim, &control).await.unwrap();
     worker.work.close().await.unwrap();
     let resumed = crate::automation::Automation::connect(
@@ -1739,6 +1724,13 @@ async fn definition_validation_resumes_without_partial_publication() {
     let claim = claim_job(&resumed, task, Duration::from_secs(120)).await;
     finish_claim(&resumed, &claim).await;
     assert_eq!(
+        sql(&format!(
+            "SELECT count(*) FROM mdm_planning.group_definition_walk WHERE tenant_id='{}' AND task_id='{task}'",
+            tenant()
+        )),
+        "0"
+    );
+    assert_eq!(
         execute(&service, &GroupCommand::GroupRead { id: root })
             .await
             .unwrap()["group"]["revision"],
@@ -1749,7 +1741,6 @@ async fn definition_validation_resumes_without_partial_publication() {
         &service,
         &GroupCommand::Group {
             id: root,
-            sensitive: true,
             change: Box::new(group_operation(
                 2,
                 GroupChange::Rule {
@@ -1764,7 +1755,6 @@ async fn definition_validation_resumes_without_partial_publication() {
         &service,
         &GroupCommand::Group {
             id: root,
-            sensitive: true,
             change: Box::new(group_operation(
                 2,
                 GroupChange::Edit {
@@ -1791,6 +1781,13 @@ async fn definition_validation_resumes_without_partial_publication() {
     finish_claim(&resumed, &claim).await;
     assert_eq!(
         sql(&format!(
+            "SELECT count(*) FROM mdm_planning.group_definition_walk WHERE tenant_id='{}' AND task_id='{task}'",
+            tenant()
+        )),
+        "0"
+    );
+    assert_eq!(
+        sql(&format!(
             "SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
             tenant()
         )),
@@ -1807,7 +1804,6 @@ async fn definition_validation_resumes_without_partial_publication() {
             &service,
             &GroupCommand::Group {
                 id: source.unwrap(),
-                sensitive: true,
                 change: Box::new(group_operation(1, GroupChange::Delete))
             }
         )
@@ -1824,7 +1820,6 @@ async fn definition_validation_resumes_without_partial_publication() {
         &service,
         &GroupCommand::Group {
             id: removed,
-            sensitive: true,
             change: Box::new(group_operation(1, GroupChange::Delete)),
         },
     )
@@ -1843,6 +1838,13 @@ async fn definition_validation_resumes_without_partial_publication() {
     finish_claim(&resumed, &claim).await;
     assert_eq!(
         sql(&format!(
+            "SELECT count(*) FROM mdm_planning.group_definition_walk WHERE tenant_id='{}' AND task_id='{task}'",
+            tenant()
+        )),
+        "0"
+    );
+    assert_eq!(
+        sql(&format!(
             "SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
             tenant()
         )),
@@ -1850,6 +1852,69 @@ async fn definition_validation_resumes_without_partial_publication() {
     );
     assert!(
         execute(&service, &GroupCommand::GroupRead { id: dependent })
+            .await
+            .is_err()
+    );
+    let denied_group = Uuid::new_v4();
+    let denied = execute(&service, &create(denied_group, source))
+        .await
+        .unwrap();
+    let task = Uuid::parse_str(denied["task"].as_str().unwrap()).unwrap();
+    sql(&format!(
+        "INSERT INTO mdm_planning.group_definition_walk(tenant_id,task_id,node_id,graph_revision) VALUES('{}','{task}','{root}',0)",
+        tenant()
+    ));
+    service
+        .runtime
+        .local_tx_with_context(
+            service.tenant,
+            deadline(),
+            (service.as_ref(), task),
+            |(service, task), tx| {
+                Box::pin(async move {
+                    service
+                        .audit_store
+                        .bind_in(tx)
+                        .await
+                        .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                    let partition = rss_mdm_audit_integration::source_partition(
+                        tx.tenant_id(),
+                        "mdm",
+                        "request",
+                    )?;
+                    tx.prepare_outbox_partitions(&[partition]).await?;
+                    crate::automation::jobs::finish_job_in(
+                        tx,
+                        &service.audit_store,
+                        *task,
+                        Some("permission_denied"),
+                    )
+                    .await
+                    .map_err(|e| {
+                        sqlx::Error::Protocol(format!("terminal settlement: {e:?}")).into()
+                    })
+                })
+            },
+        )
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |_| panic!("commit unknown"),
+            |_| panic!("rollback unknown"),
+            |e| panic!("{e:?}"),
+        );
+    assert_eq!(
+        sql(&format!(
+            "SELECT completed AND failure='permission_denied' AND NOT EXISTS(SELECT 1 FROM mdm_planning.group_definition_walk WHERE tenant_id='{}' AND task_id='{task}') FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
+            tenant(),
+            tenant()
+        )),
+        "t"
+    );
+    assert!(
+        execute(&service, &GroupCommand::GroupRead { id: denied_group })
             .await
             .is_err()
     );

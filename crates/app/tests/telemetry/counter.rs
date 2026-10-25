@@ -247,8 +247,8 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
                 .call(&f.router, Method::POST, path, Some(body))
                 .await?
                 .0
-                == StatusCode::FORBIDDEN,
-            "sensitive read permitted: {path}"
+                == StatusCode::OK,
+            "Sensitive classification added a read permission: {path}"
         );
     }
     Ok(())

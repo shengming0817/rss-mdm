@@ -302,7 +302,6 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
         &first,
         &GroupCommand::Group {
             id: group,
-            sensitive: true,
             change: Box::new(group_operation(
                 0,
                 GroupChange::Create {

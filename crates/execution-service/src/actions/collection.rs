@@ -46,6 +46,7 @@ pub async fn accept(
         progress,
         now,
         observed_at: collected_at,
+        trusted,
         project,
     };
     tx.with_connection(move |c| {

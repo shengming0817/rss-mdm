@@ -134,7 +134,7 @@ pub struct ReadScope {
     pub authority: String,
     pub collection_scope: rss_mdm_inventory::CollectionScope,
     pub subject: String,
-    pub sensitive: bool,
+
     pub devices: Option<BTreeSet<String>>,
 }
 impl ReadScope {
@@ -143,7 +143,6 @@ impl ReadScope {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "group".into(),
             authority: "internal".into(),
-            sensitive: true,
             devices: None,
         }
     }
@@ -156,18 +155,8 @@ impl ReadScope {
         p: &crate::authorization::context::AuthorizedPrincipal,
         snapshot: &crate::authorization::Snapshot,
     ) -> std::result::Result<Self, Error> {
-        let sensitive = match snapshot.require(
-            p,
-            crate::authorization::Permission::InventorySensitiveRead,
-            None,
-        ) {
-            Ok(()) => true,
-            Err(crate::authorization::error::AuthorizationError::Forbidden) => false,
-            Err(e) => return Err(e.into()),
-        };
         Ok(Self {
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
-            sensitive,
             subject: format!("{}:{}", p.instance_id(), p.principal_id()),
             devices: snapshot.inventory_devices(p)?,
             authority: snapshot.query_binding(p)?,

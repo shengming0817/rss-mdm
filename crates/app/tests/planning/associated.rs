@@ -92,7 +92,6 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     let accepted = seed_group(
         &service,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,

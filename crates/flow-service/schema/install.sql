@@ -51,7 +51,7 @@ CREATE TABLE mdm_automation.automation_jobs (
     failure text,
     failure_detail jsonb,
     CONSTRAINT automation_jobs_authority_revision_check CHECK ((authority_revision >= 0)),
-    CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text]))),
+    CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT automation_jobs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
     CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'group_definition'::text, 'scope'::text, 'policy_reconcile'::text, 'asset_query'::text, 'compliance'::text]))),
     CONSTRAINT automation_jobs_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
@@ -354,5 +354,5 @@ ALTER TABLE mdm_planning.group_definition_walk FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_planning.group_definition_walk
  USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid)
  WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
+GRANT SELECT,INSERT,DELETE ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
 GRANT UPDATE(graph_revision,visited) ON mdm_planning.group_definition_walk TO mdm_flow_runtime;

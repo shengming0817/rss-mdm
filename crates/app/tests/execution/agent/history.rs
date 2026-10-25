@@ -225,9 +225,9 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
-            denied.0 == StatusCode::FORBIDDEN
-                && !denied.1.to_string().contains("private-collection-canary"),
-            "sensitive result leaked through Policy: {denied:?}"
+            denied.0 == StatusCode::OK
+                && denied.1.to_string().contains("private-collection-canary"),
+            "Sensitive classification added a permission requirement: {denied:?}"
         );
         let mut granted = f.grants.clone();
         granted.push(Grant {
@@ -244,7 +244,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         // Keep the original loaded snapshot after withdrawal, then call the service directly.
         let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
         ensure!(stale.manage(Permission::InventorySensitiveRead).is_ok());
-        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.iter().filter(|g|g.operation != Permission::InventoryRead).cloned().collect())
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read", rss_mdm_audit_integration::AuditIntent::Routine);
@@ -254,7 +254,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
                 denied,
                 Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
             ),
-            "stale sensitive grant survived withdrawal"
+            "stale inventory grant survived withdrawal"
         );
     }
     Ok(())

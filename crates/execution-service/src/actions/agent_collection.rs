@@ -174,6 +174,7 @@ pub async fn finish(
         progress,
         now,
         observed_at,
+        trusted,
         project: allowed && trusted,
     };
     tx.with_connection(move |c| {

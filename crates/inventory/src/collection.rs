@@ -62,10 +62,10 @@ impl CollectionDefinition {
         for field in &fields {
             field.scope.validate_source(source)?;
         }
-        if fields
-            .iter()
-            .any(|f| !f.definition.sources.contains_key(&source))
-        {
+        if fields.iter().any(|f| {
+            !f.definition.sources.contains_key(&source)
+                || f.definition.sensitivity == crate::Sensitivity::Secret
+        }) {
             return Err(Invalid::SourceNotAllowed);
         }
         fields.sort_by_key(|f| f.definition.key);

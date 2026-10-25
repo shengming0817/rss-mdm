@@ -290,8 +290,13 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             ..context
         },
     )?;
+    let task_id = signed.payload.task_id();
+    let sampled_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? - 60;
+    pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({sampled_at}::bigint-1)) WHERE tenant_id='{}' AND id='{task_id}'", case_tenant()))?;
+    execution.recover_action_fixture(policy_id).await?;
+    ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()=="t", "real recovery did not seal the original attempt without evidence");
     let result_operation = Uuid::new_v4();
-    let mut result = json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
+    let mut result = json!({"kind":"result","collectedAt":sampled_at,"exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
     execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
@@ -1050,6 +1055,19 @@ async fn native_inventory_case(
             }
             terminal
         } else { serde_json::to_value(w::TaskEvent::CollectionResult(result.clone()))? };
+        if stage == 0 && !all_failed {
+            pg(&format!("UPDATE mdm_access.collection_runs SET deadline=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?;
+            f.command_runtime.local_tx(f.authority.identity.tenant, crate::identity::deadline(), |tx| Box::pin(async move {
+                let tenant=tx.tenant_id().to_string();
+                tx.with_connection(move |c| Box::pin(async move {
+                    let mut facts=Vec::new();
+                    crate::collection::store::expire_timed(c,&mut facts,&tenant).await
+                        .map_err(|e|sqlx::Error::Protocol(e.to_string()))?;
+                    Ok(())
+                })).await
+            })).await.fold(|_|(),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|_|panic!("commit unknown"),|_|panic!("rollback unknown"),|e|panic!("{e:?}"));
+            ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t");
+        }
         let operation = Uuid::new_v4();
         let input = event(operation, terminal);
         let accepted = agent_call(
@@ -1201,7 +1219,7 @@ async fn native_inventory_case(
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
         for (path,secret) in sensitive_paths {
             let hidden=f.author.call(&f.router,Method::GET,&path,None).await?;
-            ensure!(hidden.0==StatusCode::FORBIDDEN && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
+            ensure!(hidden.0==StatusCode::OK && hidden.1.to_string().contains(secret),"Sensitive classification unexpectedly required an extra permission: {hidden:?}");
         }
         let denied = f
             .author

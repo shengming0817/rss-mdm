@@ -152,9 +152,9 @@ impl AssetService {
         })
     }
 }
-/// Only explicit grants can expose sensitive raw fields or accept conditions using them.
-pub fn visible(definition: &FieldDefinition, sensitive: bool) -> bool {
-    sensitive || definition.sensitivity == Sensitivity::Standard
+/// Ordinary inventory excludes secrets regardless of the caller’s privileges.
+pub fn visible(definition: &FieldDefinition) -> bool {
+    definition.sensitivity != Sensitivity::Secret
 }
 
 /// Actual field directory entry, using the same field contract as signed projections.

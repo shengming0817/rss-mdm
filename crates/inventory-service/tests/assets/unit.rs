@@ -19,11 +19,10 @@ fn asset_fingerprint_binds_explicit_collection_scope() {
             authority: "internal".into(),
             collection_scope: rss_mdm_inventory::CollectionScope::Device,
             subject: "operator".into(),
-            sensitive: false,
             devices: None,
         },
     };
-    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"filter":null,"scope":{"selector":{"kind":"device"},"quantifier":"one"},"fields":[],"sort":[]}},"scope":{"authority":"internal","collection_scope":{"kind":"device"},"subject":"operator","sensitive":false,"devices":null}}}]"#;
+    let original=br#"["11111111-1111-4111-8111-111111111111","operator","mdm",{"kind":"Asset","command":{"kind":"search","request":{"operationId":"22222222-2222-4222-8222-222222222222","expectedRevision":0,"input":{"filter":null,"scope":{"selector":{"kind":"device"},"quantifier":"one"},"fields":[],"sort":[]}},"scope":{"authority":"internal","collection_scope":{"kind":"device"},"subject":"operator","devices":null}}}]"#;
     let (operation, digest) = operation_identity(&command, &audit).unwrap();
     assert_eq!(operation, Some(id));
     assert_eq!(digest, Sha256::digest(original).to_vec());
@@ -67,7 +66,7 @@ fn one_typed_condition_round_trips_through_the_existing_group_core() {
 }
 
 #[test]
-fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_grant() {
+fn registered_sensitive_paths_feed_group_sets_without_an_extra_grant() {
     use rss_mdm_group_postgres::core as g;
     use rss_mdm_inventory::{Catalog, ResolvedField, Sensitivity, State};
     let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
@@ -83,8 +82,7 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
         value: Some(Scalar::String("private".into())),
         values: None,
     };
-    assert!(filter::require_visible(&catalog, &sensitive, false).is_err());
-    assert!(filter::require_visible(&catalog, &sensitive, true).is_ok());
+    assert!(filter::require_visible(&catalog, &sensitive).is_ok());
     let path = FieldKey::parse("device.software.installations.name").unwrap();
     let root = FieldKey::parse("device.software.installations").unwrap();
     let condition = Criteria::Predicate {
@@ -155,11 +153,10 @@ fn registered_paths_feed_group_sets_and_sensitive_conditions_need_an_explicit_gr
         )
         .unwrap();
     assert_eq!(decision.objects[0].decision, g::Decision::Match);
-    restrict_fields(&mut device, &catalog, false);
-    assert!(!device.fields.contains_key(&custom.key));
-    assert!(!device.fields.contains_key(&root));
-    assert!(filter::require_visible(&catalog, &condition, false).is_err());
-    assert!(filter::require_visible(&catalog, &condition, true).is_ok());
+    restrict_fields(&mut device, &catalog);
+    assert!(device.fields.contains_key(&custom.key));
+    assert!(device.fields.contains_key(&root));
+    assert!(filter::require_visible(&catalog, &condition).is_ok());
 }
 
 #[test]
@@ -253,4 +250,29 @@ fn installed_id_groups_use_existing_sets_and_preserve_unknown_states() {
         .unwrap();
     assert_eq!(target["version"], Scalar::String("1".into()));
     assert_ne!(target["version"], Scalar::String("2".into()));
+}
+
+#[test]
+fn secret_fields_and_paths_are_never_visible_to_group_inputs() {
+    use rss_mdm_inventory::{Catalog, Sensitivity};
+    let mut secret = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key.as_str() == "device.software.installations")
+        .unwrap();
+    secret.key = FieldKey::parse("custom.secret_material").unwrap();
+    secret.sensitivity = Sensitivity::Secret;
+    secret.manual = false;
+    secret.sources.remove(&rss_mdm_inventory::Source::Manual);
+    secret.searchable = false;
+    let catalog = Catalog::new(vec![secret.clone()]).unwrap();
+    assert!(!fields::visible(&secret));
+    for key in ["custom.secret_material", "custom.secret_material.name"] {
+        let criteria = Criteria::Predicate {
+            field: FieldKey::parse(key).unwrap(),
+            op: Operator::IsNotNull,
+            value: None,
+            values: None,
+        };
+        assert!(filter::require_visible(&catalog, &criteria).is_err());
+    }
 }

@@ -30,7 +30,7 @@ impl Planning {
     ) -> Result<()> {
         let editor = self.group_editor();
         let (context, roots) = match editor
-            .definition_references_in(tx, edit.group, &edit.change, edit.sensitive)
+            .definition_references_in(tx, edit.group, &edit.change)
             .await
         {
             Ok(value) => value,
@@ -62,13 +62,19 @@ impl Planning {
                     tx,
                     edit.group,
                     &edit.change,
-                    (checked_input(Timepoint::try_from(edit.at))?, edit.sensitive),
+                    checked_input(Timepoint::try_from(edit.at))?,
                     self,
                 )
                 .await?;
             return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await;
         }
         if restart {
+            let tenant = self.tenant.to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("DELETE FROM mdm_planning.group_definition_walk WHERE tenant_id=$1::uuid AND task_id=$2")
+                    .bind(tenant).bind(task).execute(c).await?;
+                Ok(())
+            })).await?;
             self.seed_definition_nodes(tx, task, revision, roots)
                 .await?;
         }
@@ -81,9 +87,7 @@ impl Planning {
             if *node == edit.group {
                 return Err(Error::Malformed.into());
             }
-            let children = editor
-                .reference_edges_in(tx, *node, context, edit.sensitive)
-                .await?;
+            let children = editor.reference_edges_in(tx, *node, context).await?;
             if children.contains(&edit.group) {
                 return Err(Error::Malformed.into());
             }

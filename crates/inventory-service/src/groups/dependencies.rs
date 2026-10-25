@@ -15,7 +15,6 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         op: &Operation<GroupChange>,
-        sensitive: bool,
     ) -> Result<(rss_mdm_group_postgres::AssetContext, Vec<Uuid>)> {
         let gid = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
         let (context, condition) = match &op.input {
@@ -51,7 +50,7 @@ impl Groups {
         condition.validate()?;
         let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
         let rule = criteria::rule(self.tenant, op.operation_id, &condition.criteria, &catalog)?;
-        assets::filter::require_visible_rule(&catalog, &rule, sensitive)?;
+        assets::filter::require_visible_rule(&catalog, &rule)?;
         let references = rule
             .groups()
             .iter()
@@ -67,7 +66,6 @@ impl Groups {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         context: rss_mdm_group_postgres::AssetContext,
-        sensitive: bool,
     ) -> Result<Vec<Uuid>> {
         let gid = checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
         let group = group_checked(self.groups.get_in(tx, gid).await?)?
@@ -82,7 +80,7 @@ impl Groups {
         let rule =
             group_checked(self.groups.rule_in(tx, gid, &version).await?)?.ok_or(Error::Conflict)?;
         let catalog = assets::catalog_in(tx, self.tenant, i64::MAX).await?;
-        assets::filter::require_visible_rule(&catalog, &rule, sensitive)?;
+        assets::filter::require_visible_rule(&catalog, &rule)?;
         rule.groups()
             .iter()
             .map(|s| checked_input(Uuid::parse_str(s)))
