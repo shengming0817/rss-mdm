@@ -62,6 +62,14 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         }
     };
     request.extensions_mut().insert(audit.clone());
+    let lifecycle = request
+        .extensions()
+        .get::<rss_runtime::AdmissionGate>()
+        .cloned();
+    let ingress_lease = request
+        .extensions()
+        .get::<Arc<Vec<tokio::sync::OwnedSemaphorePermit>>>()
+        .cloned();
     let input = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -74,14 +82,12 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
     } else {
         body(request, envelope.requests.clone()).await
     };
-    let accepted = envelope.audit_store.accepted_requests();
-    let ingress_lease = input.as_ref().ok().and_then(|request| {
-        request
-            .extensions()
-            .get::<rss_mdm_audit_integration::IngressLease>()
-            .cloned()
-    });
+    let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
+        audit.finalize(None);
+        return limited(id);
+    };
     let work = async move {
+        let _lifecycle_permit = permit;
         let _permit = _permit;
         let _ingress_lease = ingress_lease;
         let mut response = match input {
@@ -117,7 +123,7 @@ pub async fn admit(State(envelope): State<Envelope>, mut request: Request, next:
         );
         secure(response, id)
     };
-    accepted.run(work).await.unwrap_or_else(|| limited(id))
+    tokio::spawn(work).await.unwrap_or_else(|_| limited(id))
 }
 fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response.headers_mut().insert(

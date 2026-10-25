@@ -157,7 +157,7 @@ pub(crate) async fn admit(
             uuid::Uuid::new_v4(),
         );
     };
-    let lease = rss_mdm_audit_integration::IngressLease::new(vec![slots.0, slots.1]);
+    let lease = Arc::new(vec![slots.0, slots.1]);
     request.extensions_mut().insert(lease.clone());
     let response = next.run(request).await;
     drop(lease);
@@ -193,7 +193,7 @@ pub(crate) async fn admit_agent(
             .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
         return response;
     };
-    let lease = rss_mdm_audit_integration::IngressLease::new(vec![peer_slot]);
+    let lease = Arc::new(vec![peer_slot]);
     request.extensions_mut().insert(lease.clone());
     let response = next.run(request).await;
     drop(lease);
@@ -203,3 +203,18 @@ pub(crate) async fn admit_agent(
 #[cfg(test)]
 #[path = "../../tests/native/admission_unit.rs"]
 mod tests;
+
+/// App binds the single RSS lifecycle gate after launch has registered all dependencies.
+pub(crate) async fn lifecycle(
+    axum::extract::State(gate): axum::extract::State<
+        Arc<std::sync::OnceLock<rss_runtime::AdmissionGate>>,
+    >,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(gate) = gate.get() else {
+        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    request.extensions_mut().insert(gate.clone());
+    next.run(request).await
+}

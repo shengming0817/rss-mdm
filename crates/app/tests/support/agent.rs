@@ -398,7 +398,7 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
         "/api/v1",
         rss_mdm_management_http::agent_enrollment::routes(Some(service)).into_axum(),
     );
-    fixture.router_with_public(browser, public)
+    fixture.router_with_public(browser, crate::test_support::runtime::native_router(public))
 }
 
 /// Prepare additional task-capable targets from one real HTTP registration.

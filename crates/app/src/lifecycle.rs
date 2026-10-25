@@ -69,6 +69,7 @@ pub async fn serve(
     let compiled = config
         .compile()
         .map_err(|e| ProcessError::at("startup.configuration", e))?;
+    let admission = Arc::new(std::sync::OnceLock::new());
     let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
         TotalDrainBudget::new(Duration::from_secs(60)).map_err(|_| {
             ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
@@ -410,9 +411,6 @@ pub async fn serve(
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::webhooks::Resource(app.webhooks.clone()),
                         ));
-                        startup.stage_resource(DynManagedResource::new_box(
-                            AcceptedRequestsResource(audit_store.accepted_requests()),
-                        ));
                         let native_listeners = app
                             .listeners
                             .iter()
@@ -559,14 +557,26 @@ pub async fn serve(
                     launch.stage_task_with_token(
                         rss_axum::serve_http1_registration(
                             listener,
-                            app.browser,
+                            app.browser.layer(axum::middleware::from_fn_with_state(
+                                admission.clone(),
+                                crate::native::admission::lifecycle,
+                            )),
                             crate::native::gateway::Transport { gateway },
                             "mdm-http",
                             http_policy(),
                         )
                         .critical(),
                     );
-                    launch.finish();
+                    let (control, gate) = launch
+                        .finish_with_admission("native-accepted-requests", Duration::from_secs(35));
+                    admission.set(gate).map_err(|_| ProcessError::Stage {
+                        stage: "startup.admission",
+                        kind: "admission already bound",
+                    })?;
+                    control.open().map_err(|_| ProcessError::Stage {
+                        stage: "startup.admission",
+                        kind: "admission could not open",
+                    })?;
                     std::future::pending().await
                 })
             },
@@ -663,20 +673,6 @@ impl ManagedResource for AuditSourceResource {
     }
     async fn shutdown(&self) -> Result<(), ShutdownError> {
         self.0.close().await;
-        Ok(())
-    }
-}
-
-struct AcceptedRequestsResource(Arc<rss_mdm_audit_integration::AcceptedRequests>);
-impl ManagedResource for AcceptedRequestsResource {
-    fn name(&self) -> &str {
-        "native-accepted-requests"
-    }
-    fn shutdown_timeout(&self) -> Duration {
-        Duration::from_secs(35)
-    }
-    async fn shutdown(&self) -> Result<(), ShutdownError> {
-        self.0.drain().await;
         Ok(())
     }
 }

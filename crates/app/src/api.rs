@@ -225,8 +225,10 @@ pub(crate) async fn application_fixture(
                 )
             }
         }
+        let requests = crate::test_support::runtime::NativeRequests::new();
+        resources.resource(requests.clone());
         Ok((
-            fixture_routers.browser,
+            requests.wrap(fixture_routers.browser),
             execution_service,
             plan_runtime,
             fixture_planning,

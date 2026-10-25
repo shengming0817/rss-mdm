@@ -115,7 +115,14 @@ pub async fn admit(
         }
     };
     request.extensions_mut().insert(audit.clone());
-    let accepted = envelope.audit_store.accepted_requests();
+    let lifecycle = request
+        .extensions()
+        .get::<rss_runtime::AdmissionGate>()
+        .cloned();
+    let ingress_lease = request
+        .extensions()
+        .get::<Arc<Vec<tokio::sync::OwnedSemaphorePermit>>>()
+        .cloned();
     let input = if request.headers().get_all(header::HOST).iter().count() != 1
         || request.uri().to_string().len() > 8192
         || request
@@ -128,17 +135,21 @@ pub async fn admit(
     } else {
         body(request, envelope.requests.clone()).await
     };
-    let ingress_lease = input.as_ref().ok().and_then(|(request, _)| {
-        request
-            .extensions()
-            .get::<rss_mdm_audit_integration::IngressLease>()
-            .cloned()
-    });
+    let Some(permit) = lifecycle.and_then(|gate| gate.try_admit().ok()) else {
+        audit.finalize(None);
+        return limited(id);
+    };
+    let (input, requests_permit) = match input {
+        Ok((request, permit)) => (Ok(request), Some(permit)),
+        Err(response) => (Err(response), None),
+    };
     let work = async move {
+        let _requests_permit = requests_permit;
+        let _lifecycle_permit = permit;
         let _ingress_lease = ingress_lease;
         let _permit = _permit;
         let mut response = match input {
-            Ok((request, _permit)) => next.run(request).await,
+            Ok(request) => next.run(request).await,
             Err(response) => response,
         };
         let failure = classify(response.extensions().get::<Error>());
@@ -170,7 +181,7 @@ pub async fn admit(
         );
         secure(family(response, enrollment), id)
     };
-    accepted.run(work).await.unwrap_or_else(|| limited(id))
+    tokio::spawn(work).await.unwrap_or_else(|_| limited(id))
 }
 fn secure(mut response: Response, id: uuid::Uuid) -> Response {
     response.headers_mut().insert(

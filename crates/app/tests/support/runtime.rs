@@ -353,3 +353,58 @@ impl rss_runtime::ManagedResource for SourceResource {
         Ok(())
     }
 }
+
+/// Fixtures use the same RSS admission/drain owner as the product process.
+pub(crate) struct NativeRequests {
+    control: rss_runtime::AdmissionControl,
+    pub(crate) gate: rss_runtime::AdmissionGate,
+    owner: tokio::sync::Mutex<Option<rss_runtime::ShutdownStack>>,
+}
+impl NativeRequests {
+    pub(crate) fn new() -> Arc<Self> {
+        let mut owner = rss_runtime::ShutdownStack::try_new(
+            rss_runtime::TotalDrainBudget::new(Duration::from_secs(40)).unwrap(),
+            Arc::new(crate::lifecycle::RuntimeTimer),
+        )
+        .unwrap();
+        let (control, gate) = owner
+            .startup()
+            .unwrap()
+            .commit()
+            .finish_with_admission("native-fixture", Duration::from_secs(35));
+        control.open().unwrap();
+        Arc::new(Self {
+            control,
+            gate,
+            owner: tokio::sync::Mutex::new(Some(owner)),
+        })
+    }
+    pub(crate) fn wrap(self: &Arc<Self>, router: axum::Router) -> axum::Router {
+        router
+            .layer(axum::Extension(self.gate.clone()))
+            .layer(axum::Extension(self.clone()))
+    }
+    pub(crate) async fn drain(&self) -> Result<()> {
+        self.control.close();
+        if let Some(owner) = self.owner.lock().await.take() {
+            ensure!(owner.shutdown().join().await?.is_clean());
+        }
+        Ok(())
+    }
+}
+impl rss_runtime::ManagedResource for Arc<NativeRequests> {
+    fn name(&self) -> &str {
+        "native-fixture"
+    }
+    fn shutdown_timeout(&self) -> Duration {
+        Duration::from_secs(40)
+    }
+    async fn shutdown(&self) -> Result<(), rss_runtime::ShutdownError> {
+        self.drain()
+            .await
+            .map_err(|e| rss_runtime::ShutdownError::new(std::io::Error::other(e.to_string())))
+    }
+}
+pub(crate) fn native_router(router: axum::Router) -> axum::Router {
+    NativeRequests::new().wrap(router)
+}

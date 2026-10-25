@@ -489,7 +489,7 @@ impl Tls {
             let mut startup = owner.startup()?;
             startup.stage_task_with_token(rss_axum::serve_http1_registration(
                 internal,
-                router,
+                crate::test_support::runtime::native_router(router),
                 crate::native::gateway::Transport {
                     gateway: "127.0.0.1".parse()?,
                 },

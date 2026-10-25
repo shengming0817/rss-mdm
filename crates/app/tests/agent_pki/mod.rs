@@ -283,6 +283,7 @@ async fn renewal_grant_lookup_survives_expired_identity_without_writing_authorit
         rss_mdm_agent_channel::enroll::router(s.clone(), envelope("mdm.example.test").await?)
             .into_axum(),
     );
+    let router = crate::test_support::runtime::native_router(router);
     let request = wire::RenewalStatusRequest {
         wire_version: 1,
         operation_id: renewal.operation_id,
@@ -402,6 +403,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
         rss_mdm_agent_channel::enroll::router(unknown.clone(), envelope("mdm.example.test").await?)
             .into_axum(),
     );
+    let router = crate::test_support::runtime::native_router(router);
     let mut failures = Vec::new();
     let mut owner =
         <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?).await?;
@@ -609,6 +611,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
     )
     .layer(middleware::from_fn(crate::native::admission::admit_agent))
     .into_axum();
+    let router = crate::test_support::runtime::native_router(router);
     let mut running = Vec::new();
     for gate in [first.clone(), first.clone(), second.clone(), second.clone()] {
         let request = Request::get("/held")
@@ -2345,8 +2348,9 @@ async fn disconnected_certificate_request_finishes_once_and_replays() -> anyhow:
     let receipt = authorize_request(&service, &p, &g, &audit()).await?;
     let input = signing(&g, receipt.grant_id)?;
     let envelope = envelope("mdm.example.test").await?;
-    let accepted = envelope.audit_store.accepted_requests();
-    let router = rss_mdm_agent_channel::enroll::router(service.clone(), envelope).into_axum();
+    let accepted = crate::test_support::runtime::NativeRequests::new();
+    let router =
+        accepted.wrap(rss_mdm_agent_channel::enroll::router(service.clone(), envelope).into_axum());
     let mut owner = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
     let mut observer = sqlx::PgConnection::connect_with(&options("postgres")?).await?;
     let owner_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
@@ -2387,10 +2391,14 @@ async fn disconnected_certificate_request_finishes_once_and_replays() -> anyhow:
     response.abort();
     assert!(response.await.unwrap_err().is_cancelled());
     hold.rollback().await?;
-    tokio::time::timeout(Duration::from_secs(25), accepted.drain()).await?;
+    tokio::time::timeout(Duration::from_secs(35), accepted.drain()).await??;
     let saved: (String, String, i64) = sqlx::query_as("SELECT i.state,s.state,(SELECT count(*) FROM mdm_pki.signing x WHERE x.tenant_id=i.tenant_id AND x.attempt=i.id) FROM mdm_access.agent_issuances i JOIN mdm_pki.signing s ON(s.tenant_id,s.attempt)=(i.tenant_id,i.id) WHERE i.tenant_id=$1::uuid AND i.grant_id=$2")
         .bind(case_a()).bind(receipt.grant_id).fetch_one(&mut observer).await?;
     assert_eq!(saved, ("issued".into(), "issued".into(), 1));
+    assert!(
+        accepted.gate.try_admit().is_err(),
+        "shutdown reopened native admission"
+    );
     let first = service.issue(&input, &audit()).await?;
     let replay = service.issue(&input, &audit()).await?;
     assert_eq!(serde_json::to_value(first)?, serde_json::to_value(replay)?);

@@ -229,7 +229,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
             let mut observer=PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
             let mut hold=root.begin().await?;
             let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
-            sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
+            sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
             let query=rss_mdm_device_service::directory::parse("limit=64")?;
             let directory_identity=authority.identity.authority.clone();
             let task=tokio::spawn(async move {
@@ -278,7 +278,7 @@ async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Resu
         let mut observer=PgConnection::connect_with(&options).await?;
         let mut hold=root.begin().await?;
         let blocker:i32=sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *hold).await?;
-        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
+        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE").bind(case_tenant()).fetch_one(&mut *hold).await?;
         let router=f.router.clone();
         let pending=tokio::spawn(async move {
             let request=Request::builder().method(Method::GET).uri(CURRENT).header("host","mdm.example.test:9445").extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap()).body(Body::empty())?;
@@ -313,8 +313,8 @@ async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Resu
 }
 
 #[tokio::test]
-#[ignore = "MODULE=agent.current_user: ordinary presence reads do not queue audit work; denials do"]
-async fn current_user_read_ignores_audit_quota_lock_and_keeps_denials() -> Result<()> {
+#[ignore = "MODULE=agent.current_user: presence reads and denials persist independently of business audit locks"]
+async fn current_user_read_persists_without_business_audit_contention() -> Result<()> {
     use sqlx::Connection;
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
@@ -322,7 +322,7 @@ async fn current_user_read_ignores_audit_quota_lock_and_keeps_denials() -> Resul
         f.register_profile(json!(["inventory.collect.v1"])).await?;
         let mut owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let mut hold = owner.begin().await?;
-        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid FOR UPDATE")
+        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
             .bind(case_tenant()).fetch_one(&mut *hold).await?;
         let request = Request::get(CURRENT).header("host", "mdm.example.test:9445")
             .extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap())
@@ -337,7 +337,7 @@ async fn current_user_read_ignores_audit_quota_lock_and_keeps_denials() -> Resul
             Ok::<i64, anyhow::Error>(sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND convert_from(source_bytes,'UTF8')::jsonb->>'request'=$2")
                 .bind(case_tenant()).bind(id).fetch_one(&mut c).await?)
         };
-        ensure!(count(id).await? == 0, "ordinary read enqueued a persistent fact");
+        ensure!(count(id).await? == 1, "ordinary read lost its persistent fact");
         let response = f.router.clone().oneshot(Request::get(CURRENT)
             .header("host", "mdm.example.test:9445").body(Body::empty())?).await?;
         ensure!(response.status() == StatusCode::UNAUTHORIZED);
@@ -362,11 +362,11 @@ async fn slow_login_preflight_preserves_source_settlement() -> Result<()> {
         let mut observer = PgConnection::connect_with(&options).await?;
         let mut identity_hold = identity_owner.begin().await?;
         let identity_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *identity_hold).await?;
-        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE")
+        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
             .bind(case_tenant()).fetch_one(&mut *identity_hold).await?;
         let mut quota_hold = quota_owner.begin().await?;
         let quota_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *quota_hold).await?;
-        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid FOR UPDATE")
+        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
             .bind(case_tenant()).fetch_one(&mut *quota_hold).await?;
         let router=f.router.clone();
         let token=f.author.cookies["__Host-identity-session"].clone();

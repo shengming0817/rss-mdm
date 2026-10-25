@@ -341,7 +341,9 @@ MDM 投影使用 `audit_projection.database` 的独立 `mdm_audit_worker` 登录
 
 `audit_projection.recovery_keys` 与 `identity.audit_recovery_keys` 各自配置 `active_file` 和 `historical_files`，文件为 32 字节原始密钥、权限 0600，最多 15 个历史钥。两个集合及设备材料保护钥不得复用，历史钥也须保留至相应恢复材料退出；这些文件随运行配置进入联合备份。worker 密码必须与生产角色及另一 worker 分离。
 
-`audit_projection.max_events` 默认 100000，`max_bytes` 默认 1073741824，按租户以先到者为限；字节数指冻结源事件的精确载荷字节，不是 PostgreSQL 物理占用。普通额度之外保留 10% 的失败/拒绝事实容量，未投影及隔离事实继续计费。达到上限拒绝新应审计业务，预留耗尽关闭相应接流，不能递归写入失败事实。80% 或最老未投影事件超过五分钟在诊断中告警。运行诊断分别显示 `audit_source`、`audit_projection` 和 `identity_audit`；投影落后不直接撤销核心 readiness，源容量耗尽、主库不可用和完整性故障仍按接流策略处理。
+原生请求在 SIGTERM 后由 Runtime 先关闭准入并排空，再释放依赖。进程总停机预算为 60 秒，Compose server 的 `stop_grace_period` 为 75 秒（另留 15 秒进程退出余量）；正常退出立即结束，不等待宽限期用满。
+
+`audit_projection.max_events` 默认 100000，`max_bytes` 默认 1073741824，按租户以先到者为限（两项均至少为 2）；普通额度等分给业务事实与请求完成事实，奇数余量归业务，两个来源分别持有配额行和 outbox 分区，避免请求完成等待业务长事务。字节数指冻结源事件的精确载荷字节，不是 PostgreSQL 物理占用。每个来源在自身普通额度之外保留向上取整的 10% 失败/拒绝事实容量，未投影及隔离事实继续计费。达到上限拒绝新应审计业务，预留耗尽关闭相应接流，不能递归写入失败事实。80% 或最老未投影事件超过五分钟在诊断中告警。运行诊断分别显示 `audit_source`、`audit_projection` 和 `identity_audit`；投影落后不直接撤销核心 readiness，源容量耗尽、主库不可用和完整性故障仍按接流策略处理。
 
 所有运行模式（含 Apple-only 与 Agent-only）必须配置顶层 `native_protection`，包含 `active_file`、`historical_files` 与 `fingerprint_file`。每个文件恰好包含 32 字节原始随机密钥，权限 0600；不是 hex/Base64/PEM 文本。全新安装分别生成加密钥与比较钥。`active_file` 只用于新密文，最多保留 15 个历史解密钥，按密文中确切 key ID 读取。`fingerprint_file` 维持原有请求、材料与设备比较身份，不能随密文重加密替换。Ledger、Windows 协议保护材料和恢复凭据专用钥集合仍分别保管。旧 `native_protection_key_file` 配置不再接受，也不提供转换入口。
 
