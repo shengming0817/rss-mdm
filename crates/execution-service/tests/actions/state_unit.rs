@@ -11,7 +11,9 @@ fn expired_delivery_can_retry_but_unknown_side_effect_cannot() {
     assert!(run.received(first, 61).is_err());
     run.received(second, 61).unwrap();
     run.start(second, 62).unwrap();
-    run.expire(122, 60);
+    run.expire(122);
+    assert_eq!(run.execution, Execution::Running);
+    run.expire(300);
     assert_eq!(run.execution, Execution::Unknown);
     assert!(run.claim(Uuid::new_v4(), 123).is_err());
     run.result(second, true).unwrap();
@@ -24,17 +26,17 @@ fn execution_time_is_independent_of_receipt_and_cancellation() {
     run.claim(attempt, 0).unwrap();
     run.received(attempt, 1).unwrap();
     run.start(attempt, 2).unwrap();
-    assert!(run.trusts_result(61, 60));
-    assert!(run.trusts_result(62, 60));
-    assert!(!run.trusts_result(63, 60));
-    assert!(!run.trusts_result(100, 3600));
+    assert!(run.trusts_result(61));
+    assert!(run.trusts_result(62));
+    assert!(run.trusts_result(63));
+    assert!(!run.trusts_result(100));
     run.cancel();
-    assert!(run.trusts_result(3, 60));
+    assert!(run.trusts_result(3));
     run.cancelled(attempt).unwrap();
-    assert!(run.trusts_result(4, 60));
+    assert!(run.trusts_result(4));
     run.result(attempt, true).unwrap();
     assert_eq!(run.execution, Execution::Succeeded);
-    assert!(!run.trusts_result(5, 60));
+    assert!(!run.trusts_result(5));
 }
 #[test]
 fn cancellation_is_separate_from_effect_and_late_execution_evidence() {

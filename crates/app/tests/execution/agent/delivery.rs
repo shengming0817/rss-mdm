@@ -281,20 +281,26 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
         );
     }
     task_event(&router, &task, json!({"kind":"received"})).await?;
-    let permit = task_event(&router, &task, json!({"kind":"start"})).await?;
-    let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit)?;
+    let start_operation = Uuid::new_v4();
+    let mut start_event = json!({"kind":"start"});
+    let permit = task_event_request(&router, &task, start_operation, &mut start_event).await?;
+    ensure!(permit.0 == StatusCode::OK);
+    let ack: rss_mdm_agent_wire::runtime::TaskEventAck = serde_json::from_value(permit.1.clone())?;
+    let start = ack.into_permit().unwrap();
+    let task_id = signed.payload.task_id();
+    ensure!(pg(&format!("SELECT deadline={} FROM mdm_commands.action_runs WHERE id='{task_id}'",start.payload.expires_at()))?.trim()=="t", "Start must use the original Run deadline");
     crate::test_support::task_signature::verify(
-        &ack.into_permit().unwrap(),
+        &start,
         &crate::test_support::task_signature::TaskVerification {
             permit: rss_mdm_agent_wire::runtime::TaskPermit::Start,
             ..context
         },
     )?;
-    let task_id = signed.payload.task_id();
-    let sampled_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? - 60;
+    let sampled_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? - 120;
     pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({sampled_at}::bigint-1)) WHERE tenant_id='{}' AND id='{task_id}'", case_tenant()))?;
     execution.recover_action_fixture(policy_id).await?;
-    ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()=="t", "real recovery did not seal the original attempt without evidence");
+    ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{task_id}'"))?.trim()=="running", "Start signing time must not consume the process budget");
+    ensure!(permit == task_event_request(&router, &task, start_operation, &mut start_event).await?, "Start replay changed the original permit");
     let result_operation = Uuid::new_v4();
     let mut result = json!({"kind":"result","collectedAt":sampled_at,"exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
     execution.inject_fault(
@@ -1033,7 +1039,7 @@ async fn native_inventory_case(
             result.collected_at=now-1;
             for query in result.queries.values_mut() { query.collected_at=now-1; }
             f.execution.recover_action_fixture(policy).await?;
-            ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t");
+            ensure!(pg(&format!("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.task_id))?.trim()=="running");
         }
         let body = serde_json::to_vec(&result)?;
         let manifest = w::OutputManifest::new(body.len() as u32, Sha256::digest(&body).into())?;
