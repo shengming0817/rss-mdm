@@ -71,10 +71,6 @@ impl ExecutionService {
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
-                if matches!(input.event(),wire::TaskEvent::Start) {
-                    if now>=run.deadline || run.state.cancellation!=Cancellation::None || run.state.attempt()!=Some(input.attempt_id()) || run.state.execution!=Execution::Running {return Err(Error::Conflict.into());}
-                    if plan.withdrawn_in(service,tx,&run.target,now).await? || !plan.authorized_run_in(service,tx,&run,now).await? {return Err(Error::Forbidden.into());}
-                }
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let id=stored(Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().ok_or(Error::Conflict)?))?;
                     let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());
