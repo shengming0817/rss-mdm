@@ -110,7 +110,7 @@ impl Queries {
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
             let nodes = if let Some(attempt) = run.state.attempt() {
-                if matches!(plan, db::ScheduledPolicy::Software(_)) {
+                if matches!(&plan, db::ScheduledPolicy::Software(software) if software.assignment.channel() == rss_mdm_inventory::Channel::Agent) {
                     let super::evidence::Material::Software {steps,..} = super::evidence::load_in(tx,id,attempt).await? else { return Err(Error::Malformed.into()); };
                     steps.into_iter().map(|step| json!({"stepId":step.step_id,"definition":step.definition})).collect::<Vec<_>>()
                 } else { vec![] }

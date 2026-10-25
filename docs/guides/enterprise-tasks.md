@@ -142,7 +142,7 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 
 Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件和 MDM 注册调用 parameters 必须为空。
 
-以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前 requestId、Policy revision/version 和确切输入，客户端边界由 #2677 实施。
+以下入口位于 `/api/v1/agent/runtime`，始终使用 Agent 系统服务的设备凭据。用户访问模式还使用 `X-RSS-User-Session`；设备模式不需要企业登录。无效或重复用户会话头不会降级为设备访问。系统服务根据真实 IPC 入口设置 source，模型参数不得控制 source，也不得接触设备私钥或企业凭据。confirmed 绑定当前请求身份、Policy 身份和确切调用输入。首次受理读取当前配置，回执中的配置/执行版本用于溯源，不是调用方的版本前置条件。
 
 - `GET /self-service?source=human|ai`（支持 filter/sort/fields/limit/cursor） 返回当前可调用的有界目录。每项含 Policy 坐标、自助描述及 tagged script/software/enrollment 接口。目录复用 Scope、注册世代、平台、能力、资源批准、频率、窗口、容量及 pending/Unknown 判断；未知事实不授予执行。
 - `POST /self-service/invocations` 针对当前设备接受 operationId、policyId、source、confirmed、parameters；不接受客户端配置/执行版本前置条件，返回 202 的 requestId/runId。精确重试返回原 Run；变化正文返回冲突。AvailableInstall 在显式请求前不创建 Run/Offer，不能自行 Start；安装按确切资源版本、检测意图及稳定 Device/SID/UID 效果目标在用户和 Policy 之间排除重复，Unknown 不允许盲重试。
