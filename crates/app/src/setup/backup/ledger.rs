@@ -44,16 +44,17 @@ async fn verify_pool(runtime: &Value, tenants: &[String], pool: sqlx::PgPool) ->
         let mut heads=Vec::new();
         for tenant in tenants {
             let id=rss_request_context::TenantId::parse(tenant).map_err(|_|Error::Input)?;
-            let mut tx=pool.begin().await.map_err(|_|Error::Storage)?;
-            sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
-            let head:Option<(String,Option<i64>,Vec<u8>)>=sqlx::query_as("SELECT key_id,seq,tag FROM rss_ledger.heads WHERE tenant_id=$1::uuid AND chain_id='rss.audit.v1'").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
-            tx.rollback().await.map_err(|_|Error::Storage)?;
             match &audit {
                 crate::config::AuditConfig::Plain=>{
-                    if head.is_some() {return Err(Error::Conflict)}
+                    store.validate_tenant(id,&budget.control()).await.map_err(|_|Error::Corrupt)?;
                     heads.push(Head {tenant:tenant.clone(),key_id:None,sequence:None,tag:None,verified_records:None});
                 }
                 crate::config::AuditConfig::Ledger {key_id,..}=>{
+                    let mut tx=pool.begin().await.map_err(|_|Error::Storage)?;
+                    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await.map_err(|_|Error::Storage)?;
+                    let head:Option<(String,Option<i64>,Vec<u8>)>=sqlx::query_as("SELECT key_id,seq,tag FROM rss_ledger.heads WHERE tenant_id=$1::uuid AND chain_id='rss.audit.v1'").bind(tenant).fetch_optional(&mut *tx).await.map_err(|_|Error::Storage)?;
+                    tx.rollback().await.map_err(|_|Error::Storage)?;
+
                     let (stored,sequence,tag)=head.unwrap_or((key_id.clone(),None,vec![0u8;32]));
                     if &stored!=key_id || sequence.is_some_and(|s|s<0) {return Err(Error::Conflict)}
                     let tag:[u8;32]=tag.try_into().map_err(|_|Error::Corrupt)?;

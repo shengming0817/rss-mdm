@@ -407,11 +407,13 @@ async fn install_identity_in(
         rss_identity_postgres::AuthorityProfile::Provisioning,
     )
     .await?;
-    sqlx::query("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)")
-        .bind(installation.target.as_slice())
-        .bind(installation.lineage.as_slice())
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES($1,$2)",
+    )
+    .bind(installation.target.as_slice())
+    .bind(installation.lineage.as_slice())
+    .execute(&mut **tx)
+    .await?;
     // Installation allocates the reserved authentication/authorization tenant, never accounts.
     let management = uuid::Uuid::new_v4();
     sqlx::query("INSERT INTO public.mdm_tenants(tenant_id,initial_epoch,name,used) VALUES($1,1,'Installation management',true)")

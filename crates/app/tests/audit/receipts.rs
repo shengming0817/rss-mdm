@@ -35,6 +35,52 @@ async fn exercise(pool: &PgPool) -> Result<()> {
         .await;
     ensure!(state(conflict) == "rolled_back");
     ensure!(bytes(pool, tenant).await? == original);
+    let duplicate = Fact::business(&request, "duplicate-new-business", 200, "success", None)?;
+    let repeated = store
+        .write(
+            tenant,
+            &control,
+            (&store, &duplicate),
+            |(store, fact), tx| {
+                Box::pin(async move {
+                    store.append(tx, fact).await?;
+                    store.append(tx, fact).await
+                })
+            },
+        )
+        .await;
+    ensure!(
+        state(repeated) == "rolled_back",
+        "two new business facts cannot share an identity"
+    );
+    ensure!(bytes(pool, tenant).await? == original);
+    let runtime = crate::audit_test_support::source_runtime(pool, tenant).await?;
+    let borrowed = store
+        .on_runtime(
+            runtime.clone(),
+            tenant,
+            &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5)).control(),
+        )
+        .await?;
+    let repeated = runtime
+        .local_tx_with_context(
+            tenant,
+            rss_transactional_messaging::policy::OperationDeadline::from_remaining(
+                Duration::from_secs(5),
+            ),
+            (&borrowed, &duplicate),
+            |(store, fact), tx| {
+                Box::pin(async move {
+                    store.bind_in(tx).await?;
+                    store.append_in(tx, fact).await?;
+                    store.append_in(tx, fact).await.map_err(Into::into)
+                })
+            },
+        )
+        .await;
+    ensure!(state(repeated) == "rolled_back");
+    ensure!(bytes(pool, tenant).await? == original);
+    runtime.close().await;
     let rollback = Fact::business(&request, "rolled-back-operation", 200, "success", None)?;
     let rollback = store
         .write(

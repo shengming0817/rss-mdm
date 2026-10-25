@@ -239,7 +239,7 @@ Identity callback 固定 `/api/v1/identity/oidc/callback`，其它 API 保留后
 
 Audit 与 Ledger 的组件 SQL 分别由 `mdm_audit_owner`、`mdm_ledger_owner` 安装，两个 owner 均为 NOLOGIN、NOSUPERUSER、NOBYPASSRLS。管理员须对目标数据库执行 `audit-roles.sql` 中的 CREATE 授权。实际业务运行角色只取得组件表 SELECT 和固定追加函数 EXECUTE；业务状态、操作回执与最终审计共同提交。Plain 默认安装不创建 Ledger schema，显式 Ledger 才安装和授予其能力。
 
-`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际 runtime/maintenance 和 audit worker 权限，脚本成功不代表角色准入成功。
+`migrate` 使用 mdm_owner；`initialize` / `recover-password` 使用 mdm_identity_maintenance；`initialize-authorization` 使用 mdm_access 显式初始化一次产品授权；`serve` 只使用对应运行角色。安装会检查实际业务及 Identity runtime/maintenance/provisioning 权限，脚本成功不代表角色准入成功。
 
 迁移输入含 database 和 installation；installation 只固定 instance_id、target、lineage 和 audit_mode（plain 或 ledger，与运行配置 audit.mode 一致）。安装创建唯一保留管理租户及 epoch=1，不创建账户、密码或权限；重放只核稳定安装身份、保留管理租户绑定、完整当前 schema 和运行权限，不比较租户全集，不改租户 epoch。安装按 audit mode 授予实际业务与 Identity 写角色权限，模式不能随重放改变。
 
@@ -367,7 +367,7 @@ docker compose exec -T gateway nginx -s reload -c /run/gateway/nginx.conf
 
 ## 时间线索引恢复
 
-时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v1`，checkpoint 不持有后台健康状态；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才从 checkpoint 有界追赶，故障返回不可用，后续请求重新尝试。
+时间线索引是产品派生数据，`rss_audit` 持久事实仍是唯一来源。当前全新安装包含 `timeline-service-schema-v1`，索引不维护消费 checkpoint；旧安装清单不能用于当前候选，启动和安装校验会拒绝不匹配的清单，不提供旧结构自动升级。授权访问设备时间线或管理审计检索时才按事实身份有界查缺补齐，故障返回不可用，后续请求重新尝试。
 
 需要重建时先停止本安装的服务，由数据库 owner 删除目标租户的 `mdm_timeline.facts`，保留全部 Audit/Ledger 数据。重启后由授权查询有界查缺补齐。分页为普通导航，不提供索引 generation 或冻结窗口；重建后从第一页重新查询。不得删除 Audit 事实或改写安装清单来恢复索引。
 

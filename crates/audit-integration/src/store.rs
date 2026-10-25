@@ -219,7 +219,11 @@ impl AuditStore {
         .await
     }
     async fn flush(&self, tx: &mut SourceTransaction<'_, '_>) -> Result<(), Error> {
-        rss_audit_postgres::append_batch_in(tx.inner, &self.integrity, &tx.facts).await?;
+        for appended in
+            rss_audit_postgres::append_batch_in(tx.inner, &self.integrity, &tx.facts).await?
+        {
+            require_new_business_fact(&appended)?;
+        }
         Ok(())
     }
     pub async fn append(
@@ -251,7 +255,8 @@ impl AuditStore {
         let now = source_time(tx).await?;
         let prepared = rss_audit_core::prepare(fact.event(now)?, now)
             .map_err(rss_audit_postgres::Error::from)?;
-        rss_audit_postgres::append_in(tx, &self.integrity, &prepared).await?;
+        let appended = rss_audit_postgres::append_in(tx, &self.integrity, &prepared).await?;
+        require_new_business_fact(&appended)?;
         Ok(())
     }
     /// Commit a necessary final request outcome before releasing its response.
@@ -279,6 +284,23 @@ impl AuditStore {
             |e| Err(transaction_error(e)),
         )
     }
+}
+// Business replay belongs to the operation owner and never reaches append. Accepting an
+// existing business fact here would let a new mutation commit without its own audit fact.
+fn require_new_business_fact(appended: &rss_audit_postgres::StagedAppend) -> Result<(), Error> {
+    if !appended.inserted()
+        && appended
+            .record()
+            .prepared()
+            .identity()
+            .source()
+            .source_id()
+            .as_str()
+            == "mdm.business"
+    {
+        return Err(Error::Receipt);
+    }
+    Ok(())
 }
 async fn source_time(tx: &mut PgTransaction<'_>) -> Result<rss_contract::Timepoint, Error> {
     let now: i64 = tx

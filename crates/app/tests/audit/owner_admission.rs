@@ -110,7 +110,7 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
     ] {
         let owner = pool(role).await.unwrap();
         let runtime = source_runtime(&owner, tenant).await.unwrap();
-        for table in ["rss_audit.records", "rss_ledger.entries"] {
+        for table in ["rss_audit.records"] {
             pg(&format!("GRANT UPDATE ON {table} TO {role}")).unwrap();
             let result = store
                 .on_runtime(
