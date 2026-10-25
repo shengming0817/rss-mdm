@@ -30,6 +30,17 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         let initial=agent_call(&f.router,Method::GET,path,Some(execution::case_credential()),None).await?;
         ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false,"initial configuration: {initial:?}");
         let missing=agent_call(&f.router,Method::GET,path,None,None).await?;ensure!(!missing.0.is_success());
+        let managed=format!("/api/v1/devices/{}/recovery-credentials/filevault/configuration",execution::case_device_id());
+        let denied_before=crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403).await?;
+        ensure!(f.author.call(&f.router,Method::GET,&managed,None).await?.0==StatusCode::FORBIDDEN);
+        ensure!(crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403).await?==denied_before,
+            "ordinary FileVault configuration read acquired management audit");
+        let denied=f.author.call(&f.router,Method::POST,&managed,Some(json!({"operationId":Uuid::new_v4(),
+            "registration":registration["registrationId"],"generation":registration["generation"],"expectedRevision":0,
+            "enabled":true,"recipientId":protection.active_recipient().id()}))).await?;
+        ensure!(denied.0==StatusCode::FORBIDDEN,"FileVault mutation denial {denied:?}");
+        ensure!(crate::audit_test_support::audit_count(|r|r.source()=="mdm.request" && r.status()==403 && r.result()=="denied").await?==denied_before+1,
+            "FileVault mutation lost ingress audit");
         f.grants.extend(crate::test_support::identity::device_grants(None,&["security_operate"])?);
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         ensure!(f.author.login_password(&f.router,"other",crate::test_support::identity::PASSWORD).await?==StatusCode::OK);

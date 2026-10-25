@@ -399,26 +399,6 @@ mod tests {
             ],
         );
         assert_intents(
-            crate::recovery_credentials::filevault_routes(None),
-            &[
-                (
-                    "/api/v1/devices/{device}/recovery-credentials/filevault/configuration",
-                    "POST",
-                    Management,
-                ),
-                (
-                    "/api/v1/devices/{device}/recovery-credentials/filevault/configuration",
-                    "GET",
-                    Routine,
-                ),
-                (
-                    "/api/v1/devices/{device}/recovery-credentials/filevault/link",
-                    "POST",
-                    Management,
-                ),
-            ],
-        );
-        assert_intents(
             crate::telemetry::routes(None),
             &[
                 ("/api/v1/telemetry/maintenance", "POST", Management),
