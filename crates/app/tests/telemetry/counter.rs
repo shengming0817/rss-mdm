@@ -7,7 +7,7 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
         operation: crate::authorization::Permission::InventorySensitiveRead,
         scope: crate::authorization::Scope::Tenant,
     });
-    identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let field = d::FieldDefinition {
         key: d::FieldKey::parse("custom.telemetry_counter")?,
         version: 1,

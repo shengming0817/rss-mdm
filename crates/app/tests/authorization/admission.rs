@@ -166,6 +166,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             let router = authority.router(authority.authorization().nest("/api/v1",
                 rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum()))?;
             let mut browser = authority.browser("admin")?;
+            identity::seed_grants(case_tenant(), &prepared_subject(&browser)?, vec![crate::authorization::Grant { operation: crate::authorization::Permission::ComplianceRuleRead, scope: crate::authorization::Scope::Tenant }]).await?;
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
             let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
             ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");

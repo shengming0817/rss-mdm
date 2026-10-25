@@ -107,10 +107,6 @@ async fn fixture(base: Value) -> Result<Fixture> {
     Ok(f)
 }
 
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "provider recovery seams and the single shared business anchor remain in one owned lifecycle"
-)]
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let anchor = expected == "postgres" && projection == r::TelemetryProjection::Both;
     let restore_seconds: i64 = if expected == "postgres" { 30 } else { 3600 };
@@ -330,6 +326,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         );
     }
     crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
+    let grants = f.grants;
+    let author = f.author;
+    f = fixture(base.clone()).await?;
+    f.grants = grants;
+    f.author = author;
+    let router = f.router.clone();
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
     if expected == "postgres" {
         let mut mismatch = base.clone();
         mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
@@ -342,21 +347,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             .configuration_binding()
             .await?;
         ensure!(
-            rss_mdm_telemetry_service::admit_configuration(
+            matches!(rss_mdm_telemetry_service::admit_configuration(
                 &f.planning.runtime,
                 f.planning.tenant,
                 binding
             )
-            .await
-            .is_err(),
+            .await, Err(rss_mdm_telemetry_service::Error::Conflict)),
             "a replica must not replace the tenant's fixed admission policy"
         );
     }
-    let mut restarted = fixture(base.clone()).await?;
-    let router = restarted.router.clone();
-    let resources = std::mem::take(&mut restarted.resources);
-    resources
-        .finish(async {
             if let Some(interrupted)=&interrupted {
                 let receipt=format!("/api/v1/agent/runtime/telemetry/batches/{}",interrupted["batchId"].as_str().unwrap());
                 published(&router,&receipt).await?;
@@ -392,7 +391,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
             }
             if projection!=r::TelemetryProjection::Both { return Ok(()); }
-            if expected=="postgres" { f.router=router.clone(); counter::quality_and_sensitive_reads(&mut f).await?; }
+            if expected=="postgres" { counter::quality_and_sensitive_reads(&mut f).await?; }
             use rss_mdm_telemetry_service::maintenance::{Action, Request as Maintenance};
             let start = query["startMicros"].as_i64().unwrap();
             let end = query["endMicros"].as_i64().unwrap();
