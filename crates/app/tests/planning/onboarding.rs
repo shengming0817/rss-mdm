@@ -335,8 +335,7 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         let available = agent_call(&f.router, Method::GET, directory, Some(case_credential()), None).await?;
         ensure!(available.0 == StatusCode::OK && available.1["items"][0]["task"]["kind"] == "enrollment", "{available:?}");
         ensure!(run_count(id)?.trim() == "0", "directory cannot initiate enrollment");
-        let input = json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],
-            "policyVersion":policy["versionId"],"source":"human","confirmed":true,"parameters":{}});
+        let input = json!({"operationId":Uuid::new_v4(),"policyId":id,"source":"human","confirmed":true,"parameters":{}});
         let accepted = agent_call(&f.router, Method::POST, invoke, Some(case_credential()), Some(input.clone())).await?;
         ensure!(accepted.0 == StatusCode::ACCEPTED, "{accepted:?}");
         ensure!(agent_call(&f.router, Method::POST, invoke, Some(case_credential()), Some(input.clone())).await? == accepted);
@@ -434,10 +433,10 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         inventory::seed_unenrolled(case_device_id())?;
             planning_http::await_ingress().await?;
         let id = Uuid::new_v4();
-        let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
+        let _policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
             "scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
             "selfService":{"access":{"kind":"device"},"published":true,"allowAi":false,"presentation":{"displayName":"Register MDM","description":"Join","prerequisites":"OS confirmation","sideEffects":"Device management","category":"Device","keywords":[]}}}}})).await?;
-        let invoke = json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],"policyVersion":policy["versionId"],"source":"human","confirmed":true,"parameters":{}});
+        let invoke = json!({"operationId":Uuid::new_v4(),"policyId":id,"source":"human","confirmed":true,"parameters":{}});
         let accepted = agent_call(&f.router, Method::POST, "/api/v1/agent/runtime/self-service/invocations", Some(case_credential()), Some(invoke)).await?;
         ensure!(accepted.0 == StatusCode::ACCEPTED, "{accepted:?}");
         let task = claim(&f.router).await?;

@@ -328,6 +328,7 @@ fn map_software_downgrade(input: &r::SoftwareDowngrade) -> w::SoftwareTaskDowngr
 
 pub(crate) fn software_step(
     input: &r::SoftwareSpec,
+    definition: w::SoftwareStepDefinition,
     index: usize,
     platform: w::TaskPlatform,
     context: &w::SoftwareExecutionContext,
@@ -345,6 +346,8 @@ pub(crate) fn software_step(
         })
         .collect();
     Ok(w::SoftwareTaskStep {
+        step_id: definition.step_id()?,
+        definition,
         action,
         artifacts,
         target,

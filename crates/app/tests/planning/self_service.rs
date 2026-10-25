@@ -56,8 +56,8 @@ async fn publish_definition_as(
     let policy=post(author,router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":value}})).await?;
     Ok((id, policy))
 }
-fn request(id: Uuid, policy: &Value, parameters: Value) -> Value {
-    json!({"operationId":Uuid::new_v4(),"policyId":id,"policyRevision":policy["revision"],"policyVersion":policy["versionId"],"source":"ai","confirmed":true,"parameters":parameters})
+fn request(id: Uuid, _policy: &Value, parameters: Value) -> Value {
+    json!({"operationId":Uuid::new_v4(),"policyId":id,"source":"ai","confirmed":true,"parameters":parameters})
 }
 const INVOKE: &str = "/api/v1/agent/runtime/self-service/invocations";
 const DIRECTORY: &str = "/api/v1/agent/runtime/self-service?source=ai";
@@ -1732,5 +1732,66 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     );
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.self_service"]
+async fn exact_addresses_and_accepted_runs_survive_policy_edits() -> Result<()> {
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register().await?;
+        ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0 == StatusCode::OK);
+        f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
+        let (resource,_,_) = f.script_resource(4096,true).await?;
+        let mut authored = definition(resource,true);
+        authored["alias"] = json!("  Repair.App ");
+        let (id,policy) = publish_definition(&mut f,authored.clone()).await?;
+        ensure!(policy["definition"]["alias"] == "repair.app");
+        let selectors = [json!({"kind":"id","id":id}),json!({"kind":"tool_name","name":rss_mdm_agent_wire::runtime::policy_tool_name(id)}),json!({"kind":"alias","alias":"REPAIR.APP"})];
+        for selector in selectors {
+            let resolved = call(&f,Method::POST,"/api/v1/agent/runtime/self-service/resolve",Some(json!({"source":"ai","selector":selector})),true,true).await?;
+            ensure!(resolved.0 == StatusCode::OK,"resolve: {resolved:?}");
+            ensure!(resolved.1["policyId"] == id.to_string());
+            ensure!(resolved.1["capability"]["inputSchema"]["properties"].get("path").is_none());
+            let managed = post(&mut f.author,&f.router,"/api/v1/policies/resolve",selector).await?;
+            ensure!(managed["policy"]["id"] == id.to_string());
+        }
+        // Minimal valid invisible candidates prove exact lookup does not scan directory pages.
+        pg(&format!("BEGIN; INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at,execution_binding) SELECT p.tenant_id,lpad(to_hex(n),32,'0')::uuid,1,lpad(to_hex(n),32,'0')::uuid,1,'enabled',jsonb_set(p.definition-'alias','{{selfService,allowAi}}','false'),p.author,p.updated_at,p.execution_binding FROM mdm_policy.policies p CROSS JOIN generate_series(1,65) n WHERE p.tenant_id='{}' AND p.id='{id}'; INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,action_kind,resource,resource_version,frozen,fingerprint) SELECT v.tenant_id,lpad(to_hex(n),32,'0')::uuid,lpad(to_hex(n),32,'0')::uuid,1,v.action_kind,v.resource,v.resource_version,v.frozen,v.fingerprint FROM mdm_policy.versions v CROSS JOIN generate_series(1,65) n WHERE v.tenant_id='{}' AND v.id='{}'; COMMIT;",case_tenant(),case_tenant(),policy["versionId"].as_str().unwrap()))?;
+        let page = call(&f,Method::GET,DIRECTORY,None,true,true).await?;
+        ensure!(page.0 == StatusCode::OK && page.1["items"] == json!([]),"candidate budget: {page:?}");
+        let next = page.1["nextCursor"].as_str().ok_or_else(|| anyhow::anyhow!("missing examined-candidate cursor"))?;
+        let page = call(&f,Method::GET,&format!("{DIRECTORY}&cursor={next}"),None,true,true).await?;
+        ensure!(page.1["items"].as_array().unwrap().iter().any(|item| item["policyId"] == id.to_string()));
+        let resolved = call(&f,Method::POST,"/api/v1/agent/runtime/self-service/resolve",Some(json!({"source":"ai","selector":{"kind":"alias","alias":"repair.app"}})),true,true).await?;
+        ensure!(resolved.0 == StatusCode::OK && resolved.1["policyId"] == id.to_string());
+        let projected = call(&f,Method::GET,&format!("{DIRECTORY}&filter=alias==repair.app&fields=policyId&limit=1"),None,true,true).await?;
+        ensure!(projected.0 == StatusCode::OK && projected.1["items"] == json!([{"policyId":id}]),"projection: {projected:?}");
+        let input = request(id,&policy,json!({"name":"Acme"}));
+        let accepted = call(&f,Method::POST,INVOKE,Some(input.clone()),true,true).await?;
+        ensure!(accepted.0 == StatusCode::ACCEPTED,"accept: {accepted:?}");
+        authored["alias"] = json!("renamed");
+        authored["selfService"]["presentation"]["displayName"] = json!("Renamed");
+        authored["action"]["parameters"]["path"]["value"] = json!("/Library");
+        let updated = post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":policy["revision"],"input":{"action":"put","enabled":true,"definition":authored}})).await?;
+        ensure!(updated["versionId"] != policy["versionId"]);
+        let replay = call(&f,Method::POST,INVOKE,Some(input.clone()),true,true).await?;
+        ensure!(replay == accepted,"replay changed original run: {replay:?}");
+        let absent = call(&f,Method::POST,"/api/v1/agent/runtime/self-service/resolve",Some(json!({"source":"ai","selector":{"kind":"alias","alias":"repair.app"}})),true,true).await?;
+        ensure!(absent.0 == StatusCode::NOT_FOUND);
+        let stack = crate::test_support::software_execution::worker(&f.base,f.execution.clone()).await?;
+        let task = claim(&f.router).await?;
+        ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
+        ensure!(task["payload"]["task"]["parameters"]["path"] == "/Applications");
+        complete(&f.router,&task).await?;
+        let status = call(&f,Method::GET,&format!("{INVOKE}/{}",input["operationId"].as_str().unwrap()),None,true,true).await?;
+        ensure!(status.0 == StatusCode::OK && status.1["state"]["execution"] == "succeeded","old execution: {status:?}");
+        let latest = call(&f,Method::POST,INVOKE,Some(request(id,&policy,json!({"name":"New"}))),true,true).await?;
+        ensure!(latest.0 == StatusCode::ACCEPTED,"new version: {latest:?}");
+        ensure!(latest.1["policyVersion"] == updated["versionId"]);
+        crate::test_support::runtime::stop_worker(stack).await?;
+        Ok(())
     }).await
 }

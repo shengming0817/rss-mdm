@@ -148,7 +148,15 @@ pub struct RunCursor {
 pub type RunPage = Page<RunSummary, RunCursor>;
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RunNode {
+    step_id: [u8; 32],
+    definition: rss_mdm_agent_wire::runtime::SoftwareStepDefinition,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunDetail {
+    /// Nodes from this attempt's frozen material, without executable content or streams.
+    pub nodes: Vec<RunNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization: Option<rss_mdm_agent_wire::runtime::TaskAuthorization>,
     #[serde(skip_serializing_if = "Option::is_none")]
