@@ -129,15 +129,17 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
                 windows: false,
             },
         )),
-    )
-    .into_axum();
+    );
     let native = rss_mdm_apple_channel::management_routes(apple)
         .route_layer(axum::middleware::from_fn(
             crate::api::apple_management_settlement,
         ))
-        .merge(rss_mdm_windows_channel::wns_materials::routes(windows))
-        .into_axum();
-    let protected = fixture.protect(Router::new().nest("/api/v1", writes).merge(native))?;
+        .merge(rss_mdm_windows_channel::wns_materials::routes(windows));
+    let protected = fixture.protect(
+        rss_mdm_http_contract::Router::new()
+            .nest("/api/v1", writes)
+            .merge(native),
+    )?;
     let router = crate::test_support::settings::catalog(&fixture, directory)?.merge(protected);
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {

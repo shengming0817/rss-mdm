@@ -169,9 +169,9 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
         instance: fixture.identity.instance, audit: audit.clone(),
     });
     let associations = Arc::new(rss_mdm_device_service::Associations::new(audit, fixture.identity.tenant, &[29;32])?);
-    let router = fixture.router(Router::new().nest("/api/v1",
+    let router = fixture.router(rss_mdm_http_contract::Router::new().nest("/api/v1",
         rss_mdm_management_http::user_profiles::routes(profiles)
-        .merge(rss_mdm_management_http::device_views::routes(sessions, fixture.identity.authority.clone(), None).with_state(associations)).into_axum())
+        .merge(rss_mdm_management_http::device_views::routes(sessions, fixture.identity.authority.clone(), None).with_state(associations)))
         .merge(fixture.authorization()).merge(fixture.enrollment()))?;
     let mut admin = Browser::default();
     identity::age_prepared_admin_session()?;

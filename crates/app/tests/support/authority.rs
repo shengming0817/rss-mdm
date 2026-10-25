@@ -1,6 +1,7 @@
 //! Minimal real authority and protected routes, without Flow or application assembly.
 use super::{http::*, runtime::*, *};
 use axum::middleware;
+use rss_mdm_http_contract::Router as Routes;
 
 pub(crate) struct Authority {
     pub(crate) resources: super::runtime::Resources,
@@ -116,24 +117,24 @@ impl Authority {
         })
     }
 
-    pub(crate) fn authorization(&self) -> Router {
-        Router::new().nest(
+    pub(crate) fn authorization(&self) -> Routes {
+        Routes::new().nest(
             "/api/v1",
-            crate::authorization::http::routes()
-                .with_state(Arc::new(crate::authorization::http::HttpState {
+            crate::authorization::http::routes().with_state(Arc::new(
+                crate::authorization::http::HttpState {
                     cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
                         .expect("fixture cursor"),
                     audit_store: self.audit.clone(),
-                }))
-                .into_axum(),
+                },
+            )),
         )
     }
 
-    pub(crate) fn enrollment(&self) -> Router {
-        Router::new().nest(
+    pub(crate) fn enrollment(&self) -> Routes {
+        Routes::new().nest(
             "/api/v1",
-            crate::enrollment::http::routes()
-                .with_state(Arc::new(crate::enrollment::http::HttpState {
+            crate::enrollment::http::routes().with_state(Arc::new(
+                crate::enrollment::http::HttpState {
                     channels: Arc::new(crate::test_support::authority::RegistrationChannels),
                     native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
                         sessions: Arc::new(
@@ -157,16 +158,16 @@ impl Authority {
                     )),
                     apple: false,
                     windows: true,
-                }))
-                .into_axum(),
+                },
+            )),
         )
     }
 
-    pub(crate) fn router(&self, routes: Router) -> Result<Router> {
+    pub(crate) fn router(&self, routes: Routes) -> Result<Router> {
         self.router_with_public(routes, Router::new())
     }
 
-    pub(crate) fn router_with_public(&self, routes: Router, public: Router) -> Result<Router> {
+    pub(crate) fn router_with_public(&self, routes: Routes, public: Router) -> Result<Router> {
         let authentication = rss_mdm_management_http::authentication_routes(
             rss_mdm_http_contract::Router::from_identity_router(self.identity.routes()),
             rss_mdm_management_http::boundary::Envelope {
@@ -188,45 +189,31 @@ impl Authority {
             ))))
     }
 
-    pub(crate) fn protect(&self, routes: Router) -> Result<Router> {
+    pub(crate) fn protect(&self, routes: Routes) -> Result<Router> {
         let requests = Arc::new(tokio::sync::Semaphore::new(32));
-        Ok(routes
-            .route_layer(middleware::from_fn_with_state(
-                Arc::new(crate::authorization::http::AuthenticationState {
-                    identity: self.identity.browser(),
-                    access: self.authorization.clone(),
-                    requests: requests.clone(),
-                }),
-                crate::authorization::http::protect,
-            ))
-            .layer(middleware::from_fn_with_state(
-                (
-                    rss_mdm_management_http::boundary::Envelope {
-                        admission: Arc::new(tokio::sync::Semaphore::new(32)),
-                        host: "mdm.example.test".into(),
-                        clock: monotonic(),
-                        audit_store: self.audit.clone(),
-                        requests,
-                        tenant: self.identity.tenant.to_string(),
-                    },
-                    Arc::new(
-                        crate::enrollment::http::routes()
-                            .endpoints()
-                            .iter()
-                            .chain(crate::authorization::http::routes().endpoints())
-                            .cloned()
-                            .map(|mut endpoint| {
-                                endpoint.path = format!("/api/v1{}", endpoint.path);
-                                endpoint
-                            })
-                            .collect(),
-                    ),
-                ),
-                rss_mdm_management_http::boundary::admit,
-            ))
-            .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-                "127.0.0.1".parse()?,
-            ))))
+        let routes = routes.route_layer(middleware::from_fn_with_state(
+            Arc::new(crate::authorization::http::AuthenticationState {
+                identity: self.identity.browser(),
+                access: self.authorization.clone(),
+                requests: requests.clone(),
+            }),
+            crate::authorization::http::protect,
+        ));
+        Ok(rss_mdm_management_http::boundary::wrap(
+            routes,
+            rss_mdm_management_http::boundary::Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                host: "mdm.example.test".into(),
+                clock: monotonic(),
+                audit_store: self.audit.clone(),
+                requests,
+                tenant: self.identity.tenant.to_string(),
+            },
+        )
+        .into_axum()
+        .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse()?,
+        ))))
     }
 }
 

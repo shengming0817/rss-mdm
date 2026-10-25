@@ -1984,15 +1984,14 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
     )?);
     client.router = client.router.merge(
         host.authority.router(
-            Router::new().nest(
+            rss_mdm_http_contract::Router::new().nest(
                 "/api/v1",
                 rss_mdm_management_http::device_views::routes(
                     client.sessions.clone(),
                     host.authority.identity.authority.clone(),
                     None,
                 )
-                .with_state(associations)
-                .into_axum(),
+                .with_state(associations),
             ),
         )?,
     );

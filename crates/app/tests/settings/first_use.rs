@@ -65,13 +65,11 @@ fn progress_router(
         windows: true,
     });
     f.router(
-        Router::new().nest(
+        rss_mdm_http_contract::Router::new().nest(
             "/api/v1",
-            rss_mdm_management_http::first_use::routes(source)
-                .merge(
-                    rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment),
-                )
-                .into_axum(),
+            rss_mdm_management_http::first_use::routes(source).merge(
+                rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment),
+            ),
         ),
     )
 }

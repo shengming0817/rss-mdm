@@ -49,7 +49,9 @@ pub(crate) mod process;
 pub(crate) mod software_execution;
 
 pub(crate) mod agent_execution;
+pub(crate) mod agent_runtime;
 pub(crate) mod command;
+pub(crate) mod current_user;
 
 pub(crate) mod planning_http;
 pub(crate) mod publication_http;

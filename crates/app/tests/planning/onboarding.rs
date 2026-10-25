@@ -457,11 +457,11 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         f.authority.identity.authority.clone(),
         None,
     )
-    .with_state(associations.clone())
-    .into_axum();
-    f.router = f
-        .router
-        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    .with_state(associations.clone());
+    f.router = f.router.merge(
+        f.authority
+            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+    );
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1", "task.execute.v1", "device.unmanage.v1"])).await?;

@@ -68,14 +68,13 @@ impl Fixture {
     }
     fn routes(authority: &authority::Authority, archive: Arc<Archive>) -> Result<Router> {
         authority.router(
-            Router::new()
+            rss_mdm_http_contract::Router::new()
                 .nest(
                     "/api/v1",
                     rss_mdm_management_http::certificate_archive::routes(
                         rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
                     )
-                    .with_state(archive)
-                    .into_axum(),
+                    .with_state(archive),
                 )
                 .merge(authority.authorization()),
         )

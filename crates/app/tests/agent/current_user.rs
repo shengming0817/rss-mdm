@@ -1,5 +1,5 @@
 //! Device mTLS and the existing enterprise session jointly bind the current user.
-use crate::test_support::{agent::*, agent_execution::Fixture, http::Browser, runtime::*, *};
+use crate::test_support::{agent::*, current_user::Fixture, http::Browser, runtime::*, *};
 use anyhow::Context;
 async fn fixture() -> Result<Fixture> {
     let mut f = Fixture::new().await?;
@@ -20,11 +20,11 @@ async fn fixture() -> Result<Fixture> {
         f.authority.identity.authority.clone(),
         None,
     )
-    .with_state(associations)
-    .into_axum();
-    f.router = f
-        .router
-        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    .with_state(associations);
+    f.router = f.router.merge(
+        f.authority
+            .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+    );
     Ok(f)
 }
 const CURRENT: &str = "/api/v1/agent/runtime/current-user";
@@ -434,4 +434,47 @@ async fn wait_current_user_blocker(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }).await.context("current-user did not reach its real preflight/source blocker")?
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: unavailable unselected content and publication do not gate presence"]
+async fn current_user_does_not_prepare_unselected_software_capabilities() -> Result<()> {
+    let unavailable = tempfile::NamedTempFile::new()?;
+    let missing = unavailable.path().with_extension("missing");
+    let mut base: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    base["content"] = json!({"storage":{"kind":"volume","directory":unavailable.path()},"imports":{},
+        "max_artifact_bytes":33554432,"max_temporary_bytes":67108864,"max_uploads":4,"transfer_seconds":60,
+        "retention_seconds":3600,"max_bundle_entries":4096,"max_expansion_ratio":100});
+    base["flow"]["publication"]["database"]["password_file"] = json!(missing);
+    base["flow"]["publication"]["sources"] = json!([{"name":"enterprise","credentials":{},"target":{"Winget":{
+        "base":"https://mdm.example.test/api/v1/software/native/sources/enterprise/",
+        "artifacts_base":"https://mdm.example.test/api/v1/software/native/sources/enterprise/artifacts/"}}}]);
+    let config: Config = serde_json::from_value(base.clone())?;
+    let mut f = Fixture::from_config(base).await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            f.register_profile(json!(["inventory.collect.v1"])).await?;
+            ensure!(call(&f, Method::GET, None, true, false).await?.0 == StatusCode::OK);
+            ensure!(
+                call(
+                    &f,
+                    Method::PUT,
+                    Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),
+                    true,
+                    true
+                )
+                .await?
+                .0 == StatusCode::OK
+            );
+            ensure!(
+                crate::execution_assembly::open_content(&config, config.native_protector()?)
+                    .await
+                    .is_err(),
+                "selected content still must reject an unusable storage directory"
+            );
+            Ok(())
+        })
+        .await
 }

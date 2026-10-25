@@ -316,10 +316,10 @@ impl Fixture {
             .merge(rss_mdm_management_http::agent_enrollment::routes(agent_enrollment.clone()));
         let routes = routes.merge(rss_mdm_management_http::device_views::routes(sessions.clone(), identity.authority.clone(), platform_configuration.clone()).with_state(associations.clone()))
             .merge(rss_mdm_management_http::recovery_credentials::routes(execution.service.recovery_credentials().map(|p| Arc::new(rss_mdm_recovery_credentials::Credentials::new(pool.clone(), audit.clone(), p.keys.clone(), Some(access_audit.clone()), execution.service.clone()))), rss_mdm_query::cursor::CursorCodec::new(&key)?));
-        let protected = Router::new().nest("/api/v1", routes.into_axum()).merge(authority.authorization())
-            .merge(rss_mdm_apple_channel::management_routes(ade.clone()).into_axum().layer(axum::middleware::from_fn(crate::api::apple_management_settlement)));
+        let protected = rss_mdm_http_contract::Router::new().nest("/api/v1", routes).merge(authority.authorization())
+            .merge(rss_mdm_apple_channel::management_routes(ade.clone()).layer(axum::middleware::from_fn(crate::api::apple_management_settlement)));
         let boundary = rss_mdm_apple_channel::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()};
-        let protected = protected.merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::to_value(&platform_configuration)?).into_axum());
+        let protected = protected.merge(rss_mdm_management_http::enterprise_broker::routes(agent_enrollment.clone(), execution.service.clone(), identity.browser(), "mdm.example.test", serde_json::to_value(&platform_configuration)?));
         let authentication = rss_mdm_management_http::authentication_routes(rss_mdm_http_contract::Router::from_identity_router(identity.routes()),
             rss_mdm_management_http::boundary::Envelope {admission: Arc::new(tokio::sync::Semaphore::new(32)), host: "mdm.example.test".into(), clock: monotonic.clone(), audit_store: audit.clone(), requests: requests.clone(), tenant: tenant.to_string()}).into_axum();
         let mut router = authority.protect(protected)?.merge(rss_mdm_apple_channel::browser_routes(ade.clone(), boundary.clone()).into_axum()).merge(authentication);

@@ -213,7 +213,7 @@ pub(crate) async fn ordinary(
 
             let cursor = rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?;
             let router = authority.router(
-                Router::new()
+                rss_mdm_http_contract::Router::new()
                     .nest(
                         "/api/v1",
                         rss_mdm_management_http::execution::http::routes(queries, cursor)
@@ -223,8 +223,7 @@ pub(crate) async fn ordinary(
                                     windows: true,
                                     apple: false,
                                 },
-                            ))
-                            .into_axum(),
+                            )),
                     )
                     .merge(authority.authorization()),
             )?;

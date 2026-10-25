@@ -150,6 +150,64 @@ pub(crate) struct Fixture {
     pub(crate) grants: Vec<crate::authorization::Grant>,
     pub(crate) key: ring::signature::Ed25519KeyPair,
 }
+// Preparation is owned by the selected capability, never inferred from ambient configuration.
+struct Prepared {
+    base: Value,
+    authority: authority::Authority,
+    resources: Resources,
+    content: Option<Arc<rss_mdm_content_service::Store>>,
+    publications: rss_mdm_software_service::management::publication::service::PublicationDirectory,
+}
+impl Prepared {
+    async fn open(base: Value) -> Result<Self> {
+        let (resources, mut prepared) = Resources::build(move |resources| Box::pin(async move {
+            let mut authority = authority::Authority::from_config(base.clone()).await?;
+            resources.extend(std::mem::take(&mut authority.resources));
+            let tenant = authority.identity.tenant;
+            let runtime = crate::planning::test_support::runtime(tenant).await;
+            resources.resource(SourceResource(runtime.clone()));
+            let cursor = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+            let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let audit_store = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+            let publications = rss_mdm_software_service::management::publication::service::PublicationDirectory {
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&cursor)?, services: BTreeMap::new(), tenant,
+                runtime, audit_store, clock: Arc::new(crate::clock::FlowClock(Arc::new(crate::clock::SystemClock))),
+            };
+            Ok(Self { base, authority, resources: Resources::default(), content: None, publications })
+        })).await?;
+        prepared.resources = resources;
+        Ok(prepared)
+    }
+    async fn software(mut self) -> Result<Self> {
+        let (resources, mut prepared) = Resources::build(move |resources| {
+            Box::pin(async move {
+                resources.extend(std::mem::take(&mut self.resources));
+                let config: Config = serde_json::from_value(self.base.clone())?;
+                let guard = super::software::content_setup_guard().await?;
+                self.content =
+                    crate::execution_assembly::open_content(&config, config.native_protector()?)
+                        .await?;
+                drop(guard);
+                if let Some(store) = &self.content {
+                    resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+                }
+                config
+                    .flow
+                    .open_publications(
+                        self.authority.identity.tenant,
+                        &mut self.publications,
+                        self.content.clone(),
+                        &mut |resource| resources.resource(resource),
+                    )
+                    .await?;
+                Ok(self)
+            })
+        })
+        .await?;
+        prepared.resources = resources;
+        Ok(prepared)
+    }
+}
 impl Fixture {
     pub(crate) async fn new() -> Result<Self> {
         let base: Value =
@@ -166,171 +224,312 @@ impl Fixture {
         }
         Ok(fixture)
     }
+    pub(crate) async fn device_access() -> Result<Self> {
+        let base = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+        Self::device_access_from_config(base).await
+    }
+    pub(crate) async fn device_access_from_config(base: Value) -> Result<Self> {
+        Self::from_prepared(Prepared::open(base).await?).await
+    }
     pub(crate) async fn from_config(base: Value) -> Result<Self> {
-        let (resources, mut fixture) =
-            crate::test_support::runtime::Resources::build(move |resources| {
-                Box::pin(async move {
-                    let fixture_config = crate::test_support::agent::fixture_signing_input()?;
-                    let key_file = fixture_config["private_key_file"]
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
-                    let key =
-                        ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?)
-                            .unwrap();
-                    // Store startup recovery and fixture uploads share the content directory.
-                    let config: Config = serde_json::from_value(base.clone())?;
-                    let mut authority = authority::Authority::from_config(base.clone()).await?;
-                    resources.extend(std::mem::take(&mut authority.resources));
-                    let tenant = authority.identity.tenant;
-                    let protection = config.native_protector()?;
-                    let content_setup = super::software::content_setup_guard().await?;
-                    let content = crate::execution_assembly::open_content(&config, protection.clone()).await?;
-                    drop(content_setup);
-                    if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
-                    let plan_runtime = crate::planning::test_support::runtime(tenant).await;
-                    resources.resource(SourceResource(plan_runtime.clone()));
-                    let cursor_key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
-                    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-                    let plan_audit = Arc::new(authority.audit.on_runtime(plan_runtime.clone(), tenant, &budget.control()).await?);
-                    let clock = Arc::new(crate::clock::SystemClock);
-                    let planning = Arc::new(rss_mdm_flow_service::planning::Planning::new(
-                        plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone(), &cursor_key,
-                        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(plan_audit.clone())),
-                    ).await?);
-                    let mut publications = rss_mdm_software_service::management::publication::service::PublicationDirectory {
-                        cursor: rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?, services: Default::default(), tenant,
-                        runtime: plan_runtime.clone(), audit_store: plan_audit.clone(), clock: Arc::new(crate::clock::FlowClock(clock.clone())),
-                    };
-                    config.flow.open_publications(tenant, &mut publications, content.clone(), &mut |resource| resources.resource(resource)).await?;
-                    let publications = Arc::new(publications);
-                    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
-                    let built = async {
-                    let channels = Arc::new(crate::channel_status::Channels::new(&config));
-                    let signer = crate::task_signing::prepare(config.task_signing.as_ref(), &config.access_database, tenant, &protection, &channels).await?.map(|loaded| Arc::new(loaded.task));
-                    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant));
-                    let (service, inputs, queries) = crate::execution_assembly::assemble(
-                        &config, protection.clone(), authority.audit.clone(), content.clone(),
-                        publications.services.clone(), runtime.clone(), channels, signer, None, sessions,
-                        config.recovery_credentials.as_ref().map(crate::recovery_credentials::Config::open).transpose()?,
-                        rss_device_command_postgres::CommandClock::Postgres,
-                        cursor_key.clone(),
-                    ).await?;
-                    Ok::<_, anyhow::Error>((service, queries, inputs))
-                    }.await;
-                    let (service, queries, inputs) = match built {
-                        Ok(value) => value,
-                        Err(error) => { runtime.close().await; return Err(error); }
-                    };
-                    resources.resource(rss_mdm_execution_service::Resource(service.clone()));
-                    authority.identity.enterprise_platform.bind(service.clone())?;
-                    let pki = config.agent_pki.load(&config.identity.instance_id, authority.audit.clone(), clock.clone(), crate::device_pki::providers(&config.device_pki)?, None)?.ok_or_else(|| anyhow::anyhow!("Agent PKI missing"))?;
-                    crate::test_support::pki::seed_trust(&authority.pool, &[pki.issuer.trust().trust.clone()]).await?;
-                    let access_audit = Arc::new(authority.audit.on_runtime(authority.identity.runtime.clone(), tenant, &budget.control()).await?);
-                    let enrollment = application_service(access_audit, &pki, authority.registration.clone(), authority.audit.clone(), service.clone())?;
-                    let agent_store = Arc::new(rss_mdm_agent_channel::Store::from_pool(authority.pool.clone()));
-                    let native = rss_mdm_agent_channel::task_router(Arc::new(crate::agent::TaskState {
-                        access: agent_store, enrollment: enrollment.clone(), execution: service.clone(),
-                        identity: Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant)),
-                        authorization: authority.authorization.clone(),
-                    }), rss_mdm_agent_channel::boundary::Envelope {
-                        admission: Arc::new(tokio::sync::Semaphore::new(32)), requests: Arc::new(tokio::sync::Semaphore::new(32)),
-                        host: "mdm.example.test:9445".into(), clock: monotonic(), audit_store: authority.audit.clone(), tenant: tenant.to_string(),
-                    });
+        Self::from_prepared(Prepared::open(base).await?.software().await?).await
+    }
+    async fn from_prepared(mut prepared: Prepared) -> Result<Self> {
+        let (resources, mut fixture) = Resources::build(move |resources| {
+            Box::pin(async move {
+                resources.extend(std::mem::take(&mut prepared.resources));
+                let Prepared {
+                    base,
+                    mut authority,
+                    content,
+                    publications,
+                    ..
+                } = prepared;
+                let config: Config = serde_json::from_value(base.clone())?;
+                let tenant = authority.identity.tenant;
+                let protection = config.native_protector()?;
+                let clock = Arc::new(crate::clock::SystemClock);
+                let plan_runtime = publications.runtime.clone();
+                let plan_audit = publications.audit_store.clone();
+                let cursor_key =
+                    rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+                let planning = Arc::new(
+                    rss_mdm_flow_service::planning::Planning::new(
+                        plan_audit.clone(),
+                        plan_runtime.clone(),
+                        tenant,
+                        clock.clone(),
+                        &cursor_key,
+                        Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                            plan_audit.clone(),
+                        )),
+                    )
+                    .await?,
+                );
+                let publications = Arc::new(publications);
+                let fixture_config = crate::test_support::agent::fixture_signing_input()?;
+                let key_file = fixture_config["private_key_file"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("fixture task key missing"))?;
+                let key =
+                    ring::signature::Ed25519KeyPair::from_pkcs8(&std::fs::read(key_file)?).unwrap();
+                let channels = crate::channel_status::Channels::new(&config);
+                let signer = crate::task_signing::prepare(
+                    config.task_signing.as_ref(),
+                    &config.access_database,
+                    tenant,
+                    &protection,
+                    &channels,
+                )
+                .await?
+                .map(|loaded| Arc::new(loaded.task));
+                let execution = super::agent_runtime::Execution::open(
+                    &mut authority,
+                    &config,
+                    content.clone(),
+                    publications.services.clone(),
+                    signer,
+                    config
+                        .recovery_credentials
+                        .as_ref()
+                        .map(crate::recovery_credentials::Config::open)
+                        .transpose()?,
+                    resources,
+                )
+                .await?;
+                let runtime = execution.runtime;
+                let service = execution.service;
+                let inputs = execution.inputs;
+                let queries = execution.queries;
+                let enrollment =
+                    super::agent_runtime::enrollment(&mut authority, &config, service.clone())
+                        .await?;
+                let native =
+                    super::agent_runtime::routes(&authority, enrollment.clone(), service.clone());
+                let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(
+                    &cursor_key,
+                    plan_runtime.clone(),
+                    rss_reconcile_postgres::PgMessagingStore::new(
+                        plan_runtime.clone(),
+                        tenant,
+                        crate::identity::deadline(),
+                    )
+                    .await?,
+                    plan_audit.clone(),
+                    tenant,
+                    Arc::new(
+                        rss_mdm_policy_postgres::PolicyStore::new(
+                            plan_runtime.clone(),
+                            tenant,
+                            crate::identity::deadline(),
+                        )
+                        .await?,
+                    ),
+                    inputs.clone(),
+                ));
+                let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+                let mut routes = rss_mdm_http_contract::Router::new()
+                    .nest(
+                        "/api/v1",
+                        rss_mdm_management_http::planning::http::routes()
+                            .with_state(Arc::new(
+                                rss_mdm_management_http::planning::http::HttpState {
+                                    planning: planning.clone(),
+                                    groups,
+                                },
+                            ))
+                            .merge(
+                                rss_mdm_management_http::planning::policies::http::routes(
+                                    queries.clone(),
+                                )
+                                .with_state(policies),
+                            )
+                            .merge(
+                                rss_mdm_management_http::execution::actions::http::routes()
+                                    .with_state(queries.clone()),
+                            )
+                            .merge(
+                                rss_mdm_management_http::execution::http::routes(
+                                    queries.clone(),
+                                    rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?,
+                                )
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::execution::http::HttpState {
+                                        execution: service.clone(),
+                                        apple: false,
+                                        windows: false,
+                                    },
+                                )),
+                            ),
+                    )
+                    .merge(authority.authorization())
+                    .merge(authority.enrollment());
+                if content.is_some() {
                     let content_access = Arc::new(rss_mdm_content_service::service::Access {
-                        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
-                        authorization: authority.authorization.clone(), catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
-                        runtime: plan_runtime.clone(), audit_store: plan_audit.clone(), tenant, content: content.clone(),
+                        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(
+                            authority.identity.authority.clone(),
+                            tenant,
+                        ),
+                        authorization: authority.authorization.clone(),
+                        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+                        runtime: plan_runtime.clone(),
+                        audit_store: plan_audit.clone(),
+                        tenant,
+                        content: content.clone(),
                         clock: Arc::new(crate::clock::ContentClock(clock.clone())),
                     });
-        let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?);
-        let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
-            runtime: plan_runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key)),
-            audit: plan_audit.clone(), tenant,
-            catalog: rss_mdm_software_service::catalog::Catalog::new(plan_runtime.clone(), tenant, plan_audit.clone()),
-            resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
-            content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
-            imports: rss_mdm_software_service::management::catalog::ImportConfig {
-                sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
-                transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
-            },
-        });
-                    let catalog = crate::flow::catalog(plan_audit.clone(), plan_runtime.clone(), tenant, clock.clone()).await?;
-                    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&cursor_key, plan_runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?, plan_audit, tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(plan_runtime.clone(), tenant, crate::identity::deadline()).await?), inputs.clone()));
-                    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
-                    let mut routes = Router::new().nest("/api/v1",
-                        rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum()
-                        .merge(rss_mdm_management_http::planning::policies::http::routes(queries.clone()).with_state(policies).into_axum())
-                        .merge(rss_mdm_management_http::execution::actions::http::routes().with_state(queries.clone()).into_axum())
-                        .merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() })).into_axum())
-                        .merge(rss_mdm_management_http::software_catalog::routes().with_state(software).into_axum())
-                        .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum())
-                        .merge(rss_mdm_management_http::execution::http::routes(queries.clone(), rss_mdm_query::cursor::CursorCodec::new(&cursor_key)?).with_state(Arc::new(rss_mdm_management_http::execution::http::HttpState { execution: service.clone(), apple: false, windows: false })).into_axum()),
-                    ).merge(authority.authorization()).merge(authority.enrollment());
-                    let mut public = Router::new().nest("/api/v1/agent/runtime", native.into_axum());
-                    if !publications.services.is_empty() {
-                        routes = routes.merge(Router::new().nest("/api/v1", rss_mdm_management_http::software_publication::http::routes().with_state(Arc::new(rss_mdm_management_http::software_publication::http::HttpState { publications: publications.clone(), access: authority.authorization.clone() })).into_axum()));
-                        public = public.merge(rss_mdm_management_http::software_native::routes().with_state(Arc::new(rss_mdm_management_http::software_native::StateData { directory: publications, content: content.clone(), requests: Arc::new(tokio::sync::Semaphore::new(8)) })).into_axum());
-                    }
-                    let router = resources.native_router(authority.router_with_public(routes, public)?);
-                    let author = crate::test_support::authority::Authority::prepared_browser("other")?;
-                    let author_id = prepared_subject(&author)?;
-                    let mut grants = crate::test_support::identity::device_grants(
-                        Some(case_device_id()),
-                        &[
-                            "enrollment",
-                            "inventory_read",
-                            "script_execute",
-                            "operation_read",
-                            "operation_cancel",
-                        ],
-                    )?;
-                    for operation in [
-                        crate::authorization::Permission::PolicyWrite,
-                        crate::authorization::Permission::PolicyRead,
-                        crate::authorization::Permission::ResourceWrite,
-                        crate::authorization::Permission::ResourceRead,
-                        crate::authorization::Permission::GroupRead,
-                        crate::authorization::Permission::GroupWrite,
-                        crate::authorization::Permission::GroupRecompute,
-                        crate::authorization::Permission::ScopeRead,
-                        crate::authorization::Permission::ScopeWrite,
-                    ] {
-                        grants.push(crate::authorization::Grant {
-                            operation,
-                            scope: crate::authorization::Scope::Tenant,
+                    let resources_store = Arc::new(
+                        rss_mdm_resource_postgres::ResourceStore::new(
+                            plan_runtime.clone(),
+                            tenant,
+                            crate::identity::deadline(),
+                        )
+                        .await?,
+                    );
+                    let software =
+                        Arc::new(rss_mdm_software_service::management::catalog::Access {
+                            runtime: plan_runtime.clone(),
+                            cursor: rss_mdm_query::cursor::CursorCodec::from_key(
+                                ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &cursor_key),
+                            ),
+                            audit: plan_audit.clone(),
+                            tenant,
+                            catalog: rss_mdm_software_service::catalog::Catalog::new(
+                                plan_runtime.clone(),
+                                tenant,
+                                plan_audit.clone(),
+                            ),
+                            resources: resources_store,
+                            clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+                            content: content.as_ref().map(|store| {
+                                Arc::new(rss_mdm_content_service::software::SoftwareContent::new(
+                                    store.clone(),
+                                    Arc::new(crate::clock::ContentClock(clock.clone())),
+                                ))
+                            }),
+                            imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                                sources: content
+                                    .as_ref()
+                                    .map(|store| store.config.imports.clone())
+                                    .unwrap_or_default(),
+                                transfer_seconds: content
+                                    .as_ref()
+                                    .map_or(0, |store| store.config.transfer_seconds),
+                            },
                         });
-                    }
+                    let catalog = crate::flow::catalog(
+                        plan_audit.clone(),
+                        plan_runtime.clone(),
+                        tenant,
+                        clock.clone(),
+                    )
+                    .await?;
+                    routes = routes.merge(
+                        rss_mdm_http_contract::Router::new().nest(
+                            "/api/v1",
+                            rss_mdm_management_http::resource_catalog::http::routes()
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::resource_catalog::http::HttpState {
+                                        catalog,
+                                        content: content_access.clone(),
+                                    },
+                                ))
+                                .merge(
+                                    rss_mdm_management_http::software_catalog::routes()
+                                        .with_state(software),
+                                )
+                                .merge(
+                                    rss_mdm_management_http::content::http::routes()
+                                        .with_state(content_access),
+                                ),
+                        ),
+                    );
+                }
+                let mut public = native;
+                if !publications.services.is_empty() {
+                    routes = routes.merge(rss_mdm_http_contract::Router::new().nest(
+                        "/api/v1",
+                        rss_mdm_management_http::software_publication::http::routes().with_state(
+                            Arc::new(
+                                rss_mdm_management_http::software_publication::http::HttpState {
+                                    publications: publications.clone(),
+                                    access: authority.authorization.clone(),
+                                },
+                            ),
+                        ),
+                    ));
+                    public = public.merge(
+                        rss_mdm_management_http::software_native::routes()
+                            .with_state(Arc::new(
+                                rss_mdm_management_http::software_native::StateData {
+                                    directory: publications,
+                                    content: content.clone(),
+                                    requests: Arc::new(tokio::sync::Semaphore::new(8)),
+                                },
+                            ))
+                            .into_axum(),
+                    );
+                }
+                let router = resources.native_router(authority.router_with_public(routes, public)?);
+                let author = crate::test_support::authority::Authority::prepared_browser("other")?;
+                let author_id = prepared_subject(&author)?;
+                let mut grants = crate::test_support::identity::device_grants(
+                    Some(case_device_id()),
+                    &[
+                        "enrollment",
+                        "inventory_read",
+                        "script_execute",
+                        "operation_read",
+                        "operation_cancel",
+                    ],
+                )?;
+                for operation in [
+                    crate::authorization::Permission::PolicyWrite,
+                    crate::authorization::Permission::PolicyRead,
+                    crate::authorization::Permission::ResourceWrite,
+                    crate::authorization::Permission::ResourceRead,
+                    crate::authorization::Permission::GroupRead,
+                    crate::authorization::Permission::GroupWrite,
+                    crate::authorization::Permission::GroupRecompute,
+                    crate::authorization::Permission::ScopeRead,
+                    crate::authorization::Permission::ScopeWrite,
+                ] {
                     grants.push(crate::authorization::Grant {
-                        operation: crate::authorization::Permission::InventoryRead,
-                        scope: crate::authorization::Scope::AllDevices,
+                        operation,
+                        scope: crate::authorization::Scope::Tenant,
                     });
-                    grants.extend(crate::test_support::identity::device_grants(
-                        None,
-                        &["script_execute"],
-                    )?);
-                    Ok(Self {
-                        resources: Default::default(),
-                        builtin_collections: Vec::new(),
-                        base,
-                        router,
-                        queries,
-                        content,
-                        execution: service,
-                        authority,
-                        enrollment,
-                        command_runtime: runtime,
-                        plan_runtime,
-                        planning,
-                        inputs,
-                        author,
-                        access_authenticator: None,
-                        author_id,
-                        grants,
-                        key,
-                    })
+                }
+                grants.push(crate::authorization::Grant {
+                    operation: crate::authorization::Permission::InventoryRead,
+                    scope: crate::authorization::Scope::AllDevices,
+                });
+                grants.extend(crate::test_support::identity::device_grants(
+                    None,
+                    &["script_execute"],
+                )?);
+                Ok(Self {
+                    resources: Default::default(),
+                    builtin_collections: Vec::new(),
+                    base,
+                    router,
+                    queries,
+                    content,
+                    execution: service,
+                    authority,
+                    enrollment,
+                    command_runtime: runtime,
+                    plan_runtime,
+                    planning,
+                    inputs,
+                    author,
+                    access_authenticator: None,
+                    author_id,
+                    grants,
+                    key,
                 })
             })
-            .await?;
+        })
+        .await?;
         fixture.resources = resources;
         Ok(fixture)
     }

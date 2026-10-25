@@ -794,9 +794,9 @@ async fn management_policy_body_replay_and_audit_faults() -> anyhow::Result<()> 
             authority.identity.tenant,
         ),
     );
-    let router = authority.router(Router::new().nest(
+    let router = authority.router(rss_mdm_http_contract::Router::new().nest(
         "/api/v1",
-        rss_mdm_management_http::windows_entra::routes(Some(service)).into_axum(),
+        rss_mdm_management_http::windows_entra::routes(Some(service)),
     ))?;
     let mut admin = authority.browser("admin")?;
     let mut owner = sqlx::PgConnection::connect_with(&options("postgres")?).await?;

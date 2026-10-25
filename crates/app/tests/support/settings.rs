@@ -90,7 +90,7 @@ pub(crate) fn catalog(
     directory: crate::settings::Directory,
 ) -> Result<Router> {
     let source: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory);
-    let catalog = rss_mdm_management_http::settings::routes(source.clone()).into_axum();
+    let catalog = rss_mdm_management_http::settings::routes(source.clone());
     let management = rss_mdm_management_http::tenant_administration::router(
         Arc::new(crate::authorization::http::AuthenticationState {
             identity: f.identity.management_browser(),
@@ -113,6 +113,8 @@ pub(crate) fn catalog(
         rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .into_axum();
-    Ok(f.router(Router::new().nest("/api/v1", catalog))?
-        .merge(management))
+    Ok(
+        f.router(rss_mdm_http_contract::Router::new().nest("/api/v1", catalog))?
+            .merge(management),
+    )
 }

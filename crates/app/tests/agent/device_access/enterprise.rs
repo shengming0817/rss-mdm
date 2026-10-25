@@ -298,7 +298,7 @@ async fn two_rps_exchange_cancel_and_revoke() -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["identity"]["enterprise"] = json!({"key_id":"enterprise-1","signing_key_file":signer,"clients":clients,"administrators":[{"configuration":{"provider":provider,"issuer":issuer,"clientId":"mdm-offboarding","addresses":addresses},"client_secret_file":admin_secret,"private_ca_file":ca}]});
-    let mut f = Fixture::from_config(base).await?;
+    let mut f = Fixture::device_access_from_config(base).await?;
     f.mount_access().await?;
     let broker = rss_mdm_management_http::enterprise_broker::routes(
         Some(f.enrollment.clone()),

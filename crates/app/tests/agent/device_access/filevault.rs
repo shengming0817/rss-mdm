@@ -25,7 +25,7 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
                 host:"mdm.example.test:9445".into(),clock:monotonic(),audit_store:f.authority.audit.clone(),tenant:case_tenant().into()});
         f.router=f.router.clone().merge(requests.wrap(Router::new().nest("/api/v1/agent/runtime",runtime.into_axum())));
         let routes=rss_mdm_management_http::recovery_credentials::filevault_routes(Some(custody));
-        f.router=f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1",routes.into_axum()))?);
+        f.router=f.router.clone().merge(f.authority.protect(rss_mdm_http_contract::Router::new().nest("/api/v1",routes))?);
         let path="/api/v1/agent/runtime/filevault/configuration";
         let initial=agent_call(&f.router,Method::GET,path,Some(execution::case_credential()),None).await?;
         ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false,"initial configuration: {initial:?}");

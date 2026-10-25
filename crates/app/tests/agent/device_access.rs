@@ -12,7 +12,7 @@ use ring::signature::KeyPair;
 use rss_mdm_agent_wire::runtime as wire;
 
 async fn fixture() -> Result<Fixture> {
-    let mut f = Fixture::new().await?;
+    let mut f = Fixture::device_access().await?;
     f.mount_access().await?;
     Ok(f)
 }
@@ -55,18 +55,14 @@ impl Fixture {
             f.execution.clone(),
             f.authority.identity.browser(),
         )
-        .into_axum()
-        .merge(
-            rss_mdm_management_http::recovery_credentials::routes(
-                recovery,
-                rss_mdm_query::cursor::CursorCodec::new(&key)?,
-            )
-            .into_axum(),
+        .merge(rss_mdm_management_http::recovery_credentials::routes(
+            recovery,
+            rss_mdm_query::cursor::CursorCodec::new(&key)?,
+        ));
+        f.router = f.router.clone().merge(
+            f.authority
+                .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
         );
-        f.router = f
-            .router
-            .clone()
-            .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
         Ok(())
     }
 }

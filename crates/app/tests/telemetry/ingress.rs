@@ -60,20 +60,14 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 Arc::new(crate::automation::inventory_tasks::InventoryTasks),
             ));
             let routes = rss_mdm_management_http::telemetry::routes(Some(telemetry.clone()))
-                .into_axum()
+                .merge(rss_mdm_management_http::planning::policies::http::previews(
+                    f.queries.clone(),
+                    Some(telemetry.clone()),
+                ))
                 .merge(
-                    rss_mdm_management_http::planning::policies::http::previews(
-                        f.queries.clone(),
-                        Some(telemetry.clone()),
-                    )
-                    .into_axum(),
-                )
-                .merge(
-                    rss_mdm_management_http::assets::routes()
-                        .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                            assets,
-                        }))
-                        .into_axum(),
+                    rss_mdm_management_http::assets::routes().with_state(Arc::new(
+                        rss_mdm_management_http::assets::http::HttpState { assets },
+                    )),
                 );
             let native = rss_mdm_agent_channel::router(
                 Arc::new(crate::agent::HttpState {
@@ -98,7 +92,10 @@ async fn fixture(base: Value) -> Result<Fixture> {
             f.router = f
                 .router
                 .clone()
-                .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?)
+                .merge(
+                    f.authority
+                        .protect(rss_mdm_http_contract::Router::new().nest("/api/v1", routes))?,
+                )
                 .merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
             f.router = resources.native_router(f.router);
             Ok(f)

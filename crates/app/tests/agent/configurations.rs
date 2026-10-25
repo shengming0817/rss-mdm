@@ -47,11 +47,10 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
         .router
         .merge(
             authority.protect(
-                Router::new()
+                rss_mdm_http_contract::Router::new()
                     .nest(
                         "/api/v1",
-                        rss_mdm_management_http::agent_enrollment::routes(Some(service))
-                            .into_axum(),
+                        rss_mdm_management_http::agent_enrollment::routes(Some(service)),
                     )
                     .merge(authority.enrollment()),
             )?,

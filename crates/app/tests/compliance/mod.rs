@@ -179,28 +179,23 @@ impl Fixture {
             Arc::new(crate::automation::inventory_tasks::InventoryTasks),
         ));
         let router = authority.router(
-            Router::new()
+            rss_mdm_http_contract::Router::new()
                 .nest(
                     "/api/v1",
                     rss_mdm_management_http::compliance::http::routes()
                         .with_state(compliance)
-                        .into_axum()
                         .merge(
-                            rss_mdm_management_http::assets::routes()
-                                .with_state(Arc::new(
-                                    rss_mdm_management_http::assets::http::HttpState { assets },
-                                ))
-                                .into_axum(),
+                            rss_mdm_management_http::assets::routes().with_state(Arc::new(
+                                rss_mdm_management_http::assets::http::HttpState { assets },
+                            )),
                         )
                         .merge(
-                            rss_mdm_management_http::planning::http::routes()
-                                .with_state(Arc::new(
-                                    rss_mdm_management_http::planning::http::HttpState {
-                                        planning,
-                                        groups,
-                                    },
-                                ))
-                                .into_axum(),
+                            rss_mdm_management_http::planning::http::routes().with_state(Arc::new(
+                                rss_mdm_management_http::planning::http::HttpState {
+                                    planning,
+                                    groups,
+                                },
+                            )),
                         ),
                 )
                 .merge(authority.authorization()),

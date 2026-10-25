@@ -33,12 +33,11 @@ impl Fixture {
                 )?);
                 let admin = authority.browser("admin")?;
                 let router = authority.router(
-                    Router::new()
+                    rss_mdm_http_contract::Router::new()
                         .nest(
                             "/api/v1",
                             rss_mdm_management_http::timeline::routes()
-                                .with_state(timeline.clone())
-                                .into_axum(),
+                                .with_state(timeline.clone()),
                         )
                         .merge(authority.authorization()),
                 )?;

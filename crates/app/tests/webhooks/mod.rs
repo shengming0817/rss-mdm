@@ -203,10 +203,10 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
     .await?;
     resources.resource(crate::webhooks::Resource(backend.clone()));
     let router = authority.router(
-        Router::new()
+        rss_mdm_http_contract::Router::new()
             .nest(
                 "/api/v1",
-                rss_mdm_management_http::webhooks::routes(backend.clone()).into_axum(),
+                rss_mdm_management_http::webhooks::routes(backend.clone()),
             )
             .merge(authority.authorization()),
     )?;
