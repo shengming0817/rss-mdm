@@ -9,20 +9,19 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
         Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         context(Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    fixture.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let empty_scope = prepared_scope(&fixture.planning, &[]).await?;
     let first_device = case::name("rollout-first");
     let first_credential = crate::test_support::runtime::credential("rollout-first");
-    crate::test_support::agent::seed_profile(&fixture.base, fixture.execution.clone(), &first_credential, first_device,
+    crate::test_support::agent::seed_service(&fixture.enrollment, &first_credential, first_device,
         json!({"capabilities":["inventory.collect.v1","software.pkg.system.v1"],"platform":"macos","architecture":"aarch64","executionContext":context(Platform::MacOs)})).await?;
     let first_scope = prepared_scope(&fixture.planning, &[first_device]).await?;
     let root_scope = prepared_scope(&fixture.planning, &[first_device, crate::test_support::software_execution::case_device()]).await?;
-    let content = fixture.content.clone();
+    let execution = fixture.execution.clone();
     let base = fixture.base;
     let router = fixture.router;
     let mut author = fixture.author;
@@ -103,7 +102,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
             == "0",
         "online read computed statistics"
     );
-    let stack = worker(&base, content).await?;
+    let stack = worker(&base, execution).await?;
     let waiting = agent(
         &router,
         "/api/v1/agent/runtime/tasks/claim",
@@ -228,23 +227,84 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
 async fn new_approval_changes_execution_version() -> Result<()> {
-    let mut fixture = Fixture::with_profiles(
-        Platform::MacOs,
-        json!(["inventory.collect.v1", "software.pkg.system.v1"]),
-        context(Platform::MacOs),
-        false,
-        true,
-    )
-    .await?;
+    let mut fixture = authority::Authority::open().await?;
     let resources = std::mem::take(&mut fixture.resources);
-    resources
-        .finish(async {
-            let router = fixture.router;
-            let mut author = fixture.author;
-            let resource = fixture.resource;
+    resources.finish(async {
+        let config: Config = serde_json::from_value(fixture.base.clone())?;
+    let tenant = fixture.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let mut app_resources = Resources::default();
+    app_resources.resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum();
+    let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+    if let Some(store) = &content { app_resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+    let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock.clone()).await?;
+    let content_access = Arc::new(rss_mdm_content_service::service::Access {
+        sessions: rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), tenant), authorization: fixture.authorization.clone(),
+        runtime: runtime.clone(), audit_store: audit.clone(), tenant, content: content.clone(), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+        catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+    });
+    let routes = routes.merge(rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(rss_mdm_management_http::resource_catalog::http::HttpState { catalog: catalog.clone(), content: content_access.clone() })).into_axum());
+    let command_runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+    app_resources.resource(SourceResource(command_runtime.clone()));
+    let protection = config.native_protector()?;
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(rss_mdm_execution_service::InputDependencies {
+        software_distribution: config.software_distribution, product_origin: config.product_origin.clone(), recovery_enabled: config.recovery_credentials.is_some(), protection: protection.clone(),
+        software: Arc::new(rss_mdm_software_service::preparation::Preparation::new(rss_mdm_software_service::catalog::Reader::new(tenant), Default::default())),
+        bootstrap: None, enrollment_entries: config.enrollment_entries.clone(), runtime: command_runtime.clone(), tenant, content: content.clone(), signing_enabled: false,
+        agent_installation: Arc::new(crate::channel_status::Channels::new(&config)),
+    }));
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(rss_mdm_execution_service::queries::Dependencies {
+        source: Arc::new(rss_mdm_flow_service::planning::execution_source::ExecutionSource { objects: planning.objects.clone(), mdm_software_enabled: config.software_distribution.mdm_enabled }),
+        protection: protection.clone(), agent_store: Arc::new(rss_mdm_agent_channel::Bindings), apple_results: Arc::new(rss_mdm_apple_channel::flow_store::Store { protection }),
+        policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(command_runtime.clone(), tenant), runtime: command_runtime, tenant, inputs: inputs.clone(), signed: false, content_available: content.is_some(),
+    }));
+    let policies = Arc::new(rss_mdm_flow_service::planning::policies::Policies::new(&key, runtime.clone(), rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?, audit.clone(), tenant, Arc::new(rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), inputs));
+    let routes = routes.merge(rss_mdm_management_http::planning::policies::http::routes(queries).with_state(policies).into_axum());
+        let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
+            runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
+            audit: audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
+            resources: Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?), clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
+            imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
+                transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
+            },
+        });
 
-            let scope = fixture.scope;
-            let authored = |intent: &str| authored(resource, scope, intent);
+    let routes = routes.merge(rss_mdm_management_http::software_catalog::routes().with_state(software).into_axum());
+    let router = fixture.router(Router::new().nest("/api/v1", routes))?;
+    app_resources.finish(async {
+    let mut author = fixture.browser("admin")?;
+    let mut grants = identity::device_grants(None, &["software_deploy", "inventory_read"])?;
+    for name in ["scope_read","resource_read","policy_read","policy_write","software_read","software_write","software_withdraw"] {
+        grants.push(crate::authorization::Grant { operation: serde_json::from_value(json!(name))?, scope: crate::authorization::Scope::Tenant });
+    }
+    identity::seed_grants(case_tenant(), &prepared_subject(&author)?, grants).await?;
+    let source = rss_mdm_software_service::catalog::SourceDefinition { id: Uuid::new_v4().to_string(), revision: "1".into(), protocol: rss_mdm_software_service::catalog::SourceProtocol::Private };
+    let source = runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        rss_mdm_software_service::catalog::fixture::source_in(tx, source).await.map_err(|e|rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(e.to_string())))
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+    let bytes = b"reapproval content";
+    let mut definition = publication_support::private_definition(serde_json::to_value(source)?, bytes);
+    definition["material"]["format"] = json!("pkg");
+    definition["behavior"]["kind"] = json!("pkg");
+    definition["behavior"]["detect"] = json!({"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"});
+    let resource = Uuid::new_v4();
+    let version = seed_resource(&runtime, tenant, resource, "macos", "aarch64", definition).await?;
+    let store = content.as_deref().expect("software content");
+    let artifact = rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new("installer")?, bytes.len() as u64, rss_mdm_resource::Digest::of(bytes))?;
+    rss_mdm_content_service::fixture::artifact(store,&artifact,bytes.to_vec(),crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?+86400).await?;
+    seed_enabled(&planning.runtime, store, &version).await?;
+    let scope = prepared_scope(&planning, &[]).await?;
+    let authored = |intent: &str| authored(resource, scope, intent);
             let policy = Uuid::new_v4();
             let policy_path = format!("/api/v1/policies/{policy}");
             let published = write(
@@ -317,6 +377,7 @@ async fn new_approval_changes_execution_version() -> Result<()> {
             Ok(())
         })
         .await
+    }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -326,10 +387,9 @@ async fn rollout_statistics_checkpoint_excluded_pages_and_reject_stale_inputs() 
         Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         context(Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    f.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let prefix = case::name("rollout");

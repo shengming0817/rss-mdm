@@ -3,15 +3,20 @@ use super::*;
 #[tokio::test]
 #[ignore = "MODULE=authorization.admission: real authorization contract"]
 async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
-    let Fixture {
-        resources,
-        config,
-        router,
-        mut admin,
-        mut member,
-        store,
-        ..
-    } = fixture().await?;
+    let authority = authority::Authority::open().await?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
+    let policy = Arc::new(
+        crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
+    );
+    let router = authority.router(
+        authority
+            .authorization()
+            .merge(rss_mdm_management_http::identity_context_routes(policy).into_axum()),
+    )?;
+    let mut admin = authority.browser("admin")?;
+    let mut member = authority.browser("other")?;
+    let store = authority.authorization.clone();
+    let resources = authority.resources;
     resources.finish(async {
     let rule_id = Uuid::new_v4();
     pg(&format!(
@@ -97,6 +102,10 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     );
     // The union rejects undeclared objects, grants and permissive tenant policies.
     for (drift, restore) in [
+        ("GRANT UPDATE(profile) ON mdm_access.enrollment_intents TO mdm_access", "REVOKE UPDATE(profile) ON mdm_access.enrollment_intents FROM mdm_access"),
+        ("GRANT UPDATE(state) ON mdm_access.grants TO mdm_access", "REVOKE UPDATE(state) ON mdm_access.grants FROM mdm_access"),
+        ("ALTER POLICY expired_only ON mdm_access.management_sessions USING(true)", "ALTER POLICY expired_only ON mdm_access.management_sessions USING(expires_at<clock_timestamp())"),
+
         (
             "GRANT INSERT ON mdm_access.asset_authority_history TO mdm_access",
             "REVOKE INSERT ON mdm_access.asset_authority_history FROM mdm_access",
@@ -118,14 +127,6 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             "REVOKE UPDATE (instance) ON mdm_access.authorization_rules FROM mdm_access",
         ),
         (
-            "CREATE FUNCTION rss_transactional_messaging.consumer_scope_domain(text) RETURNS text LANGUAGE sql AS 'SELECT $1'",
-            "DROP FUNCTION rss_transactional_messaging.consumer_scope_domain(text)",
-        ),
-        (
-            "ALTER FUNCTION rss_transactional_messaging.consumer_scope_domain() SECURITY INVOKER",
-            "ALTER FUNCTION rss_transactional_messaging.consumer_scope_domain() SECURITY DEFINER",
-        ),
-        (
             "CREATE TABLE mdm_agent.unexpected(tenant_id uuid)",
             "DROP TABLE mdm_agent.unexpected",
         ),
@@ -141,9 +142,43 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         pg(drift)?;
         let rejected = crate::Database::connect(config.access_options()?).await;
         pg(restore)?;
-        ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted");
+        ensure!(matches!(rejected, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "undeclared access privilege admitted: {drift}");
         crate::Database::connect(config.access_options()?).await?.close().await;
     }
+    // An unrelated Apple contract belongs to full App admission, not ordinary capabilities.
+    pg("ALTER TABLE mdm_apple.devices NO FORCE ROW LEVEL SECURITY")?;
+    let isolated = async {
+        let mut authority = crate::test_support::authority::Authority::open().await?;
+        let mut owners = std::mem::take(&mut authority.resources);
+        let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant));
+        let (execution, _, _) = crate::test_support::command::command_service(authority.audit.clone(), sessions, rss_device_command_postgres::CommandClock::Postgres).await?;
+        owners.resource(rss_mdm_execution_service::Resource(execution.clone()));
+        let tenant = authority.identity.tenant;
+        let runtime = crate::planning::test_support::runtime(tenant).await;
+        owners.resource(SourceResource(runtime.clone()));
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+        let planning = crate::planning::Planning::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit))).await?;
+        let compliance = crate::planning::test_support::compliance(&planning).await;
+        owners.finish(async {
+            let router = authority.router(authority.authorization().nest("/api/v1",
+                rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum()))?;
+            let mut browser = authority.browser("admin")?;
+            identity::seed_grants(case_tenant(), &prepared_subject(&browser)?, vec![crate::authorization::Grant { operation: crate::authorization::Permission::ComplianceRuleRead, scope: crate::authorization::Scope::Tenant }]).await?;
+            ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
+            let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
+            ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");
+            ensure!(planning.groups.get(rss_mdm_group_postgres::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
+            execution.relay_once().await?;
+            Ok(())
+        }).await
+    }.await;
+    let complete_app = crate::Database::connect(config.access_options()?).await;
+    pg("ALTER TABLE mdm_apple.devices FORCE ROW LEVEL SECURITY")?;
+    isolated?;
+    ensure!(matches!(complete_app, Err(crate::Error::Unavailable(crate::Failure::AccessAdmission))), "full App admitted a damaged Apple contract");
     let (identity, identity_resources) =
         crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
@@ -159,7 +194,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(store.authorization())
+    .load_authorization(&store)
     .await?;
     // Stop protocol replies after BEGIN/query, beyond the pool acquire timeout.
     use sqlx::Connection;
@@ -196,7 +231,7 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
     let (stalled, frozen) = tokio::join!(
         tokio::time::timeout(
             Duration::from_secs(4),
-            crate::authorization::store::authorization_snapshot(store.authorization(), &stale)
+            crate::authorization::store::authorization_snapshot(&store, &stale)
         ),
         freeze
     );

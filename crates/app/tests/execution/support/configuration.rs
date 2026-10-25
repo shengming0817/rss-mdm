@@ -23,12 +23,16 @@ pub(crate) async fn change(
     );
     Ok(reply.1)
 }
-pub(crate) async fn resource_input(client: &mut Client, input: Value) -> anyhow::Result<String> {
+pub(crate) async fn resource_input(
+    client: &mut Client,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    input: Value,
+) -> anyhow::Result<String> {
     let id = Uuid::new_v4().to_string();
     let bytes = serde_json::to_vec(&input)?;
     let sha = rss_mdm_resource::Digest::of(&bytes).bytes();
     let version: rss_mdm_resource::Version = rss_mdm_resource::Version::new(
-        client.app.identity.tenant,
+        client.tenant,
         rss_mdm_resource::Id::new(id.clone())?,
         rss_mdm_resource::Id::new("1")?,
         rss_mdm_resource::Kind::Configuration,
@@ -45,25 +49,17 @@ pub(crate) async fn resource_input(client: &mut Client, input: Value) -> anyhow:
             },
         )],
     )?;
-    client
-        .app
-        .flow
-        .planning
-        .runtime
-        .local_tx(
-            client.app.identity.tenant,
-            crate::identity::deadline(),
-            move |tx| {
-                Box::pin(async move {
-                    rss_mdm_resource_postgres::fixture::active_version_in(
-                        tx,
-                        version,
-                        rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
-                    )
-                    .await
-                })
-            },
-        )
+    runtime
+        .local_tx(client.tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    version,
+                    rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                )
+                .await
+            })
+        })
         .await
         .fold(
             Ok,

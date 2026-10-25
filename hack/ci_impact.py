@@ -712,8 +712,10 @@ def proof_target(module):
 
 def removed_carriers(oldroot, root, old, after, changes):
     """Require current test ownership, not a historical name or a support glob."""
+    inputs = (*old['test_inputs'], *(path for path in old['support_inputs']
+              if path.startswith('hack/t2_modules/') and path.endswith('.py')))
     files = {p.relative_to(oldroot).as_posix() for p in oldroot.rglob('*')
-             if p.is_file() and matches(p.relative_to(oldroot).as_posix(), old['test_inputs'])}
+             if p.is_file() and matches(p.relative_to(oldroot).as_posix(), inputs)}
     carriers, owners = [], set()
     for path in sorted(files):
         endpoints = {path} | {c.new for c in changes if c.old == path and c.status in {'R', 'C'}}
@@ -722,22 +724,12 @@ def removed_carriers(oldroot, root, old, after, changes):
                 carriers.append(dict(path=endpoint, kind='deleted', modules=[]))
                 continue
             current = {name for name, module in after.modules.items()
-                       if matches(endpoint, module['test_inputs'])}
+                       if matches(endpoint, module['test_inputs']) or (module.get('python') and
+                           'hack/t2_modules/' + module['python'][0] + '.py' == endpoint)}
             if not current and not matches(endpoint, after.t1):
                 raise SelectionError('test-carrier-without-owner', endpoint)
             owners.update(current)
             carriers.append(dict(path=endpoint, kind='business' if current else 'unit-test', modules=sorted(current)))
-    if old.get('python'):
-        path = 'hack/t2_modules/' + old['python'] + '.py'
-        endpoints = {path} | {c.new for c in changes if c.old == path and c.status in {'R', 'C'}}
-        for endpoint in sorted(endpoints):
-            current = {name for name, module in after.modules.items()
-                       if module.get('python') and 'hack/t2_modules/' + module['python'] + '.py' == endpoint}
-            exists = (root / endpoint).is_file()
-            if exists and not current:
-                raise SelectionError('python-carrier-without-owner', endpoint)
-            owners.update(current)
-            carriers.append(dict(path=endpoint, kind='business' if exists else 'deleted', modules=sorted(current)))
     return dict(module=old['id'], carriers=carriers, owners=sorted(owners))
 
 

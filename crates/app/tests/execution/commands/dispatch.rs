@@ -11,7 +11,7 @@ async fn outbox_gateway_ack_and_process_recovery() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_authorized().await?;
     client.dispatch_receipts().await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 #[tokio::test]
@@ -36,7 +36,7 @@ async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> 
     let cancel = tokio_util::sync::CancellationToken::new();
     let signals = crate::worker_wake::Signals::default();
     let execution_signals = signals.execution();
-    let mut worker = Box::pin(client.app.execution.run_worker(&cancel, &execution_signals));
+    let mut worker = Box::pin(client.execution.run_worker(&cancel, &execution_signals));
     let message = format!("dispatch.{}", client.operation);
     tokio::select! {
         result = &mut worker => anyhow::bail!("worker exited before claim: {result:?}"),
@@ -75,7 +75,7 @@ async fn clean_shutdown_settles_a_claimed_relay_message() -> anyhow::Result<()> 
     );
     pg.close().await?;
     lock.close().await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 impl Client {
@@ -84,15 +84,15 @@ impl Client {
         #[cfg(feature = "integration")]
         {
             self.retry_gateway().await?;
-            self.app.execution.relay_once().await?;
+            self.execution.relay_once().await?;
             // Crash recovery has its own false -> true acceptance, independent of retry faults.
             self.operation = Uuid::new_v4();
             self.accept_authorized().await?;
             self.crash_relay().await?;
         }
-        self.app.execution.relay_once().await?;
+        self.execution.relay_once().await?;
         // Drive the public bounded recovery seam without a competing fault consumer.
-        let s = self.app.execution.clone();
+        let s = self.execution.clone();
         let id = self.operation;
         s.recover_operation(id, &audit).await?;
         audit.finalize(None);
@@ -145,9 +145,9 @@ impl Client {
     async fn retry_gateway(&self) -> anyhow::Result<()> {
         use rss_transactional_messaging::outbox::OutboxRelayStore;
         use rss_transactional_messaging_postgres::PgTransactionFault;
-        let service = &self.app.execution;
+        let service = &self.execution;
         let outbox = PgOutboxStore::<()>::new(
-            self.app.execution_runtime.clone(),
+            self.execution_runtime.clone(),
             messaging_domain(),
             rss_transactional_messaging::policy::DeliveryBudget::new(
                 Duration::from_secs(60),
@@ -260,7 +260,7 @@ impl Client {
         // then the production relay claims and replays the exact gateway acceptance.
         tokio::time::timeout(Duration::from_secs(15),async {
             loop {
-                self.app.execution.relay_once().await?;
+                self.execution.relay_once().await?;
                 let published:bool=sqlx::query_scalar("SELECT status='published' FROM rss_transactional_messaging.outbox WHERE tenant_id=$1::uuid AND message_id=$2").bind(case_tenant()).bind(format!("dispatch.{}",self.operation)).fetch_one(&mut pg).await?;
                 if published {return Ok::<_,anyhow::Error>(());}
                 tokio::time::sleep(Duration::from_millis(100)).await;

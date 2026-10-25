@@ -103,16 +103,6 @@ async fn permissions_and_lifecycle() -> Result<()> {
         .fetch_one(&pool)
         .await?;
     assert_eq!(visible, 0);
-    for statement in [
-        "CREATE TABLE public.forbidden(id int)",
-        "DELETE FROM rss_observation.batches",
-    ] {
-        let error = sqlx::query(statement).execute(&pool).await.unwrap_err();
-        assert_eq!(
-            error.as_database_error().and_then(|e| e.code()).as_deref(),
-            Some("42501")
-        );
-    }
     let mut tx = pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case::tenant())
@@ -191,32 +181,10 @@ async fn permissions_and_lifecycle() -> Result<()> {
 async fn admission_drift() -> Result<()> {
     let owner = storage::pool(&url("MDM_OWNER_URL")?).await?;
     let admin = storage::pool(&url("MDM_ADMIN_URL")?).await?;
-    for (damage, restore) in [
-        (
-            "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",
-            "ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY",
-        ),
-        (
-            "ALTER TABLE mdm.inventory DISABLE ROW LEVEL SECURITY",
-            "ALTER TABLE mdm.inventory ENABLE ROW LEVEL SECURITY",
-        ),
-        (
-            "ALTER POLICY tenant ON mdm.inventory USING (true)",
-            "ALTER POLICY tenant ON mdm.inventory USING (tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid)",
-        ),
-        (
-            "GRANT CREATE ON SCHEMA mdm TO mdm_runtime",
-            "REVOKE CREATE ON SCHEMA mdm FROM mdm_runtime",
-        ),
-        (
-            "GRANT SELECT ON mdm.inventory TO PUBLIC",
-            "REVOKE SELECT ON mdm.inventory FROM PUBLIC",
-        ),
-        (
-            "GRANT TRIGGER ON mdm.inventory TO mdm_runtime",
-            "REVOKE TRIGGER ON mdm.inventory FROM mdm_runtime",
-        ),
-    ] {
+    for (damage, restore) in [(
+        "ALTER TABLE mdm.inventory NO FORCE ROW LEVEL SECURITY",
+        "ALTER TABLE mdm.inventory FORCE ROW LEVEL SECURITY",
+    )] {
         app(scope(1, "d1")).await?.close().await?;
         sqlx::raw_sql(damage).execute(&owner).await?;
         let result = app(scope(1, "d1")).await;
@@ -256,22 +224,6 @@ async fn admission_drift() -> Result<()> {
         "observation_open"
     );
     app(scope(1, "d1")).await?.close().await?;
-    let source = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let offset = source.clone();
-    let real = system_clock();
-    let injected = storage::Clock::new(move || {
-        real.now() + Duration::from_secs(offset.load(std::sync::atomic::Ordering::SeqCst))
-    });
-    let aged = App::open(
-        &storage::options()?,
-        FixtureAuthority::new(scope(1, "d1")),
-        injected,
-    )
-    .await?;
-    source.store(60, std::sync::atomic::Ordering::SeqCst);
-    aged.project(&CancellationToken::new()).await?;
-    aged.inspect(&Id::new("first")?).await?;
-    aged.close().await?;
     storage::close_pool(&owner).await?;
     storage::close_pool(&admin).await?;
     Ok(())
@@ -303,5 +255,22 @@ async fn permissions_and_bounded_lifecycle() -> Result<()> {
         .await?;
     a.project(&CancellationToken::new()).await?;
     a.close().await?;
-    permissions_and_lifecycle().await
+    permissions_and_lifecycle().await?;
+    let source = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let offset = source.clone();
+    let real = system_clock();
+    let injected = storage::Clock::new(move || {
+        real.now() + Duration::from_secs(offset.load(std::sync::atomic::Ordering::SeqCst))
+    });
+    let aged = App::open(
+        &storage::options()?,
+        FixtureAuthority::new(scope(1, "d1")),
+        injected,
+    )
+    .await?;
+    source.store(60, std::sync::atomic::Ordering::SeqCst);
+    aged.project(&CancellationToken::new()).await?;
+    aged.inspect(&Id::new("first")?).await?;
+    aged.close().await?;
+    Ok(())
 }

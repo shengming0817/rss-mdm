@@ -9,6 +9,7 @@ pub(crate) async fn preview(
     router: &Router,
     group: &str,
 ) -> Result<GroupEvidence> {
+    crate::test_support::planning_http::await_ingress().await?;
     let (_, state) = browser.call(router, Method::GET, group, None).await?;
     let accepted = ok(
         browser,
@@ -22,6 +23,7 @@ pub(crate) async fn preview(
     )
     .await?;
     let task = accepted["task"].as_str().unwrap();
+    await_task(browser, router, &format!("{group}/tasks/{task}")).await?;
     let members = ok(
         browser,
         router,

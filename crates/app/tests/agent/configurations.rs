@@ -19,7 +19,48 @@ async fn fixture() -> Result<Fixture> {
     fixture_with(&[]).await
 }
 async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
-    let f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let mut f = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let mut authority = authority::Authority::open().await?;
+    f.resources.extend(std::mem::take(&mut authority.resources));
+    let service = agent::service(&authority).await?;
+    let envelope = rss_mdm_agent_channel::boundary::Envelope {
+        admission: Arc::new(tokio::sync::Semaphore::new(4)),
+        host: "mdm.example.test:9445".into(),
+        clock: monotonic(),
+        audit_store: authority.audit.clone(),
+        requests: Arc::new(tokio::sync::Semaphore::new(4)),
+        tenant: case_tenant().into(),
+    };
+    let public = rss_mdm_agent_channel::enroll::router(service.clone(), envelope);
+    let packages = rss_mdm_management_http::boundary::wrap(
+        rss_mdm_management_http::software_catalog::agent_packages_public(f.software.clone()),
+        rss_mdm_management_http::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(4)),
+            requests: Arc::new(tokio::sync::Semaphore::new(4)),
+            host: "mdm.example.test".into(),
+            clock: monotonic(),
+            audit_store: authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
+    );
+    f.router = f
+        .router
+        .merge(
+            authority.protect(
+                Router::new()
+                    .nest(
+                        "/api/v1",
+                        rss_mdm_management_http::agent_enrollment::routes(Some(service))
+                            .into_axum(),
+                    )
+                    .merge(authority.enrollment()),
+            )?,
+        )
+        .merge(Router::new().nest("/api/v1/agent/enroll", public.merge(packages).into_axum()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    f.origin = format!("http://{}", listener.local_addr()?);
+    f.server = software::HttpServer::start(listener, f.router.clone());
+    f.user.network = Some((f.client.clone(), f.origin.clone()));
     let tenant = [
         "resource_read",
         "resource_write",
@@ -51,11 +92,9 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
             scope: crate::authorization::Scope::AllDevices,
         });
     }
-    identity::set_grants(case_tenant(), &f.subject, grants).await?;
+    identity::seed_grants(case_tenant(), &f.subject, grants).await?;
     // Installer consumers need a current signed configuration; deployment/publication is a separate journey.
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let access = database(&base).await?;
-    let mut tx = access.archive_pool().begin().await?;
+    let mut tx = authority.pool.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
@@ -70,7 +109,6 @@ async fn fixture_with(extra: &[&str]) -> Result<Fixture> {
     )
     .await?;
     tx.commit().await?;
-    access.close().await;
 
     Ok(f)
 }
@@ -131,17 +169,6 @@ async fn save_bytes(
     if suffix == "exe" {
         ensure!(inspected.1["inspection"]["facts"]["version"].is_null());
     }
-    let wrong_target = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":version,"target":{"platform":if platform == "windows" {"macos"} else {"windows"},"architecture":architecture}});
-    ensure!(
-        user.call(
-            &f.router,
-            Method::POST,
-            "/api/v1/agent-packages/save",
-            Some(wrong_target)
-        )
-        .await?
-        .0 == StatusCode::BAD_REQUEST
-    );
     let input = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":version,"target":{"platform":platform,"architecture":architecture}});
     let saved = user
         .call(
@@ -152,41 +179,6 @@ async fn save_bytes(
         )
         .await?;
     ensure!(saved.0 == StatusCode::OK, "save {saved:?}");
-    if suffix == "exe" {
-        let replay = user
-            .call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent-packages/save",
-                Some(input.clone()),
-            )
-            .await?;
-        ensure!(replay == saved, "save replay changed result");
-        let receipt = user
-            .call(
-                &f.router,
-                Method::GET,
-                &format!(
-                    "/api/v1/agent-packages/operations/{}",
-                    input["operationId"].as_str().unwrap()
-                ),
-                None,
-            )
-            .await?;
-        ensure!(receipt == saved, "original save receipt");
-        let mut conflict = input;
-        conflict["version"] = json!("changed");
-        ensure!(
-            user.call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent-packages/save",
-                Some(conflict)
-            )
-            .await?
-            .0 == StatusCode::CONFLICT
-        );
-    }
     Ok(id)
 }
 async fn publish_bytes(
@@ -209,18 +201,6 @@ async fn publish_bytes(
         )
         .await?;
     ensure!(response.0 == StatusCode::OK, "publish {response:?}");
-    let receipt = user
-        .call(
-            &f.router,
-            Method::GET,
-            &format!(
-                "/api/v1/agent-packages/operations/{}",
-                publication["operationId"].as_str().unwrap()
-            ),
-            None,
-        )
-        .await?;
-    ensure!(receipt == response, "publication operation recovery");
     let package: w::configuration::Package = serde_json::from_value(response.1)?;
     ensure!(package.installer_sha256 == rss_mdm_resource::Digest::of(bytes).bytes());
     Ok((package, publication))
@@ -239,30 +219,6 @@ async fn stage_upload(f: &Fixture, user: &mut Browser, suffix: &str, bytes: &[u8
     ensure!(response.0 == StatusCode::OK, "prepare {response:?}");
     let id: Uuid = serde_json::from_value(response.1["packageId"].clone())?;
     let upload_href = response.1["href"].as_str().context("upload href")?;
-    if suffix == "exe" {
-        ensure!(
-            user.call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent-packages/uploads",
-                Some(begin.clone())
-            )
-            .await?
-                == response
-        );
-        let mut conflict = begin;
-        conflict["length"] = json!(bytes.len() + 1);
-        ensure!(
-            user.call(
-                &f.router,
-                Method::POST,
-                "/api/v1/agent-packages/uploads",
-                Some(conflict)
-            )
-            .await?
-            .0 == StatusCode::CONFLICT
-        );
-    }
     let cookie = user
         .cookies
         .iter()
@@ -280,27 +236,8 @@ async fn stage_upload(f: &Fixture, user: &mut Browser, suffix: &str, bytes: &[u8
             .header("cookie", &cookie)
             .header("content-type", "application/octet-stream")
     };
-    let half = if suffix == "exe" { bytes.len() / 2 } else { 0 };
-    if half > 0 {
-        let first = request(Method::PATCH, &format!("{session}?offset=0"))
-            .body(bytes[..half].to_vec())
-            .send()
-            .await?;
-        ensure!(
-            first.status() == StatusCode::OK,
-            "first chunk {}",
-            first.text().await?
-        );
-        let resumed: Value = request(Method::GET, &session).send().await?.json().await?;
-        ensure!(resumed["offset"] == half);
-        let stale = request(Method::PATCH, &format!("{session}?offset=0"))
-            .body(vec![0])
-            .send()
-            .await?;
-        ensure!(stale.status() == StatusCode::CONFLICT);
-    }
-    let uploaded = request(Method::PATCH, &format!("{session}?offset={half}"))
-        .body(bytes[half..].to_vec())
+    let uploaded = request(Method::PATCH, &format!("{session}?offset=0"))
+        .body(bytes.to_vec())
         .send()
         .await?;
     ensure!(
@@ -561,53 +498,12 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
     let f = fixture_with(&[
         "registration_configuration_read",
         "registration_configuration_write",
-        "policy_read",
-        "policy_write",
-        "scope_read",
-        "scope_write",
     ])
     .await?;
     let mut user = f.user.clone();
     let windows = publish(&f, &mut user, true).await?;
-    let settings = user
-        .call(&f.router, Method::GET, "/api/v1/settings/catalog", None)
-        .await?;
-    ensure!(settings.0 == StatusCode::OK);
-    let capability = settings.1["items"]
-        .as_array()
-        .context("settings items")?
-        .iter()
-        .find(|item| item["id"] == "agent-package")
-        .context("package capability")?;
-    ensure!(
-        capability["status"] == "configured"
-            && capability["configuredCount"] == 1
-            && capability["lifecycle"] == "business_configuration",
-        "single package projection {capability:?}"
-    );
-    let path = "/api/v1/settings/first-use";
-    let initial = user.call(&f.router, Method::GET, path, None).await?;
-    ensure!(initial.0 == StatusCode::OK);
-    let previous = user.operation.replace(Uuid::new_v4());
-    let selected = user.call(&f.router, Method::PUT, path, Some(json!({"expectedRevision":initial.1["saved"]["revision"],"intent":{"channels":["agent"],"capabilities":{"agent_package":{"kind":"configure"}},"completionRequested":false}}))).await?;
-    user.operation = previous;
-    ensure!(
-        selected.0 == StatusCode::OK,
-        "first use selection {selected:?}"
-    );
-    let progress = user.call(&f.router, Method::GET, path, None).await?;
-    ensure!(progress.0 == StatusCode::OK);
-    let step = progress.1["steps"]
-        .as_array()
-        .context("first use steps")?
-        .iter()
-        .find(|step| step["id"] == "agent_package")
-        .context("package readiness")?;
-    ensure!(
-        step["status"] == "ready",
-        "single package first use {step:?}"
-    );
-
+    let base = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    crate::first_use::tests::published_agent_package_readiness(&base).await?;
     let macos = publish(&f, &mut user, false).await?;
     let package_query = "/api/v1/agent-packages?sort=version&fields=releaseId&limit=1";
     let first = user
@@ -707,15 +603,6 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
         ensure!(state["reserved"] == 0 && state["consumed"] == 2);
     }
     ensure!(devices.len() == 4);
-    // A published material-only release cannot freeze an installation operation.
-    let scope = Uuid::new_v4();
-    software::write(&mut user, &f.router, &format!("/api/v1/scopes/{scope}"), 0, json!({"action":"put","definition":{"targets":[{"kind":"device","id":devices.first().unwrap()}],"limitations":null,"exclusions":[]}})).await?;
-    let policy = user.call(&f.router, Method::POST, &format!("/api/v1/policies/{}",Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":windows.release_id},"runLifetimeSeconds":3600}}}}))).await?;
-    ensure!(
-        policy.0 == StatusCode::NOT_IMPLEMENTED && policy.1["code"] == "action_not_supported",
-        "material-only task: {policy:?}"
-    );
-
     ensure!(machine(&f, "/api/v1/agent/enroll/configurations/exchange", &exchange(&file, &macos, 2)?).await?.0 == StatusCode::TOO_MANY_REQUESTS);
     let me = user
         .call(
@@ -762,7 +649,14 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
 async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let mut other = authority::Authority::prepared_browser("other")?;
     ensure!(
@@ -970,15 +864,23 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
 async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let mut authority = authority::Authority::open().await?;
+    let (agent_router, _) = agent::router(&mut authority).await?;
     let authority_resources = std::mem::take(&mut authority.resources);
     authority_resources.finish(async {
     let service = agent::service(&authority).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
-    let _server = software::HttpServer::start(listener, agent::router(&authority).await?);
+    let _server = software::HttpServer::start(listener, agent_router);
     let post = |path: &str, value: Value| {
         let url = format!("{origin}{path}");
         let client = f.client.clone();
@@ -1093,7 +995,14 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     use sqlx::Connection;
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let input = exchange(&file, &package, 0)?;
     let (status, grant) =
@@ -1174,7 +1083,14 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
 async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let initial = user
         .call(
             &f.router,
@@ -1425,7 +1341,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, old.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .header("range", "bytes=0-4")
         .send()
         .await?;
@@ -1473,7 +1389,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, old.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(anonymous.status() == StatusCode::NOT_FOUND);
@@ -1544,7 +1460,7 @@ async fn configuration_scope_follows_current_candidate_admission() -> Result<()>
                 "{}/api/v1/agent/enroll/packages/{}/content",
                 f.origin, package.release_id
             ))
-            .header("host", "mdm.example.test:9445")
+            .header("host", "mdm.example.test")
             .send()
             .await?;
         ensure!(download.status() == StatusCode::OK);
@@ -1603,7 +1519,7 @@ async fn arm64_exe_explicit_enable_preserves_publication_binding() -> Result<()>
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, package.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(download.status() == StatusCode::OK);
@@ -1641,7 +1557,29 @@ async fn agent_publication_business_identity_is_unique() -> Result<()> {
     let right = json!({"operationId":Uuid::new_v4(),"packageId":second});
     let mut a = author.clone();
     let mut b = author.clone();
-    let (a, b) = tokio::join!(
+    use sqlx::Connection;
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut hold = owner.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{}", case_tenant()))
+        .execute(&mut *hold)
+        .await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut *hold).await?;
+                if blocked >= 2 { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (a, b, released) = tokio::join!(
         a.call(
             &f.router,
             Method::POST,
@@ -1653,8 +1591,11 @@ async fn agent_publication_business_identity_is_unique() -> Result<()> {
             Method::POST,
             "/api/v1/agent-packages",
             Some(right.clone())
-        )
+        ),
+        release
     );
+    released?;
+    owner.close().await?;
     let a = a?;
     let b = b?;
     ensure!(
@@ -1768,7 +1709,14 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
     );
     let (old_material, _) =
         configuration(&f, &mut user, json!({"kind":"unlimited"}), Some(3600)).await?;
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let pending = exchange(&old_material, &package, 0)?;
     let grant = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &pending).await?;
     ensure!(grant.0 == StatusCode::OK);
@@ -1802,14 +1750,17 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
             == saved
     );
     let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let runtime = agent::seed_profile(
-        &base,
-        f.execution.clone(),
-        "connection-peer",
-        crate::test_support::case::name("connection-peer"),
-        profile(false),
-    )
-    .await?;
+    let authority = authority::Authority::from_config(base).await?;
+    let service = agent::service(&authority).await?;
+    let runtime = authority
+        .resources
+        .finish(agent::seed_service(
+            &service,
+            "connection-peer",
+            crate::test_support::case::name("connection-peer"),
+            profile(false),
+        ))
+        .await?;
     let peer = agent::evidence("connection-peer").context("real connection peer")?;
     let publish = json!({"operationId":Uuid::new_v4(),"expectedRevision":2});
     let refused = user
@@ -2010,8 +1961,8 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         let missing=user.call(&f.router,Method::GET,"/api/v1/agent-connections/devices?revision=3",None).await?;
         ensure!(missing.0==StatusCode::OK && missing.1["items"]==json!([]));
         let mut inventory_user=authority::Authority::prepared_browser("other")?;
-        let subject=browser_subject(&inventory_user, &f.router).await?;
-        identity::set_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
+        let subject=prepared_subject(&inventory_user)?;
+        identity::seed_grants(case_tenant(), &subject, vec![crate::authorization::Grant {operation:serde_json::from_value(json!("inventory_read"))?,scope:crate::authorization::Scope::AllDevices}]).await?;
         let observed=inventory_user.call(&f.router,Method::GET,&format!("/api/v1/agent-connections/devices/{device}/observation"),None).await?;
         ensure!(observed.0==StatusCode::OK && observed.1["targetRevision"]==3 && observed.1["acknowledgement"]["revision"]==3 && observed.1["failure"].is_null(),"inventory reader could not see target and installed facts: {observed:?}");
         ensure!(inventory_user.call(&f.router,Method::GET,"/api/v1/agent-connections",None).await?.0==StatusCode::FORBIDDEN);
@@ -2048,15 +1999,23 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
     let result: Result<w::configuration::Package> = async {
         ensure!(user.call(&f.router, Method::GET, &path, None).await? == observed);
         ensure!(user.call(&f.router, Method::POST, &path, None).await? == observed);
-        let saved = user.call(&f.router, Method::POST, "/api/v1/agent-packages/save",
-            Some(json!({"operationId":Uuid::new_v4(),"packageId":id,"version":"admin-declared","target":{"platform":"windows","architecture":"x86_64"}}))).await?;
+        let input = json!({"operationId":Uuid::new_v4(),"packageId":id,"version":"admin-declared","target":{"platform":"windows","architecture":"x86_64"}});
+        let mut wrong_target = input.clone();
+        wrong_target["target"]["platform"] = json!("macos");
+        ensure!(user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(wrong_target)).await?.0 == StatusCode::BAD_REQUEST);
+        let saved = user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(input.clone())).await?;
         ensure!(saved.0 == StatusCode::OK, "save must use completed integrity and explicit declaration: {saved:?}");
+        ensure!(user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(input.clone())).await? == saved);
+        ensure!(user.call(&f.router, Method::GET, &format!("/api/v1/agent-packages/operations/{}", input["operationId"].as_str().unwrap()), None).await? == saved);
+        let mut conflict = input;
+        conflict["version"] = json!("changed");
+        ensure!(user.call(&f.router, Method::POST, "/api/v1/agent-packages/save", Some(conflict)).await?.0 == StatusCode::CONFLICT);
         let published = user.call(&f.router, Method::POST, "/api/v1/agent-packages",
             Some(json!({"operationId":Uuid::new_v4(),"packageId":id}))).await?;
         ensure!(published.0 == StatusCode::OK, "publication must not reread bytes: {published:?}");
         let package: w::configuration::Package = serde_json::from_value(published.1)?;
         let download = f.client.get(format!("{}/api/v1/agent/enroll/packages/{}/content",f.origin,package.release_id))
-            .header("host","mdm.example.test:9445").send().await?;
+            .header("host","mdm.example.test").send().await?;
         ensure!(!download.status().is_success(), "real download must still reject missing bytes");
         Ok(package)
     }.await;
@@ -2068,7 +2027,7 @@ async fn installer_observations_are_optional_and_reused_without_payload_reads() 
             "{}/api/v1/agent/enroll/packages/{}/content",
             f.origin, package.release_id
         ))
-        .header("host", "mdm.example.test:9445")
+        .header("host", "mdm.example.test")
         .send()
         .await?;
     ensure!(

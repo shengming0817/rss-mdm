@@ -2,7 +2,7 @@
 use crate::test_support::{
     agent::*,
     agent_execution::{self as execution, Fixture},
-    http::{Browser, browser_subject},
+    http::{Browser, prepared_subject},
     process::*,
     runtime::*,
     *,
@@ -10,6 +10,66 @@ use crate::test_support::{
 use anyhow::Context;
 use ring::signature::KeyPair;
 use rss_mdm_agent_wire::runtime as wire;
+
+async fn fixture() -> Result<Fixture> {
+    let mut f = Fixture::new().await?;
+    f.mount_access().await?;
+    Ok(f)
+}
+impl Fixture {
+    pub(crate) async fn mount_access(&mut self) -> Result<()> {
+        let f = self;
+        let config: Config = serde_json::from_value(f.base.clone())?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let access_audit = Arc::new(
+            f.authority
+                .audit
+                .on_runtime(
+                    f.authority.identity.runtime.clone(),
+                    f.authority.identity.tenant,
+                    &budget.control(),
+                )
+                .await?,
+        );
+        let recovery = config
+            .recovery_credentials
+            .as_ref()
+            .map(crate::recovery_credentials::Config::open)
+            .transpose()?
+            .map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::Credentials::new(
+                    f.authority.pool.clone(),
+                    f.authority.audit.clone(),
+                    p.keys.clone(),
+                    Some(access_audit),
+                    f.execution.clone(),
+                ))
+            });
+        let key =
+            rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, f.planning.tenant).await?;
+        let routes = rss_mdm_management_http::device_access::routes(
+            rss_mdm_query::cursor::CursorCodec::new(&key)?,
+            f.authority.authorization.clone(),
+            recovery.clone(),
+            Some(f.enrollment.clone()),
+            f.execution.clone(),
+            f.authority.identity.browser(),
+        )
+        .into_axum()
+        .merge(
+            rss_mdm_management_http::recovery_credentials::routes(
+                recovery,
+                rss_mdm_query::cursor::CursorCodec::new(&key)?,
+            )
+            .into_axum(),
+        );
+        f.router = f
+            .router
+            .clone()
+            .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+        Ok(())
+    }
+}
 
 fn context(revision: u64, session: Uuid, account: Uuid) -> Value {
     let mut c = crate::test_support::software_execution::context(
@@ -133,7 +193,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
         json!(["inventory.collect.v1", "device_access.v1"])
     };
     let registration = if windows {
-        seed_profile(&f.base,f.execution.clone(),execution::case_credential(),execution::case_device_id(),
+        seed_service(&f.enrollment,execution::case_credential(),execution::case_device_id(),
             json!({"capabilities":["inventory.collect.v1","task.execute.v1","credentials.windows.v1","device_access.v1"],"platform":"windows","architecture":"x86_64",
                 "executionContext":windows_context()})).await?
     } else {
@@ -151,7 +211,7 @@ async fn setup_platform(f: &mut Fixture, retiring: bool, windows: bool) -> Resul
             None,
             &["account_write"],
         )?);
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     ensure!(
         f.author
@@ -193,7 +253,7 @@ async fn event(
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: real HTTP/PG association ceremony, session switch and replay"]
 async fn first_binding_requires_current_device_and_human_then_stays_admin_only() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy,_registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
@@ -232,9 +292,12 @@ async fn first_binding_requires_current_device_and_human_then_stays_admin_only()
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: real task delivery, separate applied state, policy invalidation"]
 async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let started=user_call(&f,"begin",json!({"operationId":Uuid::new_v4(),"policy":policy}),true).await?;
@@ -266,18 +329,25 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         let id=ready.1["items"][0]["id"].as_str().context("binding")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let grants=crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["inventory_read"])?;
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants).await?;
         ensure!(f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"action":{"kind":"unbind","disposition":"keep"}}))).await?.0==StatusCode::FORBIDDEN);
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: administrator creation, pending Secure Token, late result after unlink"]
 async fn administrator_creation_and_late_completion_cannot_revive_unlinked_binding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let id=Uuid::new_v4();let device=execution::case_device_id();
@@ -312,15 +382,22 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind");
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["account"]["generatedUid"]==account.to_string());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: expired unstarted renewal, late creation after policy edit, scope-exit cleanup"]
 async fn offline_delivery_and_late_creation_converge_without_recreating_account() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;
         let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
@@ -365,20 +442,27 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let cleanup=offer(&f,&c,&registration).await?;
         ensure!(cleanup.1["task"]["payload"]["task"]["action"]["kind"]=="unbind","scope-exit cleanup {cleanup:?}");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: binding administrator revocation independent of policy publisher"]
 async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration)=setup(&mut f).await?;let c=context(2,Uuid::new_v4(),Uuid::new_v4());
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
-        let mut manager=Browser::default();ensure!(manager.login(&f.router,"admin").await?==StatusCode::OK);
-        let manager_id=browser_subject(&manager,&f.router).await?;
-        crate::test_support::identity::set_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
+        let manager = crate::test_support::authority::Authority::prepared_browser("admin")?;
+        let manager_id=prepared_subject(&manager)?;
+        crate::test_support::identity::seed_grants(case_tenant(),&manager_id,crate::test_support::identity::device_grants(Some(execution::case_device_id()),&["account_write"])?).await?;
         let id=Uuid::new_v4();let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let saved_author=std::mem::replace(&mut f.author,manager);
         let saved_authenticator=f.access_authenticator.take();
@@ -387,21 +471,29 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         ensure!(created.0==StatusCode::OK,"manager create {created:?}");
         let offer=offer(&f,&c,&registration).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
-        crate::test_support::identity::set_grants(case_tenant(),&manager_id,vec![]).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&manager_id,vec![]).await?;
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::FORBIDDEN);
         let next=claim(&f,&c).await?;ensure!(next.0==StatusCode::OK && next.1["task"].is_null());
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
         ensure!(listed.0==StatusCode::OK && listed.1["items"][0]["appliedRevision"].is_null(),"publisher remains authorized {listed:?}");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: accepted retirement keeps cleanup polling open with an existing binding"]
 async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let automation = start_automation(&f.base).await?;
+        let outcome = async {
+
         let (policy,registration)=setup_profile(&mut f,true).await?;
         let account=Uuid::new_v4();let c=context(2,Uuid::new_v4(),account);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
@@ -429,6 +521,11 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         ensure!(event(&f,&cleanup,&c,&registration,json!({"kind":"unmanage_result","outcome":"unknown"})).await?.0==StatusCode::OK);
         ensure!(claim(&f,&c).await?.0==StatusCode::OK,"uncertain unmanage must retain communication");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        let automation_stopped = stop_worker(automation).await;
+        outcome.and(stopped).and(automation_stopped)
+
     }).await
 }
 
@@ -547,9 +644,12 @@ async fn windows_withdrawn_setup_settles_only_its_attempt() -> Result<()> {
     windows_setup(false, true).await
 }
 async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let (policy,registration) = setup_platform(&mut f,false,true).await?;
         let c = windows_context();
         ensure!(claim(&f,&c).await?.0 == StatusCode::OK);
@@ -639,6 +739,10 @@ async fn windows_setup(create: bool, withdraw: bool) -> Result<()> {
         ensure!(reset.0 == StatusCode::OK && reset.1["bindingGeneration"] == 1 && reset.1["factorGeneration"] == 2,"reset {reset:?}");
         ensure!(event(&f,&preserved,&c,&registration,json!({"kind":"start"})).await?.0 == StatusCode::FORBIDDEN);
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 
@@ -772,7 +876,7 @@ impl Fixture {
 #[tokio::test]
 #[ignore = "MODULE=device-access.http: operation proof concurrency, replay and rollback"]
 async fn step_up_is_atomic_with_receipts_and_concurrent_duplicates() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy, _) = setup(&mut f).await?;
@@ -817,7 +921,7 @@ async fn binding_rollback_releases_session_guard() -> Result<()> {
 
 async fn binding_settlement_serializes_revocation(wrong_nonce: bool) -> Result<()> {
     use sqlx::{Connection, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let (policy, _) = setup(&mut f).await?;

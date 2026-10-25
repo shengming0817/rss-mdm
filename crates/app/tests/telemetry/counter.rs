@@ -7,7 +7,7 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
         operation: crate::authorization::Permission::InventorySensitiveRead,
         scope: crate::authorization::Scope::Tenant,
     });
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let field = d::FieldDefinition {
         key: d::FieldKey::parse("custom.telemetry_counter")?,
         version: 1,
@@ -46,26 +46,8 @@ async fn published_counter(f: &mut Fixture) -> Result<(Uuid, rss_mdm_inventory::
     put(&mut f.author,&f.router,field_path,json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}})).await?;
     let script = Uuid::new_v4();
     let bytes = b"#!/bin/sh\nprintf '{\"counter\":{\"count\":10}}\\n'\n";
-    let digest: [u8; 32] = Sha256::digest(bytes).into();
-    resource(
-        &mut f.author,
-        &f.router,
-        script,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
     let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"counter":{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false}},"required":["counter"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{"custom.telemetry_counter":{"pointer":"/counter","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":1,"outputBytes":4096,"maxRows":1});
-    resource(&mut f.author,&f.router,script,1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"counter","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
-    ensure!(upload(&f.author, &f.router, script, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        script,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(script, bytes, definition).await?;
     let profile = r::TelemetryProfile::new(r::TelemetryProfileSpec {
         template: r::TelemetryTemplate {
             resource: script.to_string(),
@@ -255,7 +237,7 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
     );
     f.grants
         .retain(|g| g.operation != crate::authorization::Permission::InventorySensitiveRead);
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     for (path, body) in [
         ("/api/v1/telemetry/history", query),
         ("/api/v1/telemetry/aggregate", aggregate),

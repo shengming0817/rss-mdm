@@ -179,6 +179,7 @@ def failure_evidence(directory, created, safe_log_sources, primary, filename="sm
             os.replace(staged,directory/filename)
     except Exception:
         primary.add_note("candidate failure diagnostics could not be persisted")
+    return diagnostics
 
 class CleanupFailure(RuntimeError):
     def __init__(self, records):
@@ -296,7 +297,6 @@ class Candidate:
         self.compose_override=None
         self.created,self.volumes=[],[]
         self.temporary=None
-        self.network_created=False
         self.ingress=None
         self.private_values=[PASSWORD,"candidate-fixture"]
     def command(self,*args,stage,**kwargs):
@@ -515,7 +515,7 @@ class Candidate:
             from candidate_smoke import Browser
             browser=Browser(self.port,self.root/'ca.crt',host=self.host)
             require(browser.call('POST','/api/v1/identity/tenants/'+self.tenant+'/login',
-                                 dict(login='admin',password=PASSWORD))[0]==200,'fixture login failed')
+                                 dict(login='admin',password=(self.operator_root/'account-password').read_text()))[0]==200,'fixture login failed')
             status,trust=browser.call('POST','/api/v1/task-signing/trust',
                 dict(action='prepare',expectedRevision=0),str(uuid.uuid4()))
             require(status==200 and trust['revision']==1,'fixture signing authority failed')
@@ -566,22 +566,42 @@ class Candidate:
         wait(check,"product readiness",seconds=60)
     def __exit__(self,kind,error,tb):
         def record(primary):
-            failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename,self.private_values)
-        if error:record(error)
+            return failure_evidence(self.diagnostics,self.created,{self.server,self.gateway},primary,self.diagnostic_filename,self.private_values)
+        original=record(error) if error else None
         failures=[]
         try:
+            try:
+                records=cleanup(self.created,[])
+                if any(item['outcome']!='removed' for item in records):failures.append(('containers',CleanupFailure(records)))
+            except BaseException as failure:failures.append(('containers',failure))
             if self.compose_environment:
                 try:self.compose('down','--volumes','--remove-orphans',stage=Stage.REMOVE_CONTAINER,timeout=120)
-                except BaseException as failure:failures.append(failure)
+                except BaseException as failure:failures.append(('compose',failure))
             if self.ingress is not None:
                 try:self.ingress.release()
-                except BaseException as failure:failures.append(failure)
+                except BaseException as failure:failures.append(('ingress',failure))
             try:self.pki_stack.close()
-            except BaseException as failure:failures.append(failure)
-            try:cleanup([],self.volumes)
-            except BaseException as failure:failures.append(failure)
+            except BaseException as failure:failures.append(('pki',failure))
+            try:
+                records=cleanup([],self.volumes)
+                if any(item['outcome']!='removed' for item in records):failures.append(('volumes',CleanupFailure(records)))
+            except BaseException as failure:failures.append(('volumes',failure))
             if failures:
+                primary=error if error else failures[0][1]
+                records=list(getattr(primary,'cleanup_records',[]))
+                for stage,failure in failures:
+                    for item in getattr(failure,'cleanup_records',[dict(kind='owner',name=self.name,stage=getattr(getattr(failure,'stage',None),'value',stage),outcome=getattr(failure,'outcome','unavailable'),exit_code=getattr(failure,'exit_code',None))]):
+                        if item not in records:records.append(item)
+                primary.cleanup_records=records
+                evidence=original if original is not None else record(primary)
+                evidence['cleanup']=records
+                try:
+                    with tempfile.TemporaryDirectory(prefix='.smoke-cleanup-',dir=self.diagnostics) as temporary:
+                        staged=Path(temporary)/'failure.json'
+                        staged.write_text(json.dumps(evidence,indent=2)+'\n')
+                        os.replace(staged,self.diagnostics/self.diagnostic_filename)
+                except Exception:primary.add_note('candidate cleanup diagnostics could not be persisted')
                 if error:error.add_note('candidate cleanup failed')
-                else:record(failures[0]);raise failures[0]
+                else:raise primary
         finally:
             if self.temporary and not failures:self.temporary.cleanup()

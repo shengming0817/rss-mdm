@@ -8,6 +8,7 @@
 )]
 //! Shared setup only. Assertions remain with each capability's tests.
 pub(crate) mod authority;
+pub(crate) mod settings;
 pub(crate) mod task_signature;
 pub(crate) use crate::publication_support::pg::case;
 pub(crate) mod identity;
@@ -48,6 +49,7 @@ pub(crate) mod process;
 pub(crate) mod software_execution;
 
 pub(crate) mod agent_execution;
+pub(crate) mod command;
 
 pub(crate) mod planning_http;
 pub(crate) mod publication_http;
@@ -75,3 +77,5 @@ pub(crate) mod tls;
 mod preparation;
 
 pub(crate) mod query_reads;
+
+mod context_validation;

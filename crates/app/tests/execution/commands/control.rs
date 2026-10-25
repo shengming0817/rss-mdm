@@ -33,8 +33,15 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         .status()
             == StatusCode::OK
     );
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
-    crate::test_support::identity::set_grants(
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         crate::test_support::identity::device_grants(
@@ -71,7 +78,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         json!({"kind":"wipe","confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"].as_i64().unwrap()+1}),
     ].into_iter().enumerate() {
         let id = Uuid::new_v4();
-        let response=client.call(Method::POST,"",Some(json!({"operationId":id,"deadline":host.app.clock.unix_seconds()?+300,"action":action}))).await?;
+        let response=client.call(Method::POST,"",Some(json!({"operationId":id,"deadline":host.clock.unix_seconds()?+300,"action":action}))).await?;
         let expected = [
             (StatusCode::BAD_REQUEST, "malformed_request"),
             (StatusCode::NOT_IMPLEMENTED, "action_not_supported"),
@@ -95,7 +102,7 @@ async fn fixed_controls_preserve_uncertainty() -> anyhow::Result<()> {
         };
         action["kind"] = json!(kind);
         let body =
-            json!({"operationId":id,"deadline":host.app.clock.unix_seconds()?+300,"action":action});
+            json!({"operationId":id,"deadline":host.clock.unix_seconds()?+300,"action":action});
         let accepted = client.call(Method::POST, "", Some(body.clone())).await?;
         ensure!(accepted.0 == StatusCode::ACCEPTED, "{kind}: {accepted:?}");
         ensure!(client.call(Method::POST, "", Some(body)).await? == accepted);

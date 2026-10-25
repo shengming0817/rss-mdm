@@ -104,11 +104,16 @@ pub(super) fn report(manifest: &Value, active: bool, version: &str) -> Value {
 #[ignore = "MODULE=apple.ddm: coowner publication and logical policy withdrawal"]
 async fn policy_coowners_share_native_publication_without_fabricating_removal() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let resource = Uuid::new_v4();
-    crate::test_support::planning_http::native_configuration_resource(&mut f.browser,&f.router,resource,"macos","aarch64",
+    crate::test_support::planning_http::native_configuration_resource(&f.planning.runtime, f.planning.tenant, f.commands.content.as_deref().expect("native content"),resource,"macos","aarch64",
         json!({"target":{"kind":"device"},"apply":task(vec![subscription("policy-subscriptions")],vec![]),"remove":task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}})).await?;
@@ -298,7 +303,7 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
         stale.0 == StatusCode::CONFLICT,
         "old-generation cursor accepted: {stale:?}"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         crate::test_support::identity::device_grants(
@@ -324,7 +329,12 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
 #[ignore = "MODULE=apple.ddm: managed Profile takeover and independent withdrawal proof"]
 async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();
@@ -381,8 +391,9 @@ async fn legacy_takeover_retains_guards_until_correlated_absence() -> Result<()>
     );
     let resource = Uuid::new_v4();
     crate::test_support::planning_http::native_configuration_bytes(
-        &mut f.browser,
-        &f.router,
+        &f.planning.runtime,
+        f.planning.tenant,
+        f.commands.content.as_deref().expect("native content"),
         resource,
         "macos",
         "aarch64",

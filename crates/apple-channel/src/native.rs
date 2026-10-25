@@ -209,18 +209,17 @@ pub(crate) async fn resolve(
 
 #[cfg(feature = "integration")]
 impl crate::Apple {
-    /// Seed retained, confirmed prerequisite evidence for an existing operation.
+    /// Seed retained, confirmed prerequisite evidence for a registration generation.
     /// This does not prove authentication, response intake or command execution.
     pub async fn prepare_context_fixture(
         &self,
         c: &mut PgConnection,
         tenant: &str,
+        registration: Uuid,
+        generation: i64,
         operation: Uuid,
     ) -> Result<(), Error> {
         use crate::protection::{self, Part};
-        let (registration, generation): (Uuid, i64) = sqlx::query_as(
-            "SELECT registration,registration_generation FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND id=$2")
-            .bind(tenant).bind(operation).fetch_one(&mut *c).await.map_err(db)?;
         let mut device_report = None;
         for (phase, request, root, fields) in [
             (

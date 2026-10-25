@@ -438,7 +438,7 @@ mod tests {
     use super::*;
     #[test]
     fn signatures_bind_every_field_and_do_not_trust_file_keys() {
-        let private = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let private = include_bytes!("../../tests/fixtures/configuration-signer.pk8");
         let key = Ed25519KeyPair::from_pkcs8(private.as_ref()).unwrap();
         let keys = BTreeMap::from([(
             "current".into(),

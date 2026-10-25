@@ -122,6 +122,18 @@ fn cim_time_requires_full_date_and_offset_and_normalizes_to_utc() {
 #[test]
 fn unsigned_scaling_checks_the_output_range_without_losing_input_precision() {
     assert_eq!(
+        Conversion::Integer
+            .apply(&json!(i64::MAX.to_string()))
+            .unwrap(),
+        json!(i64::MAX)
+    );
+    assert!(
+        Conversion::Integer
+            .apply(&json!(u64::MAX.to_string()))
+            .is_err()
+    );
+
+    assert_eq!(
         Conversion::Scale {
             numerator: 1,
             denominator: 3

@@ -3,11 +3,19 @@ use super::*;
 #[tokio::test]
 #[ignore = "real PG + HTTPS: make t2 MODULE=publication.mapping"]
 async fn record_receipts_and_persisted_source_admission() {
-    let audit_store = audit_store().await;
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let mut input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let mut input = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let original = input.resource_digest;
     input.resource_digest = [0; 32];
     assert!(matches!(
@@ -40,7 +48,7 @@ async fn record_receipts_and_persisted_source_admission() {
     input.expected_resource_revision -= 1;
     let connect = || async {
         PublicationService::connect(
-            try_host(runtime.clone(), audit_store.clone())
+            try_host(runtime.clone(), audit_store.clone(), content.clone())
                 .await
                 .map_err(|_| Error::Identity)?,
             tenant(),
@@ -72,7 +80,7 @@ async fn record_receipts_and_persisted_source_admission() {
     assert!(connect().await.is_ok());
     assert!(
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()).await,
+            host(runtime.clone(), audit_store.clone(), content.clone()).await,
             tenant(),
             format!("{}-alias", server.logical),
             server.winget(),
@@ -89,7 +97,7 @@ async fn record_receipts_and_persisted_source_admission() {
     c.artifacts_base.push_str("changed/");
     assert!(
         PublicationService::connect(
-            host(runtime.clone(), audit_store.clone()).await,
+            host(runtime.clone(), audit_store.clone(), content.clone()).await,
             tenant(),
             server.logical.clone(),
             swapped,
@@ -100,4 +108,6 @@ async fn record_receipts_and_persisted_source_admission() {
         .is_err()
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }

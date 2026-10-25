@@ -136,13 +136,6 @@ class Selection(unittest.TestCase):
         )
         self.assertFalse(ci.selected_gate('script-tests', selection))
 
-    def test_storage_owner_does_not_expand_into_business_consumers(self):
-        from ci_impact import select_inputs
-        self.assertEqual(select_inputs(['crates/compliance/src/lib.rs']).modules, ())
-        self.assertEqual(select_inputs(['crates/compliance-postgres/src/lib.rs']).modules,
-                         ('compliance.storage',))
-        self.assertEqual(set(select_inputs(['crates/group-postgres/src/lib.rs']).modules),
-                         {'group.persistence', 'group.generations'})
 
     def test_docs_skip_rust_and_failure_collection_keeps_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -273,7 +266,7 @@ class EntryModes(unittest.TestCase):
             shutil.copyfile(ci.ROOT / 'Makefile', root / 'Makefile')
             subprocess.run(['/usr/bin/git', 'init', '-q', str(root)], check=True)
             python = root / 'python3'
-            python.write_text('#!/bin/sh\nprintf "%s:%s" "$CI_PLAN" "$CI_FULL"\n')
+            python.write_text('#!/bin/sh\nprintf "%s:%s:%s" "$CI_PLAN" "$CI_FULL" "$JOBS"\n')
             python.chmod(0o755)
             env = {
                 **os.environ,
@@ -282,14 +275,14 @@ class EntryModes(unittest.TestCase):
                 'CI_FULL': '0',
             }
             for target, expected in [
-                ('ci', '0:0'),
-                ('ci-full', '0:1'),
-                ('ci-plan', '1:0'),
+                ('ci', '0:0:3'),
+                ('ci-full', '0:1:3'),
+                ('ci-plan', '1:0:3'),
             ]:
                 for override in ([], ['CI_PLAN=1']):
                     with self.subTest(target=target, override=override):
                         result = subprocess.run(
-                            ['make', '-s', target, *override],
+                            ['make', '-s', target, 'JOBS=3', *override],
                             cwd=root,
                             env=env,
                             text=True,

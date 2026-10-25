@@ -8,7 +8,107 @@ use rss_mdm_resource as r;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+async fn fixture(base: Value) -> Result<Fixture> {
+    let config: Config = serde_json::from_value(base.clone())?;
+    let mut f = Fixture::from_config(base).await?;
+    let (resources, mut f) = Resources::build(move |resources| {
+        Box::pin(async move {
+            resources.extend(std::mem::take(&mut f.resources));
+            let tenant = f.planning.tenant;
+            let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
+                config.runtime_database.options()?,
+                Arc::new(rss_mdm_inventory_service::Store::from_pool(
+                    f.authority.pool.clone(),
+                )),
+                tenant,
+                monotonic(),
+                f.authority.audit.clone(),
+            )
+            .await?;
+            resources.resource(InventoryFixtureResource(inventory.clone()));
+            let telemetry = config
+                .telemetry
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("telemetry configuration missing"))?
+                .open(f.planning.clone(), f.execution.clone())
+                .await?;
+            resources.resource(crate::telemetry::Resource(telemetry.clone()));
+            resources.resource(crate::telemetry::fixture_task(
+                telemetry.clone(),
+                f.command_runtime.clone(),
+                inventory.clone(),
+                config.access_options()?,
+                tenant,
+            )?);
+            let key = rss_mdm_flow_service::storage::cursor_key(&f.plan_runtime, tenant).await?;
+            let audit_budget =
+                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+            let audit = Arc::new(
+                f.authority
+                    .audit
+                    .on_runtime(f.plan_runtime.clone(), tenant, &audit_budget.control())
+                    .await?,
+            );
+            let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+                inventory.clone(),
+                audit,
+                f.plan_runtime.clone(),
+                tenant,
+                Arc::new(crate::clock::SystemClock),
+                &key,
+                Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            ));
+            let routes = rss_mdm_management_http::telemetry::routes(Some(telemetry.clone()))
+                .into_axum()
+                .merge(
+                    rss_mdm_management_http::planning::policies::http::previews(
+                        f.queries.clone(),
+                        Some(telemetry.clone()),
+                    )
+                    .into_axum(),
+                )
+                .merge(
+                    rss_mdm_management_http::assets::routes()
+                        .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                            assets,
+                        }))
+                        .into_axum(),
+                );
+            let native = rss_mdm_agent_channel::router(
+                Arc::new(crate::agent::HttpState {
+                    content: f.content.clone(),
+                    enrollment: f.enrollment.clone(),
+                    audit_store: f.authority.audit.clone(),
+                    access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
+                        f.authority.pool.clone(),
+                    )),
+                    inventory,
+                    telemetry: Some(telemetry),
+                }),
+                rss_mdm_agent_channel::boundary::Envelope {
+                    admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                    requests: Arc::new(tokio::sync::Semaphore::new(32)),
+                    host: "mdm.example.test:9445".into(),
+                    clock: monotonic(),
+                    audit_store: f.authority.audit.clone(),
+                    tenant: tenant.to_string(),
+                },
+            );
+            f.router = f
+                .router
+                .clone()
+                .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?)
+                .merge(Router::new().nest("/api/v1/agent/runtime", native.into_axum()));
+            Ok(f)
+        })
+    })
+    .await?;
+    f.resources = resources;
+    Ok(f)
+}
+
 async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
+    let anchor = expected == "postgres" && projection == r::TelemetryProjection::Both;
     let restore_seconds: i64 = if expected == "postgres" { 30 } else { 3600 };
     let expected_rows = if projection == r::TelemetryProjection::Current {
         0
@@ -24,15 +124,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
     let mut base: Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
     base["telemetry"] = serde_json::to_value(&installation.configuration)?;
-    let mut f = Fixture::from_config(base.clone()).await?;
+    let mut f = fixture(base.clone()).await?;
     let resources = std::mem::take(&mut f.resources);
     let (body,query,receipt_path,other_device,interrupted,gap_evidence)=resources.finish(async {
         f.grants.push(crate::authorization::Grant {operation:crate::authorization::Permission::InventoryFieldsWrite,scope:crate::authorization::Scope::Tenant});
         for operation in [crate::authorization::Permission::InventoryCollect,crate::authorization::Permission::TelemetryMaintain,crate::authorization::Permission::TelemetryDelete] {
             f.grants.push(crate::authorization::Grant {operation,scope:crate::authorization::Scope::AllDevices});
         }
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
-        f.register_profile(if expected=="postgres" && projection==r::TelemetryProjection::Both {json!(["inventory.collect.v1","task.execute.v1","inventory.native.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        f.register_profile(if anchor {json!(["inventory.collect.v1","task.execute.v1","inventory.native.v1","telemetry.collect.v1"])} else {json!(["inventory.collect.v1","task.execute.v1","telemetry.collect.v1"])}).await?;
         ensure!(claim_request(&f.router,Uuid::new_v4()).await?.0==StatusCode::OK);
         let (template,_,_)=f.resource().await?;
         post(&mut f.author,&f.router,"/api/v1/asset-retention-policies",json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"key":"telemetry_test","revision":1,"rawSeconds":if expected=="postgres" {30} else {86400},"summarySeconds":if expected=="postgres" {60} else {172800},"restoreSeconds":restore_seconds}})).await?;
@@ -46,6 +146,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             sample_millis:5000,upload_millis:10000,budget:r::TelemetryBudget {points:64,bytes:65536,resources:1,execution_millis:1000,output_bytes:4096},boost:None,backfill_seconds:3600,
         })?;
         let profile_id=Uuid::new_v4();let bytes=profile.canonical();let digest:[u8;32]=Sha256::digest(&bytes).into();
+        if anchor {
         resource(&mut f.author,&f.router,profile_id,0,json!({"action":"create","kind":"telemetry_profile"})).await?;
         resource(&mut f.author,&f.router,profile_id,1,json!({"action":"version","version":"v1","kind":"telemetry_profile","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"telemetry_profile","artifact":{"reference":"profile","length":bytes.len(),"sha256":digest},"definition":profile}}]})).await?;
         ensure!(upload(&f.author,&f.router,profile_id,&bytes).await?==StatusCode::CREATED);
@@ -55,16 +156,30 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         // The immutable Profile must remain publishable after a compatible catalog upgrade.
         let mut upgraded=field.clone();upgraded.version+=1;upgraded.sources.insert(rss_mdm_inventory::Source::AgentOsquery,1);
         put(&mut f.author,&f.router,"/api/v1/asset-fields/custom.corporate_agent.healthy",json!({"operationId":Uuid::new_v4(),"expectedRevision":field.version,"input":{"action":"put","definition":upgraded}})).await?;
+        } else {
+            let tenant = f.authority.identity.tenant;
+            let version = r::Version::new(tenant, r::Id::new(profile_id.to_string())?, r::Id::new("v1")?, r::Kind::TelemetryProfile,
+                vec![r::Variant::new(r::Platform::MacOS, r::Architecture::Aarch64, r::Id::new("default")?, r::Declaration::TelemetryProfile {
+                    artifact: r::Artifact::new(r::Id::new("profile")?, bytes.len() as u64, r::Digest::from_bytes(digest))?, definition: profile.clone(),
+                })])?;
+            f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await
+            })).await.fold(Ok, |e|Err(anyhow::anyhow!(e)), |e|Err(anyhow::anyhow!(e)), |_|Err(anyhow::anyhow!("seed rollback unconfirmed")), |_|Err(anyhow::anyhow!("seed commit unconfirmed")), |e|Err(anyhow::anyhow!(e)))?;
+            let artifact = r::Artifact::new(r::Id::new("profile")?, bytes.len() as u64, r::Digest::from_bytes(digest))?;
+            rss_mdm_content_service::fixture::artifact(f.content.as_deref().ok_or_else(|| anyhow::anyhow!("telemetry content"))?, &artifact, bytes.clone(), crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400).await?;
+        }
         let scope=Uuid::new_v4();
-        let secondary=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(secondary_peer(&f.base).await?)} else {None};
+        let secondary=if anchor {Some(secondary_peer(&f.base).await?)} else {None};
         let mut targets=vec![json!({"kind":"device","id":case_device_id()})];
         if let Some((_,device,_))=&secondary {targets.push(json!({"kind":"device","id":device}));}
         f.scope(scope,json!(targets)).await?;
         if secondary.is_some() {f.scope(Uuid::from_u128(case::id("telemetry-counter-scope")),json!([{"kind":"device","id":case_device_id()}])).await?;}
 
         let definition=json!({"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}});
+        if anchor {
         let preview=post(&mut f.author,&f.router,"/api/v1/policies/previews",json!({"definition":definition,"after":null,"scopeResult":null})).await?;
         ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1+usize::from(secondary.is_some()) && v.iter().any(|item|item["target"]["device"]==case_device_id() && item["collectionSupported"]==true)),"preview: {preview}");
+        }
         let policy=Uuid::new_v4();
         let policy=post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}}}})).await?;
         let config_path=format!("/api/v1/agent/runtime/telemetry/configurations/{}/{}",policy["id"].as_str().unwrap(),policy["versionId"].as_str().unwrap());
@@ -75,9 +190,9 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         use ring::signature::KeyPair;
         ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519,f.key.public_key().as_ref()).verify(&signed.configuration.signing_bytes(&signed.key_id)?,&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?).map_err(|_|anyhow::anyhow!("configuration signature"))?;
         let configuration=signed.configuration;
-        if expected=="postgres" && projection==r::TelemetryProjection::Both {performance::published_cpu(&mut f).await?;}
-        let gap_evidence=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(gaps::receive(&mut f,&configuration,secondary.as_ref().unwrap()).await?)} else {None};
-        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+        if anchor {performance::published_cpu(&mut f).await?;}
+        let gap_evidence=if anchor {Some(gaps::receive(&mut f,&configuration,secondary.as_ref().unwrap()).await?)} else {None};
+        if anchor {
             let resource_path=format!("/api/v1/resources/{profile_id}");
             let (status,before)=f.author.call(&f.router,Method::GET,&resource_path,None).await?;
             ensure!(status==StatusCode::OK && before["versions"].as_array().is_some_and(|v|v.len()==1),"resource before edit: {status} {before}");
@@ -92,29 +207,32 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         ensure!(configuration.device_id==case_device_id() && configuration.expires_at>configuration.issued_at);
 
         ensure!(matches!(configuration.collector,wire::TelemetryCollector::Script {..}));
-        if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::cross_dataset_sequence(&f,&field).await?; }
+        if anchor { recovery::cross_dataset_sequence(&f,&field).await?; }
         let now=f.planning.clock.unix_seconds()? * 1_000_000;
         let id=Uuid::new_v4();let observation=Uuid::new_v4();
         let mut body=json!({"batchId":id,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":configuration.binding,"observations":[{"id":observation,"sequence":10,"observedAt":now-1_000_000,"values":{"custom.corporate_agent.healthy":{"quality":"valid","value":{"kind":"boolean","value":true},"intervalStart":null}}}]});
-        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+        if anchor {
             body["observations"][0]["values"]["custom.vendor_extra"]=json!({"quality":"valid","value":{"kind":"string","value":"raw-vendor-evidence"},"intervalStart":null});
         }
-        let other_device=if expected=="postgres" && projection==r::TelemetryProjection::Both {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};
+        let other_device=if anchor {Some(signing_gate(&mut f,&config_path,&body,secondary.as_ref().unwrap()).await?)} else {None};
         // A failed transport may precede admission. The Agent queries the original ID
         // before resubmitting its persisted body; absence must not revoke its identity.
         let receipt_path=format!("/api/v1/agent/runtime/telemetry/batches/{id}");
         ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(case_credential()),None).await?.0==StatusCode::NOT_FOUND);
-        if expected=="postgres" && projection==r::TelemetryProjection::Both { recovery::receive_commit_unknown(&mut f,&body).await?; }
+        if anchor { recovery::receive_commit_unknown(&mut f,&body).await?; }
         let path="/api/v1/agent/runtime/telemetry/batches";
+        if anchor {
         for (key,value) in [("tenantId",json!(case::peer())),("source",json!("manual")),("registrationId",json!(Uuid::new_v4()))] {
             let mut forged=body.clone();forged[key]=value;
             ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(forged)).await?.0==StatusCode::BAD_REQUEST);
         }
+        }
         let (status,accepted)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED,"upload: {status} {accepted}");
+        if anchor {
         let (status,replayed)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(body.clone())).await?;
         ensure!(status==StatusCode::ACCEPTED && replayed["replayed"]==true);
-        if expected=="postgres" && projection==r::TelemetryProjection::Both {
+        if anchor {
             let mut extension_conflict=body.clone();
             extension_conflict["observations"][0]["values"]["custom.vendor_extra"]["value"]["value"]=json!("changed-evidence");
             ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(extension_conflict.clone())).await?.0==StatusCode::CONFLICT);
@@ -128,6 +246,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let mut observation_conflict=body.clone();observation_conflict["batchId"]=json!(Uuid::new_v4());
         observation_conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(observation_conflict)).await?.0==StatusCode::CONFLICT);
+        }
         let receipt_path=format!("{path}/{id}");
         if let Some((credential,_,_))=&secondary {
             ensure!(agent_call(&f.router,Method::GET,&receipt_path,Some(credential),None).await?.0==StatusCode::NOT_FOUND,"another registration must not discover a batch receipt");
@@ -141,13 +260,15 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             }
             Ok::<_,anyhow::Error>(())
         }).await??;
+        if anchor {
         let regrouped_id=Uuid::new_v4();let mut regrouped=body.clone();regrouped["batchId"]=json!(regrouped_id);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(regrouped)).await?.0==StatusCode::ACCEPTED);
         published(&f.router,&format!("{path}/{regrouped_id}")).await?;
+        }
         let before_late = if projection!=r::TelemetryProjection::History {
             observed(&f.router,&receipt_path,observation,"snapshot","applied").await?;
             let current=current_field(&mut f.author,&f.router).await?;
-            if expected=="postgres" && projection==r::TelemetryProjection::Both {
+            if anchor {
                 let (_,inventory)=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/inventory",case_device_id()),None).await?;
                 ensure!(inventory["asset"]["device"]["fields"]["custom.vendor_extra"].is_null());
             }
@@ -174,9 +295,12 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let history=post(&mut f.author,&f.router,"/api/v1/telemetry/history",query.clone()).await?;
         ensure!(history["rows"].as_array().is_some_and(|v|v.len()==expected_rows),"history: {history}");
         if expected=="postgres" { recovery::foreign_session_cannot_read(&mut f,&query).await?; }
-        let interrupted=if expected=="postgres" && projection==r::TelemetryProjection::Both { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
+        let interrupted=if anchor { Some(recovery::interrupt_after_backend_write(&mut f,&body).await?) } else { None };
         Ok((body,query,receipt_path,other_device,interrupted,gap_evidence))
     }).await?;
+    if projection != r::TelemetryProjection::Both {
+        return Ok(());
+    }
     if interrupted.is_some() {
         recovery::release_interruption()?;
     }
@@ -201,20 +325,37 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             result["state"] == "complete" && result["converted"].as_u64().is_some_and(|v| v > 0)
         );
     }
-    if projection == r::TelemetryProjection::Both {
-        crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone())
-            .await?;
-    }
-    let mut mismatch = base.clone();
-    mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
-        json!(installation.configuration.ingress.batches_per_minute + 1);
-    ensure!(
-        app(&mismatch).await.is_err(),
-        "a replica must not replace the tenant's fixed admission policy"
-    );
-    let (router, resources) = app(&base).await?;
+    crate::setup::backup::telemetry_fixture::roundtrip(base.clone(), installation.clone()).await?;
+    let grants = f.grants;
+    let author = f.author;
+    f = fixture(base.clone()).await?;
+    f.grants = grants;
+    f.author = author;
+    let router = f.router.clone();
+    let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
+    if expected == "postgres" {
+        let mut mismatch = base.clone();
+        mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
+            json!(installation.configuration.ingress.batches_per_minute + 1);
+        let config: Config = serde_json::from_value(mismatch)?;
+        let binding = config
+            .telemetry
+            .as_ref()
+            .unwrap()
+            .configuration_binding()
+            .await?;
+        ensure!(
+            matches!(rss_mdm_telemetry_service::admit_configuration(
+                &f.planning.runtime,
+                f.planning.tenant,
+                binding
+            )
+            .await, Err(rss_mdm_telemetry_service::Error::Conflict)),
+            "a replica must not replace the tenant's fixed admission policy"
+        );
+    }
             if let Some(interrupted)=&interrupted {
                 let receipt=format!("/api/v1/agent/runtime/telemetry/batches/{}",interrupted["batchId"].as_str().unwrap());
                 published(&router,&receipt).await?;
@@ -229,6 +370,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(history["rows"].as_array().is_some_and(|v| v.len() == expected_rows));
+            if anchor {
             let receipt = agent_call(
                 &router,
                 Method::GET,
@@ -247,8 +389,9 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             )
             .await?;
             ensure!(replay.0 == StatusCode::ACCEPTED && replay.1["replayed"] == true);
+            }
             if projection!=r::TelemetryProjection::Both { return Ok(()); }
-            if expected=="postgres" { f.router=router.clone(); counter::quality_and_sensitive_reads(&mut f).await?; }
+            if expected=="postgres" { counter::quality_and_sensitive_reads(&mut f).await?; }
             use rss_mdm_telemetry_service::maintenance::{Action, Request as Maintenance};
             let start = query["startMicros"].as_i64().unwrap();
             let end = query["endMicros"].as_i64().unwrap();
@@ -329,7 +472,8 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(interrupted)=&interrupted {
                 recovery::retention_finishes(&mut f.author,&router,interrupted,&query).await?;
             }
-            identity::set_grants(case_tenant(), &f.author_id, vec![]).await?;
+            if expected != "postgres" { return Ok(()); }
+            identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
             ensure!(
                 f.author
                     .call(
@@ -343,7 +487,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                     == StatusCode::FORBIDDEN,
                 "continuation must recheck revoked read permission"
             );
-            identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
             // Query a genuine second device with durable samples, not a missing identifier.
             if let Some(other_device) = other_device {
                 let mut denied = query.clone();
@@ -357,7 +501,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                 .await?;
                 ensure!(permitted["rows"].as_array().is_some_and(|v| v.len() == 1));
                 let grants = identity::device_grants(Some(case_device_id()), &["inventory_read"])?;
-                identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+                identity::change_grants(case_tenant(), &f.author_id, grants).await?;
                 ensure!(
                     f.author
                         .call(
@@ -371,7 +515,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
                         == StatusCode::FORBIDDEN
                 );
             } else {
-                identity::set_grants(
+                identity::change_grants(
                     case_tenant(),
                     &f.author_id,
                     identity::device_grants(Some(case_device_id()), &["inventory_read"])?,
@@ -403,7 +547,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(evidence)=&gap_evidence { gaps::withdrawn(&mut f,&router,evidence,&body["policy"]).await?; }
             let registration=pg(&format!("SELECT registration::text FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["batchId"].as_str().unwrap()))?;
             let registration:Uuid=registration.trim().parse()?;
-            identity::set_grants(case_tenant(),&f.author_id,identity::device_grants(Some(case_device_id()), &["credentials","inventory_read"])?).await?;
+            identity::change_grants(case_tenant(),&f.author_id,identity::device_grants(Some(case_device_id()), &["credentials","inventory_read"])?).await?;
             f.author.operation=Some(Uuid::new_v4());
             post(&mut f.author,&router,&format!("/api/v1/devices/{}/registrations/{registration}/revoke",case_device_id()),json!({})).await?;
             f.author.operation=None;
@@ -412,7 +556,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             for operation in [crate::authorization::Permission::PolicyRead, crate::authorization::Permission::ResourceRead] {
                 reader_grants.push(crate::authorization::Grant { operation, scope:crate::authorization::Scope::Tenant });
             }
-            identity::set_grants(case_tenant(), &f.author_id, reader_grants).await?;
+            identity::change_grants(case_tenant(), &f.author_id, reader_grants).await?;
             let (status, summary) = f.author.call(&router, Method::GET,
                 &format!("/api/v1/devices/{}/telemetry-configurations", case_device_id()), None).await?;
             ensure!(status == StatusCode::OK && summary["registration"].is_null()
@@ -636,10 +780,25 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     // Ordinary installation completes its baseline before the administrator sets up signing.
     base["task_signing"] = Value::Null;
     base["agent_pki"] = json!({"mode":"disabled"});
-    let mut initial = Fixture::from_config(base.clone()).await?;
-    let resources = std::mem::take(&mut initial.resources);
+    let (initial, execution, runtime, _, resources) = baseline_application(&base).await?;
+    let mut author = crate::test_support::authority::Authority::prepared_browser("admin")?;
+    identity::seed_grants(
+        case_tenant(),
+        &prepared_subject(&author)?,
+        vec![crate::authorization::Grant {
+            operation: crate::authorization::Permission::ResourceWrite,
+            scope: crate::authorization::Scope::Tenant,
+        }],
+    )
+    .await?;
     resources
-        .finish(partial_initialization_content(&mut initial))
+        .finish(partial_initialization_content(
+            &base,
+            &initial.browser,
+            &mut author,
+            &runtime,
+            &execution.content,
+        ))
         .await?;
     let manifest = crate::baseline::manifest::build(Uuid::parse_str(case_tenant())?)?;
     // This tenant's real provisioned administrator creates the grant and App intent
@@ -662,9 +821,10 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     crate::baseline::reserve_on(&mut tx, &authority).await?;
     tx.commit().await?;
     c.close().await?;
-    let mut f = Fixture::from_config(base.clone()).await?;
-    let resources = std::mem::take(&mut f.resources);
+    let (app, _, _, _, resources) = baseline_application(&base).await?;
+    let router = app.browser;
     let (policy,completed)=resources.finish(async {
+        resume_baseline(app.baseline).await?;
         let phase=pg(&format!("SELECT phase||':'||coalesce(blocked,'') FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?;
         ensure!(phase.trim()=="configured:","baseline incomplete: {phase}");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_group.groups WHERE tenant_id='{}' AND kind='system'",case_tenant()))?.trim()=="3");
@@ -674,26 +834,25 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         let persisted=pg(&format!("SELECT count(*) FROM mdm_policy.policies p JOIN mdm_policy.versions v ON (v.tenant_id,v.id)=(p.tenant_id,p.current_version) JOIN mdm_policy.requests r ON r.tenant_id=p.tenant_id AND r.receipt->>'id'=p.id::text WHERE p.tenant_id='{}'",case_tenant()))?;
         ensure!(expected_policies>0 && persisted.trim().parse::<usize>()?==expected_policies,"baseline policies or original receipts missing");
         // A normal client cannot create system selectors.
-        let (status,_)=f.author.call(&f.router,Method::POST,&format!("/api/v1/groups/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create_system","selector":"all_active","presentation":{"name":"client","description":""}}}))).await?;
+        let (status,_)=author.call(&router,Method::POST,&format!("/api/v1/groups/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"create_system","selector":"all_active","presentation":{"name":"client","description":""}}}))).await?;
         ensure!(status.is_client_error());
         let last=manifest.steps.last().unwrap();
         let policy=Uuid::parse_str(&last.target)?;
         let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
-        let mut administrator=Browser::default();
-        ensure!(administrator.login(&f.router,"admin").await?==StatusCode::OK);
+        let mut administrator = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let agent=manifest.steps.iter().find_map(|s|match &s.action {crate::baseline::manifest::Action::Policy{definition} if matches!(definition.action,rss_mdm_policy::Action::AgentCollection{..})=>Some(definition),_=>None}).unwrap();
-        let (status,_)=administrator.call(&f.router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"after":null,"scopeResult":null}))).await?;
+        let (status,_)=administrator.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"after":null,"scopeResult":null}))).await?;
         ensure!(status==StatusCode::CONFLICT,"unsigned baseline preview claimed execution readiness");
-        let changed=post(&mut administrator,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
+        let changed=post(&mut administrator,&router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
         ensure!(changed["revision"]==2);
         // Lost App checkpoint after owner COMMIT; recovery must use the original
         // operation's receipt even when the user has since disabled this Policy.
         pg(&format!("UPDATE mdm_initialization.baselines SET phase='pending',completed=completed-'{key}' WHERE tenant_id='{tenant}'",key=last.key,tenant=case_tenant()))?;
         Ok((policy,completed))
     }).await?;
-    let mut restarted = Fixture::from_config(base).await?;
-    let resources = std::mem::take(&mut restarted.resources);
+    let (restarted, _, _, _, resources) = baseline_application(&base).await?;
     resources.finish(async {
+        resume_baseline(restarted.baseline).await?;
         ensure!(pg(&format!("SELECT phase FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?.trim()=="configured");
         ensure!(pg(&format!("SELECT (SELECT count(*) FROM jsonb_object_keys(completed)) FROM mdm_initialization.baselines WHERE tenant_id='{}'",case_tenant()))?==completed);
         ensure!(pg(&format!("SELECT state||':'||revision FROM mdm_policy.policies WHERE tenant_id='{}' AND id='{policy}'",case_tenant()))?.trim()=="disabled:2");
@@ -702,7 +861,13 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
     }).await
 }
 
-async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
+async fn partial_initialization_content(
+    base: &Value,
+    router: &Router,
+    author: &mut Browser,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Option<Arc<rss_mdm_content_service::Store>>,
+) -> Result<()> {
     use rss_mdm_content_service::service as content;
     use sqlx::Connection;
     let target = Uuid::new_v4();
@@ -716,20 +881,19 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
         })
         .unwrap();
     resource(
-        &mut f.author,
-        &f.router,
+        author,
+        router,
         target,
         0,
         json!({"action":"instantiate","blueprint":blueprint.id,"version":blueprint.version}),
     )
     .await?;
-    let mut identity =
-        crate::test_support::authority::Authority::from_config(f.base.clone()).await?;
+    let mut identity = crate::test_support::authority::Authority::from_config(base.clone()).await?;
     let resources = std::mem::take(&mut identity.resources);
     resources
         .finish(async {
             let mut c = sqlx::PgConnection::connect_with(
-                &serde_json::from_value::<Config>(f.base.clone())?.access_options()?,
+                &serde_json::from_value::<Config>(base.clone())?.access_options()?,
             )
             .await?;
             let mut tx = c.begin().await?;
@@ -752,17 +916,13 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
                 "baseline_initialize",
             );
             proof.bind_audit(&audit)?;
-            let store = f.content.as_ref().unwrap();
+            let store = content.as_ref().unwrap();
             let budget =
                 rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
             let content_audit = Arc::new(
                 identity
                     .audit
-                    .on_runtime(
-                        f.plan_runtime.clone(),
-                        identity.identity.tenant,
-                        &budget.control(),
-                    )
+                    .on_runtime(runtime.clone(), identity.identity.tenant, &budget.control())
                     .await?,
             );
             let app = content::Access {
@@ -771,10 +931,10 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
                     identity.identity.tenant,
                 ),
                 authorization: identity.authorization.clone(),
-                runtime: f.plan_runtime.clone(),
+                runtime: runtime.clone(),
                 audit_store: content_audit,
                 tenant: identity.identity.tenant,
-                content: f.content.clone(),
+                content: content.clone(),
                 clock: Arc::new(crate::clock::ContentClock(Arc::new(
                     crate::clock::SystemClock,
                 ))),
@@ -836,4 +996,53 @@ async fn partial_initialization_content(f: &mut Fixture) -> Result<()> {
             Ok(())
         })
         .await
+}
+
+async fn baseline_application(
+    base: &Value,
+) -> Result<(
+    crate::native::Routers,
+    crate::execution_assembly::Assembly,
+    Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    Arc<rss_mdm_flow_service::planning::Planning>,
+    Resources,
+)> {
+    let config: Config = serde_json::from_value(base.clone())?;
+    let access = database(base).await?;
+    let audit = access.audit_store_fixture(&config.audit).await?;
+    let (mut app, execution, runtime, planning, resources) = crate::api::application_fixture(
+        config,
+        Arc::new(crate::clock::SystemClock),
+        monotonic(),
+        access,
+        None,
+        audit,
+    )
+    .await?;
+    app.browser = app
+        .browser
+        .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+            "127.0.0.1".parse()?,
+        )));
+    Ok((app, execution, runtime, planning, resources))
+}
+
+async fn resume_baseline(registration: rss_runtime::ManagedTaskRegistration) -> Result<()> {
+    let mut owner = rss_runtime::ShutdownStack::try_new(
+        rss_runtime::TotalDrainBudget::new(Duration::from_secs(15))?,
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    )?;
+    owner.startup()?.stage_task_with_token(registration);
+    let result = tokio::time::timeout(Duration::from_secs(120), async {
+        loop {
+            let phase = pg(&format!("SELECT phase||':'||coalesce(blocked,'') FROM mdm_initialization.baselines WHERE tenant_id='{}'", case_tenant()))?;
+            if phase.trim() == "configured:" { return Ok::<_, anyhow::Error>(()); }
+            ensure!(!phase.starts_with("blocked:"), "baseline blocked: {phase}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }).await;
+    let cleanup = owner.shutdown().join().await?;
+    result??;
+    ensure!(cleanup.is_clean());
+    Ok(())
 }

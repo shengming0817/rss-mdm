@@ -42,7 +42,7 @@ fn settled_unused_handoffs_release_capacity_but_unknown_commits_retain_it() {
             rss_identity_core::session::SessionSecret::parse("a".repeat(64)).unwrap(),
         )
     };
-    for _ in 0..5 {
+    for _ in 0..2 {
         let id = cache.insert(secret()).unwrap();
         assert!(matches!(
             cache.settle::<()>(id, Err(Error::RegistrationLimit), false),

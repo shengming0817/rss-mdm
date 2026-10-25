@@ -10,22 +10,30 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let other = admin(case_a(), "other-a").await?;
     let mdm = proof(case_a(), Channel::Mdm, 1);
     let independent = proof(case_a(), Channel::Mdm, 20);
-    bind(
-        &service,
-        &admin_a,
-        &mdm,
-        crate::test_support::case::name("same-serial"),
-        0,
-    )
-    .await?;
-    let (_, other_channel) = bind(
-        &service,
-        &admin_a,
-        &independent,
-        crate::test_support::case::name("independent-native"),
-        0,
-    )
-    .await?;
+    let mut tx = root.begin().await?;
+    for (credential, device) in [
+        (&mdm, crate::test_support::case::name("same-serial")),
+        (
+            &independent,
+            crate::test_support::case::name("independent-native"),
+        ),
+    ] {
+        rss_mdm_registration_service::device::fixture::native_in(
+            &mut tx,
+            &admin_a,
+            credential,
+            rss_mdm_registration_service::device::fixture::NativeSeed {
+                device,
+                request: Uuid::new_v4(),
+                ids: [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()],
+                windows_profile: Some(crate::enrollment::WindowsProfile::Device),
+            },
+        )
+        .await?;
+    }
+    let other_registration: Uuid = sqlx::query_scalar("SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND state='active'")
+        .bind(case_a()).bind(crate::test_support::case::name("independent-native")).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
 
     let newer = proof(case_a(), Channel::Mdm, 2);
     let (next, second) = bind(
@@ -64,17 +72,15 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await,
         Err(Error::CommitUnknown)
     ));
-    let restart_access = Arc::new(
-        Database::connect(options("mdm_access")?)
-            .await
-            .context("access store admission")?,
-    );
+    let (restart_pool, restart_source, restart_audit) =
+        crate::audit_test_support::request_store().await?;
     let restart = DeviceService::new(
-        restart_access.registration(),
+        Arc::new(rss_mdm_registration_service::Store::from_pool(
+            restart_pool.clone(),
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
         case_a().into(),
-        restart_access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        restart_audit,
     );
     let receipt = restart
         .revoke(
@@ -141,13 +147,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     let third_proof = proof(case_a(), Channel::Mdm, 3);
     let pending = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(
-            &access,
-            &admin_a,
-            crate::test_support::case::name("same-serial"),
-            Channel::Mdm,
-        )
-        .await?,
+        request_id: service
+            .fixture_request(
+                &admin_a,
+                crate::test_support::case::name("same-serial"),
+                Channel::Mdm,
+            )
+            .await?,
         expected_generation: 2,
         source: ReportSource::MdmWindows,
     };
@@ -162,7 +168,7 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .revoke(
                 &admin_a,
                 crate::test_support::case::name("independent-native"),
-                other_channel.registration,
+                other_registration,
                 Uuid::new_v4()
             )
             .await,
@@ -212,13 +218,13 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
     // Failed replacement must leave the existing generation/credential/source fully active.
     let replace = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(
-            &access,
-            &admin_a,
-            crate::test_support::case::name("same-serial"),
-            Channel::Mdm,
-        )
-        .await?,
+        request_id: service
+            .fixture_request(
+                &admin_a,
+                crate::test_support::case::name("same-serial"),
+                Channel::Mdm,
+            )
+            .await?,
         expected_generation: 3,
         source: ReportSource::MdmWindows,
     };
@@ -287,19 +293,19 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
             .await?
             .0
             .registration(),
-        other_channel.registration
+        other_registration
     );
     // A fresh operation cannot reactivate superseded or revoked credential locators.
     for retired in [&mdm, &newer] {
         let retry = BindRegistration {
             operation_id: Uuid::new_v4(),
-            request_id: request(
-                &access,
-                &admin_a,
-                crate::test_support::case::name("same-serial"),
-                Channel::Mdm,
-            )
-            .await?,
+            request_id: service
+                .fixture_request(
+                    &admin_a,
+                    crate::test_support::case::name("same-serial"),
+                    Channel::Mdm,
+                )
+                .await?,
             expected_generation: 4,
             source: ReportSource::MdmWindows,
         };
@@ -317,8 +323,9 @@ async fn revocation_and_replacement_unknown_commit() -> anyhow::Result<()> {
         );
     }
     root.close().await?;
-    restart_access.close().await;
-    access.close().await;
+    restart_source.close().await;
+    restart_pool.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 async fn commit_deadlines(
@@ -400,6 +407,6 @@ async fn bind_and_revoke_settlement_classification() -> anyhow::Result<()> {
     let (access, service, admin_a, mut root) = fixture().await?;
     commit_deadlines(&service, &admin_a, &mut root).await?;
     root.close().await?;
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }

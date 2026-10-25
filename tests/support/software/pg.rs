@@ -69,10 +69,15 @@ pub async fn runtime_at(port: Option<u16>, role: &str) -> Arc<PgRuntime> {
         .unwrap(),
     )
 }
-pub async fn audit_store() -> Arc<rss_mdm_audit_integration::AuditStore> {
-    audit_store_for("mdm_software_driver").await
+pub async fn audit_store(
+    runtime: Arc<PgRuntime>,
+) -> (Arc<rss_mdm_audit_integration::AuditStore>, sqlx::PgPool) {
+    audit_store_for(runtime, "mdm_software_driver").await
 }
-pub async fn audit_store_for(role: &str) -> Arc<rss_mdm_audit_integration::AuditStore> {
+pub async fn audit_store_for(
+    runtime: Arc<PgRuntime>,
+    role: &str,
+) -> (Arc<rss_mdm_audit_integration::AuditStore>, sqlx::PgPool) {
     let c = config();
     let options = sqlx::postgres::PgConnectOptions::new()
         .host("localhost")
@@ -90,18 +95,19 @@ pub async fn audit_store_for(role: &str) -> Arc<rss_mdm_audit_integration::Audit
     let cancel = tokio_util::sync::CancellationToken::new();
     let cutoff = Deadline::from_timeout(&Timer, Duration::from_secs(20)).unwrap();
     let control = rss_audit_postgres::Control::new(&Timer, cutoff, cutoff, &cancel);
-    Arc::new(
+    let audit = Arc::new(
         rss_mdm_audit_integration::AuditStore::new(
-            pool,
+            pool.clone(),
             rss_audit_postgres::Integrity::Plain,
-            runtime_at(None, role).await,
+            runtime,
             tenant(),
             Default::default(),
             &control,
         )
         .await
         .unwrap(),
-    )
+    );
+    (audit, pool)
 }
 pub fn sql(statement: &str) -> String {
     use std::io::Write;

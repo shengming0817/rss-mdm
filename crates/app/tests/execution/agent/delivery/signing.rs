@@ -12,9 +12,9 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
     resources.finish(async {
         f.grants.extend(crate::test_support::identity::device_grants(None,&["inventory_collect"])?);
         f.grants.push(crate::authorization::Grant { operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant });
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         let context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
-        let registration=seed_profile(&f.base,f.execution.clone(),case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
+        let registration=seed_service(&f.enrollment,case_credential(),case_device_id(),json!({"capabilities":["inventory.collect.v1","inventory.native.v1"],"platform":"macos","architecture":"aarch64","executionContext":context})).await?;
         let device=registration["deviceId"].as_str().unwrap();
         f.scope(case_task_scope(),json!([{"kind":"device","id":device}])).await?;
         let (id,engines)=collection(&mut f).await?;
@@ -48,7 +48,7 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                 let queued=unsigned.service.claim_action(&principal,&input,&audit).await?;
                 ensure!(queued["task"].is_null());
                 ensure!(run_count(policy)?.trim()=="1","matching collection was not admitted");
-                let stack=worker(&f.base).await?;
+                let stack=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
                 let result=async {
                     tokio::time::timeout(Duration::from_secs(30),async {
                         loop {

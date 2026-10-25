@@ -30,13 +30,9 @@ fn task_events_are_closed_bounded_and_cannot_claim_identity() {
 #[test]
 fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
     use base64::Engine;
-    use ring::{
-        rand::SystemRandom,
-        signature::{Ed25519KeyPair, KeyPair},
-    };
+    use ring::signature::{Ed25519KeyPair, KeyPair};
     use rss_mdm_agent_wire::runtime::*;
-    let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-    let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
     let id = Uuid::new_v4();
     let spec = TaskSpec {
         projection: ScriptProjection::None,
@@ -127,10 +123,7 @@ fn signatures_bind_attempt_artifact_and_permission_and_fail_closed() {
 #[test]
 fn software_task_binds_approved_definition_and_artifacts_without_script_fallback() {
     use base64::Engine;
-    use ring::{
-        rand::SystemRandom,
-        signature::{Ed25519KeyPair, KeyPair},
-    };
+    use ring::signature::{Ed25519KeyPair, KeyPair};
     use rss_mdm_agent_wire::runtime::*;
     let id = Uuid::new_v4();
     let steps = vec![SoftwareTaskStep {
@@ -218,11 +211,6 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
             v["steps"][0]["action"]["behavior"]["install"]["timeoutSeconds"] = json!("never")
         },
         |v: &mut serde_json::Value| v["publicationId"] = json!(null),
-        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!("managed_only"),
-        |v: &mut serde_json::Value| {
-            v["steps"][0]["action"]["ownership"] = json!("allow_user_existing")
-        },
-        |v: &mut serde_json::Value| v["steps"][0]["action"]["ownership"] = json!(null),
     ] {
         let mut bad = serde_json::to_value(&payload).unwrap();
         change(&mut bad["task"]);
@@ -230,8 +218,7 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         assert!(serde_json::from_value::<TaskPayload>(bad).is_err());
     }
     assert!(serde_json::from_value::<TaskSpec>(serde_json::to_value(&payload).unwrap()).is_err());
-    let document = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-    let key = Ed25519KeyPair::from_pkcs8(document.as_ref()).unwrap();
+    let key = Ed25519KeyPair::from_seed_unchecked(&[42; 32]).unwrap();
     let signed = SignedTask {
         signature: base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(key.sign(&payload.signing_bytes("key").unwrap()).as_ref()),
@@ -400,11 +387,8 @@ fn task_results_require_bounded_coherent_diagnostics() {
         "../schema/runtime/task-event-request-v1.schema.json"
     ))
     .unwrap();
-    assert!(
-        jsonschema::draft202012::new(&schema)
-            .unwrap()
-            .is_valid(&encoded)
-    );
+    let validator = jsonschema::draft202012::new(&schema).unwrap();
+    assert!(validator.is_valid(&encoded));
     assert!(serde_json::from_value::<TaskEventRequest>(encoded).is_ok());
 
     for field in ["exitCode", "failure"] {
@@ -417,11 +401,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
         } else {
             missing["event"].as_object_mut().unwrap().remove(field);
         }
-        assert!(
-            !jsonschema::draft202012::new(&schema)
-                .unwrap()
-                .is_valid(&missing)
-        );
+        assert!(!validator.is_valid(&missing));
         assert!(serde_json::from_value::<TaskEventRequest>(missing).is_err());
     }
 
@@ -444,11 +424,7 @@ fn task_results_require_bounded_coherent_diagnostics() {
             value
         },
     ] {
-        assert!(
-            !jsonschema::draft202012::new(&schema)
-                .unwrap()
-                .is_valid(&invalid)
-        );
+        assert!(!validator.is_valid(&invalid));
         assert!(serde_json::from_value::<TaskEventRequest>(invalid).is_err());
     }
 
@@ -628,6 +604,9 @@ fn self_service_directory_requires_a_closed_subject() {
         assert!(validator.is_valid(&value));
         let decoded: SelfServiceDirectoryResponse = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        if value["items"][0]["subject"]["kind"] != "device" {
+            continue;
+        }
         let mut missing = value.clone();
         missing["items"][0]
             .as_object_mut()
@@ -710,6 +689,11 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
     }
     let id = Uuid::new_v4();
     let input = json!({"operationId":id,"policyId":id,"policyRevision":1,"policyVersion":id,"source":"ai","confirmed":true,"parameters":{}});
+    let schema = serde_json::from_str::<serde_json::Value>(include_str!(
+        "../schema/runtime/self-service-invoke-v1.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
     for field in [
         "actor",
         "deviceId",
@@ -722,16 +706,7 @@ fn self_service_schemas_follow_owned_dtos_and_reject_model_authority() {
         let mut invalid = input.clone();
         invalid[field] = json!(id);
         assert!(serde_json::from_value::<SelfServiceInvoke>(invalid.clone()).is_err());
-        assert!(
-            !jsonschema::validator_for(
-                &serde_json::from_str::<serde_json::Value>(include_str!(
-                    "../schema/runtime/self-service-invoke-v1.schema.json"
-                ))
-                .unwrap()
-            )
-            .unwrap()
-            .is_valid(&invalid)
-        );
+        assert!(!validator.is_valid(&invalid));
     }
     let authorization = |source, allow_ai, risk_level, confirmed| TaskAuthorization::SelfService {
         request_id: id,

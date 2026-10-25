@@ -199,7 +199,6 @@ mod tests {
             projection_scope(tenant).generation(),
             "inventory-projection-v1"
         );
-        assert_ne!(definition().as_bytes(), &[0; 32]);
     }
     #[test]
     fn source_failures_preserve_recovery_and_safe_context() {

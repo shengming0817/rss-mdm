@@ -22,7 +22,7 @@ fn rsql_query(condition: Value) -> Value {
     )
     .unwrap()
 }
-async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result<()> {
+fn permissions(device: Option<&str>, write: bool) -> Result<Vec<crate::authorization::Grant>> {
     let mut grants = crate::test_support::identity::device_grants(
         device,
         if write {
@@ -41,7 +41,86 @@ async fn permissions(subject: &str, device: Option<&str>, write: bool) -> Result
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
+    Ok(grants)
+}
+
+struct AssetRuntime(Arc<rss_transactional_messaging_postgres::PgRuntime>);
+impl rss_runtime::ManagedResource for AssetRuntime {
+    fn name(&self) -> &str {
+        "asset-test-runtime"
+    }
+    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
+        self.0.close().await;
+        Ok(())
+    }
+}
+// Only asset routes and the real authentication/audit boundary; no Agent or Planning.
+struct AssetHttp {
+    assets: Arc<rss_mdm_inventory_service::assets::AssetService>,
+    runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    resources: Resources,
+    router: Router,
+    author: Browser,
+    author_id: String,
+    grants: Vec<crate::authorization::Grant>,
+}
+impl AssetHttp {
+    async fn open() -> Result<Self> {
+        let mut authority = authority::Authority::open().await?;
+        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+        let runtime = crate::planning::test_support::runtime(tenant).await;
+        authority.resources.resource(AssetRuntime(runtime.clone()));
+        let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
+        authority
+            .resources
+            .resource(InventoryFixtureResource(inventory.clone()));
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
+        let audit = Arc::new(
+            authority
+                .audit
+                .on_runtime(runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
+        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
+            inventory,
+            audit,
+            runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        ));
+        let routes = Router::new()
+            .nest(
+                "/api/v1",
+                rss_mdm_management_http::assets::routes()
+                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
+                        assets: assets.clone(),
+                    }))
+                    .into_axum(),
+            )
+            .merge(authority.authorization());
+        let router = authority.router(routes)?;
+        let author = authority.browser("other")?;
+        let author_id = prepared_subject(&author)?;
+        let grants = crate::test_support::identity::device_grants(
+            None,
+            &["inventory_read", "inventory_assign"],
+        )?;
+        crate::test_support::identity::seed_grants(case_tenant(), &author_id, grants.clone())
+            .await?;
+        Ok(Self {
+            assets,
+            runtime,
+            resources: authority.resources,
+            router,
+            author,
+            author_id,
+            grants,
+        })
+    }
 }
 
 struct Fixture {
@@ -50,7 +129,6 @@ struct Fixture {
     automation: crate::planning::test_support::RunningAutomation,
     router: Router,
     browser: Browser,
-    subject: String,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
@@ -83,8 +161,8 @@ impl Fixture {
         );
         let router = authority.router(routes.merge(authority.authorization()))?;
         let browser = authority::Authority::prepared_browser("admin")?;
-        let subject = browser_subject(&browser, &router).await?;
-        permissions(&subject, None, true).await?;
+        let subject = prepared_subject(&browser)?;
+        identity::seed_grants(case_tenant(), &subject, permissions(None, true)?).await?;
         pg(&format!(
             "INSERT INTO mdm_access.devices VALUES('{TENANT}','asset-a'),('{TENANT}','asset-b');",
             TENANT = case_tenant()
@@ -103,7 +181,6 @@ impl Fixture {
             automation,
             router,
             browser,
-            subject,
         })
     }
     async fn close(self) -> Result<()> {

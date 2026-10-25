@@ -36,11 +36,9 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         ]),
         local.clone(),
         cfg.clone(),
-        false,
-        false,
     )
     .await?;
-    let subject = browser_subject(&f.author, &f.router).await?;
+    let subject = prepared_subject(&f.author)?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[
@@ -70,13 +68,8 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants.clone()).await?;
-    let stack = execution::worker_for(
-        &serde_json::from_value(cfg)?,
-        f.execution.clone(),
-        Default::default(),
-    )
-    .await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &subject, grants.clone()).await?;
+    let stack = execution::worker(&cfg, f.execution.clone()).await?;
     let resource = Uuid::new_v4();
     let resource_path = format!("/api/v1/resources/{resource}");
     let bytes = b"frozen native MSI bytes";
@@ -225,7 +218,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         .filter(|g| g.operation != crate::authorization::Permission::SoftwareWrite)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &subject, without_enable).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &subject, without_enable).await?;
     let denied = f
         .author
         .call(&f.router, Method::POST, collection, Some(request.clone()))
@@ -235,7 +228,7 @@ async fn publication_http_authority_receipts_and_public_native_binding() -> Resu
         "draft permission: {denied:?}"
     );
     ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::NOT_FOUND);
-    crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &subject, grants).await?;
     let accepted = f
         .author
         .call(&f.router, Method::POST, collection, Some(request.clone()))

@@ -40,8 +40,10 @@ tokio = { workspace = true, features = ["time", "io-util", "macros"] }
 workspace = true
 
 [dev-dependencies]
+rss-mdm-software-service = { workspace = true, features = ["integration"] }
+rss-mdm-resource-postgres = { workspace = true, features = ["integration"] }
 rss-mdm-native-protection.workspace = true
-rss-mdm-content-service.workspace = true
+rss-mdm-content-service = { workspace = true, features = ["integration"] }
 rss-audit-core.workspace = true
 
 rss-audit-postgres.workspace = true

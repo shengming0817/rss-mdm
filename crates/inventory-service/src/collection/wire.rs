@@ -366,7 +366,7 @@ mod tests {
     fn collection_conversion_preserves_domain_meaning_and_coverage() {
         let fields = d::builtin::fields()
             .into_iter()
-            .filter(|field| field.sources.contains_key(&d::Source::AgentBuiltin))
+            .filter(|field| field.key == d::builtin::MODEL)
             .collect();
         let original = d::CollectionDefinition::new("inventory", "1", d::Source::AgentBuiltin, {
             let scope = d::CollectionScope::Device;

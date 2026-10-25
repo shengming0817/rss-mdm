@@ -14,14 +14,46 @@ async fn local_identity_mdm_authorization_and_revocation() -> Result<()> {
             let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
             let management = fixture.identity.management_tenant.to_string();
             let mut initializer = Browser::default();
-            let login = initializer
-                .call(
-                    &initial,
-                    Method::POST,
-                    &format!("/api/v1/identity/tenants/{management}/login"),
-                    Some(json!({"login":"bootstrap","password":PASSWORD})),
+            let response = initial
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri(format!("/api/v1/identity/tenants/{management}/login"))
+                        .header("host", "mdm.example.test")
+                        .header("origin", "https://mdm.example.test")
+                        .header("x-identity-request", "1")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(
+                            &json!({"login":"bootstrap","password":PASSWORD}),
+                        )?))?,
                 )
                 .await?;
+            let status = response.status();
+            let cookies = response
+                .headers()
+                .get_all("set-cookie")
+                .iter()
+                .collect::<Vec<_>>();
+            ensure!(
+                !cookies.is_empty(),
+                "successful login must issue a session cookie"
+            );
+            for header in cookies {
+                let text = header.to_str()?;
+                ensure!(
+                    text.contains("Secure")
+                        && text.contains("HttpOnly")
+                        && text.contains("Path=/")
+                        && !text.contains("Domain=")
+                );
+                let (name, value) = text.split(';').next().unwrap().split_once('=').unwrap();
+                initializer.cookies.insert(name.into(), value.into());
+            }
+            let value: Value =
+                serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
+            initializer.csrf = value["csrfToken"].as_str().map(str::to_owned);
+            let login = (status, value);
             ensure!(login.0 == StatusCode::OK);
             let principal = login.1["identity"]["principalId"]
                 .as_str()
@@ -140,7 +172,7 @@ async fn native_accounts(
     // A business-tenant administrator is not the installation initializer.
     // Prove actual revocation using the independent member, leaving admin live
     // to exercise the remaining membership/password/session revocation matrix.
-    set_management_grants(principal, json!(["identity_accounts_manage"])).await?;
+    change_management_grants(principal, json!(["identity_accounts_manage"])).await?;
     ensure!(
         browser
             .call(product, Method::GET, &format!("{tenant}/accounts"), None)
@@ -148,7 +180,7 @@ async fn native_accounts(
             .0
             == StatusCode::OK
     );
-    set_management_grants(principal, json!([])).await?;
+    change_management_grants(principal, json!([])).await?;
     let target_state = || {
         pg(&format!(
             "SELECT jsonb_build_object('account',(SELECT to_jsonb(a) FROM identity_authority.accounts a WHERE tenant_id='{tenant}' AND principal_id='{target}'),'membership',(SELECT to_jsonb(m) FROM identity_authority.memberships m WHERE tenant_id='{tenant}' AND principal_id='{target}'),'sessions',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY session_id),'[]'::jsonb) FROM identity_authority.sessions s WHERE tenant_id='{tenant}' AND principal_id='{target}'))::text",
@@ -350,7 +382,7 @@ async fn native_accounts(
     let created = created?;
     ensure!(created.0 == StatusCode::CREATED && created.1["principalId"].is_string());
     let mut managed = Browser::default();
-    ensure!(managed.login(admin_router, "managed-user").await? == StatusCode::OK);
+    ensure!(managed.login_password(admin_router, "managed-user", identity::PASSWORD).await? == StatusCode::OK);
     ensure!(managed.call(admin_router, Method::POST, &format!("{tenant}/account/password"), Some(json!({"currentPassword":PASSWORD,"password":"Self-changed-fixture-password-2026!"}))).await?.0 == StatusCode::OK);
     let wrong_tenant = &format!("/api/v1/identity/tenants/{}/session", case::peer());
     ensure!(

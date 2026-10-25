@@ -431,8 +431,14 @@ async fn unified_ca_initialization_replays_and_isolates_tenants() -> Result<()> 
         &json!({"receipt":{"tenantId":Uuid::new_v4()}}),
     )?;
     let mut first_names = Vec::new();
-    for index in 0..2 {
-        let tenant = Uuid::new_v4();
+    for (index, tenant) in [
+        crate::test_support::case::tenant(),
+        crate::test_support::case::peer(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tenant = Uuid::parse_str(tenant)?;
         let journal = Journal::open(&directory.join(format!("operation-{index}")))?;
         let agent_origin = format!("https://agent-{index}.example.test");
         let windows_origin = format!("https://windows-{index}.example.test");

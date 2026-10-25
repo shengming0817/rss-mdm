@@ -1,6 +1,6 @@
 //! Real HTTP/PG source evidence and durable Policy authority; no OS success is inferred.
 use crate::test_support::agent_execution::*;
-use crate::test_support::{agent::*, http::*, process::*, runtime::*, *};
+use crate::test_support::{agent::*, process::*, runtime::*, *};
 use anyhow::Context;
 async fn fixture() -> Result<Fixture> {
     let mut base: Value =
@@ -9,22 +9,17 @@ async fn fixture() -> Result<Fixture> {
         json!({"windows":"https://enroll.example.test","macos":"https://enroll.example.test/"});
     let (resources, mut f) = Resources::build(move |resources| {
         Box::pin(async move {
-    let mut f = Fixture::from_config(base).await?;
-    resources.extend(std::mem::take(&mut f.resources));
-    f.grants
-        .extend(identity::device_grants(None, &["enrollment"])?);
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
-    f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
-        .await?;
-    let setup = start_automation(&f.base).await?;
-    let group = Uuid::new_v4();
-    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"MDM missing","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
-    stop_worker(setup).await?;
-    f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
-        .await?;
-    Ok(f)
+            let mut f = Fixture::from_config(base).await?;
+            resources.extend(std::mem::take(&mut f.resources));
+            f.grants
+                .extend(identity::device_grants(None, &["enrollment"])?);
+            identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+            f.register_profile(json!(["inventory.collect.v1", "mdm.enrollment.v1"]))
+                .await?;
+            Ok(f)
+        })
     })
-    }).await?;
+    .await?;
     f.resources = resources;
     Ok(f)
 }
@@ -65,12 +60,45 @@ async fn report(f: &Fixture, sequence: u64, state: &str) -> Result<()> {
 async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_identity()
 -> Result<()> {
     let mut f = fixture().await?;
+    let setup = start_automation(&f.base).await?;
+    let group = Uuid::new_v4();
+    planning_http::call(&mut f.author,&f.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"MDM missing","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"channel.mdm.enrollment","op":"eq","value":{"kind":"string","value":"unenrolled"}}}})).await?;
+    stop_worker(setup).await?;
+    f.scope(case_task_scope(), json!([{"kind":"group","id":group}]))
+        .await?;
+    let runtime = agent_runtime(&f.authority).await?;
+    f.resources
+        .resource(InventoryFixtureResource(runtime.clone()));
+    let reports = rss_mdm_agent_channel::router(
+        Arc::new(crate::agent::HttpState {
+            content: None,
+            enrollment: f.enrollment.clone(),
+            audit_store: f.authority.audit.clone(),
+            access: Arc::new(rss_mdm_agent_channel::Store::from_pool(
+                f.authority.pool.clone(),
+            )),
+            inventory: runtime.clone(),
+            telemetry: None,
+        }),
+        rss_mdm_agent_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            requests: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test:9445".into(),
+            clock: monotonic(),
+            audit_store: f.authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
+    );
+    f.router = f
+        .router
+        .merge(Router::new().nest("/api/v1/agent/runtime", reports.into_axum()));
+    let inventory_worker = crate::inventory_runtime::test_support::start(runtime).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     let id = publish(&mut f).await?;
     let overlapping = publish(&mut f).await?;
     let automation = start_automation(&f.base).await?;
-    let workers = worker(&f.base).await?;
+    let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     report(&f, 0, "unknown").await?;
     let response = claim_request(&f.router, Uuid::new_v4()).await?;
     ensure!(response.0 == StatusCode::OK && response.1["task"].is_null(), "{response:?}");
@@ -147,6 +175,7 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
         .trim()
             == "0"
     );
+    stop_worker(inventory_worker).await?;
     stop_worker(workers).await?;
     stop_worker(automation).await?;
     Ok(())
@@ -156,13 +185,19 @@ async fn explicit_source_absence_drives_one_standard_entry_without_creating_mdm_
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()> {
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
             publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
-            let workers = worker(&f.base).await?;
-            report(&f, 0, "unenrolled").await?;
+            let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+            inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
             let task = claim(&f.router).await?;
             let grants = f
                 .grants
@@ -170,7 +205,7 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
                 .filter(|g| g.operation != crate::authorization::Permission::Enrollment)
                 .cloned()
                 .collect();
-            identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+            identity::change_grants(case_tenant(), &f.author_id, grants).await?;
             let response = task_event_request(
                 &f.router,
                 &task,
@@ -193,13 +228,21 @@ async fn scope_wide_grant_is_rechecked_before_opening_enrollment() -> Result<()>
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Result<()> {
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
             let id = publish(&mut f).await?;
             let automation = start_automation(&f.base).await?;
-            let workers = worker(&f.base).await?;
-            report(&f, 0, "unenrolled").await?;
+            let workers =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
+            inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
             let task = claim(&f.router).await?;
             task_event(&f.router, &task, json!({"kind":"received"})).await?;
             task_event(&f.router, &task, json!({"kind":"start"})).await?;
@@ -210,24 +253,13 @@ async fn uncertain_entry_survives_application_restart_and_policy_disable() -> Re
             )
             .await?;
             stop_worker(workers).await?;
-            let access = database(&f.base).await?;
-            let (router, execution, _, _, resources) = crate::api::application_fixture(
-                serde_json::from_value(f.base.clone())?,
-                Arc::new(crate::clock::SystemClock),
-                monotonic(),
-                access.clone(),
-                None,
-                access
-                    .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                    .await?,
-            )
-            .await?;
+            let mut rebuilt =
+                crate::test_support::agent_execution::Fixture::from_config(f.base.clone()).await?;
+            let resources = std::mem::take(&mut rebuilt.resources);
             resources
                 .finish(async {
-                    let execution = execution.service;
-                    let router = router.layer(axum::Extension(
-                        rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
-                    ));
+                    let execution = rebuilt.execution.clone();
+                    let router = rebuilt.router.clone();
                     execution.recover_action_fixture(id).await?;
                     let empty = claim_request(&router, Uuid::new_v4()).await?;
                     ensure!(empty.0 == StatusCode::OK && empty.1["task"].is_null());
@@ -271,11 +303,17 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
     use rss_mdm_registration_service::enrollment::native::{AgentPolicyAuthority, Coordinates};
     use sqlx::Connection;
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
-        report(&f, 0, "unenrolled").await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
         let directory = "/api/v1/agent/runtime/self-service?source=human";
         let invoke = "/api/v1/agent/runtime/self-service/invocations";
         ensure!(claim_request(&f.router, Uuid::new_v4()).await?.1["task"].is_null());
@@ -325,9 +363,8 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
         f.execution.current(&mut tx, &coordinates).await?;
         tx.rollback().await?;
-        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
         let admission = rss_mdm_registration_service::enrollment::native::agent_policy(
-            &access.registration(), case_tenant(), coordinates.id, Some(&credential("employee-mdm")), f.execution.clone(),
+            &f.authority.registration, case_tenant(), coordinates.id, Some(&credential("employee-mdm")), f.execution.clone(),
         ).await?;
         // Hold the execution watermark first. Native authentication must wait there,
         // without holding the registration lock needed by an in-flight handoff.
@@ -360,7 +397,7 @@ async fn employee_enrollment_is_opt_in_idempotent_and_rechecks_publication() -> 
         let (authenticated, released) = tokio::join!(admission.current_request(&mut native_tx), release);
         released?; authenticated?;
         native_tx.rollback().await?;
-        blocker.close().await?; observer.close().await?; access.close().await;
+        blocker.close().await?; observer.close().await?;
 
         definition["selfService"]["published"] = json!(false);
         post(&mut f.author, &f.router, &path, json!({"operationId":Uuid::new_v4(),"expectedRevision":policy["revision"],
@@ -383,13 +420,19 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
     use crate::authorization::{OperationAuthority, Permission};
     use sqlx::{Connection, Row};
     let mut f = fixture().await?;
+    f.scope(
+        case_task_scope(),
+        json!([{"kind":"device","id":case_device_id()}]),
+    )
+    .await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let management = f.grants.iter().filter(|g| g.operation != Permission::InventoryRead).cloned().collect();
         identity::independent_source_read(case_tenant(), &f.author_id, management).await?;
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
-        report(&f, 0, "unenrolled").await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        inventory::seed_unenrolled(case_device_id())?;
+            planning_http::await_ingress().await?;
         let id = Uuid::new_v4();
         let policy = post(&mut f.author, &f.router, &format!("/api/v1/policies/{id}"), json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{
             "scope":case_task_scope(),"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":300,"schedule":{"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null}},
@@ -404,10 +447,8 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         ensure!(native.0 == StatusCode::OK, "{native:?}");
         task_event(&f.router, &task, json!({"kind":"enrollment_result","outcome":"opened"})).await?;
         let request = Uuid::parse_str(native.1["enrollmentId"].as_str().unwrap())?;
-        let access = crate::Database::connect(crate::device::test_support::options("mdm_access")?).await?;
-        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&access.registration(), case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
-        let mut admin = Browser::default();
-        ensure!(admin.login(&f.router, "admin").await? == StatusCode::OK);
+        let admission = rss_mdm_registration_service::enrollment::native::agent_policy(&f.authority.registration, case_tenant(), request, Some(&credential("source-read-continuation")), f.execution.clone()).await?;
+        let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
         let mut tx = c.begin().await?;
         crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
@@ -426,7 +467,6 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
         tx.rollback().await?;
         ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='mdm'",case_tenant()))?.trim() == "0");
         c.close().await?;
-        access.close().await;
         stop_worker(workers).await?;
         stop_worker(automation).await?;
         Ok(())
@@ -439,6 +479,28 @@ async fn native_continuation_rejects_independent_source_read_revocation_after_op
 #[ignore = "make t2 MODULE=planning.onboarding"]
 async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Result<()> {
     let mut f = Fixture::new().await?;
+    let tenant = f.authority.identity.tenant;
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(
+        f.authority.audit.clone(),
+        tenant,
+        &[7; 32],
+    )?);
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            f.authority.identity.authority.clone(),
+            tenant,
+        ),
+    );
+    let routes = rss_mdm_management_http::device_views::routes(
+        sessions,
+        f.authority.identity.authority.clone(),
+        None,
+    )
+    .with_state(associations.clone())
+    .into_axum();
+    f.router = f
+        .router
+        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1", "task.execute.v1", "device.unmanage.v1"])).await?;
@@ -451,10 +513,10 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let denied = f.author.call(&f.router,Method::POST,&path,Some(input.clone())).await?;
         ensure!(denied.0==StatusCode::FORBIDDEN,"{denied:?}");
         f.grants.extend(identity::device_grants(None,&["device_unmanage","inventory_assign"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         post(&mut f.author,&f.router,&path,input).await?;
         let automation = start_automation(&f.base).await?;
-        let workers = worker(&f.base).await?;
+        let workers = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         let empty = claim_request(&f.router,Uuid::new_v4()).await?;
         ensure!(empty.0==StatusCode::OK && empty.1["task"].is_null(),"manual policy ran automatically: {empty:?}");
         ensure!(pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{}' AND policy='{policy}'",case_tenant()))?.trim()=="0");
@@ -495,11 +557,9 @@ async fn unmanage_policy_requires_authority_and_preserves_accepted_exit() -> Res
         let force_path=format!("/api/v1/device-retirements/{retirement}/force-revoke");
         let receipt=post(&mut f.author,&f.router,&force_path,forced.clone()).await?;
         ensure!(post(&mut f.author,&f.router,&force_path,forced).await?==receipt);
-        let access=database(&f.base).await?;
-        let owner=rss_mdm_device_service::Associations::new(access.audit_store_fixture(&crate::config::AuditConfig::Plain).await?,rss_request_context::TenantId::parse(case_tenant())?,&[7;32])?;
         // The live worker may have finalized this operation before the explicit sweep.
         // Prove the persisted outcome, not which concurrent caller did the work.
-        owner.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
+        associations.finalize_retirements(&crate::registration_lifecycle::Bridge).await?;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let (status,record)=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-retirements/{retirement}"),None).await?;
@@ -539,13 +599,13 @@ async fn retirement_delivery_deadline(started: bool) -> Result<()> {
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
         f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         let policy=Uuid::new_v4();
         let now=crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
         let automation=start_automation(&f.base).await?;
-        let workers=worker(&f.base).await?;
+        let workers=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}/reruns"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"deadline":now+300}})).await?;
         let task=claim(&f.router).await?;
         task_event(&f.router,&task,json!({"kind":"received"})).await?;
@@ -581,7 +641,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1","device.unmanage.v1"])).await?;
         f.grants.extend(identity::device_grants(None,&["device_unmanage"])?);
-        identity::set_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;
         f.scope(case_empty_scope(),json!([])).await?;
         let a=Uuid::new_v4();let b=Uuid::new_v4();
@@ -590,7 +650,7 @@ async fn delayed_explicit_retirement_and_overlapping_policy_history_remain_durab
             post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":case_task_scope(),"action":action}}})).await?;
         }
         let automation=start_automation(&f.base).await?;
-        let workers=worker(&f.base).await?;
+        let workers=crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
         // First drain publication jobs without any trigger. The following persisted
         // trigger has no accompanying job, as after an early delayed reconciliation.
         tokio::time::timeout(Duration::from_secs(30),async {

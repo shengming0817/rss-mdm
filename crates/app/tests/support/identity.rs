@@ -8,6 +8,7 @@ use rss_identity_core::{
 };
 use rss_identity_postgres::AttemptSource;
 use std::sync::Arc;
+use uuid::Uuid;
 pub(crate) const INSTANCE: &str = "33333333-3333-4333-8333-333333333333";
 const BOOTSTRAP: &str = "44444444-4444-4444-8444-444444444444";
 pub(crate) const PASSWORD: &str = "Fixture-only-correct-horse-battery-2026!";
@@ -105,32 +106,21 @@ pub(super) async fn prepare_environment(root: &std::path::Path) -> Result<()> {
         .max_connections(2)
         .connect_with(value.access_options()?)
         .await?;
-    let tenant = rss_request_context::TenantId::parse(&value.identity.tenant_id)?;
-    let source_runtime = crate::identity::open_runtime(
-        &value.access_database,
-        &value.flow.storage.target,
-        &value.flow.storage.lineage,
-        &[(tenant, value.flow.storage.epoch)],
-    )
-    .await?;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = rss_mdm_audit_integration::AuditStore::new(
-        pool.clone(),
-        value.audit.integrity()?,
-        source_runtime.clone(),
-        tenant,
-        Default::default(),
-        &budget.control(),
-    )
-    .await?;
-    let result = crate::authorization::store::initialize_authorization(
-        &audit,
-        user(&value.identity.tenant_id, BOOTSTRAP),
-        uuid::Uuid::new_v4(),
-    )
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+            .bind(&value.identity.tenant_id)
+            .execute(&mut *tx)
+            .await?;
+        crate::authorization::store::seed_initialization_in(
+            &mut tx,
+            user(&value.identity.tenant_id, BOOTSTRAP),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    }
     .await;
-    source_runtime.close().await;
     pool.close().await;
     result?;
     refresh_management(root).await
@@ -149,6 +139,31 @@ pub(super) async fn refresh_management(root: &std::path::Path) -> Result<()> {
     })
     .await?;
     resources.finish(async { Ok(()) }).await
+}
+
+pub(super) async fn prepare_management_delegate(
+    root: &std::path::Path,
+    management: &str,
+    source_secret: &std::path::Path,
+    login: &str,
+) -> Result<()> {
+    let config = configured(management)?;
+    let tenant = rss_request_context::TenantId::parse(management)?;
+    let (resources, identity) = super::runtime::Resources::build(move |resources| {
+        Box::pin(identity_with(config, resources))
+    })
+    .await?;
+    resources.finish(async {
+        let source = identity.authority.inspect_session(tenant, SessionSecret::parse(crate::config::secret(source_secret)?.to_string())?, crate::identity::deadline()).await?;
+        let account = identity.authority.create_local_account(source, LoginKey::parse(login)?, Password::new(PASSWORD.into())?, crate::identity::deadline()).await?;
+        let issued = identity.authority.login_local(tenant, LoginKey::parse(login)?, Password::new(PASSWORD.into())?, AttemptSource::parse(&format!("t2-management-{login}"))?, None, crate::identity::deadline()).await?;
+        let inspected = identity.authority.inspect_session(tenant, SessionSecret::parse(issued.secret().expose().into())?, crate::identity::deadline()).await?;
+        anyhow::ensure!(inspected.account() == account.key());
+        write(&root.join("management-delegate.json"), &serde_json::to_vec(&serde_json::json!({
+            "tenant":management,"principal":account.key().principal.as_uuid().to_string(),"login":login,
+            "credential":issued.secret().expose(),"csrf":issued.secret().csrf(),
+        }))?)
+    }).await
 }
 
 pub(super) async fn prepare_accounts(
@@ -350,17 +365,27 @@ fn baseline_management_does_not_protect_device_grants() -> Result<()> {
         .into_iter()
         .map(serde_json::from_value::<Rule>)
         .collect::<Result<Vec<_>, _>>()?;
-    anyhow::ensure!(rules.len() == 3);
-    anyhow::ensure!(protected_management_rule(&rules[0]));
-    anyhow::ensure!(!protected_management_rule(&rules[1]) && !protected_management_rule(&rules[2]));
-    anyhow::ensure!(
-        rules[1]
-            .grants
-            .iter()
-            .all(|g| g.operation == Permission::InventoryRead)
-    );
-    let mut mixed = rules[0].clone();
-    mixed.grants.extend(rules[1].grants.clone());
+    let management = rules
+        .iter()
+        .find(|r| protected_management_rule(r))
+        .ok_or_else(|| anyhow::anyhow!("management rule absent"))?;
+    let inventory = rules
+        .iter()
+        .find(|r| {
+            !r.grants.is_empty()
+                && r.grants
+                    .iter()
+                    .all(|g| g.operation == Permission::InventoryRead)
+        })
+        .ok_or_else(|| anyhow::anyhow!("inventory rule absent"))?;
+    anyhow::ensure!(!protected_management_rule(inventory));
+    let mut device = inventory.clone();
+    device.grants[0].scope = crate::authorization::Scope::Device {
+        id: "fixture-device".into(),
+    };
+    anyhow::ensure!(!protected_management_rule(&device));
+    let mut mixed = management.clone();
+    mixed.grants.extend(inventory.grants.clone());
     anyhow::ensure!(!protected_management_rule(&mixed));
     Ok(())
 }
@@ -458,29 +483,105 @@ pub(crate) fn device_grants(
         })
         .collect()
 }
-pub(crate) async fn set_grants(
+/// Prepare a legal authorization state without issuing an online authorization mutation.
+pub(crate) async fn seed_grants(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants_in(tenant, subject, grants, false).await
+    use crate::authorization::{Rule, Subject};
+    let rule = Rule {
+        subject: Subject::User {
+            user: user(tenant, subject),
+        },
+        grants,
+    };
+    rule.subject.validate(tenant, INSTANCE)?;
+    if !rule.grants.is_empty() {
+        rule.validate(tenant, INSTANCE)?;
+    }
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(config(tenant)?.access_options()?)
+        .await?;
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;
+        let existing: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id,document FROM mdm_access.authorization_rules WHERE tenant_id=$1::uuid AND instance=$2::uuid AND document IS NOT NULL")
+            .bind(tenant).bind(INSTANCE).fetch_all(&mut *tx).await?;
+        for (id, document) in existing {
+            let prior: Rule = serde_json::from_value(document)?;
+            if matches!(&prior.subject, Subject::User { user } if user.principal_id == subject)
+                && !protected_management_rule(&prior) {
+                sqlx::query("UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id=$1::uuid AND instance=$2::uuid AND id=$3")
+                    .bind(tenant).bind(INSTANCE).bind(id).execute(&mut *tx).await?;
+            }
+        }
+        if !rule.grants.is_empty() {
+            sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+                .bind(tenant).bind(INSTANCE).bind(Uuid::new_v4()).bind(serde_json::to_value(&rule)?)
+                .execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }.await;
+    pool.close().await;
+    result
+}
+
+pub(crate) async fn change_grants(
+    tenant: &str,
+    subject: &str,
+    grants: Vec<crate::authorization::Grant>,
+) -> Result<()> {
+    change_grants_in(tenant, subject, grants, false).await
 }
 pub(crate) async fn independent_source_read(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants(tenant, subject, device_grants(None, &["inventory_read"])?).await?;
-    set_management_grants(tenant, subject, grants).await
+    use crate::authorization::{Permission, Rule, Subject};
+    seed_grants(
+        tenant,
+        subject,
+        grants
+            .into_iter()
+            .filter(|g| g.operation != Permission::InventoryRead)
+            .collect(),
+    )
+    .await?;
+    let read = Rule {
+        subject: Subject::User {
+            user: user(tenant, subject),
+        },
+        grants: device_grants(None, &["inventory_read"])?,
+    };
+    read.validate(tenant, INSTANCE)?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(config(tenant)?.access_options()?)
+        .await?;
+    let result = async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(tenant).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+            .bind(tenant).bind(INSTANCE).bind(Uuid::new_v4()).bind(serde_json::to_value(read)?).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    pool.close().await;
+    result
 }
-pub(crate) async fn set_management_grants(
+pub(crate) async fn change_management_grants(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,
 ) -> Result<()> {
-    set_grants_in(tenant, subject, grants, true).await
+    change_grants_in(tenant, subject, grants, true).await
 }
-async fn set_grants_in(
+async fn change_grants_in(
     tenant: &str,
     subject: &str,
     grants: Vec<crate::authorization::Grant>,

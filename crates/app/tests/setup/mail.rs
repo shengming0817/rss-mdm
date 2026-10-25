@@ -134,7 +134,6 @@ async fn real_tls_authentication_and_unknown_submission_are_distinct() -> Result
 #[tokio::test]
 #[ignore = "MODULE=installation.smtp: original operation, encrypted credentials and unknown DATA receipt survive replay"]
 async fn unknown_submission_is_not_requeued_and_materials_rewrap() -> Result<()> {
-    runtime_role_cannot_insert_provider_success().await?;
     let tenant = crate::test_support::runtime::case_tenant();
     let mut c = PgConnection::connect_with(
         &std::env::var("MDM_OWNER_URL")?
@@ -208,35 +207,22 @@ async fn unknown_submission_is_not_requeued_and_materials_rewrap() -> Result<()>
     Ok(())
 }
 
+#[tokio::test]
+#[ignore = "MODULE=installation.smtp: runtime cannot forge provider acceptance"]
 async fn runtime_role_cannot_insert_provider_success() -> Result<()> {
     let mut c =
         PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?).await?;
-    for kind in ["smtp", "wns"] {
-        let mut tx = c.begin().await?;
-        let tenant = Uuid::new_v4();
-        scope(&mut tx, tenant).await?;
-        let insert = if kind == "smtp" {
-            sqlx::query("INSERT INTO mdm_mail.heads VALUES($1,0,NULL)")
-                .bind(tenant)
-                .execute(&mut *tx)
-                .await?;
-            "INSERT INTO mdm_mail.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,profile,sender,recipient,credentials,state,accepted_at) VALUES($1,1,$2,'fake',decode(repeat('00',32),'hex'),'fake','a@example.test','b@example.test',decode('00','hex'),'accepted',1)"
-        } else {
-            sqlx::query("INSERT INTO mdm_wns.heads VALUES($1,0,NULL)")
-                .bind(tenant)
-                .execute(&mut *tx)
-                .await?;
-            "INSERT INTO mdm_wns.versions(tenant_id,revision,operation_id,actor,fingerprint_key,fingerprint,pfn,sid_digest,configuration,material,qualified_at,selected) VALUES($1,1,$2,'fake','fake',decode(repeat('00',32),'hex'),'fake',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),decode('00','hex'),1,true)"
-        };
-        let error = sqlx::query(insert)
-            .bind(tenant)
-            .bind(Uuid::new_v4())
-            .execute(&mut *tx)
-            .await
-            .unwrap_err();
-        ensure!(error.as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
-        tx.rollback().await?;
-    }
+    let mut tx = c.begin().await?;
+    let tenant = Uuid::new_v4();
+    scope(&mut tx, tenant).await?;
+    sqlx::query("INSERT INTO mdm_mail.heads VALUES($1,0,NULL)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let error = sqlx::query("INSERT INTO mdm_mail.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,profile,sender,recipient,credentials,state,accepted_at) VALUES($1,1,$2,'fake',decode(repeat('00',32),'hex'),'fake','a@example.test','b@example.test',decode('00','hex'),'accepted',1)")
+        .bind(tenant).bind(Uuid::new_v4()).execute(&mut *tx).await.unwrap_err();
+    ensure!(error.as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
+    tx.rollback().await?;
     c.close().await?;
     Ok(())
 }

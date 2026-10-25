@@ -122,10 +122,12 @@ impl Server {
     pub async fn service(
         &self,
         runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        content: Arc<rss_mdm_content_service::Store>,
         config: SourceConfig,
     ) -> PublicationService {
         PublicationService::connect(
-            host(runtime, audit_store().await).await,
+            host(runtime, audit, content).await,
             tenant(),
             self.logical.clone(),
             config,
@@ -145,13 +147,6 @@ impl Server {
             format!("{}artifacts/x64.msi", self.base).into();
         v["Data"]["Versions"][0]["Installers"][0]["InstallerSha256"] =
             hex(&rel::Digest::of(b"abc").bytes()).into();
-        let mut arm = v["Data"]["Versions"][0]["Installers"][0].clone();
-        arm["Architecture"] = "arm64".into();
-        arm["InstallerUrl"] = format!("{}artifacts/arm64.msi", self.base).into();
-        v["Data"]["Versions"][0]["Installers"]
-            .as_array_mut()
-            .unwrap()
-            .push(arm);
         ExportDocument::Winget {
             manifest: v["Data"].clone(),
         }
@@ -279,17 +274,19 @@ pub fn request(c: &rel::Publication) -> ServiceRequest {
 }
 pub async fn seed(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
 ) -> PublishInput {
-    seed_version(runtime, server, document, true).await
+    seed_version(runtime, content, server, document, true).await
 }
 pub async fn seed_draft(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
 ) -> PublishInput {
-    seed_version(runtime, server, document, false).await
+    seed_version(runtime, content, server, document, false).await
 }
 #[allow(
     clippy::cognitive_complexity,
@@ -297,14 +294,12 @@ pub async fn seed_draft(
 )]
 async fn seed_version(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    content: &Arc<rss_mdm_content_service::Store>,
     server: &Server,
     document: ExportDocument,
     enabled: bool,
 ) -> PublishInput {
-    let store = resource_pg::ResourceStore::new(runtime, tenant(), deadline())
-        .await
-        .unwrap();
-    let source_snapshot = admit_private_source(&server.logical).await;
+    let source_snapshot = seed_private_source(&server.logical).await;
     let key = id(&unique());
     let mut variants = Vec::new();
     let (package, package_version, platform, variant) = match &document {
@@ -329,6 +324,29 @@ async fn seed_version(
         (resource::Architecture::X86_64, "x64"),
         (resource::Architecture::Aarch64, "arm64"),
     ] {
+        let selected = match &document {
+            ExportDocument::Winget { manifest } => manifest["Versions"][0]["Installers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["Architecture"] == keyname),
+            ExportDocument::Brew { recipe } => match &recipe.payload {
+                BrewPayload::Cask { artifacts, .. } => artifacts.iter().any(|v| {
+                    v.architecture
+                        == if arch == resource::Architecture::X86_64 {
+                            "x86_64"
+                        } else {
+                            "aarch64"
+                        }
+                }),
+                BrewPayload::Formula { bottles, .. } => bottles.iter().any(|v| {
+                    v.tag.starts_with("arm64_") == (arch == resource::Architecture::Aarch64)
+                }),
+            },
+        };
+        if !selected {
+            continue;
+        }
         variants.push(resource::Variant::new(
             platform,
             arch,
@@ -490,80 +508,43 @@ async fn seed_version(
         variants,
     )
     .unwrap();
-    let content = stored_content().await;
+    let mut uploaded = std::collections::BTreeSet::new();
     for v in version.variants() {
         let resource::Declaration::Software { definition } = v.declaration() else {
             unreachable!()
         };
         for artifact in definition.materials() {
-            let upload = uuid::Uuid::new_v4();
-            let actor = "publication-fixture";
-            let binding = rss_mdm_content_service::Binding {
-                purpose: rss_mdm_content_service::Purpose::Resource(
-                    rss_mdm_content_service::ResourceBinding {
-                        inspection: None,
-                        storage_class: rss_mdm_content_service::StorageClass::Artifact,
-                        resource: key.as_str().into(),
-                        version: version.label().as_str().into(),
-                        variant: v.key().as_str().into(),
-                        platform: v.platform(),
-                        architecture: v.architecture(),
-                        resource_digest: version.digest().bytes(),
-                        source: Some(definition.spec().source.clone()),
-                        origin: artifact.origin.clone(),
-                    },
-                ),
-                reference: artifact.reference.clone(),
-                length: artifact.length,
-                sha256: artifact.sha256,
-                actor: actor.into(),
-            };
-            content
-                .begin(
-                    upload,
-                    binding,
-                    1700000000,
-                    content.upload_budget().unwrap(),
-                )
-                .await
-                .unwrap();
-            content
-                .append(
-                    actor,
-                    upload,
-                    0,
-                    1700000000,
-                    std::io::Cursor::new(b"abc".to_vec()),
-                    content.upload_budget().unwrap(),
-                )
-                .await
-                .unwrap();
-            content
-                .finish(actor, upload, 1700000000, content.upload_budget().unwrap())
-                .await
-                .unwrap();
-        }
-    }
-    for (revision, command) in [
-        (0, resource_pg::Command::Create(resource::Kind::Software)),
-        (1, resource_pg::Command::Insert(version.clone())),
-    ] {
-        store
-            .execute(
-                &resource_pg::Request {
-                    id: id(&unique()),
-                    resource: key.clone(),
-                    expected_storage_revision: revision,
-                    as_of: at(1),
-                    command,
-                },
-                deadline(),
+            if !uploaded.insert((artifact.sha256, artifact.length)) {
+                continue;
+            }
+            let material = resource::Artifact::new(
+                resource::Id::new(artifact.reference.clone()).unwrap(),
+                artifact.length,
+                resource::Digest::from_bytes(artifact.sha256),
+            )
+            .unwrap();
+            rss_mdm_content_service::fixture::artifact(
+                content,
+                &material,
+                b"abc".to_vec(),
+                1700000000 + 86400,
             )
             .await
             .unwrap();
+        }
     }
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &version, |version, tx| {
+            Box::pin(async move {
+                resource_pg::fixture::draft_version_in(tx, version.clone(), at(1)).await?;
+                Ok(Ok(()))
+            })
+        })
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
     if enabled {
-        admit_version(&version).await;
+        seed_enabled_version(&version, content).await;
     }
     PublishInput {
         actor: rel::ActorId::new(tenant(), "publisher").unwrap(),
@@ -632,7 +613,7 @@ pub fn cask(server: &Server, package: &str, version: &str) -> ExportDocument {
             description: "Controlled app".into(),
             homepage: "https://example.com/".into(),
             payload: BrewPayload::Cask {
-                artifacts: [("x86_64", "x64"), ("aarch64", "arm64")]
+                artifacts: [("x86_64", "x64")]
                     .into_iter()
                     .map(|(arch, key)| BrewArtifact {
                         architecture: arch.into(),
@@ -671,7 +652,7 @@ pub fn formula(server: &Server) -> ExportDocument {
                     sha256: rel::Digest::of(b"abc").bytes(),
                 },
                 executable: "tool".into(),
-                bottles: [("sonoma", "x64"), ("arm64_sonoma", "arm64")]
+                bottles: [("sonoma", "x64")]
                     .into_iter()
                     .map(|(tag, key)| BottleInput {
                         cellar: "any_skip_relocation".into(),
@@ -724,13 +705,15 @@ pub fn software_definition(
 pub async fn host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Arc<rss_mdm_content_service::Store>,
 ) -> rss_mdm_software_service::Host {
-    try_host(runtime, audit).await.unwrap()
+    try_host(runtime, audit, content).await.unwrap()
 }
 
 pub async fn try_host(
     runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Arc<rss_mdm_content_service::Store>,
 ) -> std::result::Result<rss_mdm_software_service::Host, rss_mdm_audit_integration::Error> {
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
@@ -742,11 +725,11 @@ pub async fn try_host(
     Ok(rss_mdm_software_service::Host {
         runtime,
         audit: Arc::new(TestAudit(audit)),
-        content: stored_content().await,
+        content,
         credentials: Arc::new(TestCredentials),
     })
 }
-struct TestAudit(Arc<rss_mdm_audit_integration::AuditStore>);
+pub struct TestAudit(pub Arc<rss_mdm_audit_integration::AuditStore>);
 impl rss_mdm_software_service::AuditPort for TestAudit {
     fn bind_in<'a>(
         &'a self,
@@ -844,123 +827,69 @@ pub async fn stored_content() -> Arc<rss_mdm_content_service::Store> {
     .unwrap()
 }
 
-async fn admit_private_source(source: &str) -> resource::SoftwareSource {
+async fn seed_private_source(source: &str) -> resource::SoftwareSource {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant(), &budget.control())
-            .await
-            .unwrap(),
-    );
-    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
     let definition = c::SourceDefinition {
         id: source.into(),
         revision: "1".into(),
         protocol: c::SourceProtocol::Private,
     };
     let snapshot = definition.snapshot().unwrap();
-    for (expected_revision, input) in [(0, c::SourceChange::Register { definition })] {
-        let request = rss_mdm_audit_integration::RequestAudit::new(
-            tenant().to_string(),
-            "software_source_write",
-        );
-        request.set_principal("operator", INSTANCE);
-        let op = c::Operation {
-            operation_id: uuid::Uuid::new_v4(),
-            expected_revision,
-            input,
-        };
-        let result = runtime
-            .local_tx_with_context(
-                tenant(),
-                deadline(),
-                (&catalog, &request, &op, source),
-                |(catalog, request, op, source), tx| {
-                    Box::pin(async move {
-                        if let Ok(value) = catalog.reader().source_read_in(tx, source, "1").await
-                            && value["lifecycle"]["state"] == "enabled"
-                        {
-                            return Ok(Ok(()));
-                        }
-                        catalog
-                            .source_in(tx, request, source, "1", op)
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &definition, |definition, tx| {
+            Box::pin(async move {
+                let reader = c::Reader::new(tx.tenant_id());
+                match reader
+                    .source_read_in(tx, &definition.id, &definition.revision)
+                    .await
+                {
+                    Ok(value) if value["lifecycle"]["state"] == "enabled" => (),
+                    Err(c::Error::Missing) => {
+                        c::fixture::source_in(tx, definition.clone())
                             .await
-                            .map(|_| Ok(()))
-                            .map_err(|_| {
-                                sqlx::Error::Protocol("fixture source lifecycle".into()).into()
-                            })
-                    })
-                },
-            )
-            .await;
-        result.fold(|r| r, Err, Err, Err, Err, Err).unwrap();
-        request.finalize(None);
-    }
+                            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    }
+                    _ => {
+                        return Err(sqlx::Error::Protocol(
+                            "source seed requires missing or enabled state".into(),
+                        )
+                        .into());
+                    }
+                }
+                Ok(Ok(()))
+            })
+        })
+        .await
+        .fold(|r| r, Err, Err, Err, Err, Err)
+        .unwrap();
     runtime.close().await;
     snapshot
 }
-async fn admit_version(version: &resource::Version) {
+async fn seed_enabled_version(
+    version: &resource::Version,
+    content: &rss_mdm_content_service::Store,
+) {
     use rss_mdm_software_service::catalog::{self as c, ContentPort};
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
-    let budget =
-        rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-    let audit = Arc::new(
-        audit
-            .on_runtime(runtime.clone(), tenant(), &budget.control())
-            .await
-            .unwrap(),
-    );
-    let catalog = c::Catalog::new(runtime.clone(), tenant(), Arc::new(TestAudit(audit)));
-    let content = stored_content()
-        .await
-        .as_ref()
-        .verify(version)
-        .await
-        .unwrap();
-    let op = c::Operation {
-        operation_id: uuid::Uuid::new_v4(),
-        expected_revision: 0,
-        input: c::VersionChange::Enable,
-    };
-    let request = rss_mdm_audit_integration::RequestAudit::new(
-        tenant().to_string(),
-        "software_version_write",
-    );
-    request.set_principal("operator", INSTANCE);
+    let verified = content.verify(version).await.unwrap();
     runtime
         .local_tx_with_context(
             tenant(),
             deadline(),
-            (&catalog, &request, &op, &content, version),
-            |(catalog, request, op, content, version), tx| {
+            (version, &verified),
+            |(version, verified), tx| {
                 Box::pin(async move {
-                    catalog
-                        .version_change_in(
-                            tx,
-                            request,
-                            version.resource().as_str(),
-                            version.label().as_str(),
-                            op,
-                            Some(content.as_ref()),
-                            &[],
-                        )
+                    c::fixture::enabled_in(tx, version, verified.as_ref())
                         .await
-                        .map(|_| Ok(()))
-                        .map_err(|_| {
-                            sqlx::Error::Protocol("fixture version lifecycle".into()).into()
-                        })
+                        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+                    Ok(Ok(()))
                 })
             },
         )
         .await
         .fold(|r| r, Err, Err, Err, Err, Err)
         .unwrap();
-    request.finalize(None);
     runtime.close().await;
 }
 
@@ -968,7 +897,7 @@ async fn admit_version(version: &resource::Version) {
 pub async fn withdraw_version(input: &PublishInput) {
     use rss_mdm_software_service::catalog as c;
     let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-    let audit = pg::audit_store_for("mdm_flow_runtime").await;
+    let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
     let budget =
         rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
     let audit = Arc::new(TestAudit(Arc::new(
@@ -1046,6 +975,7 @@ pub async fn withdraw_version(input: &PublishInput) {
         .fold(Ok, Err, Err, Err, Err, Err)
         .unwrap();
     request.finalize(None);
+    audit_pool.close().await;
     runtime.close().await;
 }
 

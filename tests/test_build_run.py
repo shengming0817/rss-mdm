@@ -52,7 +52,8 @@ class BuildRunTests(unittest.TestCase):
     def hold(self, *, work=None, env=None, code=None):
         ready = self.root / str(time.monotonic_ns())
         code = code or (f'import os,time; from pathlib import Path; '
-                        f'Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)')
+                        f'p=Path({str(ready)!r}); staged=p.with_suffix(".pending"); '
+                        f'staged.write_text(str(os.getpid())); staged.replace(p); time.sleep(60)')
         process = subprocess.Popen([sys.executable, str(SCRIPT), '--', sys.executable, '-c', code],
                                    cwd=work or self.work, env=self.env | (env or {}),
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

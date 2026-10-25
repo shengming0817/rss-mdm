@@ -1,7 +1,7 @@
 use rss_mdm_agent_wire::runtime::*;
 #[test]
 fn output_chunks_are_bounded_complete_and_digest_bound() {
-    let value = serde_json::json!([{"name":"x".repeat(400000)}]);
+    let value = serde_json::json!([{"name":"x".repeat(OUTPUT_CHUNK_BYTES)}]);
     let result = TaskResult::new(
         Some(0),
         OutputQuality::Complete,
@@ -31,4 +31,9 @@ fn malformed_manifest_and_chunk_index_are_rejected() {
     let manifest = OutputManifest::new(4, [0; 32]).unwrap();
     assert!(OutputChunk::new(manifest.clone(), 1, b"null").is_err());
     assert!(OutputChunk::new(manifest, 0, b"x").is_err());
+    use sha2::{Digest, Sha256};
+    let bytes = b"{\"result\":true}";
+    let manifest = OutputManifest::new(bytes.len() as u32, Sha256::digest(bytes).into()).unwrap();
+    let corrupt = OutputChunk::new(manifest.clone(), 0, b"{\"result\":null}").unwrap();
+    assert!(manifest.assemble(vec![corrupt]).is_err());
 }

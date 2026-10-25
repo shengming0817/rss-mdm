@@ -58,19 +58,23 @@ pub(crate) fn pg(sql: &str) -> Result<String> {
 
 pub(crate) fn pg_tenant(tenant: &str, sql: &str) -> Result<String> {
     uuid::Uuid::parse_str(tenant)?;
-    let config: Config =
-        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let config: Value =
+        serde_json::from_slice(&std::fs::read(std::env::var("BACKEND_PG_CONFIG")?)?)?;
     command(
         &[
             "exec",
             "-i",
-            &std::env::var("MDM_TEST_PG_CONTAINER")?,
+            config["container"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("PG container"))?,
             "psql",
             "-X",
             "-U",
             "postgres",
             "-d",
-            &config.access_database.name,
+            config["database"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("PG database"))?,
             "-qAt",
             "-v",
             "ON_ERROR_STOP=1",

@@ -193,7 +193,14 @@ impl Store {
             let length = p.length;
             let (checked, _work) = blocking(guard.clone(), move || {
                 let logical = if class.protected() {
-                    store.plaintext(&physical, &artifact, class, length)?
+                    protected::plaintext(
+                        &store.protection,
+                        store.tenant,
+                        &physical,
+                        &artifact,
+                        class,
+                        length,
+                    )?
                 } else {
                     Zeroizing::new(physical)
                 };
@@ -414,10 +421,9 @@ mod tests {
     #[tokio::test]
     async fn transfer_capacity_expires_without_polling_and_releases_on_drop() {
         let slots = Arc::new(Semaphore::new(1));
-        let deadline = Deadline::at(RuntimeTimer.now() + std::time::Duration::from_millis(30));
+        let deadline = Deadline::at(RuntimeTimer.now());
         let work = Arc::new(slots.clone().try_acquire_owned().unwrap());
         let lease = TransferLease::new(work.clone(), deadline);
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(slots.clone().try_acquire_owned().is_err());
         drop(work);
         let restored = tokio::time::timeout(

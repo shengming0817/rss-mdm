@@ -8,7 +8,7 @@ pub(crate) mod tests;
 pub(crate) mod test_support;
 
 #[cfg(test)]
-use crate::{Database, Error, collection::Run};
+use crate::{Error, collection::Run};
 #[cfg(test)]
 use rss_projection::Control;
 #[cfg(test)]

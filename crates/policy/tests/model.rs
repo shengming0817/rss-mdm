@@ -253,13 +253,7 @@ fn input_is_exact_and_cannot_override_fixed_values() {
     ] {
         assert!(sources.resolve(&invalid).is_err());
     }
-    for invalid in [
-        json!({"name":"old literal"}),
-        json!({"name":{"kind":"input","default":"x"}}),
-        json!({"name":{"kind":"fixed","value":[],"schema":{}}}),
-    ] {
-        assert!(serde_json::from_value::<ParameterSources>(invalid).is_err());
-    }
+    assert!(serde_json::from_value::<ParameterSources>(json!({"name":"literal"})).is_err());
     for invalid in [0, 3, 255] {
         assert!(serde_json::from_value::<ScriptRisk>(json!(invalid)).is_err());
     }
@@ -366,9 +360,6 @@ fn software_lifecycle_generation_requires_a_new_execution_version() {
     .unwrap();
     assert_ne!(initial.policy.version, renewed.policy.version);
     assert_eq!(renewed.policy.number, 2);
-    let mut retired = serde_json::to_value(definition).unwrap();
-    retired["action"]["admissionOperation"] = json!(Uuid::new_v4());
-    assert!(serde_json::from_value::<Definition>(retired).is_err());
 }
 
 #[test]

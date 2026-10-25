@@ -81,78 +81,66 @@ impl Clock for RuntimeTimer {
         std::time::Instant::now()
     }
 }
-fn test_store() -> (tempfile::TempDir, Store) {
+fn test_backend() -> (tempfile::TempDir, backend::Backend) {
     let dir = tempfile::tempdir().unwrap();
-    let tenant =
-        rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
-    let store = Store {
-        cleanup_tasks: tokio_util::task::TaskTracker::new(),
-        protection: protection(),
-        tenant,
-        config: config(dir.path().to_owned()),
-        transfers: Arc::new(Semaphore::new(4)),
+    let backend = backend::Backend::Volume {
+        directory: dir.path().to_owned(),
+        scope: [8; 32],
         timer: Arc::new(RuntimeTimer),
-        backend: backend::Backend::Volume {
-            directory: dir.path().to_owned(),
-            scope: [8; 32],
-            timer: Arc::new(RuntimeTimer),
-        },
-        pool: sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://localhost/test")
-            .unwrap(),
     };
-    (dir, store)
+    (dir, backend)
 }
-#[tokio::test]
-async fn native_ciphertext_binds_class_tenant_digest_and_record_frontier() {
-    let (_dir, mut store) = test_store();
+#[test]
+fn native_ciphertext_binds_class_tenant_digest_and_record_frontier() {
+    let protection = protection();
+    let mut tenant =
+        rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
     let bytes = vec![0x39; 65539];
     let a = binding(&bytes).artifact().unwrap();
     let c = StorageClass::NativeConfiguration;
-    let sealed = store.seal(&bytes, &a, c).unwrap();
+    let sealed = protected::seal(&protection, tenant, &bytes, &a, c).unwrap();
     assert!(!sealed.windows(100).any(|b| b == &bytes[..100]));
     assert_eq!(
-        &*store.plaintext(&sealed, &a, c, bytes.len() as u64).unwrap(),
+        &*protected::plaintext(&protection, tenant, &sealed, &a, c, bytes.len() as u64).unwrap(),
         &bytes
     );
     assert!(
-        store
-            .plaintext(&sealed, &a, StorageClass::Artifact, bytes.len() as u64)
-            .is_err()
+        protected::plaintext(
+            &protection,
+            tenant,
+            &sealed,
+            &a,
+            StorageClass::Artifact,
+            bytes.len() as u64
+        )
+        .is_err()
     );
     assert!(
-        store
-            .plaintext(&sealed, &a, c, bytes.len() as u64 - 1)
-            .is_err()
+        protected::plaintext(&protection, tenant, &sealed, &a, c, bytes.len() as u64 - 1).is_err()
     );
     let mut damaged = sealed.clone();
     damaged[4] ^= 1;
     assert!(
-        store
-            .plaintext(&damaged, &a, c, bytes.len() as u64)
-            .is_err()
+        protected::plaintext(&protection, tenant, &damaged, &a, c, bytes.len() as u64).is_err()
     );
-    store.tenant =
-        rss_request_context::TenantId::parse("22222222-2222-4222-8222-222222222222").unwrap();
-    assert!(store.plaintext(&sealed, &a, c, bytes.len() as u64).is_err());
+    tenant = rss_request_context::TenantId::parse("22222222-2222-4222-8222-222222222222").unwrap();
+    assert!(protected::plaintext(&protection, tenant, &sealed, &a, c, bytes.len() as u64).is_err());
 }
 #[tokio::test]
 async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
-    let (_dir, store) = test_store();
-    let d = store.deadline().unwrap();
+    let (dir, backend) = test_backend();
+    let d = Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
     let content = rss_mdm_content_s3::Content {
         length: 3,
         sha256: Sha256::digest(b"abc").into(),
     };
-    let intent = store.backend.intent(uuid::Uuid::new_v4(), content).unwrap();
-    let coordinate = store
-        .backend
+    let intent = backend.intent(uuid::Uuid::new_v4(), content).unwrap();
+    let coordinate = backend
         .write(&intent, content, b"abc".to_vec(), d, ())
         .await
         .unwrap();
     assert_eq!(
-        store
-            .backend
+        backend
             .read(&coordinate, content, 1, 3, d, ())
             .await
             .unwrap(),
@@ -161,19 +149,9 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
     let backend::Coordinate::Volume { id, .. } = &coordinate else {
         panic!()
     };
-    fs::write(
-        store
-            .config
-            .storage
-            .volume_directory()
-            .unwrap()
-            .join(id.to_string()),
-        b"bad",
-    )
-    .unwrap();
+    fs::write(dir.path().join(id.to_string()), b"bad").unwrap();
     assert!(
-        store
-            .backend
+        backend
             .read(&coordinate, content, 0, 3, d, ())
             .await
             .is_err()
@@ -182,7 +160,7 @@ async fn volume_exact_coordinate_rejects_replacement_and_other_scope() {
         id: *id,
         scope: [0; 32],
     };
-    assert!(store.backend.delete(&other, d).await.is_err());
+    assert!(backend.delete(&other, d).await.is_err());
 }
 #[test]
 fn piece_and_native_limits_are_arithmetic_boundaries() {
@@ -203,36 +181,35 @@ fn piece_and_native_limits_are_arithmetic_boundaries() {
 
 #[tokio::test]
 async fn volume_reclaims_interrupted_intents_and_fences_late_publication() {
-    let (dir, store) = test_store();
-    let deadline = store.deadline().unwrap();
+    let (dir, backend) = test_backend();
+    let deadline =
+        Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
     let content = rss_mdm_content_s3::Content {
         length: 3,
         sha256: Sha256::digest(b"abc").into(),
     };
     for interrupted in [false, true] {
         let id = uuid::Uuid::new_v4();
-        let intent = store.backend.intent(id, content).unwrap();
+        let intent = backend.intent(id, content).unwrap();
         let temporary = dir.path().join(format!(".{id}.tmp"));
         if interrupted {
             fs::write(&temporary, b"a").unwrap();
         }
-        let coordinate = store
-            .backend
+        let coordinate = backend
             .recover(&intent, content, deadline)
             .await
             .unwrap()
             .unwrap();
-        assert!(store.backend.delete(&coordinate, deadline).await.unwrap());
+        assert!(backend.delete(&coordinate, deadline).await.unwrap());
         assert!(!temporary.exists());
         assert!(matches!(
-            store
-                .backend
+            backend
                 .write(&intent, content, b"abc".to_vec(), deadline, ())
                 .await,
             Err(backend::WriteFailure::Unresolved(Error::Conflict))
         ));
         assert!(!dir.path().join(id.to_string()).exists());
-        assert!(store.backend.delete(&coordinate, deadline).await.unwrap());
+        assert!(backend.delete(&coordinate, deadline).await.unwrap());
     }
 }
 
@@ -259,16 +236,16 @@ async fn volume_range_validates_consumed_bytes_during_replacement_and_in_place_w
         }
     }
     for replace in [true, false] {
-        let (dir, store) = test_store();
-        let deadline = store.deadline().unwrap();
+        let (dir, backend) = test_backend();
+        let deadline =
+            Deadline::from_timeout(&RuntimeTimer, std::time::Duration::from_secs(60)).unwrap();
         let id = uuid::Uuid::new_v4();
         let content = rss_mdm_content_s3::Content {
             length: 3,
             sha256: Sha256::digest(b"abc").into(),
         };
-        let intent = store.backend.intent(id, content).unwrap();
-        let coordinate = store
-            .backend
+        let intent = backend.intent(id, content).unwrap();
+        let coordinate = backend
             .write(&intent, content, b"abc".to_vec(), deadline, ())
             .await
             .unwrap();
@@ -436,7 +413,6 @@ fn automatic_inspection_has_a_one_gib_boundary() {
 fn bundle_observations_do_not_validate_payload_bytes() {
     use std::io::{Cursor, Write};
     for (count, link) in [
-        (4095, None),
         (4096, None),
         (4097, None),
         (3, Some("manifest.json")),

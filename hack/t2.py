@@ -133,8 +133,6 @@ def reuse_phases(invocations, plan):
             and len({job.module.profile for job in selected}) == 1, 'reuse qualification requires one compatible profile')
     require(all(job.module.scope == 'objects' for job in selected[:2])
             and all(job.module.scope in ('tenant', 'pair') for job in selected[2:]), 'reuse observation scopes differ from plan')
-    require(not any('shared_worker' in job.module.fixtures for job in selected),
-            'parallel reuse proof requires capability cases, not exclusive full product hosts')
     a, b, c, d = selected
     phases, occurrences = [], {}
     for group in ([a], [b], [a], [b], [a], [b], [a, b], [c, d]):

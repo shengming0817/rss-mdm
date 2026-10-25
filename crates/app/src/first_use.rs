@@ -6,10 +6,7 @@ use rss_mdm_authorization_service::{
     context::{AuthorizedPrincipal, RequestAuth},
 };
 use rss_mdm_management_http::{
-    Error, Failure,
-    first_use::*,
-    http_operation::RequestContinuation,
-    settings::{self, Source as _},
+    Error, Failure, first_use::*, http_operation::RequestContinuation, settings,
 };
 use rss_mdm_registration_service::{admission::State, quotas::Channel};
 use std::sync::Arc;
@@ -28,7 +25,11 @@ impl Drop for ObservationAction<'_> {
 }
 
 pub(crate) struct FirstUse {
-    pub directory: crate::settings::Directory,
+    pub directory: Arc<dyn settings::Source>,
+    pub tenant: rss_request_context::TenantId,
+    pub instance: rss_identity_core::InstanceId,
+    pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    pub admission: rss_mdm_registration_service::admission::Admission,
     pub channels: Arc<dyn rss_mdm_management_http::enrollment::channels::Source>,
 }
 impl FirstUse {
@@ -38,10 +39,8 @@ impl FirstUse {
         audit: &RequestAudit,
         write: bool,
     ) -> Result<(), Error> {
-        let identity = &self.directory.state.identity;
         p.session()?;
-        if p.tenant_id() != identity.tenant.to_string()
-            || p.instance_id() != identity.instance.to_string()
+        if p.tenant_id() != self.tenant.to_string() || p.instance_id() != self.instance.to_string()
         {
             return Err(Error::Forbidden);
         }
@@ -129,12 +128,7 @@ impl FirstUse {
                 .and_then(|v| v.as_str().map(str::to_owned)),
             evidence: vec![],
         };
-        let admission = rss_mdm_registration_service::admission::Admission::new(
-            self.directory.state.access.registration(),
-            self.directory.state.audit_store.clone(),
-        )
-        .read(proof)
-        .await;
+        let admission = self.admission.read(proof).await;
         match admission {
             Ok(settings) => {
                 if settings
@@ -240,15 +234,14 @@ impl Source for FirstUse {
             self.proof(&auth.proof, &audit, matches!(command, Command::Update(..)))?;
             match command {
                 Command::Read => {
-                    let saved =
-                        store::read(&self.directory.state.audit_store, &auth.proof, &audit).await?;
+                    let saved = store::read(&self.audit, &auth.proof, &audit).await?;
                     Ok(Output::Progress(
                         self.progress(&auth, &audit, continuation, saved).await?,
                     ))
                 }
                 Command::Operation(id) => Ok(Output::Receipt(
                     store::operation(
-                        &self.directory.state.audit_store,
+                        &self.audit,
                         &auth.proof,
                         &audit,
                         id,
@@ -269,7 +262,7 @@ impl Source for FirstUse {
                     // Resolve durable outcomes before asking current owners. Expired materials
                     // or unavailable providers cannot invalidate an already committed receipt.
                     let previous = store::operation(
-                        &self.directory.state.audit_store,
+                        &self.audit,
                         &auth.proof,
                         &audit,
                         id,
@@ -295,7 +288,7 @@ impl Source for FirstUse {
                     audit.operation(id, "first_use_update");
                     audit.require_request_settlement();
                     let receipt = store::update(
-                        &self.directory.state.audit_store,
+                        &self.audit,
                         &auth.proof,
                         &audit,
                         id,
@@ -316,7 +309,7 @@ fn database(_: sqlx::Error) -> Error {
 
 #[cfg(test)]
 #[path = "../tests/settings/first_use.rs"]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(test)]
 mod unit {

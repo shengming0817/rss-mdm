@@ -174,15 +174,22 @@ async fn status(
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
 ) -> Result<Json<Value>, Error> {
-    directory(&app, &auth, purpose).await.map(Json)
+    directory(&app.access, app.identity.tenant(), &auth, purpose)
+        .await
+        .map(Json)
 }
 pub async fn directory(
-    app: &HttpState,
+    store: &crate::Store,
+    tenant: rss_request_context::TenantId,
     auth: &RequestAuth,
     purpose: Purpose,
 ) -> Result<Value, Error> {
-    let p = proof(app, auth, false)?;
-    let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    let p = &auth.proof;
+    if p.tenant_id() != tenant.to_string() {
+        return Err(Error::Forbidden);
+    }
+    p.require(Permission::RegistrationConfigurationRead, None)?;
+    let mut tx = store.begin_read(p.tenant_id()).await?;
     let (revision, desired) = storage::head(&mut tx, p.tenant_id(), purpose).await?;
     let values = storage::versions(&mut tx, p.tenant_id(), purpose).await?;
     let accounts: Vec<(String, i64)> = if purpose == Purpose::ManagedAccount {

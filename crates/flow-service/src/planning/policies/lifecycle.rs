@@ -31,8 +31,7 @@ impl super::super::Planning {
             return Ok(None);
         }
         let published = checked(
-            self.policy_store
-                .reader()
+            rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant)
                 .version_in(tx, policy.version)
                 .await?,
         )?

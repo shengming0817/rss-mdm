@@ -21,14 +21,15 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             .with(unselected_runs.clone()),
     )?;
 
-    let mut base: serde_json::Value =
+    let base: serde_json::Value =
         serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    // The real Windows Host below owns this case's Windows endpoint and trust.
-    base["native_protocols"]
-        .as_object_mut()
-        .unwrap()
-        .remove("windows");
     let mut fixture = agent::Fixture::from_config(base).await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        &fixture.author_id,
+        fixture.grants.clone(),
+    )
+    .await?;
     fixture.register().await?;
     let (resource, _, _) = fixture.resource().await?;
     fixture
@@ -37,24 +38,53 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
             json!([{"kind":"device","id":agent::case_device_id()}]),
         )
         .await?;
-    let worker = agent::worker(&fixture.base).await?;
-    agent::publish(&mut fixture.author, &fixture.router, resource).await?;
-    let task = agent::claim(&fixture.router).await?;
-    agent::complete(&fixture.router, &task).await?;
-    let id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
-    crate::test_support::runtime::stop_worker(worker).await?;
-    let mut host = crate::windows::test_support::Host::open().await?;
-    host.listen().await?;
-    let _peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let policy = agent::seed_script_policy(&fixture, resource).await?;
+    let id = agent::seed_script_run(&fixture, policy).await?;
+    agent::seed_script_result(
+        &fixture,
+        id,
+        json!({"version":"1.2","healthy":true}),
+        "retained result",
+    )
+    .await?;
+    let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     // IDs belong to their original owners; equal IDs must not lose either kind.
     client.operation = id;
-    client.known_windows_capability(case_device()).await?;
-    client.accept_authorized().await?;
-    client.publish_operation(id).await?;
+    let grants = crate::test_support::identity::device_grants(
+        None,
+        &["device_control", "operation_read", "operation_cancel"],
+    )?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await?;
+    let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
+    client
+        .execution_runtime
+        .local_tx_with_context(
+            client.tenant,
+            crate::identity::deadline(),
+            (&client.execution, &proof),
+            |(service, proof), tx| {
+                Box::pin(async move {
+                    service
+                        .seed_published_restart_in(tx, proof, case_device(), id)
+                        .await
+                        .map_err(|e| {
+                            rss_transactional_messaging_postgres::PgError::from(
+                                sqlx::Error::Protocol(e.to_string()),
+                            )
+                        })
+                })
+            },
+        )
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
     let mut grants = fixture.grants.clone();
     grants.extend(identity::device_grants(None, &["operation_read"])?);
-    identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
+    identity::seed_grants(case_tenant(), &fixture.author_id, grants).await?;
     for descending in [false, true] {
         let sort = if descending { "-id,-kind" } else { "id,kind" };
         let mut path = format!("/api/v1/operations?limit=1&sort={sort}");
@@ -134,10 +164,9 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
     let before = crate::test_support::process::pg(revision_sql)?;
     let rejected = Uuid::new_v4();
     client
-        .app
         .execution
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
-    ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
+    ensure!(client.call(Method::POST,"",Some(json!({"operationId":rejected,"action":{"kind":"restart"},"deadline":client.clock.unix_seconds()?+300}))).await?.0==StatusCode::SERVICE_UNAVAILABLE);
     ensure!(
         crate::test_support::process::pg(revision_sql)? == before,
         "rolled-back command advanced query generation"
@@ -151,7 +180,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         "command rollback leaked state"
     );
     let large = Uuid::new_v4();
-    ensure!(client.call(Method::POST, "", Some(json!({"operationId":large,"action":{"kind":"restart"},"deadline":host.app.clock.unix_seconds()?+300}))).await?.0 == StatusCode::ACCEPTED);
+    ensure!(client.call(Method::POST, "", Some(json!({"operationId":large,"action":{"kind":"restart"},"deadline":client.clock.unix_seconds()?+300}))).await?.0 == StatusCode::ACCEPTED);
     crate::test_support::process::pg(&format!(
         "UPDATE mdm_commands.operations SET request=convert_to(repeat('x',20000000),'UTF8') WHERE id='{large}'"
     ))?;
@@ -192,7 +221,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         .ok_or_else(|| anyhow::anyhow!("mixed continuation"))?;
     let continuation = format!("{selected}&cursor={cursor}");
     let audit = RequestAudit::new(case_tenant().into(), "management_read");
-    client.app.execution.recover_operation(id, &audit).await?;
+    client.execution.recover_operation(id, &audit).await?;
     audit.finalize(None);
     ensure!(
         fixture
@@ -238,7 +267,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         oversized.0 == StatusCode::SERVICE_UNAVAILABLE,
         "budget overflow became conflict: {oversized:?}"
     );
-    identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let (status, page) = fixture
         .author
         .call(
@@ -275,6 +304,7 @@ async fn console_mixed_kind_cursor_and_device_visibility() -> anyhow::Result<()>
         )
         .await?;
     ensure!(hidden.0 == StatusCode::OK && hidden.1["items"] == json!([]));
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
+    fixture.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }

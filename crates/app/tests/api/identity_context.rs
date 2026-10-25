@@ -12,8 +12,15 @@ pub(crate) async fn host_context_matrix(
         "/api/v1/identity-host/tenants/{TENANT}/context",
         TENANT = case_tenant()
     );
-    let (router, app_resources) = app(base).await?;
-    app_resources.finish(async {
+    let mut authority = authority::Authority::from_config(base.clone()).await?;
+    let router = authority.router(
+        rss_mdm_management_http::identity_context_routes(Arc::new(
+            crate::authorization::identity_management::IdentityManagementPolicy::new(INSTANCE)?,
+        ))
+        .into_axum(),
+    )?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
     let rule_id = uuid::Uuid::new_v4();
     for permissions in [
         json!(["accounts"]),
@@ -108,8 +115,7 @@ async fn navigation_uses_current_identity_management_policy() -> Result<()> {
     fixture_resources
         .finish(async {
             let browser = fixture.browser("other")?;
-            let router = fixture.router(fixture.authorization())?;
-            let subject = browser_subject(&browser, &router).await?;
+            let subject = prepared_subject(&browser)?;
             host_context_matrix(&fixture.base, &browser, &subject).await?;
             Ok(())
         })

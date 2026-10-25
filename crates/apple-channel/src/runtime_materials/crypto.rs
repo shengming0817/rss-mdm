@@ -245,7 +245,9 @@ mod tests {
     };
     const NOW: i64 = 1_800_000_000;
     fn root() -> (PKey<Private>, X509) {
-        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let key =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-root-key.pem"))
+                .unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", "Approved test root")
             .unwrap();
@@ -278,11 +280,11 @@ mod tests {
     fn leaf(
         root: &X509,
         signer: &PKey<Private>,
-        key: &Key,
+        private: &[u8],
         topic: Option<&str>,
         expires: i64,
     ) -> String {
-        let public = PKey::private_key_from_pkcs8(&key.private).unwrap();
+        let public = PKey::private_key_from_pkcs8(private).unwrap();
         let mut name = X509NameBuilder::new().unwrap();
         name.append_entry_by_text("CN", "MDM test leaf").unwrap();
         if let Some(topic) = topic {
@@ -324,43 +326,54 @@ mod tests {
         assert!(csr.verify(&csr.public_key().unwrap()).unwrap());
         let (signer, root) = root();
         let roots = vec![root.to_pem().unwrap()];
-        let cert = leaf(&root, &signer, &key, None, NOW + 3600);
+        let cert = leaf(&root, &signer, &key.private, None, NOW + 3600);
         let validated = certificate(Purpose::Profile, &cert, &key.private, &roots, NOW).unwrap();
         assert_eq!(validated.expires, NOW + 3600);
-        let other = prepare("other", Purpose::Profile, None).unwrap();
-        assert!(certificate(Purpose::Profile, &cert, &other.private, &roots, NOW).is_err());
+        let other =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-root-key.pem"))
+                .unwrap()
+                .private_key_to_pkcs8()
+                .unwrap();
+        assert!(certificate(Purpose::Profile, &cert, &other, &roots, NOW).is_err());
         assert!(certificate(Purpose::Profile, &cert, &key.private, &[], NOW).is_err());
         assert!(certificate(Purpose::Profile, &cert, &key.private, &roots, NOW + 3600).is_err());
         assert!(certificate(Purpose::Apns, &cert, &key.private, &roots, NOW).is_err());
     }
     #[test]
     fn candidate_expiry_includes_the_verified_root_and_digest_binds_the_supplied_chain() {
-        let key = prepare("tenant", Purpose::Profile, None).unwrap();
+        let private =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-leaf-key.pem"))
+                .unwrap()
+                .private_key_to_pkcs8()
+                .unwrap();
         let (signer, root) = root();
         let roots = vec![root.to_pem().unwrap()];
-        let cert = leaf(&root, &signer, &key, None, NOW + 172800);
-        let original = certificate(Purpose::Profile, &cert, &key.private, &roots, NOW).unwrap();
+        let cert = leaf(&root, &signer, &private, None, NOW + 172800);
+        let original = certificate(Purpose::Profile, &cert, &private, &roots, NOW).unwrap();
         assert_eq!(original.expires, NOW + 86400);
         let with_chain = format!(
             "{cert}{}",
             String::from_utf8(root.to_pem().unwrap()).unwrap()
         );
-        let changed =
-            certificate(Purpose::Profile, &with_chain, &key.private, &roots, NOW).unwrap();
+        let changed = certificate(Purpose::Profile, &with_chain, &private, &roots, NOW).unwrap();
         assert_ne!(original.digest, changed.digest);
     }
     #[test]
     fn persisted_identity_rejects_corruption_without_confusing_expiry_with_integrity() {
-        let key = prepare("tenant", Purpose::Profile, None).unwrap();
+        let private =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-leaf-key.pem"))
+                .unwrap()
+                .private_key_to_pkcs8()
+                .unwrap();
         let (signer, root) = root();
-        let cert = leaf(&root, &signer, &key, None, NOW + 60);
-        let digest = persisted_digest(&cert, &key.private).unwrap();
+        let cert = leaf(&root, &signer, &private, None, NOW + 60);
+        let digest = persisted_digest(&cert, &private).unwrap();
         assert_eq!(
             digest,
             certificate(
                 Purpose::Profile,
                 &cert,
-                &key.private,
+                &private,
                 &[root.to_pem().unwrap()],
                 NOW
             )
@@ -371,38 +384,52 @@ mod tests {
             certificate(
                 Purpose::Profile,
                 &cert,
-                &key.private,
+                &private,
                 &[root.to_pem().unwrap()],
                 NOW + 60
             )
             .is_err()
         );
-        assert_eq!(persisted_digest(&cert, &key.private).unwrap(), digest);
-        assert!(persisted_digest("corrupt persisted PEM", &key.private).is_err());
-        let other = prepare("tenant", Purpose::Profile, None).unwrap();
-        assert!(persisted_digest(&cert, &other.private).is_err());
+        assert_eq!(persisted_digest(&cert, &private).unwrap(), digest);
+        assert!(persisted_digest("corrupt persisted PEM", &private).is_err());
+        let other =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-root-key.pem"))
+                .unwrap()
+                .private_key_to_pkcs8()
+                .unwrap();
+        assert!(persisted_digest(&cert, &other).is_err());
     }
     #[test]
     fn apns_requires_one_mdm_topic_and_ca_private_material_is_never_a_leaf() {
-        let key = prepare("tenant", Purpose::Apns, None).unwrap();
+        let private =
+            PKey::private_key_from_pem(include_bytes!("../../tests/fixtures/runtime-leaf-key.pem"))
+                .unwrap()
+                .private_key_to_pkcs8()
+                .unwrap();
         let (signer, root) = root();
         let roots = vec![root.to_pem().unwrap()];
         let cert = leaf(
             &root,
             &signer,
-            &key,
+            &private,
             Some("com.apple.mgmt.tenant"),
             NOW + 3600,
         );
         assert_eq!(
-            certificate(Purpose::Apns, &cert, &key.private, &roots, NOW)
+            certificate(Purpose::Apns, &cert, &private, &roots, NOW)
                 .unwrap()
                 .topic
                 .as_deref(),
             Some("com.apple.mgmt.tenant")
         );
-        let wrong = leaf(&root, &signer, &key, Some("ordinary.client"), NOW + 3600);
-        assert!(certificate(Purpose::Apns, &wrong, &key.private, &roots, NOW).is_err());
+        let wrong = leaf(
+            &root,
+            &signer,
+            &private,
+            Some("ordinary.client"),
+            NOW + 3600,
+        );
+        assert!(certificate(Purpose::Apns, &wrong, &private, &roots, NOW).is_err());
         let root_pem = String::from_utf8(root.to_pem().unwrap()).unwrap();
         assert!(
             certificate(

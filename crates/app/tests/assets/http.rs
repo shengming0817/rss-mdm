@@ -1,82 +1,9 @@
-use crate::test_support::{http::Browser, http::browser_subject};
+use super::{AssetHttp, AssetRuntime};
+use crate::test_support::http::Browser;
 use crate::test_support::{process::*, runtime::*, *};
-struct AssetRuntime(Arc<rss_transactional_messaging_postgres::PgRuntime>);
-impl rss_runtime::ManagedResource for AssetRuntime {
-    fn name(&self) -> &str {
-        "asset-test-runtime"
-    }
-    async fn shutdown(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
-        self.0.close().await;
-        Ok(())
-    }
-}
-// Only asset routes and the real authentication/audit boundary; no Agent or Planning.
-struct AssetHttp {
-    resources: Resources,
-    router: Router,
-    author: Browser,
-    author_id: String,
-    grants: Vec<crate::authorization::Grant>,
-}
-impl AssetHttp {
-    async fn open() -> Result<Self> {
-        let mut authority = authority::Authority::open().await?;
-        let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-        let runtime = crate::planning::test_support::runtime(tenant).await;
-        authority.resources.resource(AssetRuntime(runtime.clone()));
-        let inventory = crate::planning::test_support::inventory_runtime(tenant).await;
-        authority
-            .resources
-            .resource(InventoryFixtureResource(inventory.clone()));
-        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
-        let budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(std::time::Duration::from_secs(5));
-        let audit = Arc::new(
-            authority
-                .audit
-                .on_runtime(runtime.clone(), tenant, &budget.control())
-                .await?,
-        );
-        let assets = Arc::new(rss_mdm_inventory_service::assets::AssetService::new(
-            inventory,
-            audit,
-            runtime,
-            tenant,
-            Arc::new(crate::clock::SystemClock),
-            &key,
-            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
-        ));
-        let routes = Router::new()
-            .nest(
-                "/api/v1",
-                rss_mdm_management_http::assets::routes()
-                    .with_state(Arc::new(rss_mdm_management_http::assets::http::HttpState {
-                        assets,
-                    }))
-                    .into_axum(),
-            )
-            .merge(authority.authorization());
-        let router = authority.router(routes)?;
-        let author = authority.browser("other")?;
-        let author_id = browser_subject(&author, &router).await?;
-        let grants = crate::test_support::identity::device_grants(
-            None,
-            &["inventory_read", "inventory_assign"],
-        )?;
-        crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone())
-            .await?;
-        Ok(Self {
-            resources: authority.resources,
-            router,
-            author,
-            author_id,
-            grants,
-        })
-    }
-}
 mod identity_read {
     use super::AssetHttp;
-    use crate::test_support::http::{Browser, set_device_grants};
+    use crate::test_support::http::{Browser, change_device_grants};
     use crate::test_support::{process::*, runtime::*, *};
     #[tokio::test]
     #[ignore = "MODULE=assets.http: real read authorization and PostgreSQL projection"]
@@ -86,14 +13,12 @@ mod identity_read {
         fixture_resources.finish(async {
         let authorized = fixture.router;
         let mut browser = fixture.author;
-        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, vec![]).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, vec![]).await?;
         let query = &format!("/api/v1/devices/{}/inventory", case::name("device-1"));
         ensure!(
             browser.call(&authorized, Method::GET, query, None).await?.0 == StatusCode::FORBIDDEN
         );
-        set_device_grants(
-            &mut browser,
-            &authorized,
+        change_device_grants(&mut browser,
             crate::test_support::case::name("device-1"),
             &["inventory_read"],
         )
@@ -418,23 +343,6 @@ mod manual {
         ))?;
         let router = &fixture.router;
         let mut browser = fixture.author.clone();
-        let catalog = ok(
-            &mut browser,
-            router,
-            Method::GET,
-            "/api/v1/asset-fields?limit=1024",
-            None,
-        )
-        .await?;
-        for field in rss_mdm_inventory::builtin::fields() {
-            ensure!(
-                catalog["asset"]["items"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|value| value["key"] == serde_json::to_value(field.key).unwrap())
-            );
-        }
         let cases = [
             ("custom.asset_tag", "string", json!("A-2463")),
             ("custom.office_floor", "integer", json!(3)),
@@ -456,26 +364,28 @@ mod manual {
             )
             .await?;
             ensure!(first["asset"]["revision"] == 1);
-            ensure!(
-                ok(
-                    &mut browser,
-                    router,
-                    Method::PUT,
-                    &path,
-                    Some(write.clone())
-                )
-                .await?
-                    == first
-            );
-            let mut changed = write.clone();
-            changed["input"] = json!({"action":"delete"});
-            ensure!(
-                browser
-                    .call(router, Method::PUT, &path, Some(changed))
+            if kind == "integer" {
+                ensure!(
+                    ok(
+                        &mut browser,
+                        router,
+                        Method::PUT,
+                        &path,
+                        Some(write.clone())
+                    )
                     .await?
-                    .0
-                    == StatusCode::CONFLICT
-            );
+                        == first
+                );
+                let mut changed = write.clone();
+                changed["input"] = json!({"action":"delete"});
+                ensure!(
+                    browser
+                        .call(router, Method::PUT, &path, Some(changed))
+                        .await?
+                        .0
+                        == StatusCode::CONFLICT
+                );
+            }
             let detail = ok(
                 &mut browser,
                 router,
@@ -672,7 +582,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
         operation: Permission::InventoryFieldsWrite,
         scope: Scope::Tenant,
     });
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         &fixture.author_id,
         fixture.grants.clone(),
@@ -704,7 +614,7 @@ async fn field_catalog_admin_publish_and_reference_checks_need_no_approval() -> 
     let denied_refs = fixture.author.call(&fixture.router, Method::GET, &format!("{path}/references"), None).await?;
     ensure!(denied_refs.0 == StatusCode::FORBIDDEN, "resource references require ResourceRead");
     fixture.grants.push(Grant { operation: Permission::ResourceRead, scope: Scope::Tenant });
-    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &fixture.author_id, fixture.grants.clone()).await?;
     let references = fixture
         .author
         .call(
@@ -768,7 +678,7 @@ async fn typed_list_pages_remain_frozen_across_field_updates() -> Result<()> {
     let device = case::name("asset-list");
     pg(&format!("INSERT INTO mdm_access.devices VALUES('{}','{device}')", case_tenant()))?;
     f.grants.push(Grant { operation: Permission::InventoryFieldsWrite, scope: Scope::Tenant });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let key = "custom.page_values";
     let definition = json!({"key":key,"version":1,"valueType":{"kind":"array","items":{"kind":"integer"},"maxItems":1000},"nullable":true,"manual":true,"sources":{"manual":0},"platforms":["macos","windows"],"sensitivity":"standard","unit":null,"searchable":true,"itemKey":null});

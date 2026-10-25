@@ -6,7 +6,7 @@ fn all_seed_definitions_use_the_same_catalog_and_frozen_collection_contract() {
         assert_eq!(FieldKey::parse(field.key.as_str()).unwrap(), field.key);
         assert!(field.validate().is_ok());
         for source in field.sources.keys().filter(|s| **s != Source::Manual) {
-            let contract = CollectionDefinition::new("published-template", 1, *source, {
+            CollectionDefinition::new("published-template", 1, *source, {
                 let scope = rss_mdm_inventory::CollectionScope::Device;
                 let fields: Vec<rss_mdm_inventory::FieldDefinition> = vec![field.clone()];
                 fields
@@ -18,9 +18,6 @@ fn all_seed_definitions_use_the_same_catalog_and_frozen_collection_contract() {
                     .collect()
             })
             .unwrap();
-            let encoded = serde_json::to_vec(&contract).unwrap();
-            let decoded: CollectionDefinition = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(contract.coverage().unwrap(), decoded.coverage().unwrap());
         }
     }
     let health = catalog

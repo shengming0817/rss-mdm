@@ -5,9 +5,24 @@ use super::*;
 async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     let server = Server::new().await;
     let runtime = runtime().await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
     let (_root, config) = brew_config();
-    let service = server.service(runtime.clone(), config.clone()).await;
-    let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
+    let first = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "app", "1"),
+    )
+    .await;
     let p1 = submit_publication(&service, &first).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
@@ -44,7 +59,14 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
         server.logical
     ));
     drop(service);
-    let service = server.service(runtime.clone(), config.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
     assert!(matches!(
         service
             .reconcile(p1.id(), 1, at(10), cutoff())
@@ -57,10 +79,16 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
         Err(Error::Content)
     ));
     let old = git(&config, &["rev-parse", "refs/heads/main"]);
-    let other = seed(runtime.clone(), &server, formula(&server)).await;
+    let other = seed(runtime.clone(), &content, &server, formula(&server)).await;
     let p2 = submit_publication(&service, &other).await;
     service.publish(p2.id(), 1, at(10), cutoff()).await.unwrap();
-    let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
+    let second = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "app", "2"),
+    )
+    .await;
     let p3 = submit_publication(&service, &second).await;
     service.publish(p3.id(), 1, at(10), cutoff()).await.unwrap();
     let current = git(&config, &["rev-parse", "refs/heads/main"]);
@@ -141,6 +169,8 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
     );
     assert!(!server.state.lock().unwrap().artifact_auth_leaked);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -148,9 +178,24 @@ async fn brew_immutable_tap_recovery_and_version_specific_withdrawal() {
 async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_restart() {
     let server = Server::new().await;
     let runtime = runtime().await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
     let (_root, config) = brew_config();
-    let service = server.service(runtime.clone(), config.clone()).await;
-    let input = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
+    let input = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "app", "1"),
+    )
+    .await;
     let p = submit_publication(&service, &input).await;
     sql(
         "CREATE FUNCTION public.reject_brew_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_brew_result();",
@@ -201,7 +246,14 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
     drop(service);
     runtime.close().await;
     let runtime = publication_support::pg::runtime().await;
-    let service = server.service(runtime.clone(), config.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
     let work = service
         .reconciliation_page("", 32, cutoff())
         .await
@@ -237,6 +289,8 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
         "1"
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -244,15 +298,36 @@ async fn attempted_publication_withdrawal_recovers_original_git_snapshot_after_r
 async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() {
     let server = Server::new().await;
     let runtime = runtime().await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
     let (_root, config) = brew_config();
-    let service = server.service(runtime.clone(), config.clone()).await;
-    let first = seed(runtime.clone(), &server, cask(&server, "app", "1")).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
+    let first = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "app", "1"),
+    )
+    .await;
     let initial = submit_publication(&service, &first).await;
     service
         .publish(initial.id(), initial.attempt, at(10), cutoff())
         .await
         .unwrap();
-    let second = seed(runtime.clone(), &server, cask(&server, "app", "2")).await;
+    let second = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "app", "2"),
+    )
+    .await;
     let p = submit_publication(&service, &second).await;
     let SourceConfig::Brew(source) = &config else {
         panic!("Brew");
@@ -283,7 +358,14 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
     drop(service);
     std::fs::remove_file(lock).unwrap();
     git(&config, &["update-ref", "-d", "refs/heads/main"]);
-    let service = server.service(runtime.clone(), config.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config.clone(),
+        )
+        .await;
     let work = service
         .reconciliation_page("", 32, cutoff())
         .await
@@ -334,6 +416,8 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
         "2"
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -341,9 +425,24 @@ async fn unknown_withdrawal_only_settles_absence_after_original_cas_is_fenced() 
 async fn withdrawal_settles_a_result_observed_after_its_intent() {
     let server = Server::new().await;
     let runtime = runtime().await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
     let (_root, config) = brew_config();
-    let service = server.service(runtime.clone(), config).await;
-    let input = seed(runtime.clone(), &server, cask(&server, "late", "1")).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            config,
+        )
+        .await;
+    let input = seed(
+        runtime.clone(),
+        &content,
+        &server,
+        cask(&server, "late", "1"),
+    )
+    .await;
     let p = submit_publication(&service, &input).await;
     sql(
         "CREATE FUNCTION public.reject_late_result() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture result failure'; END $$; CREATE TRIGGER reject_late_result BEFORE UPDATE ON mdm_software_release.aggregates FOR EACH ROW EXECUTE FUNCTION public.reject_late_result();",
@@ -408,4 +507,6 @@ async fn withdrawal_settles_a_result_observed_after_its_intent() {
         Withdrawal::Complete
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }

@@ -294,13 +294,11 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
 #[tokio::test]
 #[ignore = "MODULE=authorization.capacity: real authorization contract"]
 async fn sql_capacity_membership_pagination_and_atomicity() -> Result<()> {
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        mut member,
-        ..
-    } = fixture().await?;
+    let authority = authority::Authority::open().await?;
+    let router = authority.router(authority.authorization())?;
+    let mut admin = authority.browser("admin")?;
+    let mut member = authority.browser("other")?;
+    let resources = authority.resources;
     resources
         .finish(async {
             verify(&router, &mut admin, &mut member).await?;

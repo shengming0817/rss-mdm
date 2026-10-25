@@ -9,25 +9,16 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     let admin_a = admin(case_a(), "admin-a").await?;
     let admin_b = admin(case_b(), "admin-b").await?;
     let other = admin(case_a(), "other-a").await?;
-    let access = Arc::new(
-        Database::connect(options("mdm_access")?)
-            .await
-            .context("access store admission")?,
-    );
-    let service = DeviceService::new(
-        access.registration(),
-        case_a().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    );
-    let service_b = DeviceService::new(
-        access.registration(),
-        case_b().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    );
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let mut access = crate::test_support::runtime::Resources::default();
+    access.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    access.resource(crate::test_support::runtime::SourceResource(source));
+    let registration = Arc::new(rss_mdm_registration_service::Store::from_pool(
+        pool,
+        Arc::new(crate::registration_lifecycle::Bridge),
+    ));
+    let service = DeviceService::new(registration.clone(), case_a().into(), audit.clone());
+    let service_b = DeviceService::new(registration, case_b().into(), audit);
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
         .bind(case_a())
@@ -146,13 +137,17 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     // Two accepted requests racing for the same expected generation cannot silently overwrite.
     let left = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "concurrent", Channel::Mdm).await?,
+        request_id: service
+            .fixture_request(&admin_a, "concurrent", Channel::Mdm)
+            .await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
     let right = BindRegistration {
         operation_id: Uuid::new_v4(),
-        request_id: request(&access, &admin_a, "concurrent", Channel::Mdm).await?,
+        request_id: service
+            .fixture_request(&admin_a, "concurrent", Channel::Mdm)
+            .await?,
         expected_generation: 0,
         source: ReportSource::MdmWindows,
     };
@@ -188,7 +183,7 @@ async fn bindings_generations_and_competing_credentials() -> anyhow::Result<()> 
     assert_eq!(usize::from(l.is_ok()) + usize::from(r.is_ok()), 1);
     assert!(matches!(l, Err(Error::Conflict)) || matches!(r, Err(Error::Conflict)));
     root.close().await?;
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }
 // Hold both business rows. The first contender must wait there while the second
@@ -390,6 +385,6 @@ async fn communication_is_transactional_and_bound_to_current_registration() -> a
     let hidden = admin(case_b(), "admin-b").await?;
     assert!(service.directory_device(&hidden, device).await.is_err());
     c.close().await?;
-    access.close().await;
+    access.finish(async { Ok(()) }).await?;
     Ok(())
 }

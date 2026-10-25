@@ -192,25 +192,7 @@ async fn resource_cas_events_and_owner_admission() {
             .storage_revision,
         2
     );
-    sql(
-        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_resource_runtime",
-    );
     let r = req(&key, 2, Command::Insert(version(&key, "three", 3)));
-    let result = s.execute(&r, deadline()).await;
-    sql(
-        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_resource_runtime",
-    );
-    assert!(matches!(
-        result,
-        Err(Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent
-    ));
-    assert!(
-        s.version(&key, &id("three"), deadline())
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(s.operation(&r.id, deadline()).await.unwrap().is_none());
     let wrong = support::runtime().await;
     let result = wrong
         .local_tx_with_context(tenant(), deadline(), (&s, &r), |(s, r), tx| {
@@ -294,6 +276,24 @@ fn assert_event(id: &str, request: &str, revision: u64, occurred_at: i64) {
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
 async fn resource_admission_rejects_schema_and_privilege_drift() {
     let runtime = runtime().await;
+    let s = ResourceStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let key = id(&unique());
+    sql(
+        "REVOKE EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) FROM mdm_resource_runtime",
+    );
+    let r = req(&key, 0, Command::Create(r::Kind::Software));
+    let result = s.execute(&r, deadline()).await;
+    sql(
+        "GRANT EXECUTE ON FUNCTION rss_transactional_messaging.append_outbox(bytea,jsonb) TO mdm_resource_runtime",
+    );
+    assert!(matches!(
+        result,
+        Err(Error::RolledBack(ref error)) if error.kind() == rss_transactional_messaging::error::MessagingErrorKind::Permanent
+    ));
+    assert!(s.get(&key, deadline()).await.unwrap().is_none());
+    assert!(s.operation(&r.id, deadline()).await.unwrap().is_none());
     let cases = [
         (
             "CREATE TABLE mdm_resource.unexpected(id integer)",
@@ -399,6 +399,7 @@ fn software(artifact: &r::Artifact) -> r::SoftwareDefinition {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
+#[cfg(feature = "integration")]
 async fn artifact_reference_index_covers_reuse_without_another_upload_and_archive_rollback() {
     let runtime = runtime().await;
     let store = ResourceStore::new(runtime.clone(), tenant(), deadline())
@@ -408,17 +409,22 @@ async fn artifact_reference_index_covers_reuse_without_another_upload_and_archiv
     let second = id(&unique());
     let digest = r::Digest::from_bytes([201; 32]);
     for key in [&first, &second] {
-        store
-            .execute(&req(key, 0, Command::Create(r::Kind::Software)), deadline())
+        let seeded = version(key, "v1", 201);
+        runtime
+            .local_tx(tenant(), deadline(), move |tx| {
+                Box::pin(async move {
+                    rss_mdm_resource_postgres::fixture::draft_version_in(tx, seeded, at(1)).await
+                })
+            })
             .await
-            .unwrap();
-        store
-            .execute(
-                &req(key, 1, Command::Insert(version(key, "v1", 201))),
-                deadline(),
-            )
-            .await
-            .unwrap();
+            .fold(
+                |_| (),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+                |e| panic!("{e:?}"),
+            );
     }
     async fn referenced(
         runtime: &rss_transactional_messaging_postgres::PgRuntime,
@@ -505,26 +511,29 @@ async fn artifact_reference_index_covers_reuse_without_another_upload_and_archiv
 
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=resource.persistence"]
+#[cfg(feature = "integration")]
 async fn storage_rejects_invalid_format_without_rewriting_immutable_bytes() {
     let runtime = runtime().await;
-    let store = ResourceStore::new(runtime, tenant(), deadline())
+    let store = ResourceStore::new(runtime.clone(), tenant(), deadline())
         .await
         .unwrap();
     let key = id(&unique());
-    store
-        .execute(
-            &req(&key, 0, Command::Create(r::Kind::Software)),
-            deadline(),
-        )
+    let seeded = version(&key, "one", 1);
+    runtime
+        .local_tx(tenant(), deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::draft_version_in(tx, seeded, at(1)).await
+            })
+        })
         .await
-        .unwrap();
-    store
-        .execute(
-            &req(&key, 1, Command::Insert(version(&key, "one", 1))),
-            deadline(),
-        )
-        .await
-        .unwrap();
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let read = format!(
         "SELECT convert_from(document,'UTF8') FROM mdm_resource.immutable WHERE tenant_id='{}' AND owner='{}' AND kind='version'",
         tenant(),

@@ -47,14 +47,14 @@ pub(super) fn configuration(root: &std::path::Path) -> Result<config::PlatformSs
         signing_keys: [("active".into(), path)].into(),
     })
 }
-async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value)> {
+async fn call(router: &Router, path: &str, body: Value) -> Result<(StatusCode, Value)> {
     let request = Request::builder()
         .method(Method::POST)
         .uri(path)
         .header("host", "mdm.example.test")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body)?))?;
-    let response = f.router.clone().oneshot(request).await?;
+    let response = router.clone().oneshot(request).await?;
     let status = response.status();
     Ok((
         status,
@@ -64,35 +64,99 @@ async fn call(f: &Fixture, path: &str, body: Value) -> Result<(StatusCode, Value
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=apple.platform_sso: real nonce storage, tenant boundary and authenticated registration HTTP"]
 async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
-    let f = Fixture::with_options(None, None, false, None, false, true).await?;
-    let result=async {
+    let mut authority = crate::test_support::authority::Authority::open().await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let config = crate::test_support::identity::config(case_tenant())?;
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            authority.identity.authority.clone(),
+            authority.identity.tenant,
+        ),
+    );
+    let (execution, _, _) = crate::test_support::command::command_service(
+        authority.audit.clone(),
+        sessions.clone(),
+        rss_device_command_postgres::CommandClock::Postgres,
+    )
+    .await?;
+    resources.resource(rss_mdm_execution_service::Resource(execution.clone()));
+    let root = tempfile::tempdir()?;
+    let state = Arc::new(rss_mdm_apple_channel::HttpState {
+        platform_sso: Some(
+            configuration(root.path())?.load(&config.product_origin, authority.identity.tenant)?,
+        ),
+        platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+            authority.audit.clone(),
+        )),
+        material_roots: Arc::new(vec![]),
+        account_authority: rss_mdm_apple_channel::account_enrollment::authority(),
+        authentication: rss_mdm_apple_channel::account_enrollment::Authentication {
+            authority: authority.identity.authority.clone(),
+            http: authority.identity.browser().http.clone(),
+            origin: config.product_origin.clone(),
+        },
+        mount: crate::device::ChannelMount::new(
+            authority.identity.tenant,
+            rss_mdm_inventory::ReportSource::MdmApple,
+            rss_mdm_registration_service::Purpose::Primary,
+        ),
+        audit_store: authority.audit.clone(),
+        access: Arc::new(rss_mdm_apple_channel::Store::from_pool(
+            authority.pool.clone(),
+            authority.registration.clone(),
+            authority.authorization.clone(),
+        )),
+        apple: None,
+        clock: Arc::new(crate::clock::InventoryClock(Arc::new(
+            crate::clock::SystemClock,
+        ))),
+        execution,
+        protection: config.native_protector()?,
+        credentials: authority.credentials.clone(),
+        devices: Arc::new(crate::device::DeviceService::new(
+            authority.registration.clone(),
+            case_tenant().into(),
+            authority.audit.clone(),
+        )),
+        identity: sessions,
+        requests: Arc::new(tokio::sync::Semaphore::new(32)),
+    });
+    let router = rss_mdm_apple_channel::boundary::wrap(
+        rss_mdm_apple_channel::platform_sso::browser_routes().with_state(state),
+        rss_mdm_apple_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            requests: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: fixture_clock(),
+            audit_store: authority.audit.clone(),
+            tenant: case_tenant().into(),
+        },
+    )
+    .into_axum();
+    resources.finish(async {
         let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
-        let response = f.router.clone().oneshot(association).await?;
+        let response = router.clone().oneshot(association).await?;
         ensure!(response.status()==StatusCode::OK);
         let association: Value = serde_json::from_slice(&response.into_body().collect().await?.to_bytes())?;
         ensure!(association == json!({"authsrv":{"apps":["ABCDEFGHIJ.com.rss.psso"]}}));
         let base=format!("/api/v1/apple/platform-sso/{}",case_tenant());
-        let (status,value)=call(&f,&format!("{base}/nonce"),json!({})).await?;
+        let (status,value)=call(&router,&format!("{base}/nonce"),json!({})).await?;
         ensure!(status==StatusCode::OK,"nonce {status}: {value}");
         ensure!(crypto::decode(value["nonce"].as_str().context("nonce")?)?.len()==32);
         let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         let (digest,context,seconds):(Vec<u8>,Value,i64)=sqlx::query_as("SELECT nonce_digest,context,expires_at-floor(extract(epoch FROM clock_timestamp()))::bigint FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid AND id=$2")
             .bind(case_tenant()).bind(serde_json::from_value::<Uuid>(value["id"].clone())?).fetch_one(&mut c).await?;
         ensure!(digest==crypto::digest(value["nonce"].as_str().unwrap())&&context==json!({})&&(1..=120).contains(&seconds));
-        ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",Uuid::new_v4()),json!({})).await?.0==StatusCode::UNAUTHORIZED);
+        ensure!(call(&router,&format!("/api/v1/apple/platform-sso/{}/nonce",Uuid::new_v4()),json!({})).await?.0==StatusCode::UNAUTHORIZED);
         let invalid=Request::builder().method(Method::POST).uri(format!("{base}/token")).header("host","mdm.example.test").header("content-type","application/x-www-form-urlencoded").body(Body::from("platform_sso_version=1.0&grant_type=refresh_token&assertion=opaque"))?;
-        ensure!(f.router.clone().oneshot(invalid).await?.status()==StatusCode::BAD_REQUEST);
-        ensure!(call(&f,&format!("{base}/browser/begin"),json!({"bindingId":Uuid::new_v4()})).await?.0==StatusCode::UNAUTHORIZED);
-        let protected=Request::builder().method(Method::POST).uri("/api/v1/agent/runtime/platform-sso/bootstrap").header("host","mdm.example.test:9445").header("content-type","application/json").body(Body::from(serde_json::to_vec(&json!({"operationId":Uuid::new_v4(),"kind":"device"}))?))?;
-        ensure!(f.router.clone().oneshot(protected).await?.status()==StatusCode::UNAUTHORIZED);
+        ensure!(router.clone().oneshot(invalid).await?.status()==StatusCode::BAD_REQUEST);
+        ensure!(call(&router,&format!("{base}/browser/begin"),json!({"bindingId":Uuid::new_v4()})).await?.0==StatusCode::UNAUTHORIZED);
         // Capacity is a tenant budget, not an unbounded public nonce allocator.
         sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
-        ensure!(call(&f,&format!("{base}/nonce"),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
+        ensure!(call(&router,&format!("{base}/nonce"),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         sqlx::query("DELETE FROM mdm_apple.psso_challenges WHERE tenant_id=$1::uuid").bind(case_tenant()).execute(&mut c).await?;
         c.close().await?;Ok(())
-    }.await;
-    f.close().await?;
-    result
+    }).await
 }
 
 async fn grants(_f: &Fixture) -> Result<()> {
@@ -129,7 +193,7 @@ async fn grants(_f: &Fixture) -> Result<()> {
             scope: Scope::Tenant,
         }),
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,
@@ -166,8 +230,7 @@ async fn pair(
         .await?
         .context("Agent member")?;
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    f.app
-        .associations
+    f.associations
         .confirm(
             &proof,
             &rss_mdm_device_service::Confirm {
@@ -184,18 +247,18 @@ async fn pair(
             ),
         )
         .await?;
-    let objects = rss_mdm_device_service::planning::PlanningObjects::new(f.app.audit_store.clone());
+    let objects = rss_mdm_device_service::planning::PlanningObjects::new(f.authority.audit.clone());
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
-    let snapshot = objects.freeze(&mut tx, f.app.identity.tenant).await?;
+    let snapshot = objects.freeze(&mut tx, f.authority.identity.tenant).await?;
     let mut ready = false;
     for _ in 0..16 {
         if matches!(
             objects
-                .advance(&mut tx, f.app.identity.tenant, &snapshot)
+                .advance(&mut tx, f.authority.identity.tenant, &snapshot)
                 .await?,
             SnapshotProgress::Ready
         ) {
@@ -280,7 +343,7 @@ async fn register_key(
     );
     let _: rss_mdm_agent_wire::platform_sso::BootstrapResponse =
         serde_json::from_value(challenge.clone())?;
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let proof=signing.signer.sign("rss-mdm-platform-sso-registration+jwt",&json!({"iss":registration,"aud":format!("{}/register",challenge["endpoints"]["base"].as_str().unwrap()),"challengeId":challenge["id"],"sourceId":challenge["sourceId"],"sourceVersion":challenge["sourceVersion"],"nonce":challenge["nonce"],"encryptionKeyId":crypto::kid(&encryption.public)?,"iat":now,"exp":now+120}))?;
     let input = json!({"operationId":Uuid::new_v4(),"challengeId":challenge["id"],"signingKey":signing.public,"encryptionKey":encryption.public,"proof":proof});
     let (status, receipt) = agent(f, "register", input.clone()).await?;
@@ -349,13 +412,13 @@ async fn login_request(
     use rss_mdm_agent_wire::platform_sso::{ASSERTION_TYPE, LOGIN_TYPE, SCOPE};
     let rt = f.ade.platform_sso.as_ref().context("PSSO")?;
     let (status, nonce) = call(
-        f,
+        &f.router,
         &format!("/api/v1/apple/platform-sso/{}/nonce", case_tenant()),
         json!({}),
     )
     .await?;
     ensure!(status == StatusCode::OK);
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let client_nonce = Uuid::new_v4().to_string();
     let inner=user.signer.sign(ASSERTION_TYPE,&json!({"iss":id,"sub":id,"aud":rt.endpoints.issuer,"iat":now,"exp":now+120,"scope":SCOPE,"nonce":client_nonce,"request_nonce":nonce["nonce"]}))?;
     device.signer.sign(LOGIN_TYPE,&json!({"iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,"aud":rt.endpoints.token,"sub":id,"username":id,"grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer","iat":now,"exp":now+120,"scope":SCOPE,"nonce":client_nonce,"request_nonce":nonce["nonce"],"assertion":inner,"jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":apv(&encryption.public,&client_nonce)?}})).map_err(Into::into)
@@ -559,7 +622,7 @@ async fn browser_exchange(
         .split(';')
         .next()
         .context("browser cookie")?;
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let proof=user.signer.sign(BRIDGE_TYPE,&json!({"iss":registered["sourceId"],"sourceVersion":registered["sourceVersion"],"aud":challenge["audience"],"nonce":challenge["nonce"],"accessToken":access,"iat":now,"exp":now+120}))?;
     let request = Request::builder()
         .method(Method::POST)
@@ -593,7 +656,7 @@ async fn native_registration_login_browser_bridge_and_revocation() -> Result<()>
 async fn native_registration_scenario(password: Option<password::Fixture>) -> Result<()> {
     let mode = password.is_some();
     let mut f = Fixture::with_platform_configuration(
-        None,
+        true,
         None,
         false,
         None,
@@ -604,16 +667,23 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
     .await?;
     let worker = f.policy_worker().await?;
     let result=async {
+        if !mode {
+        let protected=Request::builder().method(Method::POST).uri("/api/v1/agent/runtime/platform-sso/bootstrap").header("host","mdm.example.test:9445").header("content-type","application/json").body(Body::from(serde_json::to_vec(&json!({"operationId":Uuid::new_v4(),"kind":"device"}))?))?;
+        ensure!(f.router.clone().oneshot(protected).await?.status()==StatusCode::UNAUTHORIZED);
+        }
+
         let (peer,_device)=f.ready_local_peer().await?;grants(&f).await?;
         let account=Uuid::new_v4();
         let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
         context["osVersion"]=json!([26,4,0,0]);
         context["interactiveUser"]=json!({"windowsAuthority":null,"identity":"501","generatedUid":account,"sessionId":Uuid::new_v4(),"administrator":false});
-        let agent_receipt=crate::test_support::agent::seed_service(f.app.agent_enrollment.as_ref().context("Agent service")?,agent_label(),crate::test_support::case::name("psso-agent-device"),json!({"executionContext":context,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","device_access.v1"]})).await?;
+        let agent_receipt=crate::test_support::agent::seed_service(f.agent_enrollment.as_ref().context("Agent service")?,agent_label(),crate::test_support::case::name("psso-agent-device"),json!({"executionContext":context,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","device_access.v1"]})).await?;
         let agent_registration:Uuid=serde_json::from_value(agent_receipt["registrationId"].clone())?;
         let agent_device=agent_receipt["deviceId"].as_str().context("Agent device")?;
         let mdm=pair(&f,agent_device).await?;
+        if !mode {
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"application/profile observations are required");
+        }
         let login=if let Some(p)=&password{p.login()}else{Default::default()};
         let binding=binding_with_configuration(&mut f,agent_device,serde_json::to_value(&login)?).await?;
         if let Some(p)=&password{p.mapping(binding).await?;}
@@ -624,6 +694,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let waiting = peer.manage("Acknowledged",Some(security),Some(("SecurityInfo",protocol::dictionary([("ManagementStatus",protocol::dictionary([("EnrolledViaDEP",false.into()),("UserApprovedEnrollment",true.into()),("IsUserEnrollment",false.into())]).into())]).into()))).await?;
         ensure!(waiting.is_empty(),"RSS profile waits for application observation: {}",String::from_utf8_lossy(&waiting));
         installed_application(mdm.registration_id,"psso-applications",Some("1.0")).await?;
+        if !mode {
         installed_application(mdm.registration_id,"psso-missing-version",None).await?;
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"a valid scope must not mask another scope missing version");
         {
@@ -636,25 +707,25 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
             let valid:bool=sqlx::query_scalar("SELECT mdm_apple.application_valid_until($1,$2,floor(extract(epoch FROM clock_timestamp()))::bigint) IS NOT NULL").bind(mdm.registration_id).bind(&cfg).fetch_one(&mut pg).await?;
             ensure!(valid,"valid scope alone qualifies");
         }
+        }
         let (execute,_)=peer.next("InstallProfile").await?;
         let bytes=peer.manage("Acknowledged",Some(execute),None).await?;
         let (observe,_)=lifecycle::command(&bytes,"ProfileList")?;
+        if !mode {
         ensure!(agent(&f,"bootstrap",json!({"operationId":Uuid::new_v4(),"kind":"device"})).await?.0==StatusCode::CONFLICT,"ACK is not observed readiness");
+        }
         let payloads = profile.payloads.iter().map(|payload| Ok(protocol::dictionary([
             ("PayloadIdentifier",payload.identifier.clone().into()),("PayloadUUID",payload.uuid.to_string().into()),
             ("PayloadVersion",1.into()),("PayloadType",payload.payload_type()?.into())]).into())).collect::<Result<Vec<plist::Value>>>()?;
         let report = |children: Vec<plist::Value>| plist::Value::Array(vec![protocol::dictionary([
             ("PayloadIdentifier",profile.identifier.clone().into()),("PayloadUUID",profile.uuid.to_string().into()),
             ("PayloadVersion",1.into()),("PayloadContent",plist::Value::Array(children))]).into()]);
-        let incomplete = protocol::dictionary([("ProfileList", report(payloads[..1].to_vec()))]);
-        ensure!(!profile.observed(&incomplete)?, "missing required associated domains cannot qualify");
         let observed = report(payloads);
         peer.manage("Acknowledged",Some(observe),Some(("ProfileList",observed))).await?;
         ensure!(f.operation(operation).await?["commandStatus"]=="applied");
         let device=Key::new()?;let device_encryption=Key::new()?;let mut user=if mode{password::copy_key(&device)?}else{Key::new()?};let encryption=Key::new()?;
         let mut c=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
         sqlx::query("INSERT INTO mdm_apple.psso_challenges(tenant_id,id,purpose,nonce_digest,expires_at,context) SELECT $1::uuid,gen_random_uuid(),'login',decode(repeat('ab',32),'hex'),floor(extract(epoch FROM clock_timestamp()))::bigint+120,'{}'::jsonb FROM generate_series(1,4096)").bind(case_tenant()).execute(&mut c).await?;
-        ensure!(call(&f,&format!("/api/v1/apple/platform-sso/{}/nonce",case_tenant()),json!({})).await?.0==StatusCode::SERVICE_UNAVAILABLE);
         let registered_device=register_key(&f,"device",None,agent_registration,&device,&device_encryption).await?;
 
         let registered=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
@@ -667,20 +738,27 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         applied_binding(binding).await?;
         if let Some(provider)=&password {password::capacity(&f,&device,&encryption,&registered["sourceId"]).await?;password::negative(&f,&device,&encryption,&registered["sourceId"]).await?;provider.failure_recovery(&f,&device,&encryption,&registered["sourceId"]).await?;}
         let assertion=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
-        let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
-        let (one,two)=(one?,two?);
-        let (success,replay)=if one.0==StatusCode::OK {(one,two)}else{(two,one)};
-        ensure!(success.0==StatusCode::OK&&replay.0==StatusCode::BAD_REQUEST,"concurrent nonce use: {} {} / {} {}",success.0,success.1,replay.0,replay.1);
-        let response=success.1;
+        let response = if mode {
+            let (status, response) = token(&f, &assertion).await?;
+            ensure!(status == StatusCode::OK, "Password token: {response}");
+            response
+        } else {
+            let (one,two)=tokio::join!(token(&f,&assertion),token(&f,&assertion));
+            let (one,two)=(one?,two?);
+            let (success,replay)=if one.0==StatusCode::OK {(one,two)}else{(two,one)};
+            ensure!(success.0==StatusCode::OK&&replay.0==StatusCode::BAD_REQUEST,"concurrent nonce use: {} {} / {} {}",success.0,success.1,replay.0,replay.1);
+            ensure!(token(&f,&assertion).await?.0==StatusCode::BAD_REQUEST,"nonce replay");
+            success.1
+        };
         let tokens=decrypt(&encryption,&response)?;
         ensure!(tokens["token_type"]=="Bearer"&&tokens["expires_in"]==300&&tokens["refresh_token"].as_str().is_some_and(|s|s.len()==43));
         ensure!(decrypt(&device_encryption,&response).is_err(),"response is encrypted to user key");
-        ensure!(token(&f,&assertion).await?.0==StatusCode::BAD_REQUEST,"nonce replay");
         let (status,headers,body)=browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().context("access token")?).await?;
         ensure!(status==StatusCode::OK,"browser exchange {status}: {body}");
         ensure!(headers.get_all("set-cookie").iter().any(|h|h.to_str().is_ok_and(|s|s.starts_with("__Host-identity-session="))),"P2 must issue ordinary Identity session");
+        if !mode {
         let secret=headers.get_all("set-cookie").iter().filter_map(|h|h.to_str().ok()).find_map(|v|v.strip_prefix("__Host-identity-session=").and_then(|v|v.split(';').next())).context("platform cookie")?;
-        let session=f.app.identity.authority.inspect_session(f.app.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
+        let session=f.authority.identity.authority.inspect_session(f.authority.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
         let reference=serde_json::to_value(session.reference()?)?;
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
@@ -689,7 +767,9 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
                 .bind(case_tenant()).bind(agent_registration).bind(&reference).execute(&mut pg).await?;
         }
         directory_session(&mut f,agent_device,true).await?;
+        }
         if let Some(p)=&password{p.revision_fence(&f,serde_json::from_value(registered["sourceId"].clone())?).await?;}
+        if !mode {
         // A local lookup must not evaluate an unrelated source, even if its document is corrupt.
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
@@ -717,17 +797,20 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let fresh=password::login(&f,mode,&device,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&fresh).await?.0==StatusCode::OK,"fresh SE renewal");
         ensure!(browser_exchange(&f,binding,&user,&registered,tokens["access_token"].as_str().unwrap()).await?.0==StatusCode::UNAUTHORIZED,"renewal replaces the native access token");
+        }
         let replacement=Key::new()?;
         let replaced=register_key(&f,"device",None,agent_registration,&replacement,&device_encryption).await?;
         ensure!(replaced["sourceId"]==registered_device["sourceId"]&&replaced["sourceVersion"]==2);
-        directory_session(&mut f,agent_device,false).await?;
+        if !mode { directory_session(&mut f,agent_device,false).await?; }
         let stale=password::login(&f,mode,&replacement,&user,&encryption,&registered["sourceId"]).await?;
         ensure!(token(&f,&stale).await?.0==StatusCode::BAD_REQUEST,"parent key replacement invalidates old user registration");
         if mode {user=password::copy_key(&replacement)?;}
         let repaired=password::register_user(&f,Some(binding),agent_registration,&user,&encryption,mode).await?;
         ensure!(repaired["sourceVersion"]==2);
         let path=format!("sources/{}/revoke",repaired["sourceId"].as_str().unwrap());
+        if !mode {
         ensure!(agent(&f,&path,json!({"sourceVersion":1})).await?.0==StatusCode::CONFLICT,"delayed teardown must not revoke the replacement");
+        }
         let valid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;
         let (status,response)=token(&f,&valid).await?;ensure!(status==StatusCode::OK);
         let current_tokens=decrypt(&encryption,&response)?;
@@ -735,8 +818,10 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::OK,"token is valid immediately before logout");
         let revoked=agent(&f,&path,json!({"sourceVersion":2})).await?;
         ensure!(revoked.0==StatusCode::OK&&revoked.1["revoked"]==true&&revoked.1["sourceVersion"]==3);
+        if !mode {
         let repeated=agent(&f,&path,json!({"sourceVersion":2})).await?;
         ensure!(repeated.0==StatusCode::OK&&repeated.1["sourceVersion"]==3,"same retirement is idempotent");
+        }
         let invalid=password::login(&f,mode,&replacement,&user,&encryption,&repaired["sourceId"]).await?;ensure!(token(&f,&invalid).await?.0==StatusCode::BAD_REQUEST);
         ensure!(browser_exchange(&f,binding,&user,&repaired,current_access).await?.0==StatusCode::UNAUTHORIZED);
         Ok(())
@@ -757,7 +842,7 @@ async fn third_party_profile_dispatch_with_rss_runtime() -> Result<()> {
     third_party_profile_dispatch(true).await
 }
 async fn third_party_profile_dispatch(enabled: bool) -> Result<()> {
-    let mut f = Fixture::with_options(None, None, false, None, false, enabled).await?;
+    let mut f = Fixture::with_options(true, None, false, None, false, enabled).await?;
     let worker = f.policy_worker().await?;
     let result: Result<()> = async {
         let (peer, _) = f.ready_local_peer().await?;

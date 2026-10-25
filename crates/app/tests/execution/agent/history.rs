@@ -23,8 +23,8 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         None,
         &["operation_read"],
     )?);
-    crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, grants).await?;
-    let stack = worker(&fixture.base).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let plan = publish(author, router, resource).await?;
@@ -120,10 +120,10 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         let filtered=author.call(router,Method::GET,&format!("/api/v1/policies?filter=action==execution;resource=={resource}&limit=1"),None).await?;
         ensure!(filtered.0==StatusCode::OK && filtered.1["items"][0]["id"]==plan.to_string());
         let grants_without_read=fixture.grants.iter().filter(|g|g.operation!=crate::authorization::Permission::OperationRead).cloned().collect();
-        crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&fixture.author_id,grants_without_read).await?;
         ensure!(author.call(router,Method::GET,&path,None).await?.0==StatusCode::FORBIDDEN);
         let mut restored=fixture.grants.clone();restored.extend(crate::test_support::identity::device_grants(None,&["operation_read"])?);
-        crate::test_support::identity::set_grants(case_tenant(),&fixture.author_id,restored).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&fixture.author_id,restored).await?;
         ensure!(
             ids.windows(2).all(|pair| pair[0] > pair[1]),
             "equal-time run history was not ordered by descending task id: {ids:?}"
@@ -198,52 +198,30 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
     resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
-    f.grants.push(Grant {
-        operation: Permission::InventoryFieldsWrite,
-        scope: Scope::Tenant,
-    });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
     let key = "custom.confidential_observation";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    ensure!(f.author.call(&f.router,Method::PUT,&format!("/api/v1/asset-fields/{key}"),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0==StatusCode::OK);
+    let tenant = f.planning.tenant;
+    let field = serde_json::from_value(field)?;
+    let inserted = f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |connection| Box::pin(async move { rss_mdm_inventory_postgres::publish_field_in(connection, tenant, 0, &field).await.map_err(|e| sqlx::Error::Protocol(e.to_string())) })).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+    ensure!(inserted);
     let id = Uuid::new_v4();
     let bytes = b"printf '{}'";
-    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let definition = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
-    resource(
-        &mut f.author,
-        &f.router,
-        id,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
-    resource(&mut f.author,&f.router,id,1,json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"sensitive-script","length":bytes.len(),"sha256":digest},"definition":definition}}]})).await?;
-    ensure!(upload(&f.author, &f.router, id, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(id, bytes, definition).await?;
     f.scope(
         case_task_scope(),
         json!([{"kind":"device","id":case_device_id()}]),
     )
     .await?;
-    let stack = worker(&f.base).await?;
     {
-        let policy = publish(&mut f.author, &f.router, id).await?;
-        let task = claim(&f.router).await?;
-        task_event(&f.router, &task, json!({"kind":"received"})).await?;
-        task_event(&f.router, &task, json!({"kind":"start"})).await?;
-        task_event(&f.router,&task,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":"private-collection-canary"},"diagnostics":{"stdout":"private-collection-canary","stderr":"private-collection-canary","durationMs":1,"executedAt":1,"failure":null}})).await?;
+        let policy = seed_script_policy(&f, id).await?;
+        let task_id = seed_script_run(&f, policy).await?;
+        seed_script_result(&f, task_id, json!({"secret":"private-collection-canary"}), "private-collection-canary").await?;
         let path = format!(
             "/api/v1/policies/{policy}/runs/{}",
-            task["payload"]["task"]["taskId"].as_str().unwrap()
+            task_id
         );
         let denied = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
@@ -256,7 +234,7 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             operation: Permission::InventorySensitiveRead,
             scope: Scope::Tenant,
         });
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, granted).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, granted).await?;
         let detail = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(
             detail.0 == StatusCode::OK
@@ -266,11 +244,10 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
         // Keep the original loaded snapshot after withdrawal, then call the service directly.
         let stale = crate::device::test_support::admin(case_tenant(), "other-a").await?;
         ensure!(stale.manage(Permission::InventorySensitiveRead).is_ok());
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "command_read");
-        let task_id = Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().unwrap())?;
         let denied = f.queries.action_run(&stale, policy, task_id, &audit).await;
         ensure!(
             matches!(
@@ -280,7 +257,6 @@ async fn sensitive_collection_run_details_reauthorize_both_read_paths() -> Resul
             "stale sensitive grant survived withdrawal"
         );
     }
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -314,7 +290,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
                 .filter(|g| g.operation != Permission::ScriptExecute)
                 .cloned()
                 .collect();
-            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn)
+            crate::test_support::identity::change_grants(case_tenant(), &f.author_id, withdrawn)
                 .await?;
             let current = serde_json::to_value(
                 queries
@@ -332,7 +308,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
                 .filter(|g| g.operation != Permission::InventoryRead)
                 .cloned()
                 .collect();
-            crate::test_support::identity::set_grants(case_tenant(), &f.author_id, withdrawn)
+            crate::test_support::identity::change_grants(case_tenant(), &f.author_id, withdrawn)
                 .await?;
             ensure!(matches!(
                 queries
@@ -340,7 +316,7 @@ async fn device_capabilities_use_current_permissions_after_proof_capture() -> Re
                     .await,
                 Err(rss_mdm_execution_service::queries::QueryError::Forbidden)
             ));
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 &f.author_id,
                 f.grants.clone(),

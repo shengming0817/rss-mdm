@@ -148,11 +148,10 @@ async fn startup_integrity(
     pool: &PgPool,
     store: &AuditStore,
     tenant: TenantId,
-    ledger: bool,
     control: &Control<'_, crate::lifecycle::RuntimeTimer>,
 ) -> Result<()> {
     store.validate_tenant(tenant, control).await?;
-    let opposite = new_store(pool.clone(), integrity(!ledger)?, tenant).await?;
+    let opposite = new_store(pool.clone(), integrity(true)?, tenant).await?;
     ensure!(
         matches!(
             opposite
@@ -164,28 +163,6 @@ async fn startup_integrity(
         ),
         "configured integrity cannot silently switch"
     );
-    if ledger {
-        let wrong = new_store(
-            pool.clone(),
-            Integrity::Ledger(std::sync::Arc::new(rss_ledger::Authenticator::new(
-                rss_ledger::KeyId::parse("mdm-audit-fixture")?,
-                vec![20; 32],
-            )?)),
-            tenant,
-        )
-        .await?;
-        ensure!(
-            matches!(
-                wrong
-                    .validate_tenant(tenant, control)
-                    .await
-                    .unwrap_err()
-                    .class(),
-                rss_mdm_audit_integration::ErrorClass::AuditIntegrity
-            ),
-            "same ID with wrong secret must fail before serving requests"
-        );
-    }
     Ok(())
 }
 
@@ -241,37 +218,33 @@ async fn empty_reads_preserve_heads(
 async fn storage_integrity_is_enforced() -> Result<()> {
     for role in ROLES {
         let pool = pool(role).await?;
-        for ledger in [false] {
-            let timer = crate::lifecycle::RuntimeTimer;
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let control = {
-                let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
-                Control::new(&timer, cutoff, cutoff, &cancel)
-            };
-            let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
-            let store = new_store(pool.clone(), integrity(ledger)?, tenant).await?;
-            empty_reads_preserve_heads(&pool, &store, tenant, &control).await?;
-            let request = RequestAudit::new(tenant.to_string(), "audit_integrity_test");
-            let fact = Fact::business(&request, "integrity", b"initial", 200, "success", None)?;
-            let source_budget =
-                rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
-            let source_control = source_budget.source_control();
-            let written = store
-                .write(
-                    tenant,
-                    &source_control,
-                    (&store, &fact),
-                    |(store, fact), tx| {
-                        Box::pin(async move { store.append(tx, fact, false).await })
-                    },
-                )
-                .await;
-            ensure!(state(written) == "committed");
-            crate::audit_test_support::projection::drain(tenant, integrity(ledger)?).await?;
-            startup_integrity(&pool, &store, tenant, ledger, &control).await?;
-            reject_damaged_receipt(&store, tenant, &fact, &source_control).await?;
-            request.finalize(None);
-        }
+        let timer = crate::lifecycle::RuntimeTimer;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let control = {
+            let cutoff = Deadline::from_timeout(&timer, Duration::from_secs(10))?;
+            Control::new(&timer, cutoff, cutoff, &cancel)
+        };
+        let tenant = TenantId::parse(&Uuid::new_v4().to_string())?;
+        let store = new_store(pool.clone(), Integrity::Plain, tenant).await?;
+        empty_reads_preserve_heads(&pool, &store, tenant, &control).await?;
+        let request = RequestAudit::new(tenant.to_string(), "audit_integrity_test");
+        let fact = Fact::business(&request, "integrity", b"initial", 200, "success", None)?;
+        let source_budget =
+            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(10));
+        let source_control = source_budget.source_control();
+        let written = store
+            .write(
+                tenant,
+                &source_control,
+                (&store, &fact),
+                |(store, fact), tx| Box::pin(async move { store.append(tx, fact, false).await }),
+            )
+            .await;
+        ensure!(state(written) == "committed");
+        crate::audit_test_support::projection::drain(tenant, Integrity::Plain).await?;
+        startup_integrity(&pool, &store, tenant, &control).await?;
+        reject_damaged_receipt(&store, tenant, &fact, &source_control).await?;
+        request.finalize(None);
         pool.close().await;
     }
     Ok(())

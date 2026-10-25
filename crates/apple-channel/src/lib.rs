@@ -530,18 +530,10 @@ mod identity_seed_tests {
                 notify_id: "original-notify".into(),
             },
         };
-        use sha2::Digest;
-        let original: [u8; 32] = sha2::Sha256::digest(
-            serde_json::to_vec(&(
-                "mdm.apple.enrollment/v1",
-                "https://mdm.example.test",
-                "com.apple.mgmt.example",
-                "original-challenge",
-                "original-notify",
-            ))
-            .unwrap(),
-        )
-        .into();
+        let original = [
+            187, 13, 252, 233, 152, 35, 120, 200, 1, 91, 247, 255, 145, 242, 226, 130, 168, 161,
+            117, 52, 84, 192, 217, 82, 251, 90, 145, 106, 8, 152, 36, 185,
+        ];
         assert_eq!(super::protocol_identity(&config), original);
     }
 }

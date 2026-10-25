@@ -12,10 +12,10 @@ fn sources_are_distinct_closed_current_protocols_without_credentials() {
         let input = json!({"id":"enterprise","revision":"1","protocol":protocol});
         let definition: SourceDefinition = serde_json::from_value(input.clone()).unwrap();
         definition.snapshot().unwrap();
-        let mut old = input;
-        old["location"] = json!(null);
-        assert!(serde_json::from_value::<SourceDefinition>(old).is_err());
     }
+    let invalid =
+        json!({"id":"enterprise","revision":"1","protocol":{"kind":"private"},"unexpected":null});
+    assert!(serde_json::from_value::<SourceDefinition>(invalid).is_err());
 }
 
 #[test]

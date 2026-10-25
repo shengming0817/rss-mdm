@@ -198,6 +198,14 @@ mod tests {
         };
         let grants = authority.grants(&snapshot).unwrap();
         assert!(
+            grants
+                .iter()
+                .any(|g| g.operation == Permission::GroupRead && g.scope == crate::Scope::Tenant)
+        );
+        assert!(grants.iter().any(
+            |g| g.operation == Permission::InventoryRead && g.scope == crate::Scope::AllDevices
+        ));
+        assert!(
             !grants
                 .iter()
                 .any(|g| g.operation == Permission::AuthorizationWrite

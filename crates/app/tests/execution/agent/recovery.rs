@@ -20,7 +20,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let execution = fixture.execution;
     let mut author = fixture.author;
@@ -29,7 +29,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     let unknown_policy = publish(&mut author, &router, id).await?;
     let pending = claim(&router).await?;
     // Removing management grants leaves the independent source-read authority intact.
-    crate::test_support::identity::set_management_grants(case_tenant(), &author_id, vec![]).await?;
+    crate::test_support::identity::change_management_grants(case_tenant(), &author_id, vec![]).await?;
     task_event(&router, &pending, json!({"kind":"received"})).await?;
     task_event(&router, &pending, json!({"kind":"start"})).await?;
     let task_id = pending["payload"]["task"]["taskId"].as_str().unwrap();
@@ -52,7 +52,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
         run_count(unknown_policy)? == before,
         "unknown execution repeated"
     );
-    crate::test_support::identity::set_management_grants(case_tenant(), &author_id, grants.clone())
+    crate::test_support::identity::change_management_grants(case_tenant(), &author_id, grants.clone())
         .await?;
     post(
         &mut author,

@@ -29,31 +29,25 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
         )]
         .into(),
     };
-    for cause in [
-        group::core::UnknownReason::Null,
-        group::core::UnknownReason::Missing,
-        group::core::UnknownReason::Deleted,
-        group::core::UnknownReason::Unsupported,
-        group::core::UnknownReason::Conflict,
-    ] {
-        result.contexts.get_mut("scope").unwrap().explanations = vec![group::core::Explanation {
-            path: vec![],
-            outcome: group::core::Outcome::Unknown(cause),
-        }];
-        assert_eq!(
-            assessment(
-                &input,
-                &device,
-                &BTreeMap::new(),
-                result.clone(),
-                vec![],
-                vec![]
-            )
-            .unwrap()
-            .status,
-            rss_mdm_compliance::Status::Unknown
-        );
-    }
+    result.contexts.get_mut("scope").unwrap().explanations = vec![group::core::Explanation {
+        path: vec![],
+        outcome: group::core::Outcome::Unknown(group::core::UnknownReason::Missing),
+    }];
+    let unknown = assessment(
+        &input,
+        &device,
+        &BTreeMap::new(),
+        result.clone(),
+        vec![],
+        vec![],
+    )
+    .unwrap();
+    assert_eq!(unknown.status, rss_mdm_compliance::Status::Unknown);
+    assert_eq!(unknown.reason, rss_mdm_compliance::Reason::FactsUnknown);
+    assert!(matches!(
+        unknown.explanations[0].outcome,
+        rss_mdm_compliance::Outcome::Missing
+    ));
     result.decision = group::core::Decision::Match;
     input.definition.platform = Platform::Windows;
     let source = |s: &str| SourceReference {
@@ -101,13 +95,12 @@ fn unknown_causes_and_absent_platform_are_not_compliance() {
     );
 }
 #[test]
-fn rules_have_no_timer_or_legacy_field_surface() {
+fn boolean_criteria_reject_string_values() {
     let definition = serde_json::to_value(input().definition).unwrap();
-    for key in ["graceSeconds", "ttl", "expiresAt", "validUntil"] {
-        let mut value = definition.clone();
-        value[key] = json!(1);
-        assert!(serde_json::from_value::<Definition>(value).is_err());
-    }
+    let tenant = TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+    let rule_id = Uuid::new_v4();
+    let catalog = rss_mdm_inventory::Catalog::new(rss_mdm_inventory::builtin::fields()).unwrap();
+    assert!(validate_definition(&input().definition, tenant, rule_id, &catalog).is_ok());
     let mut value = definition;
     value["criteria"]["criteria"]["value"] = json!({"kind":"string","value":"false"});
     let rule: Definition = serde_json::from_value(value).unwrap();

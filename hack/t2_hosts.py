@@ -1,6 +1,5 @@
-"""The run owns ordinary workers through the existing product serve entry point."""
+"""Explicit product HTTP scenarios own their real serve process."""
 import json
-import hashlib
 from pathlib import Path
 import threading
 import time
@@ -11,22 +10,11 @@ from t2_model import ROOT
 from verification_result import require
 
 
-def worker_config(path):
+def management_config(path):
     config = json.loads(Path(path).read_text())
     config.update(listen='127.0.0.1:0', native_protocols={}, agent_pki={'mode': 'disabled'}, device_pki=[])
     return config
 
-
-def compatibility(path):
-    def material(value, key=''):
-        if isinstance(value, dict):
-            return {k: material(v, k) for k, v in value.items()}
-        if isinstance(value, list):
-            return [material(v) for v in value]
-        if key.endswith('_file') and isinstance(value, str):
-            return hashlib.sha256(Path(value).read_bytes()).hexdigest()
-        return value
-    return hashlib.sha256(json.dumps(material(worker_config(path)), sort_keys=True).encode()).hexdigest()
 
 
 class Host:
@@ -41,7 +29,7 @@ class Host:
         output.mkdir(parents=True, exist_ok=True)
         self.log_path = output / 'host.log'
         self.log = self.log_path.open('w')
-        config = worker_config(config_path)
+        config = management_config(config_path)
         self.address = None
         path = private(Path(config_path).with_name('host.json'), config)
         try:

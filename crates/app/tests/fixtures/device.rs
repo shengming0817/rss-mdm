@@ -7,7 +7,7 @@ pub(crate) mod t2;
 pub(crate) mod test_support;
 
 #[cfg(test)]
-use crate::{Database, authorization::context::AuthorizedPrincipal};
+use crate::authorization::context::AuthorizedPrincipal;
 #[cfg(test)]
 use coordinates::Coordinates;
 #[cfg(test)]

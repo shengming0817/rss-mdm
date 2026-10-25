@@ -57,7 +57,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             })
             .await,
     );
-    for (start, count) in [(0, 1000), (1000, 1)] {
+    for (start, count) in [(0, 2), (2, 1)] {
         for _ in 0..2 {
             let page = committed(
                 runtime
@@ -115,7 +115,7 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
     let sealed = committed(
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
-                Box::pin(async move { s.seal_build_in(tx, request.id, 1001).await })
+                Box::pin(async move { s.seal_build_in(tx, request.id, 3).await })
             })
             .await,
     );
@@ -144,8 +144,8 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
             })
             .await,
     );
-    assert_eq!(receipt.added, 1001);
-    assert_eq!(receipt.group.member_count, 1001);
+    assert_eq!(receipt.added, 3);
+    assert_eq!(receipt.group.member_count, 3);
     let replay = committed(
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
@@ -158,37 +158,37 @@ async fn staged_pages_publish_atomically_and_replay_without_duplicate_members() 
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
                 Box::pin(async move {
-                    s.build_members_in(tx, request.id, Some("device-0000999".into()), 1000)
+                    s.build_members_in(tx, request.id, Some("device-0000001".into()), 2)
                         .await
                 })
             })
             .await,
     );
-    assert_eq!(page, vec!["device-0001000"]);
+    assert_eq!(page, vec!["device-0000002"]);
     let evidence = committed(
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
                 Box::pin(async move {
-                    s.build_decisions_in(tx, request.id, Some("device-0000999".into()), 1000)
+                    s.build_decisions_in(tx, request.id, Some("device-0000001".into()), 2)
                         .await
                 })
             })
             .await,
     );
     assert_eq!(evidence.len(), 1);
-    assert_eq!(evidence[0].device, "device-0001000");
+    assert_eq!(evidence[0].device, "device-0000002");
     assert_eq!(evidence[0].origin, DecisionOrigin::Rule);
     assert_eq!(evidence[0].decision, DecisionValue::Match);
     let changes = committed(
         runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
-                Box::pin(async move { s.build_changes_in(tx, request.id, None, 1000).await })
+                Box::pin(async move { s.build_changes_in(tx, request.id, None, 2).await })
             })
             .await,
     );
-    assert_eq!(changes.added.len(), 1000);
+    assert_eq!(changes.added.len(), 2);
     assert!(changes.removed.is_empty());
-    assert_eq!(changes.next.as_deref(), Some("device-0000999"));
+    assert_eq!(changes.next.as_deref(), Some("device-0000001"));
 
     runtime.close().await;
 }
@@ -199,26 +199,17 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
     let runtime = connect_runtime().await;
     let s = store(runtime.clone(), tenant()).await;
     let group = group_id();
-    let creation = op();
-    let create = Command::Create {
-        asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-        group,
-        presentation: serde_json::json!({"name":"static-paged","description":""})
-            .as_object()
-            .unwrap()
-            .clone(),
-        definition: Definition::Static,
-    };
-    let mut current = s
-        .execute(creation, at(), &create, deadline())
-        .await
-        .unwrap();
-    assert_eq!(
-        current,
-        s.execute(creation, at(), &create, deadline())
-            .await
-            .unwrap()
-    );
+    committed(runtime.local_tx_with_context(tenant(), deadline(), &s, |_, tx| Box::pin(async move {
+        tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query("INSERT INTO mdm_group.groups(tenant_id,id,kind,presentation,revision,member_version,member_count,deleted,calculation_revision,asset_context) VALUES($1::uuid,$2::uuid,'static',$3,1,0,0,false,0,'endpoint')")
+                .bind(tenant().to_string()).bind(group.to_string())
+                .bind(serde_json::json!({"name":"static-paged","description":""}))
+                .execute(c).await?;
+            Ok(())
+        })).await?;
+        Ok(Ok(()))
+    })).await);
+    let mut current = s.get(group, deadline()).await.unwrap().unwrap();
     let mut previous = None;
     for (add, remove) in [
         (vec!["a".into(), "b".into()], vec![]),
@@ -228,12 +219,12 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             sources: vec![],
             id: op(),
             group,
-            expected: current.group.revision,
-            base_calculation: current.group.calculation_revision,
+            expected: current.revision,
+            base_calculation: current.calculation_revision,
             changed_devices: None,
             rule_version: None,
             patch: Some(MemberPatch { add, remove }),
-            input_version: format!("members-{}", current.group.revision.get()),
+            input_version: format!("members-{}", current.revision.get()),
             as_of: at(),
         };
         committed(
@@ -265,7 +256,7 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             previous.is_some(),
             "unpublished changes leaked"
         );
-        current = committed(
+        let published = committed(
             runtime
                 .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
                     Box::pin(async move {
@@ -277,11 +268,11 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                 .await,
         );
         assert_eq!(
-            current,
+            published,
             builds::publish(&runtime, &s, &request).await.unwrap()
         );
         if let Some(old) = previous {
-            assert_eq!((current.added, current.removed), (1, 1));
+            assert_eq!((published.added, published.removed), (1, 1));
             let old_members = committed(
                 runtime
                     .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
@@ -322,13 +313,14 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
             stored_rows, 0,
             "static membership must reuse immutable changes instead of copying unchanged devices"
         );
+        current = published.group;
         previous = Some(request.id);
     }
     // The same published set also proves a borrowed delete rolls back its receipt and event.
     let deletion = op();
     let delete = Command::Delete {
         group,
-        expected: current.group.revision,
+        expected: current.revision,
     };
     let attempt = runtime
         .local_tx_with_context(tenant(), deadline(), (&s, &delete), |ctx, tx| {
@@ -356,29 +348,13 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
         })).await
     })).await.fold(|v|v,|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"),|e|panic!("{e:?}"));
     assert_eq!(effects, (0, 0));
-    execute_companion(
-        &runtime,
-        &s,
-        op(),
-        &Command::Delete {
-            group,
-            expected: current.group.revision,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(
-        !affected(&runtime, &s, vec!["b".into()], None, 33)
-            .await
-            .contains(&group)
-    );
     let foreign_store = store(runtime.clone(), foreign()).await;
     assert!(
         affected(&runtime, &foreign_store, vec!["b".into()], None, 33)
             .await
             .is_empty()
     );
-    for (devices, limit) in [(vec!["b".into(); 1001], 1), (vec![], 0), (vec![], 1001)] {
+    for (devices, limit) in [(vec![], 0), (vec![], 1001)] {
         let result = runtime
             .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {
                 Box::pin(

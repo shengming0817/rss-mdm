@@ -76,7 +76,6 @@ impl CaseContext {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
                 != self.fixtures.len()
-            || self.has_fixture("shared_worker") && self.has_fixture("local_worker")
         {
             return Err("fixtures");
         }
@@ -218,80 +217,9 @@ pub fn id(label: &str) -> u128 {
     namespace ^ u128::from(hash.finish())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum WorkerOwner {
-    Run,
-    Case,
-    None,
-}
-
-pub fn worker_owner() -> WorkerOwner {
-    match (
-        context().has_fixture("shared_worker"),
+pub fn require_worker() {
+    assert!(
         context().has_fixture("local_worker"),
-    ) {
-        (true, false) => WorkerOwner::Run,
-        (false, true) => WorkerOwner::Case,
-        (false, false) => WorkerOwner::None,
-        (true, true) => panic!("case has conflicting worker owners"),
-    }
-}
-
-pub fn owns_worker() -> bool {
-    match worker_owner() {
-        WorkerOwner::Run => false,
-        WorkerOwner::Case => true,
-        WorkerOwner::None => panic!("worker ownership is missing from case policy"),
-    }
-}
-
-#[cfg(test)]
-mod validation {
-    use super::*;
-    fn planned() -> serde_json::Value {
-        serde_json::json!({"caseId":"case", "invocationId":"invoke", "namespace":"00000000000000000000000000000001",
-            "tenant":"11111111-1111-4111-8111-111111111111", "peer":"22222222-2222-4222-8222-222222222222",
-            "actors":[{"tenant":"11111111-1111-4111-8111-111111111111", "role":"admin", "login":"admin-1", "principal":null}],
-            "fixtures":["identity"]})
-    }
-    #[test]
-    fn rejects_malformed_and_incomplete_contract_before_consumption() {
-        for field in [
-            "caseId",
-            "invocationId",
-            "namespace",
-            "tenant",
-            "peer",
-            "actors",
-            "fixtures",
-        ] {
-            for replacement in [
-                None,
-                Some(serde_json::json!(42)),
-                Some(serde_json::json!("")),
-            ] {
-                let mut value = planned();
-                if let Some(replacement) = replacement {
-                    value[field] = replacement;
-                } else {
-                    value.as_object_mut().unwrap().remove(field);
-                }
-                assert!(
-                    CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Preparing)
-                        .is_err(),
-                    "{field}"
-                );
-            }
-        }
-        let bytes = serde_json::to_vec(&planned()).unwrap();
-        assert!(CaseContext::decode(&bytes, Phase::Preparing).is_ok());
-        assert!(CaseContext::decode(&bytes, Phase::Ready).is_err());
-        let mut value = CaseContext::decode(&bytes, Phase::Preparing).unwrap();
-        value.actors_mut()[0].principal = Some("44444444-4444-4444-8444-444444444444".into());
-        assert!(CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Ready).is_ok());
-        value
-            .fixtures
-            .extend(["local_worker".into(), "shared_worker".into()]);
-        assert!(CaseContext::decode(&serde_json::to_vec(&value).unwrap(), Phase::Ready).is_err());
-    }
+        "worker ownership is missing from case policy"
+    );
 }

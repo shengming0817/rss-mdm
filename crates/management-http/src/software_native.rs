@@ -787,21 +787,15 @@ mod tests {
         );
         assert!(token(&headers).is_none());
         assert!(digest("../secret").is_err());
-        let access = rss_mdm_software_service::BrewReadAccess::new(
-            rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap(),
-            "brew",
-            "source-read-token-2531-00000000000",
-        )
-        .unwrap();
-        assert!(access.permits(
-            rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap(),
-            "brew",
-            "source-read-token-2531-00000000000"
-        ));
-        assert!(!access.permits(
-            rss_request_context::TenantId::parse("10000000-0000-0000-0000-000000000001").unwrap(),
-            "other",
-            "source-read-token-2531-00000000000"
-        ));
+        headers.insert(
+            header::AUTHORIZATION,
+            axum::http::HeaderValue::from_static(
+                "Basic cnNzOnNvdXJjZS1yZWFkLXRva2VuLTI1MzEtMDAwMDAwMDAwMDA=",
+            ),
+        );
+        assert_eq!(
+            self::token(&headers).as_deref(),
+            Some("source-read-token-2531-00000000000")
+        );
     }
 }

@@ -11,7 +11,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("authorized fixture: {e:#}"))?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone())
+    let stack = worker(&fixture.base, fixture.execution.clone())
         .await
         .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;
@@ -207,7 +207,7 @@ async fn windows_variant_delivery_and_detection() -> Result<()> {
     let mut fixture = Fixture::authorized(Platform::Windows).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let stack = worker(&fixture.base, fixture.content.clone())
+    let stack = worker(&fixture.base, fixture.execution.clone())
         .await
         .map_err(|e| anyhow::anyhow!("software worker: {e:#}"))?;
     let router = fixture.router;

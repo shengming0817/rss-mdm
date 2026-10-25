@@ -5,8 +5,17 @@ use super::*;
 async fn one_target_withdrawal_preserves_an_independent_target() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let first = server.service(runtime.clone(), server.winget()).await;
-    let a = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let first = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let a = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let digest = first.target()["digest"].clone();
     let mut config = server.winget();
     let SourceConfig::Winget(c) = &mut config else {
@@ -14,7 +23,7 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
     };
     c.base.push_str("secondary/");
     let second = PublicationService::connect(
-        host(runtime.clone(), audit_store().await).await,
+        host(runtime.clone(), audit_store.clone(), content.clone()).await,
         tenant(),
         format!("{}-secondary", server.logical),
         config,
@@ -139,6 +148,8 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
             .is_empty()
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -146,8 +157,17 @@ async fn one_target_withdrawal_preserves_an_independent_target() {
 async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let input = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let p = submit_publication(&service, &input).await;
     let request = request_for(&service, &input.record).await;
     assert_eq!(
@@ -186,6 +206,8 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
     );
     assert_eq!(server.state.lock().unwrap().posts, 0);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -193,8 +215,17 @@ async fn unstarted_withdrawal_cancels_original_attempt_without_publishing() {
 async fn global_withdrawal_settles_an_unstarted_attempt_once() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let input = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let p = submit_publication(&service, &input).await;
     withdraw_version(&input).await;
     let reconcile = || service.reconcile_withdrawal(p.id(), p.attempt, cutoff());
@@ -242,4 +273,6 @@ async fn global_withdrawal_settles_an_unstarted_attempt_once() {
     ));
     assert_eq!(server.state.lock().unwrap().posts, 0);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }

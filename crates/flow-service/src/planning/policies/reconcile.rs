@@ -23,7 +23,13 @@ impl super::super::Planning {
             &policy.to_string(),
         )
         .map_err(Error::from)?;
-        let Some(p) = storage::read_in(self.policy_store.reader(), tx, policy).await? else {
+        let Some(p) = storage::read_in(
+            &rss_mdm_policy_postgres::PolicyReader::bind(self.runtime.clone(), self.tenant),
+            tx,
+            policy,
+        )
+        .await?
+        else {
             tx.prepare_outbox_partitions(&[terminal_partition]).await?;
             return Ok(PreparedAssignment::Empty);
         };

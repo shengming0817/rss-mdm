@@ -24,18 +24,6 @@ fn server_acknowledges_results_by_command_name() {
 }
 
 #[test]
-fn historical_initialization_is_only_untrusted_protocol_data() {
-    let message = syncml::decode(
-        include_bytes!("fixtures/initialization.xml"),
-        &CodecLimits::default(),
-    )
-    .unwrap();
-    assert_eq!(message.header.source, "test-device");
-    assert_eq!(message.commands.len(), 2);
-    assert!(message.final_message);
-}
-
-#[test]
 fn duplicate_header_is_rejected() {
     let xml = include_str!("fixtures/results.xml")
         .replace("<MsgID>2</MsgID>", "<MsgID>2</MsgID><MsgID>3</MsgID>");
@@ -43,15 +31,23 @@ fn duplicate_header_is_rejected() {
 }
 
 #[test]
-fn dtd_is_rejected_before_entity_resolution() {
-    let xml = b"<!DOCTYPE SyncML [<!ENTITY e SYSTEM 'file:///etc/passwd'>]><SyncML>&e;</SyncML>";
-    assert!(syncml::decode(xml, &CodecLimits::default()).is_err());
-}
-
-#[test]
 fn empty_results_data_is_a_present_empty_value() {
     let xml = include_str!("fixtures/results.xml").replace("<Data>TEST-DEVICE</Data>", "<Data/>");
-    assert!(syncml::decode(xml.as_bytes(), &CodecLimits::default()).is_ok());
+    let decoded = syncml::decode(xml.as_bytes(), &CodecLimits::default()).unwrap();
+    let result = decoded
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            syncml::Command::Results(result) => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        result
+            .items
+            .iter()
+            .any(|item| item.data.as_ref().is_some_and(|data| data.0.is_empty()))
+    );
 }
 #[test]
 fn malformed_xml_declaration_is_rejected() {

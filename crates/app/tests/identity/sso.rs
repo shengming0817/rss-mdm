@@ -150,21 +150,29 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     )
     .await?;
     identity_resources.finish(async {
-    let access = database(&base).await?;
-    let audit_store = access.audit_store_fixture(&config.audit).await?;
-    let (router, _, _, _, resources) = crate::api::application_fixture(
-        config,
-        Arc::new(crate::clock::SystemClock),
-        monotonic(),
-        access,
-        Some(identity),
-        audit_store,
-    )
-    .await?;
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool.clone()));
+    resources.resource(SourceResource(source));
+    let registration = Arc::new(rss_mdm_registration_service::Store::from_pool(pool.clone(), Arc::new(crate::registration_lifecycle::Bridge)));
+    let fixture = authority::Authority {
+        resources: Default::default(), base: base.clone(), pool: pool.clone(),
+        authorization: Arc::new(rss_mdm_authorization_service::Store::from_pool(pool, Arc::new(crate::lifecycle::RuntimeTimer))),
+        registration, identity: Arc::new(identity), audit: audit.clone(),
+        credentials: Arc::new(crate::enrollment::credentials::Credentials::new(monotonic(), 16)),
+    };
     resources.finish(async {
-    let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-        "127.0.0.1".parse()?,
-    )));
+    let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(fixture.identity.authority.clone(), fixture.identity.tenant));
+    let profiles = Arc::new(crate::user_profiles::Backend {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[29;32])?,
+        identity: fixture.identity.authority.clone(), tenant: fixture.identity.tenant,
+        instance: fixture.identity.instance, audit: audit.clone(),
+    });
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(audit, fixture.identity.tenant, &[29;32])?);
+    let router = fixture.router(Router::new().nest("/api/v1",
+        rss_mdm_management_http::user_profiles::routes(profiles)
+        .merge(rss_mdm_management_http::device_views::routes(sessions, fixture.identity.authority.clone(), None).with_state(associations)).into_axum())
+        .merge(fixture.authorization()).merge(fixture.enrollment()))?;
     let mut admin = Browser::default();
     identity::age_prepared_admin_session()?;
     ensure!(admin.login_password(&router, "admin", PASSWORD).await? == StatusCode::OK);
@@ -191,7 +199,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     );
     let mut alice = Browser::default();
     roundtrip(&router, &mut alice, provider, "alice").await?;
-    let alice_principal=browser_subject(&alice,&router).await?;
+    let alice_principal=authorization_subject(&alice,&router).await?;
     let without_mapping=admin.call(&router,Method::GET,&format!("/api/v1/user-profiles/{alice_principal}?view=latest"),None).await?;
     ensure!(without_mapping.0==StatusCode::OK);
     ensure!(without_mapping.1["fields"].as_array().unwrap().is_empty());
@@ -206,7 +214,7 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     let second_path=format!("{tenant}/providers/{second_id}/enabled");
     let second_enabled=admin.call(&router,Method::POST,&second_path,Some(json!({"expectedVersion":second["version"],"enabled":true}))).await?;
     ensure!(second_enabled.0==StatusCode::OK);
-    let admin_id=browser_subject(&admin,&router).await?;
+    let admin_id=authorization_subject(&admin,&router).await?;
     let admin_profile=format!("{tenant}/accounts/{admin_id}/profile");
     let local=admin.call(&router,Method::GET,&admin_profile,None).await?;
     ensure!(local.0==StatusCode::OK);
@@ -219,10 +227,10 @@ async fn product_callback_facts_and_provider_isolation() -> Result<()> {
     ensure!(admin.call(&router,Method::GET,&format!("{}?{}",callback.path(),callback.query().context("callback query")?),None).await?.0==StatusCode::SEE_OTHER);
     let mut linked=Browser::default();
     roundtrip(&router,&mut linked,second_id,"bob").await?;
-    ensure!(browser_subject(&linked,&router).await?==admin_id,"linked login changed the relationship principal");
+    ensure!(authorization_subject(&linked,&router).await?==admin_id,"linked login changed the relationship principal");
     admin=Browser::default();
     ensure!(admin.login_password(&router,"admin",PASSWORD).await?==StatusCode::OK);
-    ensure!(browser_subject(&admin,&router).await?==admin_id,"link changed the relationship principal");
+    ensure!(authorization_subject(&admin,&router).await?==admin_id,"link changed the relationship principal");
     let device=crate::test_support::case::name("sso-personnel");
     let directory_rule=json!({"subject":{"kind":"user","user":{"tenantId":case_tenant(),"instanceId":INSTANCE,"principalId":admin_id}},"grants":[{"operation":"inventory_read","scope":{"kind":"all_devices"}},{"operation":"enrollment","scope":{"kind":"all_devices"}},{"operation":"inventory_sensitive_read","scope":{"kind":"tenant"}},{"operation":"user_profiles_read","scope":{"kind":"tenant"}}]});
     crate::test_support::process::pg(&format!("BEGIN; SET LOCAL rss.tenant_id='{}'; INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{}','{}'); INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES('{}','{}','{}',1,'{}'::jsonb); COMMIT;",case_tenant(),case_tenant(),device,case_tenant(),INSTANCE,uuid::Uuid::new_v4(),directory_rule))?;

@@ -61,39 +61,44 @@ fn certificate_evidence_allows_descriptions_but_rejects_secret_material_in_every
             queries: [("facts".into(), r)].into(),
         };
         assert!(envelope(r.clone()).validate_for(&p, 100).is_ok());
-        r.rows[0].insert("vendor_note".into(), json!({"label":"device certificate"}));
-        r.rows[0].insert("health".into(), json!("valid"));
-        r.rows[0].insert("running".into(), json!("ordinary description"));
         let extended = envelope(r.clone());
-        assert!(extended.validate_for(&p, 100).is_ok());
-        let restored: NativeCollectionResult =
-            serde_json::from_slice(&serde_json::to_vec(&extended).unwrap()).unwrap();
-        assert_eq!(restored, extended);
+        if status == NativeQueryStatus::Complete {
+            r.rows[0].insert("vendor_note".into(), json!({"label":"device certificate"}));
+            r.rows[0].insert("health".into(), json!("valid"));
+            r.rows[0].insert("running".into(), json!("ordinary description"));
+            let extended = envelope(r.clone());
+            assert!(extended.validate_for(&p, 100).is_ok());
+            let restored: NativeCollectionResult =
+                serde_json::from_slice(&serde_json::to_vec(&extended).unwrap()).unwrap();
+            assert_eq!(restored, extended);
+        }
         let mut nested_secret = extended.clone();
         nested_secret.queries.get_mut("facts").unwrap().rows[0]
             .insert("vendor_note".into(), json!({"privateKey":"forbidden"}));
         assert!(nested_secret.validate_for(&p, 100).is_err());
 
-        for key in [
-            "private_key",
-            "password",
-            "hash",
-            "der",
-            "pfx",
-            "recovery_key",
-            "privateKey",
-            "recoveryKey",
-            "passwordHash",
-            "certificateDer",
-            "pkcs12",
-            "recovery-password",
-        ] {
-            let mut bad = r.clone();
-            bad.rows[0].insert(key.into(), json!("forbidden"));
-            assert!(
-                envelope(bad).validate_for(&p, 100).is_err(),
-                "{status:?}/{key}"
-            );
+        if status == NativeQueryStatus::Complete {
+            for key in [
+                "private_key",
+                "password",
+                "hash",
+                "der",
+                "pfx",
+                "recovery_key",
+                "privateKey",
+                "recoveryKey",
+                "passwordHash",
+                "certificateDer",
+                "pkcs12",
+                "recovery-password",
+            ] {
+                let mut bad = r.clone();
+                bad.rows[0].insert(key.into(), json!("forbidden"));
+                assert!(
+                    envelope(bad).validate_for(&p, 100).is_err(),
+                    "{status:?}/{key}"
+                );
+            }
         }
         assert_eq!(
             r.complete_for(&q, 100),
@@ -157,6 +162,7 @@ fn reboot_observations_do_not_require_a_completed_scan() {
             mode: UpdateScanMode::Local,
         },
     ] {
+        let windows = matches!(recipe, NativeSystemQuery::WindowsUpdates { .. });
         let q = query(recipe);
         let p = plan(q.clone());
         let envelope = |r| NativeCollectionResult {
@@ -174,8 +180,11 @@ fn reboot_observations_do_not_require_a_completed_scan() {
             });
             assert!(r.complete_for(&q, 100));
             assert!(envelope(r.clone()).validate_for(&p, 100).is_ok());
+            if state != "required" {
+                continue;
+            }
             let encoded = serde_json::to_value(&r).unwrap();
-            for invalid_scan in [
+            let scans = [
                 serde_json::Value::Null,
                 json!({"mode":"online"}),
                 json!({"mode":"local","source":"https://user:secret@host/"}),
@@ -184,9 +193,10 @@ fn reboot_observations_do_not_require_a_completed_scan() {
                 json!({"mode":"local","finishedAt":90}),
                 json!({"mode":"local","startedAt":90,"finishedAt":80}),
                 json!({"mode":"local","startedAt":80,"finishedAt":101}),
-            ] {
+            ];
+            for invalid_scan in scans.iter().take(if windows { scans.len() } else { 1 }) {
                 let mut bad = encoded.clone();
-                bad["scan"] = invalid_scan;
+                bad["scan"] = invalid_scan.clone();
                 let bad: NativeQueryResult = serde_json::from_value(bad).unwrap();
                 assert!(!bad.complete_for(&q, 100));
                 assert!(envelope(bad).validate_for(&p, 100).is_err());

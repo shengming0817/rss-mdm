@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from candidate_fixture import INSTANCE, ADMIN
 from t2_context import contexts, installation, registration_tenants, validate
 from t2_database import Costs, DatabasePool, measure
-from t2_hosts import Host, compatibility
 from t2_environment import Environment, private, run
 from t2_registry import PREPARATION
 from s3_fixtures import S3Environment
@@ -33,9 +32,9 @@ class RunFixtures:
         self.builds = builds
         self.output = output
         self.costs = Costs()
-        self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1))
-        self.fault = DatabasePool(builds, 't2-fault', self.costs, 128)
-        self.gateway_owner = Environment(group='t2-gateway')
+        self.normal = DatabasePool(builds, 't2', self.costs, 128 * (jobs + 1), output / 'resources')
+        self.fault = DatabasePool(builds, 't2-fault', self.costs, 128, output / 'resources')
+        self.gateway_owners = {}
         self.cert_directory = tempfile.TemporaryDirectory(prefix='mdm-t2-run-')
         self.root = Path(self.cert_directory.name)
         self.native_key = private(self.root / 'native-data.key', '')
@@ -51,8 +50,6 @@ class RunFixtures:
         self.identity_locks = {}
         self.actor_batches = {}
         self.actors = {}
-        self.hosts = {}
-        self.host_locks = {}
         self.recovery_material = None
         self.materials = {}
         self.material_locks = {}
@@ -64,7 +61,22 @@ class RunFixtures:
         try:
             # The worktree lease makes these known projects exclusively ours.
             # Recover all registered owners, independently of this run's selected fixtures.
+            identity = self.normal.owner.identity
+            prefix = identity + '-t2-gateway'
+            projects = set()
+            for listing in (['ps', '-a'], ['network', 'ls']):
+                values = run(['docker', *listing, '--filter', 'label=rss.mdm.worktree=' + identity,
+                              '--format', '{{.Label "com.docker.compose.project"}}'], capture_output=True, timeout=30).stdout.splitlines()
+                projects.update(value for value in values if value == prefix or value.startswith(prefix + '-'))
+            base = ROOT / 'artifacts/dev-environment'
+            if base.exists():
+                projects.update(Environment(group=path.name).project for path in base.glob('t2-gateway*') if path.is_dir())
+            for project in sorted(projects):
+                group = project.removeprefix(identity + '-')
+                require(group == 't2-gateway' or group.startswith('t2-gateway-'), 'invalid gateway recovery owner')
+                self.gateway_owners[group] = Environment(group=group)
             self.cleanup_environments('prepare-recovery')
+            self.gateway_owners.clear()
         except BaseException:
             self.cert_directory.cleanup()
             self.process_ownership.__exit__(*sys.exc_info())
@@ -73,19 +85,10 @@ class RunFixtures:
 
     def cleanup_environments(self, phase='run-cleanup'):
         errors = []
-        for host in self.hosts.values():
-            if isinstance(host, BaseException):
-                continue
-            try:
-                with measure(self.costs, phase, host=host.address, hostLog=str(host.log_path)):
-                    host.close()
-            except Exception as error:
-                errors.append(error)
-        self.hosts.clear()
         for pool in (self.normal, self.fault):
             if pool.ready:
                 pool.sample_connections(list(pool.shared.values()))
-        for environment in (self.normal.owner, self.fault.owner, self.gateway_owner):
+        for environment in (self.normal.owner, self.fault.owner, *self.gateway_owners.values()):
             try:
                 with measure(self.costs, phase, pg=environment.project):
                     environment.reset()
@@ -246,6 +249,12 @@ class RunFixtures:
         private(root / 'runtime.json', config)
         private(root / 'account-password', (shared / 'account-password').read_text())
         pool.database_config(root, database, 'mdm_identity_maintenance', 'identity-maintenance-fixture')
+        if 'management' in job.module.fixtures or 'management_delegate' in job.module.fixtures:
+            private(root / 'management-session.json', dict(tenant=management, principal=ADMIN, login='bootstrap', credential=source))
+        if 'management_delegate' in job.module.fixtures:
+            secret = private(root / 'management-source', source)
+            self.preparation_helper(root, dict(stage='management_delegate', management=management,
+                source_secret=str(secret), login='delegate-' + job.key), output / 'management-delegate', database)
     def prepare_identity(self, pool, database, job, output):
         shared, management, source = self.identity_environment(pool, database, output)
         key = (pool.owner.project, pool.generation, database)
@@ -292,6 +301,7 @@ class RunFixtures:
                     self.preparation_helper(root, manifest, output / 'actors', database)
                 for member, path in zip(batch, paths):
                     root = Path(path).parent
+                    private(root / 'source-session', source)
                     context = validate(json.loads(Path(path).read_text()), ready=True)
                     self.case_contexts[member['job'].key] = context
                     for actor in context['actors']:
@@ -327,7 +337,7 @@ class RunFixtures:
             self.builds.processes.check()
             source = self.materials.get(digest)
             if isinstance(source, BaseException):
-                raise RuntimeError('cryptographic material preparation previously failed') from source
+                raise DependencyBlocked('cryptographic material preparation previously failed', source) from source
             if source is None:
                 source = self.root / ('materials-' + digest)
                 try:
@@ -343,6 +353,10 @@ class RunFixtures:
                         elif kind == 'apple':
                             from apple_fixtures import generate
                             generate(source, source / 'server.crt', source / 'server.key')
+                        elif kind == 'archive':
+                            subprocess.run(['openssl', 'x509', '-x509toreq', '-in', str(source / 'server.crt'), '-signkey', str(source / 'server.key'), '-out', str(source / 'request.pem')], check=True, capture_output=True, timeout=30)
+                            subprocess.run(['openssl', 'pkey', '-in', str(source / 'server.key'), '-aes-256-cbc', '-passout', 'pass:fixture', '-out', str(source / 'encrypted.pem')], check=True, capture_output=True, timeout=30)
+                            (source / 'encrypted.pem').chmod(0o600)
                         elif kind.startswith('pki-'):
                             from pki_fixtures import offline_materials
                             offline_materials(source, kind.removeprefix('pki-'))
@@ -351,6 +365,10 @@ class RunFixtures:
                     self.materials[digest] = source
                     self.costs.increment('cryptographicMaterialSets', 1)
                 except BaseException as error:
+                    error.root_cause = str(self.output / 'materials' / f'{digest}-failure.json')
+                    from verification_result import publish
+                    publish(Path(error.root_cause), dict(status='failed', phase='cryptographic-materials',
+                            kind=kind, materials=list(materials), errorClass=type(error).__name__))
                     self.materials[digest] = error
                     raise
         def relocate(value):
@@ -377,62 +395,6 @@ class RunFixtures:
             shutil.copy2(root / name, directory / name)
         self.prepare_materials('pki-' + purpose, directory)
         offline(directory, root, env, purpose)
-
-    @contextmanager
-    def workers(self, job, database, config):
-        pool = self.fault if job.module.db_mode == 'instance' else self.normal
-        tenant = self.case_contexts[job.key]['tenant']
-        # Full serve also owns the installation's management-tenant projector.
-        # A physical database has one full host, irrespective of the business tenant.
-        key = (pool.owner.project, pool.generation, database)
-        signature = compatibility(config)
-        with self.lock:
-            lock = self.host_locks.setdefault(key, threading.Lock())
-        with measure(self.costs, 'host-wait', database=database, tenant=tenant):
-            while not lock.acquire(timeout=.05):
-                self.builds.processes.check()
-        try:
-            self.builds.processes.check()
-            host = self.hosts.get(key)
-            if isinstance(host, BaseException):
-                raise DependencyBlocked('host preparation previously failed', host) from host
-            try:
-                if host is not None:
-                    host.check()
-                if host is not None and host.signature != signature:
-                    # Keep ownership if shutdown fails; never publish a second owner.
-                    host.close()
-                    del self.hosts[key]
-                    host = None
-                if host is None:
-                    output = self.output / 'hosts' / database / tenant / job.key
-                    try:
-                        with measure(self.costs, 'host-start', database=database, tenant=tenant):
-                            host = Host(self.builds, config, output)
-                        host.signature = signature
-                        self.hosts[key] = host
-                        self.costs.increment('hostStarts', 1)
-                    except BaseException as error:
-                        error.root_cause = str(output / 'host.log')
-                        self.hosts[key] = error
-                        raise
-                with self.builds.processes.depending_on(host.check):
-                    yield host
-            except BaseException as error:
-                if host is not None and host.failed.is_set():
-                    error.root_cause = str(host.log_path.with_name('failure.json'))
-                    self.hosts[key] = error
-                    with self.builds.processes.cleanup():
-                        host.close()
-                raise
-            finally:
-                if job.module.db_mode != 'reuse' or job.module.scope != 'objects':
-                    if self.hosts.get(key) is host:
-                        with self.builds.processes.cleanup():
-                            host.close()
-                        del self.hosts[key]
-        finally:
-            lock.release()
 
     def source_tls(self, root):
         with self.lock:
@@ -476,7 +438,7 @@ class RunFixtures:
         pool = self.fault if job.module.db_mode == 'instance' else self.normal
         return dict(database=None, tenant=context['tenant'], peer=context['peer'],
                     pg=pool.owner.project if job.module.postgres else None,
-                    pgGeneration=None, host=None, hostLog=None)
+                    pgGeneration=None)
 
     @contextmanager
     def scenario(self, job, output, receipt):
@@ -486,6 +448,11 @@ class RunFixtures:
         stack = ExitStack()
         try:
             root = self.root / job.key
+            if 'gateway' in module.fixtures:
+                gateway_owner = Environment(group='t2-gateway-' + job.key)
+                with self.lock:
+                    self.gateway_owners[job.key] = gateway_owner
+                gateway_owner.reset()
             env = dict(os.environ, RUST_MIN_STACK=str(8 * 1024 * 1024),
                        MDM_CASE_CONTEXT=str(root / 'case.json'))
             env.pop('MDM_CASE_RENDEZVOUS', None)
@@ -501,6 +468,9 @@ class RunFixtures:
                         certificates.prepare_inputs()
                 for name in ('ca.crt', 'server.crt', 'server.key'):
                     private(root / name, (certificates.root / name).read_text())
+            if 'archive-issued' in module.materials:
+                self.prepare_materials('archive', root)
+                env['MDM_ARCHIVE_FIXTURES'] = str(root)
             if 'windows' in module.fixtures:
                 self.prepare_materials('windows', root, tuple(item for item in module.materials if item.startswith('windows-')))
                 env['MDM_WINDOWS_FIXTURES'] = str(root)
@@ -587,10 +557,6 @@ class RunFixtures:
             # Runtime authority revisions must exist before a real host consumes them.
             if 'identity' in module.fixtures:
                 self.prepare_identity(pool, database, job, output / 'identity-setup')
-            if 'shared_worker' in module.fixtures:
-                host = stack.enter_context(self.workers(job, database, env['MDM_TEST_CONFIG']))
-                receipt['environment']['hostLog'] = str(host.log_path.relative_to(self.output))
-                receipt['environment']['host'] = host.address
             if 'oracle' in module.fixtures:
                 from apple_oracle import running as oracle
                 stack.enter_context(oracle(root, env))
@@ -621,8 +587,8 @@ class RunFixtures:
                     try:
                         stack.__exit__(*original)
                     finally:
-                        if module.python == 'gateway' and self.gateway_owner.root.exists():
-                            self.gateway_owner.reset()
+                        if job.key in self.gateway_owners:
+                            self.gateway_owners[job.key].reset()
             except BaseException as error:
                 import traceback
                 path = output / 'cleanup-failure.log'

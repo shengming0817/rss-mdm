@@ -201,9 +201,7 @@ async fn report_on(
 pub(crate) async fn start(
     runtime: Arc<InventoryRuntime>,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
+    crate::test_support::case::require_worker();
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(10))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
@@ -231,7 +229,7 @@ pub(crate) async fn start(
 pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if (!crate::test_support::case::owns_worker() || runtime.readiness.health().is_ready())
+            if runtime.readiness.health().is_ready()
                 && runtime.inspect(run).await?.projection
                     == crate::inventory_runtime::ProjectionStatus::Projected
             {
@@ -245,15 +243,16 @@ pub(crate) async fn wait_ready_projection(runtime: &InventoryRuntime, run: &Run)
     Ok(())
 }
 
-pub(super) async fn open(access: Arc<Database>) -> Result<Arc<InventoryRuntime>> {
+pub(super) async fn open(
+    inventory: Arc<rss_mdm_inventory_service::Store>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
+) -> Result<Arc<InventoryRuntime>> {
     Ok(InventoryRuntime::fixture(
         options("mdm_runtime")?,
-        access.inventory(),
+        inventory,
         TenantId::parse(case_a())?,
         clock(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        audit,
     )
     .await?)
 }

@@ -2,32 +2,35 @@ use super::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: explicit reinstatement fences old offboarding attempts"]
 async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         let id=enterprise::ready(&mut f).await?;let person=f.author_id.clone();
         let list=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
         ensure!(list.0==StatusCode::OK,"bindings {list:?}");
         let policy=pg(&format!("SELECT document->>'policy' FROM mdm_access.device_access_bindings WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim().to_owned();
         // A distinct current administrator performs offboarding; self-offboarding is rejected.
-        ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);f.access_authenticator=None;
-        let operator=browser_subject(&f.author,&f.router).await?;
+        f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;f.access_authenticator=None;
+        let operator=prepared_subject(&f.author)?;
         let mut grants=f.grants.clone();
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&operator,grants).await?;
-        ensure!(f.author.login(&f.router,"admin").await?==StatusCode::OK);
+        crate::test_support::identity::seed_grants(case_tenant(),&operator,grants).await?;
+        f.author = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let path=format!("/api/v1/devices/{}/device-access/bindings/{id}",execution::case_device_id());
         let successor_login=format!("successor-{}",Uuid::new_v4());
         let successor=f.author.call(&f.router,Method::POST,&format!("/api/v1/identity/tenants/{}/accounts",case_tenant()),Some(json!({"login":successor_login,"password":crate::test_support::identity::PASSWORD}))).await?;
         ensure!(successor.0==StatusCode::CREATED,"successor creation {successor:?}");
         let successor_id=successor.1["principalId"].as_str().context("successor principal")?;
         let mut successor_grants=f.grants.clone();successor_grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::IdentityAccountsManage,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),successor_id,successor_grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),successor_id,successor_grants).await?;
         let operation=Uuid::new_v4();let offboard=json!({"operationId":operation,"expectedRevision":1,"action":{"kind":"offboard","disposition":"keep"}});
         let result=f.access_call(Method::PUT,&path,Some(offboard.clone())).await?;ensure!(result.0==StatusCode::OK,"offboard {result:?}");
         f.author.cookies.remove("__Host-identity-operation");ensure!(f.author.call(&f.router,Method::PUT,&path,Some(offboard)).await?==result);
         let status_path=format!("/api/v1/devices/{}/device-access/operations/{operation}/offboarding",execution::case_device_id());
-        crate::test_support::identity::set_grants(case_tenant(),&operator,vec![]).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&operator,vec![]).await?;
         ensure!(!f.author.call(&f.router,Method::GET,&status_path,None).await?.0.is_success());
         let mut next=Browser::default();
         ensure!(next.call(&f.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":successor_login,"password":crate::test_support::identity::PASSWORD}))).await?.0==StatusCode::OK);
@@ -38,14 +41,21 @@ async fn reinstatement_does_not_reopen_old_offboarding() -> Result<()> {
         let stale=f.author.call(&f.router,Method::POST,&format!("{status_path}/identity"),Some(json!({"kind":"execute"}))).await?;
         ensure!(!stale.0.is_success(),"old offboarding reopened");
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: DA recovery requires atomic step-up and preserves its disclosure receipt"]
 async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
         f.grants.extend(crate::test_support::identity::device_grants(None,&["credentials"])?);
         let binding=enterprise::ready(&mut f).await?;
         let device=execution::case_device_id();
@@ -66,5 +76,9 @@ async fn recovery_disclosure_consumes_one_proof_and_rechecks_current_binding() -
         ensure!(unbound.0==StatusCode::OK,"unbind {unbound:?}");
         ensure!(!f.author.call(&f.router,Method::POST,&secret_path,Some(body)).await?.0.is_success());
         Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
     }).await
 }

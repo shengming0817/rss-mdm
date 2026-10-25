@@ -62,6 +62,12 @@ pub struct Services {
     pub windows: bool,
     pub apple: bool,
 }
+pub fn device_action_routes() -> Router {
+    Router::new().route(
+        "/devices/{id}/actions",
+        post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+    )
+}
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let broker = crate::enterprise_broker::routes(
         state.agent_enrollment.clone(),
@@ -77,15 +83,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             state.identity.tenant,
         ),
     );
-    let software_content = Router::new()
-        .route(
-            "/api/v1/software/installations/{id}/package",
-            get(crate::software_content::download).owned(
-                &contracts::DOWNLOAD_MANAGEMENT_HTTP,
-                &[RouteOperation::Action],
-            ),
-        )
-        .with_state(state.execution.clone());
+    let software_content = crate::software_content::routes(state.execution.clone());
     let directory = Arc::new(crate::enrollment::directory::HttpState {
         cursor: state.query_cursor.clone(),
         devices: state.devices.clone(),
@@ -115,9 +113,6 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         access: state.authorization.clone(),
         requests: state.requests,
     });
-    let identity_context_state = Arc::new(IdentityContextState {
-        identity_management: state.identity_management,
-    });
     let enrollment = Arc::new(crate::enrollment::http::HttpState {
         channels: state.registration_channels,
         service: state.enrollment,
@@ -131,12 +126,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::first_use::routes(state.first_use))
         .merge(crate::mail::routes(state.mail))
         .merge(crate::content::connections::routes().with_state(state.storage_connections))
-        .route(
-            "/settings/catalog",
-            get(crate::settings::tenant)
-                .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get])
-                .layer(Extension(state.settings)),
-        )
+        .merge(crate::settings::routes(state.settings))
         .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::telemetry::routes(state.telemetry.clone()))
         .merge(crate::api_access::key_routes(Arc::new(
@@ -165,10 +155,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             )),
         )
         .merge(crate::authorization::routes().with_state(authorization))
-        .route(
-            "/devices/{id}/actions",
-            post(action).owned(&contracts::DEVICES, &[RouteOperation::Action]),
-        );
+        .merge(device_action_routes());
     let planning_routes = Router::new()
         .merge(crate::runtime_diagnostics::routes().with_state(state.diagnostics))
         .merge(crate::planning::routes().with_state(planning.clone()))
@@ -199,9 +186,13 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
                 .with_state(execution),
         )
         .merge(
-            crate::planning::policies::http::routes(state.queries.clone(), state.telemetry.clone())
+            crate::planning::policies::http::routes(state.queries.clone())
                 .with_state(policies.clone()),
         )
+        .merge(crate::planning::policies::http::previews(
+            state.queries.clone(),
+            state.telemetry.clone(),
+        ))
         .merge(crate::software_catalog::routes().with_state(state.software_catalog))
         .merge(crate::content::http::routes().with_state(state.content))
         .merge(crate::enrollment::http::routes().with_state(enrollment))
@@ -211,25 +202,17 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
             crate::device_views::routes(sessions, directory_identity, state.platform_configuration)
                 .with_state(state.associations),
         );
-    let host_context = Router::new()
-        .route(
-            "/api/v1/identity-host/tenants/{tenant}/context",
-            get(identity_context)
-                .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
-                .with_state(identity_context_state),
-        )
-        .route_layer(middleware::from_fn_with_state(
+    let host_context = identity_context_routes(state.identity_management).route_layer(
+        middleware::from_fn_with_state(
             authentication_state.clone(),
             crate::authorization::http::protect,
-        ));
+        ),
+    );
     let protected = core
         .merge(planning_routes)
         .merge(operations)
         .merge(resources)
-        .route(
-            "/mdm-candidate/workspace",
-            get(workspace).owned(&contracts::WORKSPACE, &[RouteOperation::Get]),
-        )
+        .merge(workspace_routes())
         .route_layer(middleware::from_fn_with_state(
             authentication_state,
             crate::authorization::http::protect,
@@ -244,6 +227,13 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         envelope,
     )
 }
+pub fn workspace_routes() -> Router {
+    Router::new().route(
+        "/mdm-candidate/workspace",
+        get(workspace).owned(&contracts::WORKSPACE, &[RouteOperation::Get]),
+    )
+}
+
 async fn workspace(
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<serde_json::Value>, Error> {
@@ -290,6 +280,20 @@ struct IdentityHostContext {
     session_id: String,
     navigation: crate::authorization::identity_management::IdentityNavigation,
 }
+/// Product identity navigation over the existing authenticated request proof.
+pub fn identity_context_routes(
+    policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
+) -> Router {
+    Router::new().route(
+        "/api/v1/identity-host/tenants/{tenant}/context",
+        get(identity_context)
+            .owned(&contracts::IDENTITY_CONTEXT, &[RouteOperation::Get])
+            .with_state(Arc::new(IdentityContextState {
+                identity_management: policy,
+            })),
+    )
+}
+
 async fn identity_context(
     State(app): State<Arc<IdentityContextState>>,
     Extension(auth): Extension<RequestAuth>,

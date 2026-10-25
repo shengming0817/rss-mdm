@@ -57,41 +57,6 @@ pub(crate) fn seed_source(
     Ok((registration, epoch))
 }
 
-/// One completed run for retained-quality fixtures; no projection or behavior matrix runs here.
-pub(crate) async fn completed_windows_run(base: &Value, device: &str) -> Result<()> {
-    let (registration, _) = seed_source(device, "mdm", "mdm.windows", "fixture")?;
-    let proof =
-        crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 124);
-    let locator = crate::test_support::runtime::secret("channel-proof-124")
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
-    pg(&format!(
-        "UPDATE mdm_access.credentials SET locator='{locator}' WHERE registration='{registration}'"
-    ))?;
-    let access = database(base).await?;
-    let service = crate::device::DeviceService::new(
-        access.registration(),
-        case_tenant().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    );
-    crate::inventory_runtime::test_support::report(
-        &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
-        &proof,
-        [Some("fixture"), Some("1")],
-    )
-    .await?;
-    access.close().await;
-    Ok(())
-}
-
 /// Explicit contract for a fixture collector; production never has a default field roster.
 pub(crate) fn definition(
     dataset: &str,
@@ -141,4 +106,48 @@ pub(crate) fn definition_sql(
     Ok(format!(
         "INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{tenant}','{dataset}','{version}','{source}','{fingerprint}','{coverage}','{document}') ON CONFLICT DO NOTHING"
     ))
+}
+
+/// A projected Agent fact before an enrollment-policy action; report intake has its own owner.
+pub(crate) fn seed_unenrolled(device: &str) -> Result<()> {
+    let device = device.replace('\'', "''");
+    let coordinates: Value = serde_json::from_str(&pg(&format!(
+        "SELECT jsonb_build_array(r.id,s.epoch) FROM mdm_access.registrations r JOIN mdm_access.report_sources s ON(s.tenant_id,s.registration)=(r.tenant_id,r.id) WHERE r.tenant_id='{}' AND r.device='{device}' AND r.channel='agent' AND r.state='active' AND s.source='agent.builtin' AND s.enabled",
+        case_tenant()
+    ))?)?;
+    let registration: Uuid = serde_json::from_value(coordinates[0].clone())?;
+    let epoch: Uuid = serde_json::from_value(coordinates[1].clone())?;
+    let field = rss_mdm_inventory::FieldKey::parse("channel.mdm.enrollment")?;
+    let definition = definition(field.as_str(), "agent.builtin", &[field]);
+    register_definition(&definition)?;
+    let scope = crate::device::scope_dataset(
+        rss_request_context::TenantId::parse(case_tenant())?,
+        registration,
+        "agent.builtin",
+        epoch,
+        definition.dataset(),
+    )?
+    .encode()?
+    .replace('\'', "''");
+    let coverage = serde_json::to_string(&definition.coverage()?)?.replace('\'', "''");
+    let value = serde_json::to_string(&rss_mdm_inventory::Scalar::String("unenrolled".into()))?;
+    let snapshot = Uuid::new_v4();
+    let progress = rss_mdm_inventory::CollectionProgress::native(
+        definition,
+        [(
+            field,
+            rss_mdm_inventory::NativeValue::Value(rss_mdm_inventory::CollectedValue::Value(
+                rss_mdm_inventory::Scalar::String("unenrolled".into()),
+            )),
+        )]
+        .into(),
+        2,
+    )?;
+    let attempts = serde_json::to_string(&progress)?.replace('\'', "''");
+
+    pg(&format!(
+        "SELECT mdm.lock_asset_watermark('{tenant}'); INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES('{{\"kind\":\"device\"}}','{tenant}','mdm.observation.v1','inventory-projection-v1','{scope}','{coverage}','channel.mdm.enrollment','{value}','{snapshot}',1,2,'known','{value}','{snapshot}',1,2,'{registration}','agent.builtin','{epoch}',0); INSERT INTO mdm_access.collection_runs(tenant_id,id,registration,source,epoch,scope,sequence,started_at,attempts,result,reason,sealed_at) VALUES('{tenant}','{snapshot}','{registration}','agent.builtin','{epoch}','{scope}',0,1,'{attempts}','snapshot','complete',2)",
+        tenant = case_tenant()
+    ))?;
+    Ok(())
 }

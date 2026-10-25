@@ -36,8 +36,6 @@ pub(crate) struct Fixture {
     pub(crate) resources: super::runtime::Resources,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) router: Router,
-    pub(crate) execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) content: Option<Arc<rss_mdm_content_service::Store>>,
     pub(crate) runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) user: Browser,
@@ -46,7 +44,12 @@ pub(crate) struct Fixture {
     pub(crate) subject: String,
     pub(crate) registered: Value,
     pub(crate) peer: Option<publication_support::Server>,
-    _server: HttpServer,
+    pub(crate) server: HttpServer,
+    pub(crate) software: Arc<
+        rss_mdm_software_service::management::catalog::Access<
+            rss_mdm_content_service::software::SoftwareContent,
+        >,
+    >,
 }
 impl Fixture {
     pub(crate) async fn open(mirror: bool) -> Result<Self> {
@@ -104,23 +107,45 @@ impl Fixture {
             }
         }
         crate::test_support::storage::seed(&serde_json::from_value(base.clone())?).await?;
-        let access = database(&base).await?;
-        let audit = access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?;
-        let (router, execution, runtime, _, application_resources) = crate::api::application_fixture(
-            serde_json::from_value(base.clone())?,
-            Arc::new(crate::clock::SystemClock),
-            monotonic(),
-            access,
-            None,
-            audit,
-        )
-        .await?;
-        resources.extend(application_resources);
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
+        let config: Config = serde_json::from_value(base.clone())?;
+        let mut authority = authority::Authority::from_config(base.clone()).await?;
+        resources.extend(std::mem::take(&mut authority.resources));
+        let tenant = authority.identity.tenant;
+        let runtime = crate::planning::test_support::runtime(tenant).await;
+        resources.resource(SourceResource(runtime.clone()));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+        let clock = Arc::new(crate::clock::SystemClock);
+        let content = crate::execution_assembly::open_content(&config, config.native_protector()?).await?;
+        if let Some(store) = &content { resources.resource(crate::execution_assembly::ContentResource(store.clone())); }
+        let reader = Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant));
+        let content_access = Arc::new(rss_mdm_content_service::service::Access {
+            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
+            authorization: authority.authorization.clone(), runtime: runtime.clone(),
+            audit_store: audit.clone(), tenant, content: content.clone(),
+            clock: Arc::new(crate::clock::ContentClock(clock.clone())), catalog: reader,
+        });
+        let resources_store = Arc::new(rss_mdm_resource_postgres::ResourceStore::new(runtime.clone(), tenant, crate::identity::deadline()).await?);
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let software = Arc::new(rss_mdm_software_service::management::catalog::Access {
+            runtime: runtime.clone(), cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key)),
+            audit: audit.clone(), tenant,
+            catalog: rss_mdm_software_service::catalog::Catalog::new(runtime.clone(), tenant, audit.clone()),
+            resources: resources_store, clock: Arc::new(crate::clock::ContentClock(clock.clone())),
+            content: content.as_ref().map(|store| Arc::new(rss_mdm_content_service::software::SoftwareContent::new(store.clone(), Arc::new(crate::clock::ContentClock(clock.clone()))))),
+            imports: rss_mdm_software_service::management::catalog::ImportConfig {
+                sources: content.as_ref().map(|store| store.config.imports.clone()).unwrap_or_default(),
+                transfer_seconds: content.as_ref().map_or(0, |store| store.config.transfer_seconds),
+            },
+        });
+        let catalog = crate::flow::catalog(audit.clone(), runtime.clone(), tenant, clock).await?;
+        let router = authority.router(Router::new().nest("/api/v1",
+            rss_mdm_management_http::resource_catalog::http::routes().with_state(Arc::new(
+                rss_mdm_management_http::resource_catalog::http::HttpState { catalog, content: content_access.clone() },
+            )).into_axum()
+            .merge(rss_mdm_management_http::software_catalog::routes().with_state(software.clone()).into_axum())
+            .merge(rss_mdm_management_http::content::http::routes().with_state(content_access).into_axum()),
+        ).merge(authority.authorization()))?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let hosted = router.clone();
@@ -132,11 +157,11 @@ impl Fixture {
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let origin = format!("http://{address}");
-        let mut user = Browser {
+        let user = Browser {
             network: Some((client.clone(), origin.clone())),
             ..authority::Authority::prepared_browser("admin")?
         };
-        let subject = browser_subject(&user, &router).await?;
+        let subject = prepared_subject(&user)?;
         let grants = [
             "resource_read",
             "resource_write",
@@ -152,20 +177,23 @@ impl Fixture {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let source = peer.as_ref().map_or_else(
             || case::name("private-fixture").to_owned(),
             |peer| peer.logical.clone(),
         );
-        let source_path = format!("/api/v1/software/sources/{source}/revisions/1");
-        let registered=write(&mut user,&router,&source_path,0,json!({"action":"register","definition":{"id":source,"revision":"1","protocol":{"kind":"private"}}})).await?;
+        let definition = rss_mdm_software_service::catalog::SourceDefinition {
+            id: source, revision: "1".into(), protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
+        };
+        let snapshot = runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+            rss_mdm_software_service::catalog::fixture::source_in(tx, definition).await.map_err(|error| rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(error.to_string())))
+        })).await.fold(Ok, |e| Err(anyhow::anyhow!(e)), |e| Err(anyhow::anyhow!(e)), |_| Err(anyhow::anyhow!("source seed rollback unconfirmed")), |_| Err(anyhow::anyhow!("source seed commit unconfirmed")), |e| Err(anyhow::anyhow!(e)))?;
+        let registered = json!({"snapshot":snapshot});
         Ok(Self {
             resources: Default::default(),
             directory,
             router,
-            queries: execution.queries,
-            content: execution.content,
-            execution: execution.service,
+            content,
             runtime,
             user,
             client,
@@ -173,7 +201,8 @@ impl Fixture {
             subject,
             registered,
             peer,
-            _server: server,
+            server,
+            software,
         })
 
         })).await?;
@@ -199,61 +228,125 @@ pub(crate) async fn write(
     Ok(response.1)
 }
 
-pub(crate) async fn create_software_version(
-    user: &mut Browser,
-    router: &Router,
+pub(crate) async fn seed_software_version(
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
     mut definition: Value,
 ) -> Result<(String, Value)> {
+    use rss_mdm_resource::{Architecture, Declaration, Id, Kind, Platform, Variant, Version};
     let resource = Uuid::new_v4().to_string();
     definition["package"] = json!(format!("Private.{resource}"));
-    let path = format!("/api/v1/resources/{resource}");
-    write(
-        user,
-        router,
-        &path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
-    write(user, router, &path, 1, json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    let read = user
-        .call(
-            router,
-            Method::GET,
-            &format!("/api/v1/software/resources/{resource}/versions/v1"),
-            None,
-        )
-        .await?;
-    ensure!(read.0 == StatusCode::OK, "read dependency: {read:?}");
-    Ok((resource, read.1["resourceDigest"].clone()))
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let version = Version::new(
+        tenant,
+        Id::new(resource.clone())?,
+        Id::new("v1")?,
+        Kind::Software,
+        vec![Variant::new(
+            Platform::Windows,
+            Architecture::X86_64,
+            Id::new("default")?,
+            Declaration::Software {
+                definition: serde_json::from_value(definition)?,
+            },
+        )],
+    )?;
+    let digest = json!(version.digest().bytes());
+    runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    version,
+                    rss_contract::Timepoint::try_from(1_i64).expect("fixture time"),
+                )
+                .await
+            })
+        })
+        .await
+        .fold(
+            Ok,
+            |e| Err(anyhow::anyhow!(e)),
+            |e| Err(anyhow::anyhow!(e)),
+            |_| Err(anyhow::anyhow!("resource rollback unconfirmed")),
+            |_| Err(anyhow::anyhow!("resource commit unconfirmed")),
+            |e| Err(anyhow::anyhow!(e)),
+        )?;
+    Ok((resource, digest))
 }
+
 impl Fixture {
     pub(crate) async fn seed_content(&self, bytes: &[u8]) -> Result<rss_mdm_resource::Artifact> {
         let _guard = content_setup_guard().await?;
-        let mut user = self.user.clone();
         let definition =
             publication_support::private_definition(self.registered["snapshot"].clone(), bytes);
-        let (id, _) = create_software_version(&mut user, &self.router, definition).await?;
-        let cookie = user
-            .cookies
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect::<Vec<_>>()
-            .join("; ");
-        let response = self.client.post(format!("{}/api/v1/resources/{id}/content?version=v1&variant=default&platform=windows&architecture=x86_64&operation={}", self.origin, Uuid::new_v4()))
-            .header("host", "mdm.example.test").header("origin", "https://mdm.example.test")
-            .header("x-identity-request", "1").header("x-csrf-token", user.csrf.as_ref().unwrap())
-            .header("cookie", cookie).header("content-type", "application/octet-stream")
-            .body(bytes.to_vec()).send().await?;
-        ensure!(
-            response.status() == StatusCode::CREATED,
-            "fixture content upload: {}",
-            response.status()
-        );
-        Ok(rss_mdm_resource::Artifact::new(
+        let source = serde_json::from_value(definition["source"].clone())?;
+        let inspection = serde_json::from_value(definition["material"]["format"].clone())?;
+        let (id, digest) = seed_software_version(&self.runtime, definition).await?;
+        let store = self
+            .content
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("content store missing"))?;
+        let artifact = rss_mdm_resource::Artifact::new(
             rss_mdm_resource::Id::new("installer")?,
             bytes.len() as u64,
             rss_mdm_resource::Digest::of(bytes),
-        )?)
+        )?;
+        let binding = rss_mdm_content_service::Binding {
+            purpose: rss_mdm_content_service::Purpose::Resource(
+                rss_mdm_content_service::ResourceBinding {
+                    inspection: Some(inspection),
+                    storage_class: rss_mdm_content_service::StorageClass::Artifact,
+                    resource: id,
+                    version: "v1".into(),
+                    variant: "default".into(),
+                    platform: rss_mdm_resource::Platform::Windows,
+                    architecture: rss_mdm_resource::Architecture::X86_64,
+                    resource_digest: serde_json::from_value(digest)?,
+                    source: Some(source),
+                    origin: None,
+                },
+            ),
+            reference: artifact.reference().as_str().into(),
+            length: artifact.length(),
+            sha256: artifact.digest().bytes(),
+            actor: self.subject.clone(),
+        };
+        let operation = Uuid::new_v4();
+        let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+        rss_mdm_content_service::fixture::artifact(store, &artifact, bytes.to_vec(), now + 86400)
+            .await?;
+        let upload = rss_mdm_content_service::Upload {
+            id: operation,
+            binding,
+            offset: bytes.len() as u64,
+            expires: now + 86400,
+            complete: true,
+        };
+        self.runtime
+            .local_tx(
+                rss_request_context::TenantId::parse(case_tenant())?,
+                crate::identity::deadline(),
+                move |tx| {
+                    Box::pin(async move {
+                        rss_mdm_content_service::bindings::bind_in(tx, &upload)
+                            .await
+                            .map_err(|e| {
+                                rss_transactional_messaging_postgres::PgError::from(
+                                    sqlx::Error::Protocol(e.to_string()),
+                                )
+                            })
+                    })
+                },
+            )
+            .await
+            .fold(
+                Ok,
+                |e| Err(anyhow::anyhow!(e)),
+                |e| Err(anyhow::anyhow!(e)),
+                |_| Err(anyhow::anyhow!("content preparation rollback unconfirmed")),
+                |_| Err(anyhow::anyhow!("content preparation commit unconfirmed")),
+                |e| Err(anyhow::anyhow!(e)),
+            )?;
+        Ok(artifact)
     }
 }

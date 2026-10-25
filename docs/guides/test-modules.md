@@ -98,19 +98,19 @@ Cargo 反向依赖决定编译/Clippy/T1/rustdoc 范围，T2 不继承 Cargo 闭
 
 **当前执行器边界**：迁移基线不预注册本轮全部租户。case 获准进入 `JOBS` 后，准备所属租户与必要跨租户哨兵，通过已有 `public.create_new_tenant` 在一个事务内完成最小合法登记。兼容数据库只初始化一次管理身份；稳定主体与真实有效会话在兼容环境内复用；需独立主体的已准入 case 合并使用 Identity 的公开账户 provisioner，保留正常密码 KDF，不复制 Identity 私有存储。`MDM_CASE_CONTEXT` 只接受当前 actors 列表格式，Python 与 Rust 同步验证；不存在旧 context 字段的兼容读取。账号、配置设备密钥数量和特殊 CA 材料由模块／case 策略声明。
 
-准备、执行、清理共同占用 `JOBS`，没有全体账号准备完才进入首个测试的屏障。普通 Agent、Windows 和 Apple 业务直接准备当前注册、真实离线证书和合法 trust/CRL；不启动在线 CA，也不执行在线准入、签发或发布前置。测试装配使用现有状态 owner 的事务种子，真实生产宿主在开放监听前仍执行在线准入。普通 worker 宿主仅装配实际使用的后台能力。注册、签发、SCEP、撤销发布、轮换和恢复专项按实际被测接缝保留在线 provider；其余前置仍用种子。普通 Apple 保留真实 TLS、Authenticate 和 TokenUpdate；Windows 管理前置使用已验证的当前凭据种子。作用域准备在所属模块内解析，资源版本由存储所属模块编码，不从 App 复制内部格式。
+准备、执行、清理共同占用 `JOBS`，没有全体账号准备完才进入首个测试的屏障。普通 Agent、Windows 和 Apple 业务直接准备当前注册、真实离线证书和合法 trust/CRL；不启动在线 CA，也不执行在线准入、签发或发布前置。测试装配使用现有状态 owner 的事务种子，真实生产宿主在开放监听前仍执行在线准入。普通 worker 仅启动实际使用的领域后台能力。完整产品 schema 清单由 App 的 Database 准入检查一次；能力构造只验证自身合同。通道 fixture 直接挂现有领域路由，不经完整 App/Flow 装配，连接池由宿主资源栈唯一关闭。注册、签发、SCEP、撤销发布、轮换和恢复专项按实际被测接缝保留在线 provider；其余前置仍用种子。普通 Apple 保留真实 TLS、Authenticate 和 TokenUpdate；Windows 管理前置使用已验证的当前凭据种子。作用域准备在所属模块内解析，资源版本由存储所属模块编码，不从 App 复制内部格式。
 
-普通后台任务由现有 `rss-mdm serve` 持有，测试等待自己对象的结果；对象范围的公共宿主存活至运行结束。需要精确 claim、故障注入或停启时机的组件测试持有专用租户与本地消费者。测试不得停止公共 worker，不得跨域修改数据或文件。管理员 SQL 必须显式限定归属；租户设置不能使超级用户受 RLS 约束。负面授权测试继续保留跨租户哨兵和副作用检查。
+普通后台任务由测试持有实际领域消费者，在专用租户内等待和观察自己的结果；完整 `rss-mdm serve` 只用于产品宿主与真实 HTTP 装配专项。停止和恢复由用例自己的资源栈负责，不得跨域修改数据或文件。管理员 SQL 必须显式限定归属；租户设置不能使超级用户受 RLS 约束。负面授权测试继续保留跨租户哨兵和副作用检查。
 
 复用资格必须包含同库 A→B→A、换序、同租户不同对象实际重叠及异租户同步写入；关键同对象竞争使用同步点。故障不得靠隐式换库重试隐藏。
 
 正式资格入口为 `make t2 MODULE=all REUSE_PLAN=/absolute/reuse-plan.json JOBS=2`。计划取 LIST 中实际发现的完整 ID，格式为 `{"objects":["A的ID","B的ID"],"tenants":["C的ID","D的ID"]}`：四项必须同 profile、`reuse`、Rust 用例，A/B 为 objects，C/D 为 tenant 或 pair。建议 A/B 选择注册与内容/执行，C/D 选择主体授权与全租户观察。执行器在一次环境生命周期内固定运行 A→B→A、B→A→B，再并发 A/B 与 C/D；所有调用重新分配对象和主体，保持同一物理 PG/数据库。并发组在两个实际 Rust 用例进入 context 后会合，核对执行区间重叠及租户关系。`reuse.json` 和逐调用 result 保存计划、顺序、数据库与运行证据；未到达会合、换库或任何业务断言失败均不能通过。该代表场景资格不替代全量 T2。
 
-T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个连接，另为普通公共宿主预留 128；故障 PG 因串行使用，容量为 128。此容量覆盖组件 fixture 中的多个产品连接池，记录于 `postgres-start.maxConnections`；不是另一个并发开关，也不按该数量建库。
+T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个连接，另为公共准备与诊断连接预留 128；故障 PG 因串行使用，容量为 128。此容量覆盖组件 fixture 中的多个产品连接池，记录于 `postgres-start.maxConnections`；不是另一个并发开关，也不按该数量建库。
 
 构建、发现和执行复用同一二进制与 Cargo 环境。每个发现的 ignored 业务测试必须有唯一模块归属；辅助子进程入口必须在同一模块描述中声明调用 owner，每个声明恰好发现一个入口；身份准备使用唯一 fixture target。未知 ignored helper 不再按命名空间豁免，函数名仍全部来自发现。空发现、重复归属、错误 CASE、缺依赖、二进制或运行中源码变化都失败。nextest JUnit 必须证明实际运行了唯一精确测试、无忽略/重试/失败；每个 Rust/Python 场景执行预算为 600 秒，Rust 的 nextest 与外层进程截止共同保证有界终止。Python 场景通过受控子进程执行并保留 test.log 完成标记；超时、取消及遗留 Compose 环境均由本轮统一清理。LIST 只构建实际发现所需目标，不额外构建身份辅助目标、产品 CLI 或运行期 examples，也不要求 Docker 等运行依赖。
 
-`artifacts/local-t2/<runId>/` 保存 discovery、逐模块/逐调用结果，以及准备/执行/清理耗时。case 结果包含实际 database、tenant、PG、host、调用 ID 与单调时钟区间；`resources.json` 的 `counts` 和 `operations` 分别记录服务、克隆、身份账户/会话、宿主与故障恢复的数量和耗时。共享准备单独记录，不把它重复计入每条 case。`run.json` 分别记录 discovery/runtime 构建耗时及合计、JOBS、首次进入执行的延迟、运行墙钟时间、case 时间总和与受管子进程数量；后者不包含 Rust 子进程自行创建的后代。逐 case 的 queueSeconds 与准备／测试／清理区间区分排队和执行。PostgreSQL 的实际会话计数在删库／环境清理前采样，含工具自身观察连接；采样失败单列，不以估算补齐。环境 owner 还记录实际 container/port 查询次数。顶层 result 记录 Git revision 与工作区来源摘要，并区分执行与 skipped；正式执行开始前撤销旧 result，LIST 开始前只撤销旧 list，避免硬中断后误读上轮成功；另一模式证据保留，ci-plan 不覆盖正式证据。比较资源消耗应同时查看选择集合、PG/Identity/SCEP 等实际准备次数、并发时间区间和耗时；文件拆分不代表 Rust crate 编译量同比下降。
+`artifacts/local-t2/<runId>/` 保存 discovery、逐模块/逐调用结果，以及准备/执行/清理耗时。case 结果包含实际 database、tenant、PG、调用 ID 与单调时钟区间；`resources.json` 的 `counts` 和 `operations` 分别记录服务、克隆、身份账户/会话与故障恢复的数量和耗时。共享准备单独记录，不把它重复计入每条 case。`run.json` 分别记录 discovery/runtime 构建耗时及合计、JOBS、首次进入执行的延迟、运行墙钟时间、case 时间总和与受管子进程数量；后者不包含 Rust 子进程自行创建的后代。逐 case 的 queueSeconds 与准备／测试／清理区间区分排队和执行。PostgreSQL 的实际会话计数在删库／环境清理前采样，含工具自身观察连接；采样失败单列，不以估算补齐。环境 owner 还记录实际 container/port 查询次数。顶层 result 记录 Git revision 与工作区来源摘要，并区分执行与 skipped；正式执行开始前撤销旧 result，LIST 开始前只撤销旧 list，避免硬中断后误读上轮成功；另一模式证据保留，ci-plan 不覆盖正式证据。比较资源消耗应同时查看选择集合、PG/Identity/SCEP 等实际准备次数、并发时间区间和耗时；文件拆分不代表 Rust crate 编译量同比下降。
 
 历史证据最多保留本入口最近 5 轮已确认归属的 runId 目录，保留当前运行及正式 result/LIST 引用的记录。LIST 不删除当前正式结果所指证据；空选择不创建运行目录。未知目录和符号链接不在清理范围。失败 case 的 `log` 指向实际输出，`failureLog` 指向异常栈；控制台同时打印两个路径。`fixtureLog` 保存该场景准备/清理命令失败时捕获的 stdout/stderr，并标明阶段；共享准备/清理失败关联 run 级 fixtureLog。命令参数不进入异常日志，包含已登记私有输入或敏感环境值的输出保守记为 `diagnostic-withheld`。
 
@@ -131,7 +131,7 @@ T2 PG 的连接容量按 `JOBS` 预算准备：每个活动 case 预留 128 个�
 
 完整产品宿主同时持有业务租户和管理租户的投影，同一物理数据库只能有一个完整宿主。
 其借用按数据库独占；配置变化必须先确认旧进程终止，再替换该槽位。能力用例不借用完整宿主时仍可并发。
-`REUSE_PLAN` 的并发证明选择不带 `shared_worker` 的能力用例，不把完整宿主串行执行称为并发复用证明。
+`REUSE_PLAN` 的并发证明选择实际领域能力用例；完整产品宿主专项使用自己的环境。
 宿主退出仅终止依赖它的当前执行、阻断该环境后续借用；用户中断才取消整次运行。
 结果中的 `phase` 区分准备、执行和清理，`blocked` 引用原准备失败，`cancelled` 表示未完成的取消；
 清理失败独立记录，不覆盖原始业务失败，任何选中用例非通过都会使本次验证失败。

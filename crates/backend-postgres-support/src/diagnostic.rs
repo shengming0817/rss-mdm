@@ -169,13 +169,15 @@ mod tests {
     #[test]
     fn document_limit_is_inclusive_for_encode_and_decode() {
         // JSON string framing consumes two bytes.
-        let text = "x".repeat(MAX_DOCUMENT - 2);
-        let bytes = STORAGE.encode(&text).unwrap();
+        let mut text = "x".repeat(MAX_DOCUMENT - 2);
+        let mut bytes = STORAGE.encode(&text).unwrap();
         assert_eq!(bytes.len(), MAX_DOCUMENT);
-        assert_eq!(STORAGE.decode::<String>(&bytes).unwrap(), text);
-        assert!(STORAGE.encode(&(text + "x")).is_err());
-        let oversized = vec![b' '; MAX_DOCUMENT + 1];
-        assert!(STORAGE.decode::<serde_json::Value>(&oversized).is_err());
+        STORAGE.decode::<serde::de::IgnoredAny>(&bytes).unwrap();
+        text.push('x');
+        assert!(STORAGE.encode(&text).is_err());
+        drop(text);
+        bytes.push(b' ');
+        assert!(STORAGE.decode::<serde_json::Value>(&bytes).is_err());
     }
 }
 

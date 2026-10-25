@@ -49,3 +49,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"
 
 [lints]
 workspace = true
+
+[features]
+integration = []

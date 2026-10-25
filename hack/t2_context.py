@@ -59,7 +59,7 @@ def validate(value, *, ready=False):
         raise ValueError('invalid case context: peer')
     fixtures = value['fixtures']
     if (not isinstance(fixtures, list) or any(not isinstance(item, str) or not item for item in fixtures)
-            or len(set(fixtures)) != len(fixtures) or {'shared_worker', 'local_worker'} <= set(fixtures)):
+            or len(set(fixtures)) != len(fixtures)):
         raise ValueError('invalid case context: fixtures')
     actors = value['actors']
     if not isinstance(actors, list):

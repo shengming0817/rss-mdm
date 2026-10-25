@@ -400,3 +400,77 @@ fn leaf_count(c: &Criteria) -> usize {
         Node::And(children) | Node::Or(children) => children.iter().map(leaf_count).sum(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Field, FieldType, ObjectSnapshot, Operand, PageInput, Predicate, ScalarType};
+
+    #[test]
+    fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
+        let tenant =
+            rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap();
+        let now = Timepoint::try_from(10).unwrap();
+        let fields = ["used", "unused"].map(|key| Field {
+            key: key.into(),
+            kind: FieldType::Scalar(ScalarType::Integer),
+            unit: None,
+            operations: [Op::Eq].into(),
+            nullable: false,
+        });
+        let rule = Rule::new(
+            tenant,
+            "rule",
+            "dictionary",
+            fields.to_vec(),
+            Criteria::predicate(Predicate {
+                field: "used".into(),
+                op: Op::Eq,
+                operand: Some(Operand {
+                    value: Value::Scalar(Scalar::Integer(1)),
+                    unit: None,
+                }),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let objects = ["a", "b"].map(|id| {
+            ObjectSnapshot::single(
+                ObjectKey::new(tenant, id).unwrap(),
+                fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.key.clone(),
+                            Fact {
+                                state: FactState::Known(Value::Scalar(Scalar::Integer(1))),
+                                source: "source".into(),
+                                snapshot_id: "snapshot".into(),
+                                observed_at: now,
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+        });
+        let coverage = fields.iter().map(|f| f.key.clone()).collect();
+        let input = PageInput {
+            tenant,
+            id: "input",
+            version: "1",
+            dictionary_version: "dictionary",
+            coverage: &coverage,
+            objects: &objects,
+            after: None,
+        };
+        let mut exact = Budget::new(LimitKind::BatchBytes);
+        exact.items(crate::limits::ITEMS - 4).unwrap();
+        assert!(rule.evaluate_input(&input, now, &mut exact).is_ok());
+        let mut short = Budget::new(LimitKind::BatchBytes);
+        short.items(crate::limits::ITEMS - 3).unwrap();
+        assert_eq!(
+            rule.evaluate_input(&input, now, &mut short),
+            Err(Error::LimitExceeded(LimitKind::Items))
+        );
+    }
+}

@@ -269,7 +269,10 @@ async fn management_only_startup_integrity(
         rss_identity_core::InstanceId::parse(&config.identity.instance_id)?,
     )
     .await?;
-    let access = crate::Database::connect(config.access_options()?).await?;
+    let access = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with(config.access_options()?)
+        .await?;
     let runtime = crate::identity::open_runtime(
         &config.access_database,
         &config.flow.storage.target,
@@ -280,14 +283,16 @@ async fn management_only_startup_integrity(
         )],
     )
     .await?;
-    let store = access
-        .audit_store(
-            &config.audit,
-            runtime.clone(),
-            management,
-            Default::default(),
-        )
-        .await?;
+    let admission = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let store = rss_mdm_audit_integration::AuditStore::new(
+        access.clone(),
+        config.audit.integrity()?,
+        runtime.clone(),
+        management,
+        Default::default(),
+        &admission.control(),
+    )
+    .await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
     let control = budget.source_control();
     let request = RequestAudit::new(management.to_string(), "management_startup_integrity");

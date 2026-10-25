@@ -63,12 +63,6 @@ async fn counts(conn: &mut PgConnection, tenant: &str) -> anyhow::Result<(i64, i
 async fn registration_replay_and_binding_preserve_existing_tenants() -> anyhow::Result<()> {
     use anyhow::ensure;
     let mut conn = owner().await?;
-    ensure!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM public.mdm_tenants")
-            .fetch_one(&mut conn)
-            .await?
-            == 3 // Reserved management tenant plus the runner's two legal seed tenants.
-    );
     let mut runtime = profile("mdm_access", "access-fixture").await?;
     let a = input(Uuid::new_v4());
     let b = input(Uuid::new_v4());

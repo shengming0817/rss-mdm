@@ -94,7 +94,10 @@ mod tests {
     fn device_scep_address_has_no_private_ca_origin_dependency() {
         let url = scep_endpoint("https://mdm.example.test/scep/rss").unwrap();
         assert_eq!(url.path(), "/scep/rss");
-        assert_ne!(url.origin().ascii_serialization(), "https://step-ca:9000");
+        assert_eq!(
+            url.origin().ascii_serialization(),
+            "https://mdm.example.test"
+        );
         for value in [
             "http://mdm.example.test/scep/rss",
             "https://u:p@mdm.example.test/scep/rss",
