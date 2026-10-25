@@ -63,11 +63,6 @@ impl Groups {
                         .query
                         .after(&codec, &binding)
                         .map_err(crate::query_error)?;
-                    let mut graph = if q.referenceable_for.is_some() {
-                        Some(dependencies::graph_in(tx).await?)
-                    } else {
-                        None
-                    };
                     let context = if let Some(id) = q.referenceable_for {
                         let gid =
                             checked_input(rss_mdm_group_postgres::GroupId::parse(&id.to_string()))?;
@@ -83,7 +78,6 @@ impl Groups {
                         .require(p, Permission::InventorySensitiveRead, None)
                         .is_ok();
                     let mut items = Vec::new();
-                    let mut scanned = 0;
                     loop {
                         let page = group_checked(
                             s.groups
@@ -100,24 +94,9 @@ impl Groups {
                             .transpose()
                             .map_err(crate::query_error)?;
                         for group in page {
-                            scanned += 1;
-                            if scanned > dependencies::MAX_GRAPH {
-                                return Err(Error::Malformed.into());
-                            }
                             let id = stored(Uuid::parse_str(&group.id.to_string()))?;
-                            if let (Some(owner), Some(graph)) =
-                                (q.referenceable_for, graph.as_mut())
-                            {
-                                let previous = graph.insert(owner, [id].into());
-                                let valid = dependencies::validate_graph(graph).is_ok();
-                                if let Some(previous) = previous {
-                                    graph.insert(owner, previous);
-                                } else {
-                                    graph.remove(&owner);
-                                }
-                                if !valid {
-                                    continue;
-                                }
+                            if q.referenceable_for == Some(id) {
+                                continue;
                             }
                             if selecting && let Some(version) = &group.rule_version {
                                 let rule =
@@ -129,21 +108,6 @@ impl Groups {
                                 ) {
                                     Err(Fault::Request(Error::Forbidden)) => continue,
                                     result => result?,
-                                }
-                                match s
-                                    .validate_references_in(
-                                        tx,
-                                        id,
-                                        group.asset_context,
-                                        &rule,
-                                        sensitive,
-                                    )
-                                    .await
-                                {
-                                    Err(Fault::Request(Error::Forbidden)) => continue,
-                                    result => {
-                                        result?;
-                                    }
                                 }
                             }
                             items.push(row(&group));

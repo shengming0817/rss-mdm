@@ -247,6 +247,11 @@ fn unknown_exclusion_blocks_only_the_affected_device() {
         resolve_device(&i).unwrap().unwrap().reasons,
         vec![ExclusionReason::ExplicitExclusion]
     );
+    i.targets[0].contains = Membership::Unknown;
+    assert_eq!(
+        resolve_device(&i).unwrap().unwrap().reasons,
+        vec![ExclusionReason::ExplicitExclusion]
+    );
 }
 
 #[test]

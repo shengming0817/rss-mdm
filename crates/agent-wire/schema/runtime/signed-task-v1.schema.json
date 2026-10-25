@@ -4066,21 +4066,6 @@
       ],
       "type": "object"
     },
-    "SoftwareStartMode": {
-      "description": "Whether a signed task can start automatically or awaits trusted local user action.",
-      "oneOf": [
-        {
-          "const": "automatic",
-          "description": "Policy-required task may start when offered and locally admitted.",
-          "type": "string"
-        },
-        {
-          "const": "user_initiated",
-          "description": "Agent must wait for a local user choice before requesting Start.",
-          "type": "string"
-        }
-      ]
-    },
     "SoftwareStepDefinition": {
       "additionalProperties": false,
       "description": "Immutable producer coordinates of one software execution node.",
@@ -5773,10 +5758,6 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
-        "startMode": {
-          "$ref": "#/$defs/SoftwareStartMode",
-          "description": "Local start behavior; no Policy or rollout details are exposed."
-        },
         "steps": {
           "description": "Ordered prerequisites followed by the requested action.",
           "items": {
@@ -5825,8 +5806,7 @@
         "authorization",
         "steps",
         "definitionDigest",
-        "intent",
-        "startMode"
+        "intent"
       ],
       "type": "object"
     },

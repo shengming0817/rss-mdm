@@ -140,8 +140,7 @@ async fn uninstall_content_selection() -> Result<()> {
             .await?;
             let removal_task = claim(&router).await?;
             ensure!(
-                removal_task["payload"]["task"]["intent"] == "uninstall"
-                    && removal_task["payload"]["task"]["startMode"] == "automatic",
+                removal_task["payload"]["task"]["intent"] == "uninstall",
                 "uninstall: {removal_task}"
             );
             let content = Request::builder()

@@ -82,6 +82,9 @@ pub async fn enqueue_job_in(
     }
     let tenant = tx.tenant_id().to_string();
     let document = crate::transaction::checked_input(serde_json::to_string(input))?;
+    if document.len() > 1_048_576 {
+        return Err(Error::Malformed.into());
+    }
     let kind = input.kind();
     let target = input.target();
     tx.with_connection(move |c|Box::pin(async move {
@@ -97,6 +100,7 @@ pub fn accepted(id: Uuid, input: &JobInput) -> Value {
             format!("/api/v1/compliance-rules/{}/tasks/{id}", input.rule)
         }
         JobInput::AssetQuery { .. } => format!("/api/v1/device-queries/{id}"),
+        JobInput::GroupDefinition { edit } => format!("/api/v1/groups/{}/tasks/{id}", edit.group),
         JobInput::Group { group, .. } => format!("/api/v1/groups/{group}/tasks/{id}"),
         JobInput::Scope { scope } => format!("/api/v1/scopes/{scope}/tasks/{id}"),
         JobInput::PolicyReconcile { policy } => format!("/api/v1/policies/{policy}"),
@@ -143,7 +147,7 @@ pub async fn finish_job_in(
         );
         audit.identify_service("service:asset-automation");
         match kind.as_str() {
-            "group" | "group_preview" => {
+            "group" | "group_preview" | "group_definition" => {
                 audit.resource_target(rss_mdm_audit_integration::TargetKind::Group, &target)
             }
             "scope" => audit.resource_target(rss_mdm_audit_integration::TargetKind::Scope, &target),

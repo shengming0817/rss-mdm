@@ -268,6 +268,7 @@ pub async fn authority_on(
     use sqlx::Row;
     let crate::authority::ExecutionAuthority::Software {
         tenant,
+        target,
         version,
         device,
         operation,
@@ -290,32 +291,31 @@ pub async fn authority_on(
     if action.channel != rss_mdm_policy::SoftwareChannel::Mdm {
         return Ok(false);
     }
-    if !rss_mdm_software_service::catalog::admitted_on(
+    if !rss_mdm_software_service::catalog::execution_admitted_on(
         c,
         tenant_id,
         &action.resource,
         &action.version,
         action.resource_digest,
-        action.lifecycle_binding,
+        {
+            let (platform, architecture) = crate::agent_install::resource_target(*target);
+            let Some(variant) = action.variants.get(target) else {
+                return Ok(false);
+            };
+            (
+                platform,
+                architecture,
+                variant.as_str(),
+                action.intent == rss_mdm_policy::SoftwareIntent::ExplicitUninstall,
+            )
+        },
     )
     .await
     .map_err(|_| Error::Unavailable(crate::Failure::SoftwareCatalogStorage))?
     {
         return Ok(false);
     }
-    let Some(grants) = action.grants.get(device).or_else(|| action.grants.get("*")) else {
-        return Ok(false);
-    };
-    let now = row.try_get("now").map_err(crate::database::db)?;
-    let mut allowed = false;
-    for grant in grants {
-        allowed |= grant
-            .valid(c, crate::authorization::Permission::SoftwareDeploy, now)
-            .await?;
-    }
-    if !allowed {
-        return Ok(false);
-    }
+    let now: i64 = row.try_get("now").map_err(crate::database::db)?;
     if dispatch && !crate::agent_install::dispatched_on(c, tenant, *operation).await? {
         let state: crate::actions::state::RunState =
             serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
@@ -328,19 +328,6 @@ pub async fn authority_on(
             .map_err(crate::database::db)?
             || now < action.schedule.not_before
             || now >= action.schedule.ends_at()
-            || !source.policy_readable_on(c, tenant_id, *version).await?
-            || !matches!(
-                source
-                    .admission_on(
-                        c,
-                        tenant_id,
-                        row.try_get("scope").map_err(crate::database::db)?,
-                        rss_mdm_inventory::Channel::Mdm,
-                        device
-                    )
-                    .await?,
-                crate::source_authority::ScopeAdmission::Eligible { .. }
-            )
         {
             return Ok(false);
         }

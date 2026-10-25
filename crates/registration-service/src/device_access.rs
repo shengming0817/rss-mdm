@@ -92,7 +92,7 @@ pub enum State {
 pub enum Origin {
     SelfEnrollment,
     Administrator {
-        authority: rss_mdm_authorization_service::OperationAuthority,
+        actor: rss_mdm_authorization_service::Actor,
     },
 }
 

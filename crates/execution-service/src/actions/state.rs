@@ -90,10 +90,10 @@ impl RunState {
         Ok(())
     }
     pub fn received(&mut self, attempt: Uuid, now: i64) -> Result<(), Error> {
-        let lease_until = self.live_attempt(attempt, now)?;
+        self.live_attempt(attempt, now)?;
         self.delivery = Delivery::Received {
             attempt,
-            lease_until,
+            lease_until: self.deadline,
         };
         Ok(())
     }
@@ -115,13 +115,14 @@ impl RunState {
         self.started_at = Some(now);
         Ok(())
     }
-    pub fn trusts_result(&self, now: i64, timeout: u32) -> bool {
-        self.execution == Execution::Running
-            && self.cancellation == Cancellation::None
-            && now < self.deadline
-            && self
-                .started_at
-                .is_some_and(|start| now >= start && now - start < i64::from(timeout))
+    pub fn trusts_result(&self, observed_at: i64, timeout: u32) -> bool {
+        matches!(
+            self.execution,
+            Execution::Running | Execution::Unknown | Execution::WaitingReboot
+        ) && observed_at < self.deadline
+            && self.started_at.is_some_and(|start| {
+                observed_at >= start && observed_at - start <= i64::from(timeout)
+            })
     }
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.

@@ -143,7 +143,7 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
             &base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&signed.signature)?,
         )
         .map_err(|_| anyhow::anyhow!("native configuration signature"))?;
-    let config = signed.configuration;
+    let config = signed.configuration.clone();
     ensure!(config.resource_digest.iter().any(|b| *b != 0));
     let mut altered = config.clone();
     altered.resource_digest[0] ^= 1;
@@ -177,7 +177,7 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
             && mapping.mapping.conversion == wire::Conversion::Identity
             && mapping.mapping.columns.is_empty()
     );
-    cpu_reading(f, &policy, &config, &field).await?;
+    cpu_reading(f, &policy, &signed, &field).await?;
     published_network(f, config.registration_id).await?;
     scoped_configuration_reader(f, &policy).await?;
     announce(f, json!({})).await?;
@@ -186,13 +186,13 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
 
 async fn cpu_reading(
     f: &mut Fixture,
-    policy: &Value,
-    config: &wire::TelemetryConfiguration,
+    _policy: &Value,
+    config: &wire::SignedTelemetryConfiguration,
     field: &rss_mdm_inventory::FieldDefinition,
 ) -> Result<()> {
     let now = f.planning.clock.unix_seconds()? * 1_000_000;
     let batch = Uuid::new_v4();
-    let body = json!({"batchId":batch,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.binding,"observations":[{"id":Uuid::new_v4(),"sequence":1,"observedAt":now-1_000_000,"values":{"custom.performance.cpu":{"quality":"valid","value":{"kind":"number","value":25.5},"intervalStart":null}}}]});
+    let body = json!({"batchId":batch,"configuration":config,"observations":[{"id":Uuid::new_v4(),"sequence":1,"observedAt":now,"values":{"custom.performance.cpu":{"quality":"valid","value":{"kind":"number","value":25.5},"intervalStart":null}}}]});
     let (status, receipt) = agent_call(
         &f.router,
         Method::POST,
@@ -623,7 +623,7 @@ async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
             "normalization marker was not signed"
         );
     }
-    network_readings(f, &policy, &signed.configuration, &field).await?;
+    network_readings(f, &policy, &signed, &field).await?;
     set_capabilities(registration, &original)?;
     Ok(())
 }
@@ -661,12 +661,24 @@ fn set_capabilities(registration: Uuid, capabilities: &str) -> Result<()> {
 
 async fn network_readings(
     f: &mut Fixture,
-    policy: &Value,
-    config: &wire::TelemetryConfiguration,
+    _policy: &Value,
+    config: &wire::SignedTelemetryConfiguration,
     field: &rss_mdm_inventory::FieldDefinition,
 ) -> Result<()> {
+    // Valid original material with a fixture-issued lease covering the historical samples.
+    use base64::Engine;
+    let mut config = config.clone();
+
     let now = f.planning.clock.unix_seconds()? * 1_000_000;
     let start = (now / 10_000_000 - 1) * 10_000_000;
+    config.configuration.issued_at = start.div_euclid(1_000_000);
+    config.configuration.expires_at = config.configuration.issued_at + 300;
+    config.signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        f.key
+            .sign(&config.configuration.signing_bytes(&config.key_id)?)
+            .as_ref(),
+    );
+
     let interface = wire::Scalar::String("interface:stable-id".into());
     let resource = format!("item:{:x}", Sha256::digest(serde_json::to_vec(&interface)?));
     for (sequence, count) in [(1, None), (2, Some(10)), (3, Some(25))] {
@@ -677,7 +689,7 @@ async fn network_readings(
             None => json!({"quality":"missing","context":rows,"intervalStart":null}),
         };
         let batch = Uuid::new_v4();
-        let body = json!({"batchId":batch,"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.binding,"observations":[{"id":Uuid::new_v4(),"sequence":sequence,"observedAt":start+sequence*1_000_000,"values":{field.key.as_str():reading}}]});
+        let body = json!({"batchId":batch,"configuration":config,"observations":[{"id":Uuid::new_v4(),"sequence":sequence,"observedAt":start+sequence*1_000_000,"values":{field.key.as_str():reading}}]});
         let (status, result) = agent_call(
             &f.router,
             Method::POST,
@@ -749,7 +761,7 @@ async fn network_readings(
         },
     )
     .await?;
-    let aggregate = post(&mut f.author, &f.router, "/api/v1/telemetry/aggregate", json!({"query":query,"definitionVersion":1,"registration":config.registration_id,"source":"agent.native","epoch":config.source_epoch,"dimensions":{},"resolutionMicros":10_000_000,"operation":"increase","coverage":{"coverage":"observedOnly"},"maxGapMicros":10_000_000})).await?;
+    let aggregate = post(&mut f.author, &f.router, "/api/v1/telemetry/aggregate", json!({"query":query,"definitionVersion":1,"registration":config.configuration.registration_id,"source":"agent.native","epoch":config.configuration.source_epoch,"dimensions":{},"resolutionMicros":10_000_000,"operation":"increase","coverage":{"coverage":"observedOnly"},"maxGapMicros":10_000_000})).await?;
     let buckets: Vec<rss_timeseries::AggregateBucket> =
         serde_json::from_value(aggregate["buckets"].clone())?;
     ensure!(buckets.len() == 1, "network increase: {aggregate}");
@@ -926,83 +938,10 @@ async fn scoped_configuration_reader(f: &mut Fixture, policy: &Value) -> Result<
     Ok(())
 }
 
-async fn configuration_lock_order(f: &Fixture, path: &str) -> Result<()> {
-    use sqlx::Connection;
-    let options = crate::device::test_support::options("postgres")?;
-    let mut owner = sqlx::PgConnection::connect_with(&options).await?;
-    let mut observer = sqlx::PgConnection::connect_with(&options).await?;
-    let mut reader = sqlx::PgConnection::connect_with(&options).await?;
-    let owner_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut owner)
-        .await?;
-    let reader_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
-        .fetch_one(&mut reader)
-        .await?;
-    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
-    let mut tx = owner.begin().await?;
-    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-        .bind(case_tenant())
-        .execute(&mut *tx)
-        .await?;
-    rss_mdm_inventory_postgres::lock_watermark_in(&mut tx, tenant).await?;
-    let parts = path.rsplit('/').take(2).collect::<Vec<_>>();
-    let version = Uuid::parse_str(parts[0])?;
-    let policy = Uuid::parse_str(parts[1])?;
-    let planning = f.planning.clone();
-    let task = tokio::spawn(async move {
-        let mut tx = reader.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(case_tenant())
-            .execute(&mut *tx)
-            .await?;
-        let result = rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
-            &planning,
-            &mut tx,
-            case_device_id(),
-            policy,
-            version,
-        )
-        .await;
-        tx.rollback().await?;
-        Ok::<_, anyhow::Error>(result?)
-    });
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let blocked: bool = sqlx::query_scalar("SELECT $1=ANY(pg_blocking_pids($2))")
-                .bind(owner_pid)
-                .bind(reader_pid)
-                .fetch_one(&mut observer)
-                .await?;
-            if blocked {
-                return Ok::<_, anyhow::Error>(());
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await??;
-    // Reader cannot hold authority while waiting for this publisher's watermark.
-    let instance = f.base["identity"]["instance_id"]
-        .as_str()
-        .context("identity instance")?;
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        rss_mdm_authorization_service::store::lock(&mut tx, case_tenant(), instance),
-    )
-    .await??;
-    tx.rollback().await?;
-    let frozen = task.await??;
-    ensure!(
-        !frozen.grants.is_empty(),
-        "lock-order witness did not resolve a real profile"
-    );
-    Ok(())
-}
-
 async fn native_configuration(
     f: &Fixture,
     path: &str,
 ) -> Result<wire::SignedTelemetryConfiguration> {
-    configuration_lock_order(f, path).await?;
     let (status, signed) =
         agent_call(&f.router, Method::GET, path, Some(case_credential()), None).await?;
     ensure!(

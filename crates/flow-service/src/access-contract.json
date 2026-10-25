@@ -36,7 +36,6 @@
     "mdm_resource.immutable",
     "mdm_software.sources",
     "mdm_software.versions",
-    "mdm_planning.policy_source_grants",
     "mdm_planning.scopes",
     "mdm_planning.scope_runs",
     "mdm_planning.scope_source_members",

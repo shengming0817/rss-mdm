@@ -162,7 +162,16 @@ impl Planning {
         authorize: &(dyn Fn() -> std::result::Result<(), Error> + Sync),
     ) -> Result<Value> {
         admit_in(tx).await?;
-        crate::transaction::lock(tx).await?;
+        if matches!(command, Command::Scope { .. }) {
+            let tenant = tx.tenant_id();
+            tx.with_connection(move |c| {
+                Box::pin(
+                    async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await },
+                )
+            })
+            .await?;
+            crate::transaction::lock(tx).await?;
+        }
         authorize()?;
         self.audit_store.prepare_in(tx, audit, &[]).await?;
         let (operation, fingerprint) = storage::identity(command, audit)?;
@@ -288,8 +297,39 @@ mod receipts;
 
 pub mod error;
 
+mod group_definition;
 mod group_references;
 impl rss_mdm_inventory_service::groups::Flow for Planning {
+    fn define<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        edit: rss_mdm_inventory_service::groups::DefinitionEdit,
+    ) -> rss_mdm_inventory_service::tasks::Pending<'a, Value> {
+        Box::pin(async move {
+            crate::automation::jobs::enqueue_job_in(
+                tx,
+                edit.change.operation_id,
+                &crate::automation::JobInput::GroupDefinition {
+                    edit: Box::new(edit),
+                },
+            )
+            .await
+            .map_err(crate::automation::inventory_tasks::failure)
+        })
+    }
+    fn graph_changed<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+    ) -> rss_mdm_inventory_service::tasks::Pending<'a, ()> {
+        Box::pin(async move {
+            let tenant = tx.tenant_id().to_string();
+            tx.with_connection(move |c| Box::pin(async move {
+                sqlx::query("INSERT INTO mdm_planning.source_heads(tenant_id,id,revision) VALUES($1::uuid,'group-graph',1) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=mdm_planning.source_heads.revision+1")
+                    .bind(tenant).execute(c).await?; Ok(())
+            })).await.map_err(|_| rss_mdm_inventory_service::Error::Unavailable(rss_mdm_inventory_service::Failure::FlowStorage))
+        })
+    }
+
     fn current<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

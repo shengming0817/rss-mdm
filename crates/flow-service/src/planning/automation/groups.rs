@@ -548,10 +548,11 @@ impl Planning {
                     }
                     result => result?,
                 };
-                let total = build.processed + page.devices.len();
-                if total > g::MAX_MEMBERS {
-                    return Err(Error::Unavailable(Failure::AssetObjectLimit).into());
-                }
+                let total = build
+                    .processed
+                    .checked_add(page.devices.len())
+                    .filter(|n| i64::try_from(*n).is_ok())
+                    .ok_or(Error::Unavailable(Failure::AssetObjectLimit))?;
                 let version = build
                     .request
                     .rule_version
@@ -737,32 +738,24 @@ impl Planning {
         // The immutable old input remains historical evidence. Newer input cannot
         // be acknowledged by publishing this old result under its former watermark.
         let tenant = self.tenant.to_string();
-        let (dirty,frontier)=tx.with_connection(move |c|Box::pin(async move {
+        let (mut dirty,frontier)=tx.with_connection(move |c|Box::pin(async move {
             sqlx::query_as::<_,(bool,i64)>("SELECT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=$1::uuid AND c.revision>$2 AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=c.tenant_id AND f.group_id=$3::uuid AND f.field=ANY(c.fields)))),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)")
                 .bind(tenant).bind(watermark).bind(id.to_string()).fetch_one(c).await
         })).await?;
-        if let Some(snapshot) = object_snapshot(&build.request.input_version)? {
-            let reader = self.objects.clone();
-            let tenant = self.tenant;
-            let current = tx
-                .with_connection(move |c| {
-                    Box::pin(async move { reader.current(c, tenant, &snapshot).await })
-                })
-                .await?;
-            if !current {
-                return Err(Error::Conflict.into());
-            }
-        }
         for source in &build.request.sources {
             if !self.source_current_in(tx, source).await? {
                 return Err(Error::Conflict.into());
             }
-        }
-        if dirty && !build.request.sources.is_empty() {
-            return Err(Error::Conflict.into());
+            let current = self
+                .capture_group_source_in(
+                    tx,
+                    checked_input(Uuid::parse_str(&source.group.to_string()))?,
+                )
+                .await?;
+            dirty |= current.coordinates.member_version != source.coordinates.member_version
+                || current.coordinates.authority_version != source.coordinates.authority_version;
         }
         let receipt = checked(self.groups.publish_build_in(tx, operation).await?)?;
-        crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         checked(
             self.sources
                 .advance_reference_in(
@@ -799,6 +792,11 @@ impl Planning {
                 )
                 .await?,
         )?;
+        let changed =
+            receipt.group.member_version > build.request.base_calculation || authority as u64 > old;
+        if changed {
+            crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
+        }
         if dirty && automatic {
             let patch = build.request.patch.as_ref().map(|_| g::MemberPatch {
                 add: vec![],
@@ -821,6 +819,9 @@ impl Planning {
                 },
             )
             .await?;
+        }
+        if !changed {
+            crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None).await?;
         }
         Ok(())
     }

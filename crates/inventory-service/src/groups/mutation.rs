@@ -10,7 +10,9 @@ impl Groups {
         flow: &dyn Flow,
     ) -> Result<Value> {
         let id = checked_input(pg::GroupId::parse(&id.to_string()))?;
-        let group = group_checked(self.groups.lock_reference_target_in(tx, id).await?)?;
+        let group = group_checked(self.groups.get_in(tx, id).await?)?
+            .filter(|g| !g.deleted)
+            .ok_or(Error::Group(GroupMissing::Group))?;
         let member_set = checked(self.groups.current_member_set_in(tx, id).await?)?;
         let criteria = if let Some(version) = &group.rule_version {
             let rule = self
@@ -31,6 +33,38 @@ impl Groups {
         )
     }
     pub async fn group_change(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        id: Uuid,
+        op: &Operation<GroupChange>,
+        context: (Timepoint, bool),
+        flow: &dyn Flow,
+    ) -> Result<Value> {
+        if matches!(
+            &op.input,
+            GroupChange::Create {
+                criteria: Some(_),
+                ..
+            } | GroupChange::Rule { .. }
+        ) {
+            self.definition_references_in(tx, id, op, context.1).await?;
+            return flow
+                .define(
+                    tx,
+                    DefinitionEdit {
+                        group: id,
+                        change: op.clone(),
+                        sensitive: context.1,
+                        at: context.0.unix_seconds(),
+                    },
+                )
+                .await
+                .map_err(Into::into);
+        }
+        self.publish_change_in(tx, id, op, context, flow).await
+    }
+    /// Publish an already validated definition in the graph-fenced owner transaction.
+    pub async fn publish_change_in(
         &self,
         tx: &mut PgTransaction<'_>,
         id: Uuid,
@@ -61,35 +95,18 @@ impl Groups {
             }
             _ => (),
         }
-        let references = match &op.input {
+        let references = if matches!(
+            &op.input,
             GroupChange::Create {
-                criteria: Some(c),
-                asset_context,
+                criteria: Some(_),
                 ..
-            } => {
-                self.validate_references_in(
-                    tx,
-                    id,
-                    *asset_context,
-                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
-                    sensitive,
-                )
+            } | GroupChange::Rule { .. }
+        ) {
+            self.definition_references_in(tx, id, op, sensitive)
                 .await?
-            }
-            GroupChange::Rule { criteria: c } => {
-                let context =
-                    group_checked(self.groups.lock_reference_target_in(tx, group).await?)?
-                        .asset_context;
-                self.validate_references_in(
-                    tx,
-                    id,
-                    context,
-                    &rule(self.tenant, op.operation_id, &c.criteria, &catalog)?,
-                    sensitive,
-                )
-                .await?
-            }
-            _ => vec![],
+                .1
+        } else {
+            vec![]
         };
         let command = match &op.input {
             GroupChange::CreateSystem {
@@ -219,6 +236,15 @@ impl Groups {
             }
         };
         let receipt = checked(self.groups.execute_in(tx, operation, at, &command).await?)?;
+        if matches!(
+            op.input,
+            GroupChange::Create { .. }
+                | GroupChange::CreateSystem { .. }
+                | GroupChange::Rule { .. }
+                | GroupChange::Delete
+        ) {
+            flow.graph_changed(tx).await?;
+        }
         crate::compliance::group_changed(&self.reconcile_messaging, tx, id).await?;
         if matches!(op.input, GroupChange::Delete) {
             self.register_fields_in(tx, id, None).await?;

@@ -43,6 +43,7 @@ pub async fn accept(
         attempt: run.state.attempt().ok_or(crate::Error::Conflict)?,
         progress,
         now,
+        observed_at: collected_at,
     };
     tx.with_connection(move |c| {
         Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
@@ -121,19 +122,16 @@ pub async fn finish(
         result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
     let trusted = success
-        && allowed
         && result.collected_at() <= now
-        && run
-            .state
-            .trusts_result(now, frozen.definition.spec().timeout_seconds);
-    if !effect_allowed {
-        run.state
-            .uncertain_result(run.state.attempt().ok_or(crate::Error::Conflict)?)?;
-    } else {
-        run.state
-            .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+        && run.state.trusts_result(
+            result.collected_at(),
+            frozen.definition.spec().timeout_seconds,
+        );
+    run.state
+        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+    if allowed && effect_allowed && trusted {
+        accept(tx, frozen, run, output, true, now, result.collected_at()).await?;
     }
-    accept(tx, frozen, run, output, trusted, now, result.collected_at()).await?;
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,

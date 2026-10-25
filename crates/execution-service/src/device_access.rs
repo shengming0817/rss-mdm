@@ -268,7 +268,7 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, device, input, audit) = *ctx;
-                    crate::transaction::lock_authority(service, tx).await?;
+
                     crate::actions::native_recovery::lock_device(tx, device.device()).await?;
                     crate::transaction::prepare_audit_in(&service.audit_store, tx, audit, &[])
                         .await?;
@@ -335,11 +335,7 @@ pub(crate) async fn policy_on(
     let frozen: crate::frozen::Frozen =
         serde_json::from_value(row.try_get("frozen").map_err(|_| AccessError::Corrupt)?)
             .map_err(|_| AccessError::Corrupt)?;
-    let crate::frozen::Frozen::DeviceAccess {
-        configuration: _,
-        grant,
-    } = frozen
-    else {
+    let crate::frozen::Frozen::DeviceAccess { .. } = frozen else {
         return Err(AccessError::Forbidden);
     };
     let now: i64 =
@@ -347,12 +343,6 @@ pub(crate) async fn policy_on(
             .fetch_one(&mut *c)
             .await
             .map_err(|_| AccessError::Storage)?;
-    if !grant
-        .valid(c, crate::authorization::Permission::AccountWrite, now)
-        .await?
-    {
-        return Err(AccessError::Forbidden);
-    }
     match source
         .admission_on(
             c,
@@ -439,8 +429,6 @@ impl Plan {
         }
         let expected = self.binding.clone();
         let tenant = self.binding.tenant;
-        let source = service.source.clone();
-        let scope = service.tenant;
         tx.with_connection(move |c| {
             Box::pin(async move {
                 let current = match access::storage::locked_in(c, tenant, expected.id).await {
@@ -467,29 +455,9 @@ impl Plan {
                 if current.state == access::State::Revoked {
                     return Ok(Ok(true));
                 }
-                if let access::Origin::Administrator { authority } = &current.origin {
-                    let now: i64 = sqlx::query_scalar(
-                        "SELECT floor(extract(epoch FROM clock_timestamp()))::bigint",
-                    )
-                    .fetch_one(&mut *c)
-                    .await?;
-                    if !authority
-                        .valid(c, crate::authorization::Permission::AccountWrite, now)
-                        .await
-                        .map_err(|_| {
-                            sqlx::Error::Protocol("binding authority unavailable".into())
-                        })?
-                    {
-                        return Ok(Ok(false));
-                    }
-                }
-                match policy_on(source, scope, c, tenant, &current.device, current.policy).await {
-                    Ok(p) => Ok(Ok(p.version == current.policy_version)),
-                    Err(AccessError::Forbidden) => Ok(Ok(false)),
-                    Err(_) => Err(sqlx::Error::Protocol(
-                        "device access policy unavailable".into(),
-                    )),
-                }
+                let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1 AND id=$2 AND state='enabled')")
+                    .bind(tenant).bind(current.policy).fetch_one(c).await?;
+                Ok(Ok(enabled))
             })
         })
         .await?
@@ -616,9 +584,9 @@ pub(crate) async fn prepare_reconciliation_in(
     let mut bindings = Vec::new();
     let mut partitions = Vec::new();
     for document in documents {
-        let previous: access::Binding = stored(serde_json::from_value(document))?;
         let source = service.source.clone();
         let scope = service.tenant;
+        let previous: access::Binding = stored(serde_json::from_value(document))?;
         let binding = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -668,10 +636,10 @@ pub(crate) async fn reconcile_in(
 ) -> Result<()> {
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     for (previous, delivery) in prepared.bindings {
-        let id = previous.id;
-        let previous_revision = previous.revision;
         let source = service.source.clone();
         let scope = service.tenant;
+        let id = previous.id;
+        let previous_revision = previous.revision;
         let binding = tx
             .with_connection(move |c| {
                 Box::pin(async move {

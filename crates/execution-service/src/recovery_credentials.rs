@@ -113,7 +113,7 @@ impl ExecutionService {
                     if proof.tenant_id() != service.tenant.to_string() {
                         return Err(Error::Forbidden.into());
                     }
-                    crate::transaction::lock_authority(service, tx).await?;
+
                     let mut permissions = vec![Permission::SecurityOperate];
                     if matches!(input.action, Action::ConfigureFilevault) {
                         permissions.push(Permission::ConfigurationWrite);
@@ -221,10 +221,7 @@ impl ExecutionService {
                         generation,
                         operation: input.operation_id,
                         required: required.clone(),
-                        evidence: required
-                            .iter()
-                            .map(|p| crate::permissions::grant(&snapshot, proof, Some(device), *p))
-                            .collect::<std::result::Result<_, _>>()?,
+                        actor: proof.actor(),
                     };
                     let result = service
                         .queue_authorized_in(tx, device, &native, authority, fingerprint, audit)

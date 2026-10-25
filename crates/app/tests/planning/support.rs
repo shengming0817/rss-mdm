@@ -634,3 +634,89 @@ pub(crate) async fn inventory_runtime(
     .await
     .unwrap()
 }
+
+/// Legal definition baseline for tests of membership/Scope rather than definition authoring.
+pub(crate) async fn seed_group(
+    m: &Planning,
+    command: &GroupCommand,
+) -> std::result::Result<Value, Error> {
+    let GroupCommand::Group {
+        id,
+        change,
+        sensitive,
+    } = command
+    else {
+        panic!("group baseline requires a mutation");
+    };
+    let owner = groups(m).await;
+    m.runtime
+        .local_tx_with_context(
+            m.tenant,
+            deadline(),
+            (&owner, m, *id, change.as_ref(), *sensitive),
+            |(owner, m, id, change, sensitive), tx| {
+                Box::pin(async move {
+                    owner
+                        .audit_store
+                        .bind_in(tx)
+                        .await
+                        .map_err(rss_transactional_messaging_postgres::PgError::from)?;
+                    rss_mdm_inventory_service::transaction::lock(tx)
+                        .await
+                        .map_err(|e| {
+                            sqlx::Error::Protocol(format!("group baseline lock: {e:?}"))
+                        })?;
+                    let partition = owner.groups.partition(&id.to_string())?;
+                    tx.prepare_outbox_partitions(&[partition]).await?;
+                    owner
+                        .publish_change_in(
+                            tx,
+                            *id,
+                            change,
+                            (
+                                rss_contract::Timepoint::try_from(m.clock.unix_seconds().unwrap())
+                                    .unwrap(),
+                                *sensitive,
+                            ),
+                            *m,
+                        )
+                        .await
+                        .map_err(|e| sqlx::Error::Protocol(format!("group baseline: {e:?}")).into())
+                })
+            },
+        )
+        .await
+        .fold(
+            Ok,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |_| panic!("unknown baseline commit"),
+            |_| panic!("unknown baseline rollback"),
+            |e| panic!("{e:?}"),
+        )
+}
+
+pub(crate) async fn finish_claim(
+    worker: &crate::automation::Automation,
+    claim: &rss_reconcile_postgres::PgClaim,
+) {
+    use rss_reconcile::{DurableStore, Reconciler};
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let diff = worker.observe(claim, &control).await.unwrap();
+            if diff.drift() == rss_reconcile::DriftKind::Converged {
+                break;
+            }
+            worker.apply(claim, diff, &control).await.unwrap();
+        }
+        worker
+            .finish(claim, rss_reconcile::Completion::Converged, &control)
+            .await
+            .unwrap();
+    })
+    .await
+    .expect("fixture task must finish");
+}

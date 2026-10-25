@@ -31,7 +31,6 @@ pub struct Selection<'a> {
     pub resource: &'a str,
     pub version: &'a str,
     pub digest: [u8; 32],
-    pub lifecycle: [u8; 32],
     pub variant: &'a str,
     pub uninstall: bool,
 }
@@ -48,15 +47,9 @@ pub struct Preparation {
 }
 impl Preparation {
     pub async fn lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
-        self.catalog.lock_in(tx).await
+        self.catalog.read_lock_in(tx).await
     }
-    pub async fn binding_in(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        version: &r::Version,
-    ) -> Result<[u8; 32]> {
-        self.catalog.binding_in(tx, version).await
-    }
+
     pub fn new(catalog: Reader, exports: BTreeMap<String, Arc<ExportReader>>) -> Self {
         Self { catalog, exports }
     }
@@ -65,7 +58,7 @@ impl Preparation {
         &self,
         tx: &mut PgTransaction<'_>,
         request: FreezeRequest<'_>,
-    ) -> Result<[u8; 32]> {
+    ) -> Result<()> {
         let FreezeRequest {
             resource,
             version,
@@ -76,15 +69,12 @@ impl Preparation {
         if targets.is_empty() {
             return Err(Error::Conflict);
         }
-        self.catalog.lock_in(tx).await?;
-        let version_value = self.catalog.version_in(tx, resource, version).await?;
-        let lifecycle = self.catalog.binding_in(tx, &version_value).await?;
+        self.catalog.read_lock_in(tx).await?;
         for (target, variant) in targets {
             let binding = Selection {
                 resource,
                 version,
                 digest,
-                lifecycle,
                 variant,
                 uninstall,
             };
@@ -102,7 +92,7 @@ impl Preparation {
                 .ok_or(Error::NotAdmitted)?;
             check_definition_budget(&steps)?;
         }
-        Ok(lifecycle)
+        Ok(())
     }
     /// Resolve an authored binding strictly, preserving rejection and identity mismatch errors.
     pub async fn resolve_in(
@@ -122,9 +112,7 @@ impl Preparation {
                 &r::Id::new(binding.variant).map_err(|_| Error::Input)?,
             )
             .await?;
-        if selected.version().digest().bytes() != binding.digest
-            || selected.binding() != binding.lifecycle
-        {
+        if selected.version().digest().bytes() != binding.digest {
             return Err(Error::Conflict);
         }
         Ok(selected)
@@ -136,10 +124,10 @@ impl Preparation {
         binding: &Selection<'_>,
         target: Target,
     ) -> Result<Option<FrozenSoftware>> {
-        match self.resolve_in(tx, binding, target).await {
-            Ok(selected) => Ok(Some(selected)),
-            Err(Error::Missing | Error::NotAdmitted | Error::Conflict) => Ok(None),
-            Err(error) => Err(error),
+        match self.closure_in(tx, binding, target).await {
+            Ok(Some(mut steps)) => Ok(steps.pop()),
+            Ok(None) | Err(Error::Missing | Error::NotAdmitted | Error::Conflict) => Ok(None),
+            Err(e) => Err(e),
         }
     }
     /// All software steps are bound to the explicitly supplied execution context.
@@ -218,7 +206,7 @@ impl Preparation {
         binding: &Selection<'_>,
         target: Target,
     ) -> Result<Option<Vec<FrozenSoftware>>> {
-        self.catalog.lock_in(tx).await?;
+        self.catalog.read_lock_in(tx).await?;
         let mut stack = vec![(
             binding.resource.to_owned(),
             binding.version.to_owned(),
@@ -280,9 +268,6 @@ impl Preparation {
                 Err(Error::Missing | Error::NotAdmitted) => return Ok(None),
                 Err(e) => return Err(e),
             };
-            if root && selected.binding() != binding.lifecycle {
-                return Ok(None);
-            }
             let dependencies = if root && binding.uninstall {
                 Vec::new()
             } else {

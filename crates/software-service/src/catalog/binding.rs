@@ -30,9 +30,10 @@ async fn resolve_on(
     version: &str,
     digest: [u8; 32],
     allow_draft: bool,
+    selection: Option<(r::Platform, r::Architecture, &str, bool)>,
 ) -> Result<Option<[u8; 32]>> {
     use sqlx::Row;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))")
         .bind(format!("mdm-software:{tenant}"))
         .execute(&mut *c)
         .await?;
@@ -90,10 +91,41 @@ async fn resolve_on(
             return Ok(None);
         }
         versions.insert(key.clone(), (digest, lifecycle.revision));
-        for variant in value.variants() {
+        let selected: Vec<_> = if let Some((platform, architecture, variant, _)) = selection {
+            if resource == root_resource && label == root_version {
+                vec![
+                    value
+                        .resolve(
+                            platform,
+                            architecture,
+                            &r::Id::new(variant).map_err(|_| Error::Input)?,
+                        )
+                        .map_err(|_| Error::NotAdmitted)?,
+                ]
+            } else {
+                let candidates: Vec<_> = value
+                    .variants()
+                    .iter()
+                    .filter(|v| v.platform() == platform && v.architecture() == architecture)
+                    .collect();
+                if candidates.len() != 1 {
+                    return Err(Error::NotAdmitted);
+                }
+                candidates
+            }
+        } else {
+            value.variants().iter().collect()
+        };
+        let mut dependencies = Vec::new();
+        for variant in selected {
             let r::Declaration::Software { definition } = variant.declaration() else {
                 return Err(Error::Integrity);
             };
+            if !selection.is_some_and(|(_, _, _, uninstall)| {
+                uninstall && resource == root_resource && label == root_version
+            }) {
+                dependencies.extend(definition.spec().dependencies.clone());
+            }
             let expected = &definition.spec().source;
             let row = sqlx::query("SELECT definition::text,lifecycle::text FROM mdm_software.sources WHERE tenant_id=$1::uuid AND id=$2 AND revision=$3")
                 .bind(tenant.to_string()).bind(&expected.id).bind(&expected.revision).fetch_optional(&mut *c).await?;
@@ -115,7 +147,7 @@ async fn resolve_on(
         }
         active.insert(key);
         stack.push((resource, label, digest, true));
-        for dependency in dependency_refs(&value)? {
+        for dependency in dependencies {
             stack.push((
                 dependency.resource,
                 dependency.version,
@@ -123,6 +155,9 @@ async fn resolve_on(
                 false,
             ));
         }
+    }
+    if selection.is_some() {
+        return Ok(Some(digest));
     }
     // Ordered sequences (rather than JSON object keys) make the canonical input unambiguous.
     let bytes = serde_json::to_vec(&(
@@ -153,7 +188,7 @@ pub async fn binding_on(
     version: &str,
     digest: [u8; 32],
 ) -> Result<Option<[u8; 32]>> {
-    resolve_on(c, tenant, resource, version, digest, false).await
+    resolve_on(c, tenant, resource, version, digest, false, None).await
 }
 impl Reader {
     pub async fn publication_binding_in(
@@ -169,7 +204,7 @@ impl Reader {
         let digest = version.digest().bytes();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                Ok(resolve_on(c, tenant, &resource, &label, digest, allow_draft).await)
+                Ok(resolve_on(c, tenant, &resource, &label, digest, allow_draft, None).await)
             })
         })
         .await??
@@ -238,4 +273,20 @@ impl Catalog {
         .await?;
         event::append(&self.writer,tx,&key,operation,&json!({"resource":version.resource().as_str(),"version":version.label().as_str(),"lifecycle":lifecycle})).await
     }
+}
+
+/// Check only the selected immutable variant closure and explicit material withdrawal.
+pub async fn execution_admitted_on(
+    c: &mut sqlx::PgConnection,
+    tenant: TenantId,
+    resource: &str,
+    version: &str,
+    digest: [u8; 32],
+    selection: (r::Platform, r::Architecture, &str, bool),
+) -> Result<bool> {
+    Ok(
+        resolve_on(c, tenant, resource, version, digest, false, Some(selection))
+            .await?
+            .is_some(),
+    )
 }

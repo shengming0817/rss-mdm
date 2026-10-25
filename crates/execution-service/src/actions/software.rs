@@ -58,12 +58,14 @@ pub async fn slot_in(
     request: Option<Uuid>,
     now: i64,
 ) -> Result<Option<Slot>> {
-    let Some((stage, _)) = policy
+    let stage = match policy
         .assignment
         .entry_in(&service.source, tx, &target.device, now)
         .await?
-    else {
-        return Ok(None);
+    {
+        Some((stage, _)) => stage,
+        None if request.is_some() && !policy.assignment.stages().is_empty() => 0,
+        None => return Ok(None),
     };
     let effect = if policy.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
         if !service.inputs.software_distribution.mdm_enabled {
@@ -97,10 +99,11 @@ pub async fn slot_in(
         else {
             return Ok(None);
         };
-        if !policy
-            .assignment
-            .supported_in(&service.admission(), tx, &binding)
-            .await?
+        if request.is_none()
+            && !policy
+                .assignment
+                .supported_in(&service.admission(), tx, &binding)
+                .await?
         {
             return Ok(None);
         }
@@ -130,17 +133,6 @@ pub async fn slot_in(
             .ok_or(Error::Forbidden)?;
         effect_key(policy, target, &steps)?
     };
-    let fence = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
-                .bind(fence)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
     let source = service.source.clone();
     let tenant_id = tx.tenant_id();
     let device = target.device.clone();
@@ -149,6 +141,20 @@ pub async fn slot_in(
             Box::pin(async move { Ok(source.effect_devices_on(c, tenant_id, &device).await) })
         })
         .await??;
+    let ordered: std::collections::BTreeSet<_> = devices.iter().cloned().collect();
+    for endpoint in ordered {
+        let fence = format!("{}:{endpoint}", tx.tenant_id());
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
+                    .bind(fence)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
     // The transaction admission fence serializes conflicting effects across associated endpoints.
     let tenant = tx.tenant_id().to_string();
     let device = devices;

@@ -101,6 +101,13 @@ pub async fn read_in(
     })
 }
 impl SoftwareAssignment {
+    pub(crate) fn pending_admission(&self, scope: Uuid, rollout: SoftwareRollout) -> Self {
+        let mut value = self.clone();
+        value.scope = scope;
+        value.rollout = Some(rollout);
+        value
+    }
+
     pub(crate) fn persisted(
         scope: Uuid,
         rollout: Option<SoftwareRollout>,
@@ -144,11 +151,6 @@ impl SoftwareAssignment {
         tx: &mut PgTransaction<'_>,
         device: &str,
     ) -> Result<Option<i64>> {
-        if let Some(version) = self.version
-            && !storage::readable_in(source, tx, version).await?
-        {
-            return Ok(None);
-        }
         if !self.active {
             return Ok(None);
         }
@@ -210,11 +212,7 @@ impl SoftwareAssignment {
         {
             return Ok(None);
         }
-        if let Some(version) = self.version
-            && !source.policy_readable_on(c, tenant, version).await?
-        {
-            return Ok(None);
-        }
+
         let crate::source_authority::ScopeAdmission::Eligible { entry } = source
             .admission_on(c, tenant, self.scope, self.channel(), device)
             .await?
@@ -355,7 +353,6 @@ impl SoftwareAssignment {
             resource: &self.frozen.resource,
             version: &self.frozen.version,
             digest: self.frozen.resource_digest,
-            lifecycle: self.frozen.lifecycle_binding,
             variant: self.variant(platform, architecture)?,
             uninstall: matches!(self.intent(), SoftwareIntent::ExplicitUninstall),
         })
@@ -467,10 +464,6 @@ impl SoftwareAssignment {
         Ok(self.active
             && now >= self.frozen.schedule.not_before
             && now < self.frozen.schedule.ends_at()
-            && self
-                .eligible_in(&service.source, tx, device)
-                .await?
-                .is_some()
             && self
                 .admitted_in(service, tx, platform, architecture)
                 .await?

@@ -40,7 +40,7 @@ impl super::super::Planning {
         let Frozen::UnmanageDevice {
             schedule,
             run_lifetime_seconds,
-            grant,
+            actor,
         } = frozen
         else {
             return Err(Error::Malformed.into());
@@ -49,18 +49,6 @@ impl super::super::Planning {
         let t = tenant.to_string();
         let version = policy.version;
         let now = crate::action_admission::now(tx).await?;
-        let authority = grant.clone();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                Ok(authority
-                    .valid(c, crate::authorization::Permission::DeviceUnmanage, now)
-                    .await)
-            })
-        })
-        .await?
-        .map_err(Error::from)?
-        .then_some(())
-        .ok_or(Error::Forbidden)?;
         let triggers=tx.with_connection(move|c|Box::pin(async move {
             sqlx::query_as::<_,(Uuid,i64)>("SELECT id,created_at FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at DESC,id DESC LIMIT 64")
                 .bind(t).bind(version).bind(now).fetch_all(c).await
@@ -102,7 +90,7 @@ impl super::super::Planning {
             frozen: Frozen::UnmanageDevice {
                 schedule,
                 run_lifetime_seconds,
-                grant,
+                actor,
             },
             objects,
             triggers,
@@ -129,7 +117,7 @@ impl super::super::Planning {
         let Frozen::UnmanageDevice {
             schedule,
             run_lifetime_seconds,
-            grant,
+            actor,
         } = frozen
         else {
             return Err(Error::Malformed.into());
@@ -162,7 +150,7 @@ impl super::super::Planning {
             };
             let reader = self.objects.clone();
             let policy_id = policy.id;
-            let grant = grant.clone();
+            let actor = actor.clone();
             let accepted = tx
                 .with_connection(move |c| {
                     Box::pin(async move {
@@ -175,7 +163,7 @@ impl super::super::Planning {
                                 version,
                                 occurrence: &occurrence,
                                 target: &item.object,
-                                authority: &grant,
+                                actor: &actor,
                                 delivery_seconds: run_lifetime_seconds,
                                 now,
                             },

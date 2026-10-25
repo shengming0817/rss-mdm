@@ -323,12 +323,10 @@ pub(crate) async fn delivery_eligible_target_on(
     .await
     .map_err(crate::database::db)?
     .flatten();
-    let Some(version) = version else {
+    let Some(_version) = version else {
         return Ok(false);
     };
-    if !source.policy_readable_on(c, tenant, version).await? {
-        return Ok(false);
-    }
+
     eligible_target_on(source, c, tenant, target, id).await
 }
 
@@ -345,25 +343,6 @@ pub(crate) async fn eligible_target_on(
     let Some(row) = row else {
         return Ok(false);
     };
-    if let Some(scope) = row
-        .try_get::<Option<Uuid>, _>("scope")
-        .map_err(crate::database::db)?
-        && !matches!(
-            source
-                .admission_on(
-                    c,
-                    tenant,
-                    scope,
-                    rss_mdm_inventory::Channel::Mdm,
-                    target.device.as_str()
-                )
-                .await
-                .map_err(crate::Error::from)?,
-            crate::source_authority::ScopeAdmission::Eligible { .. }
-        )
-    {
-        return Ok(false);
-    }
     let state: super::state::RunState =
         serde_json::from_value(row.try_get("state").map_err(crate::database::db)?)
             .map_err(|_| Error::Malformed)?;
@@ -397,30 +376,6 @@ pub(crate) async fn eligible_target_on(
     };
     if !crate::collection_eligibility::native_on(c, tenant, target, &action.definition).await? {
         return Ok(false);
-    }
-    let Some(grants) = action
-        .grants
-        .get(target.device.as_str())
-        .or_else(|| action.grants.get("*"))
-    else {
-        return Ok(false);
-    };
-    let now: i64 =
-        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut *c)
-            .await
-            .map_err(crate::database::db)?;
-    for permission in action.permissions()? {
-        let mut allowed = false;
-        for grant in grants {
-            if grant.valid(c, permission, now).await? {
-                allowed = true;
-                break;
-            }
-        }
-        if !allowed {
-            return Ok(false);
-        }
     }
     Ok(true)
 }

@@ -5,7 +5,6 @@ pub(crate) enum PreparedAssignment {
     Ordinary {
         policy: Box<Policy>,
         assignments: Vec<rss_mdm_execution_service::source_authority::AssignmentObject>,
-        readable: bool,
         more: bool,
         channel: rss_mdm_inventory::Channel,
     },
@@ -57,21 +56,12 @@ impl super::super::Planning {
             })
             .await?
             .map_err(rss_mdm_execution_service::Error::from)?;
-        let reader = crate::planning::execution_source::ExecutionSource::new(self.objects.clone());
-        let version = p.version;
-        let readable = tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(reader.policy_readable_on(c, tenant, version).await) })
-            })
-            .await?
-            .map_err(rss_mdm_execution_service::Error::from)?;
         let more = assignments.len() > 64;
         assignments.truncate(64);
         tx.prepare_outbox_partitions(&[terminal_partition]).await?;
         Ok(PreparedAssignment::Ordinary {
             policy: Box::new(p),
             assignments,
-            readable,
             more,
             channel,
         })
@@ -83,7 +73,7 @@ impl super::super::Planning {
         prepared: PreparedAssignment,
     ) -> Result<()> {
         use rss_mdm_execution_service::source_authority::Availability;
-        let (p, assignments, readable, more, channel) = match prepared {
+        let (p, assignments, more, channel) = match prepared {
             PreparedAssignment::Empty => {
                 return crate::automation::jobs::finish_job_in(tx, &self.audit_store, task, None)
                     .await;
@@ -94,20 +84,16 @@ impl super::super::Planning {
             PreparedAssignment::Ordinary {
                 policy,
                 assignments,
-                readable,
                 more,
                 channel,
-            } => (policy, assignments, readable, more, channel),
+            } => (policy, assignments, more, channel),
         };
         let tenant = tx.tenant_id();
         let mut devices = Vec::new();
         let mut keys = Vec::new();
         for mut assignment in assignments {
             keys.push(assignment.object.key());
-            if !readable {
-                assignment.availability = Availability::Unavailable;
-                assignment.reason = Some("source_forbidden".into());
-            }
+
             if !p.state.is_enabled() {
                 assignment.availability = Availability::Unavailable;
                 assignment.reason = Some("policy_disabled".into());

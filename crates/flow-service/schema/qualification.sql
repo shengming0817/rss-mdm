@@ -10,24 +10,11 @@ BEGIN
  WHERE x.tenant_id=tenant AND x.id=p_scope;
  IF NOT FOUND OR s.deleted THEN RETURN jsonb_build_object('state','excluded'); END IF;
  IF s.phase IS DISTINCT FROM 'published' OR s.definition_revision IS DISTINCT FROM s.revision THEN RETURN jsonb_build_object('state','pending'); END IF;
- IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' AND NOT mdm_planning.group_current((src->'reference'->>'id')::uuid)) THEN RETURN jsonb_build_object('state','pending'); END IF;
- FOR token IN
-  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id,(src->'coordinates'->>v.field)::bigint AS revision
-  FROM jsonb_array_elements(s.input->'sources') src
-  CROSS JOIN (VALUES('definition','definitionVersion'),('members','memberVersion'),('authority','authorityVersion')) v(kind,field)
-  WHERE src->'reference'->>'kind'='group' ORDER BY id
- LOOP
-  SELECT h.revision,h.required_input,h.observed_input INTO head FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id;
-  IF NOT FOUND OR head.revision<>token.revision OR head.observed_input<head.required_input THEN RETURN jsonb_build_object('state','pending'); END IF;
-  IF token.id LIKE 'group-members.%' AND EXISTS(
-   SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>head.observed_input
-   AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))
-   AND (c.kind IN('device','registration','source','credential') OR EXISTS(SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=tenant AND f.group_id=substring(token.id FROM 15)::uuid AND f.field=ANY(c.fields)))
-  ) THEN RETURN jsonb_build_object('state','pending'); END IF;
- END LOOP;
- IF EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND (h.device=p_device OR (p_device IS NULL AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src WHERE src->'reference'->>'kind'='group' OR src->'reference'->>'id'=h.device))) AND h.revision>s.asset_watermark)
- OR EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=tenant AND c.revision>s.asset_watermark AND (p_device IS NULL OR c.identity->>'device'=p_device OR EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=tenant AND h.kind='registration' AND h.identity=c.identity->>'registration' AND h.device=p_device))
-  AND EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src JOIN mdm_assets.group_fields f ON f.tenant_id=tenant AND f.group_id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END WHERE f.field=ANY(c.fields)))
+ -- Only explicit definition changes invalidate a complete publication.
+ IF EXISTS(SELECT 1 FROM jsonb_array_elements(s.input->'sources') src
+ LEFT JOIN mdm_group.groups g ON g.tenant_id=tenant AND g.id=CASE WHEN src->'reference'->>'kind'='group' THEN (src->'reference'->>'id')::uuid END
+ LEFT JOIN mdm_planning.source_heads h ON h.tenant_id=tenant AND h.id='group-definition.'||(src->'reference'->>'id')
+ WHERE src->'reference'->>'kind'='group' AND (g.id IS NULL OR g.deleted OR h.revision IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint))
  THEN RETURN jsonb_build_object('state','pending'); END IF;
  RETURN jsonb_build_object('state','fresh');
 END;
@@ -84,8 +71,8 @@ BEGIN
  IF NOT evaluation.target_known AND NOT evaluation.target_unknown THEN
   RETURN jsonb_build_object('state','excluded');
  END IF;
- -- Preserve the Rust Scope owner's precedence: an unknown reason is pending even
- -- when a different reason already excludes this candidate.
+ IF evaluation.exclude_known THEN RETURN jsonb_build_object('state','excluded'); END IF;
+ -- A known exclusion wins; genuinely unknown candidates still wait.
  IF NOT evaluation.target_known
   OR (frozen#>'{definition,limitations}' IS NOT NULL AND frozen#>'{definition,limitations}'<>'null'::jsonb
    AND NOT evaluation.limit_known AND evaluation.limit_unknown)

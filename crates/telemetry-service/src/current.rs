@@ -8,8 +8,8 @@ use sqlx::PgConnection;
 /// Preflight the actual destination encoding before durable reception.
 pub(crate) fn prepare(input: &Accepted) -> Result<(CollectionDefinition, Vec<Batch>), Error> {
     let definition = CollectionDefinition::new(
-        &format!("telemetry.{}", input.input.policy),
-        input.input.policy_version.to_string(),
+        &format!("telemetry.{}", input.input.configuration().policy),
+        input.input.configuration().policy_version.to_string(),
         input.source,
         input
             .fields
@@ -71,7 +71,24 @@ pub(crate) async fn deliver_on(
     c: &mut PgConnection,
     tenant: TenantId,
     input: &Accepted,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
+    let configuration = input.input.configuration();
+    let current: Option<bool> = sqlx::query_scalar("SELECT true FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND current_version=$3 AND state='enabled' FOR SHARE")
+        .bind(tenant.to_string()).bind(configuration.policy).bind(configuration.policy_version).fetch_optional(&mut *c).await?;
+    if current != Some(true)
+        || rss_mdm_registration_service::device::store::collection_stream_retired_on(
+            c,
+            tenant,
+            &input.device,
+            input.registration,
+            input.source,
+            input.epoch,
+        )
+        .await
+        .map_err(|_| Error::Storage)?
+    {
+        return Ok(false);
+    }
     let (definition, batches) = prepare(input)?;
     let scope = rss_mdm_registration_service::device::scope_dataset(
         tenant,
@@ -92,5 +109,5 @@ pub(crate) async fn deliver_on(
         .await
         .map_err(|_| Error::Storage)?;
     }
-    Ok(())
+    Ok(true)
 }

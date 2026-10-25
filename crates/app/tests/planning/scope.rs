@@ -298,7 +298,7 @@ async fn pending_group_source_keeps_scope_identity_and_recovers_after_restart() 
     .await
     .unwrap();
     let group = Uuid::new_v4();
-    let source = execute(
+    let source = seed_group(
         &first,
         &GroupCommand::Group {
             id: group,

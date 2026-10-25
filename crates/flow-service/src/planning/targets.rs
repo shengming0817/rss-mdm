@@ -17,8 +17,6 @@ async fn resolution(
     tenant: TenantId,
     scope: Uuid,
 ) -> Result<Option<(Uuid, i64, ScopeInput, bool)>, SourceError> {
-    // The owner fence precedes Scope/head locks, matching publication transactions.
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let status: serde_json::Value =
         sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
             .bind(scope)
@@ -79,7 +77,6 @@ pub async fn admission_on(
     device: &str,
 ) -> Result<ScopeAdmission, SourceError> {
     // Missing/deleted scopes exclude; an existing unpublished scope remains pending.
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let status: serde_json::Value =
         sqlx::query_scalar("SELECT mdm_planning.scope_admission($1,NULL)")
             .bind(scope)
@@ -358,17 +355,14 @@ pub async fn evidence_on(
     channel: Channel,
     device: &str,
 ) -> Result<Vec<DeviceObject>, SourceError> {
-    let (run, _, _, fresh) = resolution(c, tenant, scope)
+    match admission_on(reader, c, tenant, scope, channel, device).await? {
+        ScopeAdmission::Pending => return Ok(vec![]),
+        ScopeAdmission::Excluded => return Err(SourceError::Conflict),
+        ScopeAdmission::Eligible { .. } => (),
+    }
+    let (run, _, _, _) = resolution(c, tenant, scope)
         .await?
         .ok_or(SourceError::Conflict)?;
-    if !fresh
-        || !matches!(
-            admission_on(reader, c, tenant, scope, channel, device).await?,
-            ScopeAdmission::Eligible { .. }
-        )
-    {
-        return Err(SourceError::Conflict);
-    }
     Ok(rows_for(c, tenant, run, channel, device)
         .await?
         .into_iter()

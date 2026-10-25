@@ -3,7 +3,7 @@ use sqlx::Row;
 
 fn check_scope_page(processed: usize, added: usize) -> std::result::Result<(), Error> {
     match processed.checked_add(added) {
-        Some(total) if total <= 1_000_000 => Ok(()),
+        Some(total) if i64::try_from(total).is_ok() => Ok(()),
         _ => Err(Error::Unavailable(Failure::AssetObjectLimit)),
     }
 }
@@ -72,28 +72,8 @@ impl Planning {
                     return Ok(false);
                 }
             }
-            if let Some(snapshot) = &source.snapshot
-                && source.coordinates.asset_context
-                    == rss_mdm_group_postgres::AssetContext::AssociatedDevice
-            {
-                let reader = self.objects.clone();
-                let tenant = self.tenant;
-                let snapshot = snapshot.clone();
-                if !tx
-                    .with_connection(move |c| {
-                        Box::pin(async move { reader.current(c, tenant, &snapshot).await })
-                    })
-                    .await?
-                {
-                    return Ok(false);
-                }
-            }
         }
-        let tenant = self.tenant.to_string();
-        Ok(tx.with_connection(move |c| Box::pin(async move {
-            sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM mdm_access.asset_authority_history h WHERE h.tenant_id=r.tenant_id AND h.revision>r.asset_watermark AND EXISTS(SELECT 1 FROM mdm_planning.scope_source_members m WHERE m.tenant_id=r.tenant_id AND m.run=r.id AND EXISTS(SELECT 1 FROM jsonb_array_elements(m.input->'members') member WHERE member->>'device'=h.device))) FROM mdm_planning.scope_runs r WHERE r.tenant_id=$1::uuid AND r.id=$2::uuid")
-                .bind(tenant).bind(run.to_string()).fetch_one(c).await
-        })).await?)
+        Ok(true)
     }
 
     async fn capture_scope_in(
@@ -218,21 +198,6 @@ impl Planning {
         }
         match phase {
             "sources" => {
-                let tenant = self.tenant;
-                let current = tx
-                    .with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
-                                .await
-                                .map_err(|_| {
-                                    sqlx::Error::Protocol("asset coordinate unavailable".into())
-                                })
-                        })
-                    })
-                    .await?;
-                if current != watermark {
-                    return Err(Error::Conflict.into());
-                }
                 let index = row.try_get::<i32, _>("source_index")? as usize;
                 let after: Option<String> = row.try_get("source_cursor")?;
                 if index == frozen.sources.len() {
@@ -454,7 +419,8 @@ impl Planning {
                 let result=super::super::targets::explanation_on(c,tenant,id,&frozen,channel,&device,None).await.map_err(|_|sqlx::Error::Protocol("scope projection invalid".into()))?;
                 let identities:Vec<serde_json::Value>=sqlx::query_scalar("SELECT DISTINCT m FROM mdm_planning.scope_source_members s CROSS JOIN LATERAL jsonb_array_elements(s.input->'members') m WHERE s.tenant_id=$1::uuid AND s.run=$2 AND s.input->'members' @> jsonb_build_array(jsonb_build_object('device',$4::text,'channel',$3::text)) AND m->>'channel'=$3 AND m->>'device'=$4").bind(tenant.to_string()).bind(id).bind(channel.as_str()).bind(&device).fetch_all(&mut *c).await?;
                 let target=identities.first().ok_or_else(||sqlx::Error::Protocol("scope target missing".into()))?.clone();
-                let pending=identities.len()!=1 || result.as_ref().is_some_and(|r|r.reasons.iter().any(|r|matches!(r,rss_mdm_scope::ExclusionReason::UnknownTarget|rss_mdm_scope::ExclusionReason::UnknownLimitation|rss_mdm_scope::ExclusionReason::UnknownExclusion)));
+                let excluded=result.as_ref().is_some_and(|r| r.reasons.contains(&rss_mdm_scope::ExclusionReason::ExplicitExclusion));
+                let pending=!excluded && (identities.len()!=1 || result.as_ref().is_some_and(|r|r.reasons.iter().any(|r|matches!(r,rss_mdm_scope::ExclusionReason::UnknownTarget|rss_mdm_scope::ExclusionReason::UnknownLimitation|rss_mdm_scope::ExclusionReason::UnknownExclusion))));
                 let matched=!pending && result.as_ref().is_some_and(|r|r.reasons.is_empty());
                 let entry=if matched || pending {sqlx::query_scalar::<_,i64>("SELECT entry_revision FROM mdm_planning.scope_channel_results WHERE tenant_id=$1::uuid AND run=$2 AND channel=$3 AND device=$4 AND (matched OR pending) AND entry_revision>0 AND target=$5").bind(tenant.to_string()).bind(previous).bind(channel.as_str()).bind(&device).bind(&target).fetch_optional(&mut *c).await?.unwrap_or(if matched {epoch}else{0})}else{0};
                 sqlx::query("UPDATE mdm_planning.scope_channel_results SET matched=$5,pending=$6,target=$7,entry_revision=$8 WHERE tenant_id=$1::uuid AND run=$2 AND channel=$3 AND device=$4").bind(tenant.to_string()).bind(id).bind(channel.as_str()).bind(&device).bind(matched).bind(pending).bind(&target).bind(entry).execute(c).await?;
@@ -505,7 +471,9 @@ impl Planning {
         if current != revision || !self.scope_authority_current_in(tx, id).await? {
             return Err(Error::Conflict.into());
         }
-        for reference in references(scope, revision, frozen) {
+        for reference in references(scope, revision, frozen).into_iter().filter(|r| {
+            r.id.starts_with("scope-definition.") || r.id.starts_with("group-definition.")
+        }) {
             if checked(self.sources.reference_in(tx, &reference.id).await?)?
                 != Some(reference.revision)
             {
@@ -517,9 +485,8 @@ impl Planning {
             let (previous,old_version)=sqlx::query_as::<_,(Option<Uuid>,i64)>("SELECT resolution,resolution_revision FROM mdm_planning.scopes WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(&tenant).bind(scope.to_string()).fetch_one(&mut *c).await?;
             let changed=sqlx::query_scalar::<_,bool>("WITH old AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT device,matched,explanation->'reasons' AS reasons,explanation->'identityRevision' AS identity FROM mdm_planning.scope_results WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))")
                 .bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await? || previous.is_none();
-            let source_changed=sqlx::query_scalar::<_,bool>("WITH old AS (SELECT source,device,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$2), new AS (SELECT source,device,unknown,input FROM mdm_planning.scope_source_members WHERE tenant_id=$1::uuid AND run=$3) SELECT EXISTS((SELECT * FROM old EXCEPT SELECT * FROM new) UNION ALL (SELECT * FROM new EXCEPT SELECT * FROM old))").bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await?;
             let (agent_changed,mdm_changed)=sqlx::query_as::<_,(bool,bool)>("SELECT o.id IS NULL OR n.channel_hashes->>'agent' IS DISTINCT FROM o.channel_hashes->>'agent',o.id IS NULL OR n.channel_hashes->>'mdm' IS DISTINCT FROM o.channel_hashes->>'mdm' FROM mdm_planning.scope_runs n LEFT JOIN mdm_planning.scope_runs o ON(o.tenant_id,o.id)=(n.tenant_id,$2) WHERE n.tenant_id=$1::uuid AND n.id=$3").bind(&tenant).bind(previous).bind(id).fetch_one(&mut *c).await?;
-            let changed = changed || source_changed || agent_changed || mdm_changed;
+            let changed = changed || agent_changed || mdm_changed;
             let version=old_version.checked_add(i64::from(changed)).ok_or_else(||sqlx::Error::Protocol("scope revision overflow".into()))?;
             let captured:Option<Uuid>=sqlx::query_scalar("SELECT previous_resolution FROM mdm_planning.scope_runs WHERE tenant_id=$1::uuid AND id=$2").bind(&tenant).bind(id).fetch_one(&mut *c).await?;
             if captured!=previous {return Err(sqlx::Error::Protocol("scope projection superseded".into()));}
@@ -532,7 +499,17 @@ impl Planning {
                 .advance_reference_in(tx, &format!("scope-resolution.{scope}"), version as u64)
                 .await?,
         )?;
-        self.scope_phase(tx, id, "published").await
+        self.scope_phase(tx, id, "published").await?;
+        let mut successor = false;
+        for reference in references(scope, revision, frozen) {
+            successor |= checked(self.sources.reference_in(tx, &reference.id).await?)?
+                != Some(reference.revision);
+        }
+        if successor {
+            crate::automation::jobs::enqueue_job_in(tx, Uuid::new_v4(), &JobInput::Scope { scope })
+                .await?;
+        }
+        Ok(())
     }
 
     async fn propagate_scope_in(

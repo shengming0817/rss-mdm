@@ -159,11 +159,6 @@ impl Policies {
                         storage::write_in(&s.policy_store, tx, &policy, &op.input, None, p, now)
                             .await?;
                     }
-                    if changed {
-                        let grant=rss_mdm_authorization_service::OperationAuthority::all_devices(&authorization,p,Permission::InventoryRead)?;
-                        let grant=checked_input(serde_json::to_value(grant))?;let tenant=tx.tenant_id().to_string();let version=policy.version;
-                        tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.policy_source_grants(tenant_id,version,read_grant) VALUES($1::uuid,$2,$3)").bind(tenant).bind(version).bind(grant).execute(c).await?;Ok(())})).await?;
-                    }
                     // Publication performs no Agent fanout. Native reconciliation is a bounded background job.
                     storage::enqueue_change_in(&s.reconcile_messaging, tx, &policy, old.as_ref()).await?;
                     let value = storage::view(&policy)?;

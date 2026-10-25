@@ -1,7 +1,7 @@
 //! A started Agent enrollment task authorizes one short native handoff.
 use super::*;
 use crate::{Error, database::db, device::DevicePrincipal};
-use rss_mdm_authorization_service::{OperationAuthority, Permission};
+use rss_mdm_authorization_service::Actor;
 use sqlx::{PgConnection, Row};
 pub struct Create<'a> {
     pub principal: &'a DevicePrincipal,
@@ -9,7 +9,7 @@ pub struct Create<'a> {
     pub attempt: Uuid,
     pub operation: Uuid,
     pub password: &'a Password,
-    pub authority: &'a OperationAuthority,
+    pub actor: &'a Actor,
     pub source: ReportSource,
     pub deadline: i64,
 }
@@ -28,10 +28,7 @@ pub async fn create_in(c: &mut PgConnection, input: Create<'_>) -> Result<(Recei
         || input.operation.is_nil()
         || input.attempt.is_nil()
         || input.deadline <= now
-        || !input
-            .authority
-            .valid(c, Permission::Enrollment, now)
-            .await?
+        || input.actor.tenant_id() != p.tenant().to_string()
     {
         return Err(Error::Forbidden);
     }
@@ -63,7 +60,7 @@ pub async fn create_in(c: &mut PgConnection, input: Create<'_>) -> Result<(Recei
         input.source,
         &password,
     ));
-    let actor = input.authority.actor();
+    let actor = input.actor;
     sqlx::query("INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,created_at,expires_at) VALUES($1::uuid,$2,$3,$4,$5,'enrollment','consumed',clock_timestamp(),to_timestamp($6))")
         .bind(&tenant).bind(grant).bind(actor.subject()).bind(actor.instance_id()).bind(&device).bind(deadline as f64).execute(&mut *c).await.map_err(db)?;
     sqlx::query("INSERT INTO mdm_access.requests(tenant_id,id,grant_id,state,source,expected_generation,password_digest,password_version,expires_at,issuance_operation,windows_profile,self_service,authority_kind) VALUES($1::uuid,$2,$3,'pending',$4,0,$5,1,to_timestamp($6),$7,$8,false,'agent_policy')")
@@ -79,7 +76,7 @@ pub async fn create_in(c: &mut PgConnection, input: Create<'_>) -> Result<(Recei
     .bind(p.generation())
     .bind(id)
     .bind(hash)
-    .bind(serde_json::to_value(input.authority).map_err(|_| Error::Malformed)?)
+    .bind(serde_json::to_value(input.actor).map_err(|_| Error::Malformed)?)
     .execute(c)
     .await
     .map_err(db)?;

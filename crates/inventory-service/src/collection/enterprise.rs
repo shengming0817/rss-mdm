@@ -9,6 +9,7 @@ pub struct Report {
     pub attempt: Uuid,
     pub progress: CollectionProgress,
     pub now: i64,
+    pub observed_at: i64,
 }
 pub async fn accept_in(
     c: &mut sqlx::PgConnection,
@@ -21,6 +22,7 @@ pub async fn accept_in(
         attempt,
         progress,
         now,
+        observed_at,
     } = report;
     let definition = progress.definition();
     let body = progress
@@ -76,7 +78,7 @@ pub async fn accept_in(
             scope: &scope,
             run: &id.to_string(),
             sequence: sequence as u64,
-            observed_at: now,
+            observed_at,
             progress: &progress,
         },
     )

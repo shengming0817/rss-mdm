@@ -234,6 +234,24 @@ async fn static_patches_use_the_same_sealed_publication_and_preserve_old_sets() 
                 })
                 .await,
         );
+        if previous.is_none() {
+            s.execute(
+                op(),
+                at(),
+                &Command::Edit {
+                    group,
+                    expected: current.revision,
+                    presentation:
+                        serde_json::json!({"name":"renamed after acceptance","description":""})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                },
+                deadline(),
+            )
+            .await
+            .unwrap();
+        }
         let staged = committed(
             runtime
                 .local_tx_with_context(tenant(), deadline(), &s, |s, tx| {

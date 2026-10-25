@@ -96,6 +96,9 @@ pub fn resolve_device(input: &DeviceInput) -> Result<Option<MemberExplanation>, 
         matching(&input.exclusions),
         input.limitations.is_some(),
     );
+    if !result.exclusions.is_empty() {
+        return Ok(Some(result));
+    }
     if result.targets.is_empty() {
         result.reasons.push(ExclusionReason::UnknownTarget);
     }

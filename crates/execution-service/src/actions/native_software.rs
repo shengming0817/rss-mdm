@@ -293,6 +293,7 @@ pub async fn advance_run(
         deadline: run.deadline,
     };
     let authority = crate::authority::ExecutionAuthority::Software {
+        target: rss_mdm_policy::SoftwareTarget::new(p, a),
         tenant: tx.tenant_id().to_string(),
         version: policy.id,
         device: run.target.device.clone(),

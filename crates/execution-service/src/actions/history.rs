@@ -88,7 +88,7 @@ impl Queries {
     ) -> Result<crate::queries::records::RunDetail, crate::queries::QueryError> {
         crate::transaction::inspect(&self.runtime, self.tenant,(&self.policy_reader,proof,policy,id,audit),|ctx,tx|Box::pin(async move {
             let (reader,proof,policy,id,_audit)=*ctx;
-            let mut run=db::load_run(tx,id).await?;
+            let mut run=db::read_run(tx,id).await?;
             let plan=db::load_source(reader,tx,run.source).await?;
             if plan.owner()!=policy {
                 return Err(Error::Execution(crate::missing::ExecutionError::MissingTask).into());

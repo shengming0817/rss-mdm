@@ -66,7 +66,6 @@ impl Inputs {
             return Ok(Frozen::AgentCollection {
                 frequency: *frequency,
                 action: Box::new(FrozenAgentCollection {
-                    grants: Default::default(),
                     input: ExecutionInput {
                         platform: binding.platform,
                         architecture: binding.architecture,
@@ -135,7 +134,6 @@ impl Inputs {
                         },
                         definition: definition.clone(),
                         windows_plan,
-                        grants: Default::default(),
                         collection,
                         resource_digest: version.digest().bytes(),
                     }),
@@ -153,7 +151,6 @@ impl Inputs {
                         owner,
                         &native,
                     )?,
-                    grants: std::collections::BTreeMap::new(),
                     platform: exact.platform,
                     exit: *exit,
                     resource_digest: version.digest().bytes(),

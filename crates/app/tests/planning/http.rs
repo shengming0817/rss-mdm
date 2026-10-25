@@ -606,7 +606,7 @@ async fn console_metadata_filters_and_selectors() -> Result<()> {
         let changed = rss_mdm_policy::Policy::apply(*policy, None, 0, &change, Uuid::new_v4(), None)?;
         let frozen = rss_mdm_execution_service::frozen::Frozen::UnmanageDevice {
             schedule: match &changed.policy.definition.action { rss_mdm_policy::Action::UnmanageDevice { schedule, .. } => schedule.clone(), _ => unreachable!() }, run_lifetime_seconds: 300,
-            grant: crate::authorization::OperationAuthority::all_devices(proof.authorization()?, &proof, crate::authorization::Permission::DeviceUnmanage)?,
+            actor: proof.actor(),
         };
         let publication = rss_mdm_policy_postgres::Publication { change, policy: changed.policy, frozen: Some(serde_json::to_value(frozen)?), author: json!({"subject":subject}), at: 1 };
         runtime.local_tx_with_context(tenant, crate::identity::deadline(), &publication, |p, tx| Box::pin(async move {

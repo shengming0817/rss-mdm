@@ -97,13 +97,6 @@ impl Groups {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize, flow, initialization) = *ctx;
-                    let tenant = tx.tenant_id();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                        })
-                    })
-                    .await?;
                     if let Some(proof) = initialization {
                         let Command::Group { id, .. } = command else {
                             return Err(Error::Forbidden.into());
@@ -116,7 +109,19 @@ impl Groups {
                         )
                         .await?;
                     }
-                    crate::transaction::lock(tx).await?;
+                    if matches!(
+                        command,
+                        Command::Group { .. } | Command::GroupPreview { .. }
+                    ) {
+                        let tenant = tx.tenant_id();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                            })
+                        })
+                        .await?;
+                        crate::transaction::lock(tx).await?;
+                    }
                     authorize()?;
                     let partitions = match command {
                         Command::Group { id, .. } => vec![

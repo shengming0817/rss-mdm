@@ -34,70 +34,13 @@ use uuid::Uuid;
 pub struct Invocation {
     pub authorization: wire::TaskAuthorization,
     pub parameters: std::collections::BTreeMap<String, Value>,
-    pub basis: access::Basis,
     pub execution_target: Option<wire::SoftwareExecutionTarget>,
+    pub pending_scope: Option<Uuid>,
+    pub pending_rollout: Option<rss_mdm_policy::SoftwareRollout>,
 }
 impl Invocation {
-    /// Recheck the same employee publication/qualification at Start and native authentication.
-    /// The borrowed connection keeps revocation and scope checks in the caller's transaction.
-    pub(crate) async fn qualified_on(
-        &self,
-        c: &mut sqlx::PgConnection,
-        owner: Uuid,
-        tenant: rss_request_context::TenantId,
-        instance: &str,
-        sessions: &crate::authorization::session::SessionAuthority,
-    ) -> Result<Option<Uuid>> {
-        use sqlx::Row;
-        let wire::TaskAuthorization::SelfService {
-            subject,
-            source,
-            policy_id,
-            confirmed,
-            ..
-        } = &self.authorization
-        else {
-            return Ok(None);
-        };
-        if owner != *policy_id {
-            return Ok(None);
-        }
-        sqlx::query("SELECT mdm_planning.policy_lock($1)")
-            .bind(owner)
-            .execute(&mut *c)
-            .await
-            .map_err(crate::database::db)?;
-        let row = sqlx::query("SELECT definition FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled'")
-            .bind(tenant.to_string()).bind(owner).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let definition: rss_mdm_policy::Definition = stored(serde_json::from_value(
-            row.try_get("definition").map_err(crate::database::db)?,
-        ))?;
-        let Some(config) = &definition.self_service else {
-            return Ok(None);
-        };
-        let risk = if matches!(definition.action, rss_mdm_policy::Action::Software { .. }) {
-            2
-        } else {
-            config.risk_level.map_or(2, |r| r.value())
-        };
-        if !config.published
-            || (*source == wire::SelfServiceCaller::Ai
-                && (config.allow_ai != Some(true) || (risk == 2 && !*confirmed)))
-        {
-            return Ok(None);
-        }
-        if access::qualify_on(c, config, &self.basis, tenant, instance, sessions)
-            .await?
-            .as_ref()
-            != Some(subject)
-        {
-            return Ok(None);
-        }
-        Ok(Some(definition.scope))
-    }
+    /// Verify the accepted invocation against its immutable task and real execution target.
+
     pub async fn valid_in(
         &self,
         service: &ExecutionService,
@@ -106,23 +49,6 @@ impl Invocation {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        let invocation = self.clone();
-        let owner = plan.owner();
-        let tenant = service.tenant;
-        let instance = service.instance.clone();
-        let sessions = service.sessions.clone();
-        let current = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(invocation
-                        .qualified_on(c, owner, tenant, &instance, &sessions)
-                        .await)
-                })
-            })
-            .await??;
-        let Some(_) = current else {
-            return Ok(false);
-        };
         let wire::TaskAuthorization::SelfService { policy_version, .. } = &self.authorization
         else {
             return Ok(false);
@@ -149,26 +75,27 @@ impl Invocation {
                     && self.execution_target.is_none() => {}
             _ => return Ok(false),
         }
-        if execution_target_in(service, tx, plan, target).await? != self.execution_target {
+        if self.pending_scope.is_some() {
+            return Ok(false);
+        }
+        if let Some(expected) = &self.execution_target
+            && execution_target_in(service, tx, plan, target)
+                .await?
+                .as_ref()
+                != Some(expected)
+        {
             return Ok(false);
         }
         plan.run_admission_in(service, tx, target, now).await
     }
 }
 fn effective_risk(policy: &rss_mdm_policy::Policy) -> u8 {
-    if matches!(
-        policy.definition.action,
-        rss_mdm_policy::Action::Software { .. }
-    ) {
-        2
-    } else {
-        policy
-            .definition
-            .self_service
-            .as_ref()
-            .and_then(|s| s.risk_level)
-            .map_or(2, |r| r.value())
-    }
+    policy
+        .definition
+        .self_service
+        .as_ref()
+        .and_then(|s| s.risk_level)
+        .map_or(2, |r| r.value())
 }
 struct Prepared {
     task: wire::SelfServiceTask,
@@ -186,16 +113,18 @@ async fn prepare_in(
     input: Option<&std::collections::BTreeMap<String, Value>>,
     now: i64,
 ) -> Result<Option<Prepared>> {
-    if !plan.authorized_in(service, tx, target, now).await? {
+    if input.is_none() && !plan.authorized_in(service, tx, target, now).await? {
         return Ok(None);
     }
     match plan {
         db::ScheduledPolicy::Script(script) => {
-            let Some(entry) = script
+            let entry = match script
                 .entry_in(&service.source, tx, &target.device, now)
                 .await?
-            else {
-                return Ok(None);
+            {
+                Some(entry) => entry,
+                None if input.is_some() => 0,
+                None => return Ok(None),
             };
             let Some(slot) = invocation_slot_in(tx, script, target, entry, request, now).await?
             else {
@@ -224,11 +153,7 @@ async fn prepare_in(
                 parameters,
                 slot,
                 effect: None,
-                execution_target: Some(
-                    execution_target_in(service, tx, plan, target)
-                        .await?
-                        .ok_or(Error::Forbidden)?,
-                ),
+                execution_target: execution_target_in(service, tx, plan, target).await?,
             }))
         }
         db::ScheduledPolicy::Software(software)
@@ -492,7 +417,7 @@ impl ExecutionService {
                 .map_err(Error::from)?;
         run(&self.audit_store, &self.runtime, self.tenant, audit, (self, p, proof, input, audit, id, &partition), |ctx, tx| Box::pin(async move {
             let (service, p, proof, input, audit, id, partition) = *ctx;
-            crate::transaction::lock_authority(service,tx).await?;
+
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let hash = fingerprint(input)?;
             let now = storage::now(tx).await?;
@@ -502,8 +427,6 @@ impl ExecutionService {
                 if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {
                 let run = db::load_run(tx, checked_input(Uuid::parse_str(response["runId"].as_str().ok_or(Error::Malformed)?))?).await?;
                 crate::actions::agent::belongs(&run, p)?;
-                let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
-                if !plan.authorized_run_in(service, tx, &run, now).await? { return Err(Error::Forbidden.into()); }
                 let event_key = format!("{actor}:{}",input.operation_id);
                 let fact = Fact::business(audit, &event_key, &hash, 202, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;
                 return Ok(response);
@@ -519,11 +442,17 @@ impl ExecutionService {
             let event_key = format!("{actor}:{}",input.operation_id);
             let plan = db::load_source(&service.policy_reader, tx, db::Source::Policy { version: policy.version }).await?;
             let target = target(p);
-            if !plan.authorized_in(service, tx, &target, now).await? { return Err(Error::Forbidden.into()); }
+            let admission = crate::sources::storage::admission_in(&service.source, tx, policy.definition.scope, crate::source_authority::Channel::Agent, p.device()).await?;
+            if admission == crate::source_authority::ScopeAdmission::Excluded { return Err(Error::Forbidden.into()); }
+            let rollout_pending = if let db::ScheduledPolicy::Software(v) = &plan {
+                v.assignment.entry_in(&service.source,tx,p.device(),now).await?.is_none()
+            } else { false };
+            let pending_scope = (admission == crate::source_authority::ScopeAdmission::Pending || rollout_pending).then_some(policy.definition.scope);
+            let pending_rollout = if pending_scope.is_some() { match &policy.definition.action { rss_mdm_policy::Action::Software { rollout, .. } => Some(rollout.clone()), _ => None } } else { None };
             let Some(prepared) = prepare_in(service, tx, &plan, &target, input.operation_id, Some(&input.parameters), now).await? else { return Err(Error::Conflict.into()); };
             let decision = wire::TaskAuthorization::SelfService { request_id: input.operation_id, subject, source: input.source, policy_id: policy.id, policy_revision: policy.revision as u64, policy_version: policy.version, allow_ai, risk_level: risk, confirmed: input.confirmed };
             checked_input(decision.validate(checked_input(Uuid::parse_str(&p.tenant().to_string()))?))?;
-            let invocation = Invocation { authorization: decision, parameters: prepared.parameters, basis, execution_target: prepared.execution_target };
+            let invocation = Invocation { authorization: decision, parameters: prepared.parameters, execution_target: prepared.execution_target, pending_scope, pending_rollout };
             production::queue_run_in(service, tx, production::RunInput { triggered_at: None, source: db::Source::Policy { version: policy.version }, target: &target, id, occurrence: prepared.slot.occurrence, available: prepared.slot.available, deadline: prepared.slot.deadline, now }).await?;
             if let Some(effect) = prepared.effect { crate::actions::software::persist_effect_in(tx, id, &effect).await?; }
             let tenant = tx.tenant_id().to_string(); let document = json(&invocation)?;
@@ -559,17 +488,7 @@ impl ExecutionService {
             let wire::TaskAuthorization::SelfService { subject, .. } = &invocation.authorization else { return Err(Error::Forbidden.into()); };
             if !owns(subject, proof) { return Err(Error::Forbidden.into()); }
             let plan = db::load_source(&service.policy_reader, tx, run.source).await?;
-            // Reading an accepted request uses the current reader's qualification, not Start authority.
-            let policy = crate::sources::storage::read_in(&service.policy_reader, tx, plan.owner()).await?.ok_or(Error::NotFound)?;
-            let config = policy.definition.self_service.as_ref().ok_or(Error::Forbidden)?;
-            if !policy.state.is_enabled() || !config.published { return Err(Error::Forbidden.into()); }
-            let basis = access::select(config, proof)?.ok_or(Error::Forbidden)?;
-            if access::qualify_in(service, tx, config, &basis).await?.is_none()
-                || !matches!(crate::sources::storage::admission_in(&service.source, tx,
-                    policy.definition.scope, crate::source_authority::action_channel(&policy.definition.action)?, p.device()).await?,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }) {
-                return Err(Error::Forbidden.into());
-            }
+            // Current authenticated ownership and sensitive-read permissions govern history.
             let result = match (&plan, run.result.as_ref()) {
                 (db::ScheduledPolicy::Script(script), Some(result)) => {
                     let can_read = match proof {
@@ -707,4 +626,73 @@ fn public_state(state: &crate::actions::state::RunState) -> wire::TaskRunState {
         deadline: state.deadline,
         started_at: state.started_at,
     }
+}
+
+pub(crate) async fn advance_waiting_in(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    run: &mut db::Run,
+    plan: &db::ScheduledPolicy,
+    now: i64,
+) -> Result<bool> {
+    let Some(invocation) = &run.invocation else {
+        return Ok(true);
+    };
+    let Some(scope) = invocation.pending_scope else {
+        return Ok(true);
+    };
+    if !matches!(
+        crate::sources::storage::admission_in(
+            &service.source,
+            tx,
+            scope,
+            crate::source_authority::Channel::Agent,
+            &run.target.device
+        )
+        .await?,
+        crate::source_authority::ScopeAdmission::Eligible { .. }
+    ) {
+        return Ok(false);
+    }
+    if let (db::ScheduledPolicy::Software(v), Some(rollout)) = (plan, &invocation.pending_rollout) {
+        let assignment = v.assignment.pending_admission(scope, rollout.clone());
+        if assignment
+            .entry_in(&service.source, tx, &run.target.device, now)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
+    }
+    let source = service.source.clone();
+    let tenant = tx.tenant_id();
+    let device = run.target.device.clone();
+    let evidence = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(source
+                    .evidence_on(
+                        c,
+                        tenant,
+                        scope,
+                        crate::source_authority::Channel::Agent,
+                        &device,
+                    )
+                    .await)
+            })
+        })
+        .await??;
+    if evidence.is_empty() {
+        return Ok(false);
+    }
+    run.source_objects = evidence;
+    let invocation = run.invocation.as_mut().ok_or(Error::Malformed)?;
+    invocation.pending_scope = None;
+    invocation.pending_rollout = None;
+    let document = json(invocation)?;
+    let evidence = json(&run.source_objects)?;
+    let id = run.id;
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move|c|Box::pin(async move {sqlx::query("UPDATE mdm_commands.action_runs SET invocation=$3,source_objects=$4 WHERE tenant_id=$1::uuid AND id=$2").bind(tenant).bind(id).bind(document).bind(evidence).execute(c).await?;Ok(())})).await?;
+    Ok(true)
 }

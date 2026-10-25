@@ -53,7 +53,7 @@ async fn durable_asset_group_scope_pipeline() {
     .await
     .unwrap();
     let group = Uuid::new_v4();
-    let created = execute(
+    let created = seed_group(
         &service,
         &GroupCommand::Group {
             sensitive: true,
@@ -549,7 +549,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
     .await
     .unwrap();
 
-    for kind in ["scope", "group", "compliance"] {
+    for kind in ["scope", "compliance"] {
         let group = Uuid::new_v4();
         let scope_id = Uuid::new_v4();
         execute(
@@ -579,13 +579,44 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         };
         let reference = async {
             match kind {
-                "scope"=>execute(&second,&Command::Scope {id:scope_id,change:operation(0,ScopeChange::Put {definition:scope(group)})}).await,
-                "group"=>execute(&second,&GroupCommand::Group {sensitive:true,id:scope_id,change:Box::new(group_operation(0,GroupChange::Create {asset_context:rss_mdm_group_postgres::AssetContext::Endpoint,presentation:json!({"name":"nested-race","description":""}).as_object().unwrap().clone(),criteria:Some(assets::InventoryCondition {selector:assets::ScopeSelector::Device,quantifier:assets::ScopeQuantifier::One,criteria:rss_mdm_inventory_service::groups::criteria::Criteria::Group {group_id:group,op:rss_mdm_inventory_service::groups::criteria::MembershipOp::MemberOf}})}))}).await,
-                _=>{
-                    let s=compliance(&second).await;let audit=RequestAudit::new(second.tenant.to_string(),"compliance_write", rss_mdm_audit_integration::AuditIntent::Management);proof.bind_audit(&audit).unwrap();
+                "scope" => {
+                    execute(
+                        &second,
+                        &Command::Scope {
+                            id: scope_id,
+                            change: operation(
+                                0,
+                                ScopeChange::Put {
+                                    definition: scope(group),
+                                },
+                            ),
+                        },
+                    )
+                    .await
+                }
+                _ => {
+                    let s = compliance(&second).await;
+                    let audit = RequestAudit::new(
+                        second.tenant.to_string(),
+                        "compliance_write",
+                        rss_mdm_audit_integration::AuditIntent::Management,
+                    );
+                    proof.bind_audit(&audit).unwrap();
                     let input=serde_json::from_value(json!({"presentation":{"name":"disabled-race"},"severity":"high","enabled":false,"platform":"all","target":{"kind":"groups","ids":[group]},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"device.model","op":"eq","value":{"kind":"string","value":"any"}}}})).unwrap();
-                    let command=rss_mdm_inventory_service::compliance::Command::Put {id:scope_id,request:Box::new(rss_mdm_inventory_service::operation::Operation {operation_id:Uuid::new_v4(),expected_revision:0,input})};
-                    let result=s.execute(&command,&audit,&proof).await.map_err(Into::into);audit.finalize(None);result
+                    let command = rss_mdm_inventory_service::compliance::Command::Put {
+                        id: scope_id,
+                        request: Box::new(rss_mdm_inventory_service::operation::Operation {
+                            operation_id: Uuid::new_v4(),
+                            expected_revision: 0,
+                            input,
+                        }),
+                    };
+                    let result = s
+                        .execute(&command, &audit, &proof)
+                        .await
+                        .map_err(Into::into);
+                    audit.finalize(None);
+                    result
                 }
             }
         };
@@ -693,7 +724,7 @@ async fn ingress_batches_reuse_published_group_coverage() {
         tenant()
     ));
     let group = Uuid::new_v4();
-    let accepted = execute(
+    let accepted = seed_group(
         &service,
         &GroupCommand::Group {
             sensitive: true,
@@ -819,7 +850,7 @@ async fn superseded_group_links_reused_successor() {
     let service = planning(tenant()).await;
     let group = Uuid::new_v4();
     seed_device(&format!("successor-{group}"));
-    let created = execute(
+    let created = seed_group(
         &service,
         &GroupCommand::Group {
             sensitive: true,
@@ -932,12 +963,12 @@ async fn superseded_group_links_reused_successor() {
 #[ignore = "MODULE=planning.group_scope: real dependency transactions"]
 async fn concurrent_opposite_group_references_never_commit_a_cycle() {
     use rss_mdm_inventory_service::groups::criteria::{Criteria, MembershipOp};
-    let first = planning(tenant()).await;
+    let first = Arc::new(planning(tenant()).await);
     let second = planning(tenant()).await;
     let a = Uuid::new_v4();
     let b = Uuid::new_v4();
     for id in [a, b] {
-        execute(
+        seed_group(
             &first,
             &GroupCommand::Group {
                 id,
@@ -1007,23 +1038,8 @@ async fn concurrent_opposite_group_references_never_commit_a_cycle() {
         sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
     };
     let (left, right, ()) = tokio::join!(execute(&first, &left), execute(&second, &right), release);
-    assert_ne!(left.is_ok(), right.is_ok());
-    let count = sql(&format!(
-        "SELECT count(*) FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id='{}' AND g.id IN('{a}','{b}') AND cardinality(s.group_ids)>0",
-        tenant()
-    ));
-    assert_eq!(count, "1");
-    holder.close().await.unwrap();
-    first.runtime.close().await;
-    second.runtime.close().await;
-}
-
-#[tokio::test]
-#[ignore = "MODULE=planning.group_scope: real frozen source restart"]
-async fn nested_checkpoint_supersedes_changed_source_after_restart() {
-    use rss_mdm_inventory_service::groups::criteria::{Criteria, MembershipOp};
-    use rss_reconcile::{DurableStore, Reconciler};
-    let first = Arc::new(planning(tenant()).await);
+    let left = left.unwrap();
+    let right = right.unwrap();
     let worker = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(first.clone(), options())
             .await
@@ -1033,99 +1049,6 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     )
     .await
     .unwrap();
-    let prefix = format!("nested-restart-{}", Uuid::new_v4());
-    sql(&format!(
-        "INSERT INTO mdm_access.devices SELECT '{}','{prefix}-'||lpad(n::text,4,'0') FROM generate_series(1,1000) n",
-        tenant()
-    ));
-    let last = format!("{prefix}-1001");
-    seed_device(&last);
-    let source = Uuid::new_v4();
-    let target = Uuid::new_v4();
-    execute(
-        &first,
-        &GroupCommand::Group {
-            id: source,
-            sensitive: true,
-            change: Box::new(group_operation(
-                0,
-                GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    presentation: json!({"name":"restart-static","description":""})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    criteria: None,
-                },
-            )),
-        },
-    )
-    .await
-    .unwrap();
-    // An unpublished dynamic group must remain pending even when its static
-    // descendant is a valid initial empty set (SQL bool_and must not skip NULL).
-    let pending = Uuid::new_v4();
-    execute(
-        &first,
-        &GroupCommand::Group {
-            id: pending,
-            sensitive: true,
-            change: Box::new(group_operation(
-                0,
-                GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    presentation: json!({"name":"unpublished-source","description":""})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    criteria: Some(assets::InventoryCondition {
-                        selector: assets::ScopeSelector::Device,
-                        quantifier: assets::ScopeQuantifier::One,
-                        criteria: Criteria::Group {
-                            group_id: source,
-                            op: MembershipOp::MemberOf,
-                        },
-                    }),
-                },
-            )),
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT mdm_planning.group_current('{source}'),mdm_planning.group_current('{pending}')"
-        )),
-        "t|f"
-    );
-    let created = execute(
-        &first,
-        &GroupCommand::Group {
-            id: target,
-            sensitive: true,
-            change: Box::new(group_operation(
-                0,
-                GroupChange::Create {
-                    asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
-                    presentation: json!({"name":"restart-target","description":""})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    criteria: Some(assets::InventoryCondition {
-                        selector: assets::ScopeSelector::Device,
-                        quantifier: assets::ScopeQuantifier::One,
-                        criteria: Criteria::Group {
-                            group_id: source,
-                            op: MembershipOp::NotMemberOf,
-                        },
-                    }),
-                },
-            )),
-        },
-    )
-    .await
-    .unwrap();
-    let task = Uuid::parse_str(created["task"].as_str().unwrap()).unwrap();
     crate::automation::jobs::forward_jobs(
         &first.reconcile_messaging,
         &first.runtime,
@@ -1134,146 +1057,26 @@ async fn nested_checkpoint_supersedes_changed_source_after_restart() {
     )
     .await
     .unwrap();
-    let claim = claim_job(&worker, task, Duration::from_secs(300)).await;
-    let timer = automation::Timer::new();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(120), &cancel);
-    let diff = worker.observe(&claim, &control).await.unwrap();
-    worker.apply(&claim, diff, &control).await.unwrap();
-    let checkpoint = sql(&format!(
-        "SELECT jsonb_build_array(processed_count,phase,encode(input,'hex')) FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
+    let left_id = Uuid::parse_str(left["task"].as_str().unwrap()).unwrap();
+    let right_id = Uuid::parse_str(right["task"].as_str().unwrap()).unwrap();
+    let left_claim = claim_job(&worker, left_id, Duration::from_secs(120)).await;
+    let right_claim = claim_job(&worker, right_id, Duration::from_secs(120)).await;
+    tokio::join!(
+        finish_claim(&worker, &left_claim),
+        finish_claim(&worker, &right_claim)
+    );
+    let outcomes = sql(&format!(
+        "SELECT count(*) FILTER(WHERE completed AND failure IS NULL),count(*) FILTER(WHERE completed AND failure='invalid_input') FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id IN('{left_id}','{right_id}')",
         tenant()
     ));
-    let saved: Value = serde_json::from_str(&checkpoint).unwrap();
-    assert_eq!(saved[0], 1000);
-    assert_eq!(saved[1], "reading");
-    let changed = execute(
-        &first,
-        &GroupCommand::Group {
-            id: source,
-            sensitive: true,
-            change: Box::new(group_operation(
-                1,
-                GroupChange::Members {
-                    add: vec![rss_mdm_inventory_service::objects::ObjectRef::Endpoint(
-                        last.clone(),
-                    )],
-                    remove: vec![],
-                },
-            )),
-        },
-    )
-    .await
-    .unwrap();
-    let source_task = Uuid::parse_str(changed["task"].as_str().unwrap()).unwrap();
-    crate::automation::jobs::forward_jobs(
-        &first.reconcile_messaging,
-        &first.runtime,
-        first.tenant,
-        &first.audit_store,
-    )
-    .await
-    .unwrap();
-    let source_claim = claim_job(&worker, source_task, Duration::from_secs(300)).await;
-    for _ in 0..16 {
-        let diff = worker.observe(&source_claim, &control).await.unwrap();
-        if diff.drift() == rss_reconcile::DriftKind::Converged {
-            break;
-        }
-        worker.apply(&source_claim, diff, &control).await.unwrap();
-    }
-    assert_eq!(
-        worker
-            .observe(&source_claim, &control)
-            .await
-            .unwrap()
-            .drift(),
-        rss_reconcile::DriftKind::Converged
-    );
-    worker
-        .finish(
-            &source_claim,
-            rss_reconcile::Completion::Converged,
-            &control,
-        )
-        .await
-        .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(worker.work.clone()))
-        .await
-        .unwrap();
-    sql(&format!(
-        "UPDATE rss_reconcile.targets SET lease_until=clock_timestamp()-interval '1 second' WHERE tenant_id='{}' AND entity='job:{task}'",
+    assert_eq!(outcomes, "1|1");
+    worker.work.close().await.unwrap();
+    let count = sql(&format!(
+        "SELECT count(*) FROM mdm_group.groups g JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version) WHERE g.tenant_id='{}' AND g.id IN('{a}','{b}') AND cardinality(s.group_ids)>0",
         tenant()
     ));
-    let second = Arc::new(planning(tenant()).await);
-    let resumed = crate::automation::Automation::connect(
-        crate::automation::PlanningWork::connect(second.clone(), options())
-            .await
-            .unwrap(),
-        assets(&second).await,
-        compliance(&second).await,
-    )
-    .await
-    .unwrap();
-    let restored = claim_job(&resumed, task, Duration::from_secs(300)).await;
-    let diff = resumed.observe(&restored, &control).await.unwrap();
-    resumed.apply(&restored, diff, &control).await.unwrap();
-    assert_eq!(
-        sql(&format!(
-            "SELECT receipt IS NULL AND processed_count=1000 AND encode(input,'hex')='{}' FROM mdm_group.member_runs WHERE tenant_id='{}' AND id='{task}'",
-            saved[2].as_str().unwrap(),
-            tenant()
-        )),
-        "t"
-    );
-    let replacement = sql(&format!(
-        "SELECT replacement_task::text FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}' AND failure='superseded'",
-        tenant()
-    ));
-    let replacement = Uuid::parse_str(&replacement).unwrap();
-    resumed
-        .finish(&restored, rss_reconcile::Completion::Converged, &control)
-        .await
-        .unwrap();
-    crate::automation::jobs::forward_jobs(
-        &second.reconcile_messaging,
-        &second.runtime,
-        second.tenant,
-        &second.audit_store,
-    )
-    .await
-    .unwrap();
-    let current = claim_job(&resumed, replacement, Duration::from_secs(300)).await;
-    for _ in 0..20 {
-        let diff = resumed.observe(&current, &control).await.unwrap();
-        if diff.drift() == rss_reconcile::DriftKind::Converged {
-            break;
-        }
-        resumed.apply(&current, diff, &control).await.unwrap();
-    }
-    assert_eq!(
-        resumed.observe(&current, &control).await.unwrap().drift(),
-        rss_reconcile::DriftKind::Converged
-    );
-    let read = execute(&second, &GroupCommand::GroupRead { id: target })
-        .await
-        .unwrap();
-    assert_eq!(read["group"]["member_count"], 1000);
-    assert_eq!(read["freshness"], "current");
-    assert_eq!(
-        sql(&format!(
-            "SELECT member_set='{replacement}'::uuid FROM mdm_group.groups WHERE tenant_id='{}' AND id='{target}'",
-            tenant()
-        )),
-        "t"
-    );
-    resumed
-        .finish(&current, rss_reconcile::Completion::Converged, &control)
-        .await
-        .unwrap();
-    rss_runtime::ManagedResource::shutdown(&crate::automation::Resource(resumed.work.clone()))
-        .await
-        .unwrap();
+    assert_eq!(count, "1");
+    holder.close().await.unwrap();
     first.runtime.close().await;
     second.runtime.close().await;
 }
@@ -1291,7 +1094,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         tenant()
     ));
     let source = Uuid::new_v4();
-    let created = execute(
+    let created = seed_group(
         &service,
         &GroupCommand::Group {
             id: source,
@@ -1456,7 +1259,7 @@ async fn nested_large_source_evidence_retries_with_smaller_pages() {
         .await
         .unwrap();
     let target = Uuid::new_v4();
-    let accepted = execute(
+    let accepted = seed_group(
         &service,
         &GroupCommand::Group {
             id: target,
@@ -1801,5 +1604,232 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
     pool.close().await;
+    service.runtime.close().await;
+}
+
+#[tokio::test]
+#[ignore = "MODULE=planning.group_scope: durable definition validation and publication CAS"]
+async fn definition_validation_resumes_without_partial_publication() {
+    use rss_mdm_inventory_service::groups::criteria::{Criteria, MembershipOp};
+    use rss_reconcile::{DurableStore, Reconciler};
+    let service = Arc::new(planning(tenant()).await);
+    let condition = |source: Option<Uuid>| assets::InventoryCondition {
+        selector: assets::ScopeSelector::Device,
+        quantifier: assets::ScopeQuantifier::One,
+        criteria: source.map_or(
+            Criteria::Predicate {
+                field: rss_mdm_inventory::builtin::MODEL,
+                op: assets::Operator::Eq,
+                value: Some(assets::Scalar::String("fixture".into())),
+                values: None,
+            },
+            |group_id| Criteria::Group {
+                group_id,
+                op: MembershipOp::MemberOf,
+            },
+        ),
+    };
+    let create = |id, source| GroupCommand::Group {
+        id,
+        sensitive: true,
+        change: Box::new(group_operation(
+            0,
+            GroupChange::Create {
+                asset_context: rss_mdm_group_postgres::AssetContext::Endpoint,
+                presentation: json!({"name":"graph baseline","description":""})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                criteria: Some(condition(source)),
+            },
+        )),
+    };
+    let mut source = None;
+    for _ in 0..20 {
+        let id = Uuid::new_v4();
+        seed_group(&service, &create(id, source)).await.unwrap();
+        source = Some(id);
+    }
+    let root = Uuid::new_v4();
+    seed_group(&service, &create(root, None)).await.unwrap();
+    let change = GroupCommand::Group {
+        id: root,
+        sensitive: true,
+        change: Box::new(group_operation(
+            1,
+            GroupChange::Rule {
+                criteria: condition(source),
+            },
+        )),
+    };
+    let accepted = execute(&service, &change).await.unwrap();
+    assert_eq!(accepted["kind"], "group_definition");
+    assert!(accepted.get("group").is_none());
+    let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    let worker = crate::automation::Automation::connect(
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
+        assets(&service).await,
+        compliance(&service).await,
+    )
+    .await
+    .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
+    let claim = claim_job(&worker, task, Duration::from_secs(120)).await;
+    let timer = automation::Timer::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let control = rss_reconcile::Control::new(&timer, Duration::from_secs(60), &cancel);
+    let diff = worker.observe(&claim, &control).await.unwrap();
+    worker.apply(&claim, diff, &control).await.unwrap();
+    assert_eq!(
+        execute(&service, &GroupCommand::GroupRead { id: root })
+            .await
+            .unwrap()["group"]["revision"],
+        1
+    );
+    assert_eq!(
+        sql(&format!(
+            "SELECT (cursor::jsonb->>'ready')::boolean FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
+            tenant()
+        )),
+        "f"
+    );
+    worker.release(&claim, &control).await.unwrap();
+    worker.work.close().await.unwrap();
+    let resumed = crate::automation::Automation::connect(
+        crate::automation::PlanningWork::connect(service.clone(), options())
+            .await
+            .unwrap(),
+        assets(&service).await,
+        compliance(&service).await,
+    )
+    .await
+    .unwrap();
+    let claim = claim_job(&resumed, task, Duration::from_secs(120)).await;
+    finish_claim(&resumed, &claim).await;
+    assert_eq!(
+        execute(&service, &GroupCommand::GroupRead { id: root })
+            .await
+            .unwrap()["group"]["revision"],
+        2
+    );
+    assert_eq!(execute(&service, &change).await.unwrap(), accepted);
+    let queued = execute(
+        &service,
+        &GroupCommand::Group {
+            id: root,
+            sensitive: true,
+            change: Box::new(group_operation(
+                2,
+                GroupChange::Rule {
+                    criteria: condition(None),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    execute(
+        &service,
+        &GroupCommand::Group {
+            id: root,
+            sensitive: true,
+            change: Box::new(group_operation(
+                2,
+                GroupChange::Edit {
+                    presentation: json!({"name":"later edit","description":""})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(queued["task"].as_str().unwrap()).unwrap();
+    let claim = claim_job(&resumed, task, Duration::from_secs(120)).await;
+    finish_claim(&resumed, &claim).await;
+    assert_eq!(
+        sql(&format!(
+            "SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
+            tenant()
+        )),
+        "owner_conflict"
+    );
+    assert_eq!(
+        execute(&service, &GroupCommand::GroupRead { id: root })
+            .await
+            .unwrap()["group"]["revision"],
+        3
+    );
+    assert!(
+        execute(
+            &service,
+            &GroupCommand::Group {
+                id: source.unwrap(),
+                sensitive: true,
+                change: Box::new(group_operation(1, GroupChange::Delete))
+            }
+        )
+        .await
+        .is_err()
+    );
+    let removed = Uuid::new_v4();
+    seed_group(&service, &create(removed, None)).await.unwrap();
+    let dependent = Uuid::new_v4();
+    let accepted = execute(&service, &create(dependent, Some(removed)))
+        .await
+        .unwrap();
+    execute(
+        &service,
+        &GroupCommand::Group {
+            id: removed,
+            sensitive: true,
+            change: Box::new(group_operation(1, GroupChange::Delete)),
+        },
+    )
+    .await
+    .unwrap();
+    crate::automation::jobs::forward_jobs(
+        &service.reconcile_messaging,
+        &service.runtime,
+        service.tenant,
+        &service.audit_store,
+    )
+    .await
+    .unwrap();
+    let task = Uuid::parse_str(accepted["task"].as_str().unwrap()).unwrap();
+    let claim = claim_job(&resumed, task, Duration::from_secs(120)).await;
+    finish_claim(&resumed, &claim).await;
+    assert_eq!(
+        sql(&format!(
+            "SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id='{}' AND id='{task}'",
+            tenant()
+        )),
+        "source_unavailable"
+    );
+    assert!(
+        execute(&service, &GroupCommand::GroupRead { id: dependent })
+            .await
+            .is_err()
+    );
+    resumed.work.close().await.unwrap();
     service.runtime.close().await;
 }

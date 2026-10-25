@@ -354,7 +354,7 @@ pub(crate) async fn prepare(
         Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await })
     })
     .await?;
-    crate::transaction::lock_authority(service, tx).await?;
+
     let mut partitions = Vec::new();
     let prepared = if let Some(id) = crate::unmanage::operation(entity) {
         let batch = service.prepare_retirement_in(tx, id).await?;

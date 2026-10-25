@@ -1,5 +1,5 @@
 mod binding;
-pub use binding::{admitted_on, binding_on};
+pub use binding::{admitted_on, binding_on, execution_admitted_on};
 // Borrowed-transaction software lifecycle; external publication is a separate capability.
 mod imports;
 mod installers;
@@ -63,6 +63,11 @@ impl Reader {
         self.tenant(tx)?;
         storage::lock(tx).await
     }
+    pub async fn read_lock_in(&self, tx: &mut PgTransaction<'_>) -> Result<()> {
+        self.tenant(tx)?;
+        storage::read_lock(tx).await
+    }
+
     pub async fn source_read_in(
         &self,
         tx: &mut PgTransaction<'_>,
@@ -178,7 +183,7 @@ impl Reader {
         source: &r::SoftwareSource,
     ) -> Result<()> {
         self.tenant(tx)?;
-        storage::lock(tx).await?;
+        storage::read_lock(tx).await?;
         let (stored, lifecycle) = storage::source(tx, &source.id, &source.revision)
             .await?
             .ok_or(Error::NotAdmitted)?;
@@ -287,9 +292,7 @@ impl Reader {
                 &expected.variant,
             )
             .await?;
-        if current.binding != expected.binding
-            || current.version.digest() != expected.version.digest()
-        {
+        if current.version.digest() != expected.version.digest() {
             return Err(Error::NotAdmitted);
         }
         Ok(())
@@ -305,7 +308,7 @@ impl Reader {
         variant: &r::Id,
     ) -> Result<FrozenSoftware> {
         self.tenant(tx)?;
-        storage::lock(tx).await?;
+        storage::read_lock(tx).await?;
         let version = self.version_in(tx, resource, label).await?;
         let lifecycle = storage::lifecycle(tx, resource, label)
             .await?
@@ -315,14 +318,14 @@ impl Reader {
         {
             return Err(Error::NotAdmitted);
         }
-        self.check_sources(tx, &version).await?;
-        self.dependencies(tx, &version).await?;
         let selected = version
             .resolve(platform, architecture, variant)
             .map_err(|_| Error::Missing)?;
         let r::Declaration::Software { definition } = selected.declaration() else {
             return Err(Error::Input);
         };
+        self.source_admitted_in(tx, &definition.spec().source)
+            .await?;
         let (source, _) = storage::source(
             tx,
             &definition.spec().source.id,
@@ -330,9 +333,7 @@ impl Reader {
         )
         .await?
         .ok_or(Error::NotAdmitted)?;
-        let binding = self.binding_in(tx, &version).await?;
         Ok(FrozenSoftware {
-            binding,
             source,
             version,
             variant: variant.clone(),

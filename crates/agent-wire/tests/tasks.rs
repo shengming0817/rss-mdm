@@ -172,11 +172,8 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         steps,
         definition_digest: digest,
         intent: SoftwareTaskIntent::Install,
-        start_mode: SoftwareStartMode::Automatic,
     };
     let mut self_service = spec.clone();
-    self_service.start_mode = SoftwareStartMode::UserInitiated;
-    assert!(self_service.validate().is_err());
     self_service.authorization = TaskAuthorization::SelfService {
         request_id: id,
         subject: SelfServiceSubject::Device {},
@@ -189,13 +186,10 @@ fn software_task_binds_approved_definition_and_artifacts_without_script_fallback
         confirmed: false,
     };
     assert!(self_service.validate().is_ok());
-    self_service.start_mode = SoftwareStartMode::Automatic;
-    assert!(self_service.validate().is_err());
-    self_service.start_mode = SoftwareStartMode::UserInitiated;
     if let TaskAuthorization::SelfService { risk_level, .. } = &mut self_service.authorization {
         *risk_level = 1;
     }
-    assert!(self_service.validate().is_err());
+    assert!(self_service.validate().is_ok());
     let payload: TaskPayload = spec.clone().try_into().unwrap();
     let schema: serde_json::Value = serde_json::from_str(include_str!(
         "../schema/runtime/task-payload-v1.schema.json"

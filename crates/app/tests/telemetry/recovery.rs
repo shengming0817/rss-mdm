@@ -58,7 +58,7 @@ pub(super) async fn interrupt_after_backend_write(
     body["observations"][0]["id"] = json!(observation);
     body["observations"][0]["sequence"] = json!(3);
     body["observations"][0]["observedAt"] =
-        json!(original["observations"][0]["observedAt"].as_i64().unwrap() - 10_000_000);
+        json!(original["observations"][0]["observedAt"].as_i64().unwrap());
     pg(&format!(
         "CREATE FUNCTION public.interrupt_telemetry_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='{id}'::uuid AND NEW.delivery='published' THEN RAISE EXCEPTION 'fixture interruption after destination write' USING ERRCODE='40001'; END IF; RETURN NEW; END $$; CREATE TRIGGER interrupt_telemetry_delivery BEFORE UPDATE ON mdm_telemetry.batches FOR EACH ROW EXECUTE FUNCTION public.interrupt_telemetry_delivery();"
     ))?;

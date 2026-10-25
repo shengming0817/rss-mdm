@@ -148,7 +148,6 @@ fn invocation_schema_matches_literal_argument_and_environment_validation() {
             definition_digest: Sha256::digest(serde_json::to_vec(&steps).unwrap()).into(),
             steps,
             intent: SoftwareTaskIntent::Install,
-            start_mode: SoftwareStartMode::Automatic,
         };
         assert_eq!(spec.validate().is_ok(), accepted);
     }

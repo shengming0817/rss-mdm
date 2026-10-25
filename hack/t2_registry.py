@@ -74,6 +74,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
                     'crates/flow-service/src/planning/pages/scope.rs',
                     'crates/flow-service/src/planning/automation/scopes.rs'),
  'planning.group_scope': ('crates/inventory-service/src/groups/mod.rs',
+                          'crates/flow-service/src/planning/group_definition.rs',
                           'crates/flow-service/src/planning/scopes.rs',
                           'crates/flow-service/src/planning/automation/groups.rs',
                           'crates/flow-service/src/planning/automation/scopes.rs'),
@@ -1749,7 +1750,7 @@ consume(('crates/telemetry-service/src/catalog.json','crates/telemetry-service/s
 
 # Nested group inputs and dependency reads reuse the existing product owners.
 
-case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_checkpoint_supersedes_changed_source_after_restart', None)
+case_fixtures('planning.group_scope', 'planning::t2::group_scope::definition_validation_resumes_without_partial_publication', None)
 case_fixtures('planning.group_scope', 'planning::t2::group_scope::nested_large_source_evidence_retries_with_smaller_pages', None)
 case_fixtures('planning.scope', 'planning::t2::scope::pending_group_source_keeps_scope_identity_and_recovers_after_restart', None)
 
