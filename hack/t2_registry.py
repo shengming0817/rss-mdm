@@ -1063,6 +1063,7 @@ T1_INPUTS = (
     'crates/app/tests/assets/unit.rs',
     'crates/app/tests/audit_budget/unit.rs',
     'crates/audit-integration/tests/budget/unit.rs',
+    'crates/audit-integration/tests/facts.rs',
     'crates/app/tests/authorization/unit.rs',
     'crates/app/tests/collection/unit.rs',
     'crates/inventory-service/tests/collection.rs',
