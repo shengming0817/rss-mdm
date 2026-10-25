@@ -277,7 +277,7 @@ pub async fn authority_on(
         return Ok(false);
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let row = sqlx::query("SELECT v.frozen,p.definition,r.source_objects,r.state,p.state='enabled' AND p.current_version=v.id AS live,(p.definition->>'scope')::uuid AS scope,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations reg ON(reg.tenant_id,reg.id,reg.generation)=(r.tenant_id,r.registration,r.generation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.policy_version=$3 AND r.device=$4 AND reg.state='active'").bind(tenant).bind(operation).bind(version).bind(device).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
+    let row = sqlx::query("SELECT v.frozen,p.definition,r.source_objects,r.state,p.state='enabled' AS live,(p.definition->>'scope')::uuid AS scope,floor(extract(epoch FROM clock_timestamp()))::bigint AS now FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations reg ON(reg.tenant_id,reg.id,reg.generation)=(r.tenant_id,r.registration,r.generation) WHERE r.tenant_id=$1::uuid AND r.id=$2 AND r.policy_version=$3 AND r.device=$4 AND reg.state='active'").bind(tenant).bind(operation).bind(version).bind(device).fetch_optional(&mut *c).await.map_err(crate::database::db)?;
     let Some(row) = row else {
         return Ok(false);
     };
@@ -323,23 +323,24 @@ pub async fn authority_on(
         if state.cancellation != crate::actions::state::Cancellation::None {
             return Ok(false);
         }
-        let definition: rss_mdm_policy::Definition =
-            serde_json::from_value(row.try_get("definition").map_err(crate::database::db)?)
-                .map_err(|_| Error::Malformed)?;
-        let rss_mdm_policy::Action::Software { rollout, .. } = definition.action else {
-            return Ok(false);
-        };
-        let assignment = crate::sources::software::SoftwareAssignment::persisted(
-            definition.scope,
-            rollout,
-            *action,
-            *version,
-            row.try_get("live").map_err(crate::database::db)?,
-        );
-        if assignment
-            .entry_on(source, c, tenant_id, device, now)
-            .await?
-            .is_none()
+        if !row
+            .try_get::<bool, _>("live")
+            .map_err(crate::database::db)?
+            || now < action.schedule.not_before
+            || now >= action.schedule.ends_at()
+            || !source.policy_readable_on(c, tenant_id, *version).await?
+            || !matches!(
+                source
+                    .admission_on(
+                        c,
+                        tenant_id,
+                        row.try_get("scope").map_err(crate::database::db)?,
+                        rss_mdm_inventory::Channel::Mdm,
+                        device
+                    )
+                    .await?,
+                crate::source_authority::ScopeAdmission::Eligible { .. }
+            )
         {
             return Ok(false);
         }

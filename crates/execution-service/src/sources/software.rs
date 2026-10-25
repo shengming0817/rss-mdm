@@ -19,7 +19,7 @@ pub struct SoftwareAssignment {
     pub frozen: FrozenSoftwareAction,
     active: bool,
     scope: Uuid,
-    rollout: SoftwareRollout,
+    rollout: Option<SoftwareRollout>,
     version: Option<Uuid>,
 }
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -84,8 +84,9 @@ pub async fn read_in(
     let Frozen::Software { action } = frozen else {
         return Err(Error::Unsupported.into());
     };
-    let Action::Software { rollout, .. } = policy.definition.action else {
-        return Err(Error::Malformed.into());
+    let rollout = match policy.definition.action {
+        Action::Software { rollout, .. } => Some(rollout),
+        _ => None,
     };
     Ok(SoftwareExecutionPolicy {
         id,
@@ -95,14 +96,14 @@ pub async fn read_in(
             rollout,
             *action,
             id,
-            policy.state.is_enabled() && policy.version == id,
+            policy.state.is_enabled(),
         ),
     })
 }
 impl SoftwareAssignment {
     pub(crate) fn persisted(
         scope: Uuid,
-        rollout: SoftwareRollout,
+        rollout: Option<SoftwareRollout>,
         frozen: FrozenSoftwareAction,
         version: Uuid,
         active: bool,
@@ -131,7 +132,7 @@ impl SoftwareAssignment {
         Self {
             retirement: None,
             scope,
-            rollout,
+            rollout: Some(rollout),
             frozen,
             active: true,
             version: None,
@@ -162,7 +163,9 @@ impl SoftwareAssignment {
         self.frozen.intent
     }
     pub fn stages(&self) -> &[rss_mdm_policy::SoftwareRolloutStage] {
-        &self.rollout.stages
+        self.rollout
+            .as_ref()
+            .map_or(&[], |rollout| rollout.stages.as_slice())
     }
     pub fn variant(&self, platform: Platform, architecture: Architecture) -> Option<&str> {
         self.frozen
@@ -218,7 +221,7 @@ impl SoftwareAssignment {
         else {
             return Ok(None);
         };
-        for (index, stage) in self.rollout.stages.iter().enumerate() {
+        for (index, stage) in self.stages().iter().enumerate() {
             match source
                 .admission_on(c, tenant, stage.scope, self.channel(), device)
                 .await?
@@ -446,6 +449,33 @@ impl SoftwareAssignment {
             .await?
             .is_some())
     }
+    /// An accepted Run retains its published material; rollout only selects new Runs.
+    pub async fn authorized_run_in(
+        &self,
+        service: &crate::queries::Admission,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        platform: Platform,
+        architecture: Architecture,
+        now: i64,
+    ) -> Result<bool> {
+        if self.retirement.is_some() {
+            return self
+                .authorized_in(service, tx, device, platform, architecture, now)
+                .await;
+        }
+        Ok(self.active
+            && now >= self.frozen.schedule.not_before
+            && now < self.frozen.schedule.ends_at()
+            && self
+                .eligible_in(&service.source, tx, device)
+                .await?
+                .is_some()
+            && self
+                .admitted_in(service, tx, platform, architecture)
+                .await?
+                .is_some())
+    }
     /// Management uses the same stage, profile and current authority checks as task admission.
     pub async fn management_state_in(
         &self,
@@ -651,7 +681,7 @@ pub async fn retirement_in(
             frozen,
             active: true,
             scope: Uuid::nil(),
-            rollout: SoftwareRollout { stages: vec![] },
+            rollout: None,
             version: Some(version),
         },
     })
