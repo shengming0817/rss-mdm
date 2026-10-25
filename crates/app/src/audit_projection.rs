@@ -32,6 +32,8 @@ pub(crate) struct Worker {
     recovery_started: Notify,
     #[cfg(feature = "integration")]
     recovery_release: Notify,
+    #[cfg(feature = "integration")]
+    stop_observed: Notify,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Audit)
@@ -131,6 +133,8 @@ impl Worker {
             recovery_started: Notify::new(),
             #[cfg(feature = "integration")]
             recovery_release: Notify::new(),
+            #[cfg(feature = "integration")]
+            stop_observed: Notify::new(),
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -409,7 +413,11 @@ impl<'a> Work<'a> {
     }
     async fn run(mut self, stop: &CancellationToken) -> Result<(), AuditProjectionError> {
         loop {
-            self.draining |= stop.is_cancelled();
+            if !self.draining && stop.is_cancelled() {
+                self.draining = true;
+                #[cfg(feature = "integration")]
+                self.worker.stop_observed.notify_one();
+            }
             if self.draining && self.idle() {
                 break;
             }
@@ -424,6 +432,8 @@ impl<'a> Work<'a> {
                 }
                 Event::Stop => {
                     self.draining = true;
+                    #[cfg(feature = "integration")]
+                    self.worker.stop_observed.notify_one();
                     continue;
                 }
             };

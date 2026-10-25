@@ -245,7 +245,13 @@ fn request_intent(
             I::Sensitive(S::CredentialReveal)
         }
         "/api/v1/certificate-archive/export" => I::Sensitive(S::CertificatePrivateExport),
-        "/api/v1/certificate-archive/vault/unlock" => I::Management,
+        "/api/v1/certificate-archive/vault/unlock"
+        | "/api/v1/api-keys/{id}/rotate"
+        | "/api/v1/software/content/cleanup"
+        | "/api/v1/pki/rotations"
+        | "/api/v1/pki/signing/recover"
+        | "/api/v1/pki/crls"
+        | "/api/v1/pki/{purpose}/rotations" => I::Management,
         "/api/v1/audit-events" => I::Sensitive(S::AuditHistoryRead),
         "/api/v1/resources/{id}/versions/{version}/script" => I::Sensitive(S::ScriptContentRead),
         _ if endpoint
@@ -327,6 +333,20 @@ fn route_action(route: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pki_mutations_are_management_but_trust_queries_are_routine() {
+        use rss_mdm_audit_integration::AuditIntent;
+        let routes = crate::pki::routes();
+        for mut endpoint in routes.endpoints().iter().cloned() {
+            endpoint.path = format!("/api/v1{}", endpoint.path);
+            let expected = match endpoint.method.as_str() {
+                "POST" => AuditIntent::Management,
+                "GET" => AuditIntent::Routine,
+                method => panic!("unexpected PKI method: {method}"),
+            };
+            assert_eq!(request_intent(&endpoint), expected, "{}", endpoint.path);
+        }
+    }
     #[test]
     fn route_templates_select_audit_actions() {
         assert_eq!(

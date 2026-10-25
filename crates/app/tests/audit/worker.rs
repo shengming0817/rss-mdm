@@ -162,7 +162,21 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
         // Dispatch shutdown while the original effect is still active, then let that owner settle.
         let shutdown = owner.shutdown().join();
         let (closing_id, release) = closing.map_or((None, None), |(id, release)| (Some(id), Some(release)));
-        let (shutdown, ()) = tokio::join!(shutdown, async { if let Some(release) = release { let _ = release.send(()); } });
+        let (shutdown, stopped) = tokio::join!(shutdown, async {
+            if let Some(release) = release {
+                let observed = tokio::time::timeout(ACTION_BUDGET, worker.stop_observed.notified()).await;
+                let blocked = if observed.is_ok() {
+                    delivered(&mut observer, tenant, closing_id.as_ref().expect("closing event")).await.map(|done| !done)
+                } else { Ok(false) };
+                // Release even on assertion failure so fixture teardown never strands the effect.
+                let released = release.send(()).is_ok();
+                observed?;
+                ensure!(blocked?, "effect completed before stop was observed");
+                ensure!(released, "shutdown dropped the original effect");
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+        stopped?;
         let shutdown = shutdown?;
         ensure!(shutdown.is_clean(), "worker must release original owners: {shutdown:?}");
         if result.is_ok() && let Some(id) = closing_id {

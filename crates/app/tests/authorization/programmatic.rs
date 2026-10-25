@@ -687,3 +687,55 @@ async fn streamed_content_rejects_rotated_key_before_binding() -> Result<()> {
         Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=authorization.programmatic: critical Action denials persist request audit"]
+async fn critical_action_denials_are_durable() -> Result<()> {
+    use axum::middleware;
+    use rss_mdm_management_http::{api_access, boundary};
+    let mut authority = authority::Authority::open().await?;
+    let tenant = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority.resources.resource(SourceResource(runtime.clone()));
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let content = Arc::new(rss_mdm_content_service::service::Access {
+            sessions: rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), tenant),
+            authorization: authority.authorization.clone(), runtime,
+            audit_store: authority.audit.clone(), tenant, content: None,
+            clock: Arc::new(crate::clock::ContentClock(Arc::new(crate::clock::SystemClock))),
+            catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
+        });
+        let routes = api_access::key_routes(Arc::new(api_access::Management {
+            access: authority.authorization.clone(), audit: authority.audit.clone(),
+        })).merge(rss_mdm_management_http::content::http::routes().with_state(content));
+        let requests = Arc::new(tokio::sync::Semaphore::new(32));
+        let routes = routes.route_layer(middleware::from_fn_with_state(
+            Arc::new(rss_mdm_management_http::authorization::http::AuthenticationState {
+                identity: authority.identity.browser(), access: authority.authorization.clone(), requests: requests.clone(),
+            }), rss_mdm_management_http::authorization::http::protect,
+        ));
+        // Retain mounted endpoint declarations, just as the production router does.
+        let router = boundary::wrap(rss_mdm_http_contract::Router::new().nest("/api/v1", routes), boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)), requests,
+            host: "mdm.example.test".into(), clock: monotonic(),
+            audit_store: authority.audit.clone(), tenant: tenant.to_string(),
+        }).into_axum().layer(axum::Extension(rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?)));
+        let mut browser = authority.browser("other")?;
+        let before = audit_count(|r| r.source() == "mdm.request" && r.status() == 403 && r.actor().is_some()).await?;
+        let rotate = format!("/api/v1/api-keys/{}/rotate", Uuid::new_v4());
+        for (path, input) in [
+            (rotate.as_str(), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1}))),
+            ("/api/v1/software/content/cleanup", None),
+        ] {
+            let denied = browser.call(&router, Method::POST, path, input).await?;
+            ensure!(denied.0 == StatusCode::FORBIDDEN && denied.1["code"] == "permission_denied", "{path}: {denied:?}");
+        }
+        ensure!(audit_count(|r| r.source() == "mdm.request" && r.status() == 403 && r.result() == "denied" && r.actor().is_some()).await? == before + 2, "critical Action denials lost durable request audit");
+        let before_read = audit_count(|r| r.source() == "mdm.request").await?;
+        let denied = browser.call(&router, Method::GET, "/api/v1/api-keys", None).await?;
+        ensure!(denied.0 == StatusCode::FORBIDDEN);
+        ensure!(audit_count(|r| r.source() == "mdm.request").await? == before_read, "ordinary denial became management audit");
+        Ok(())
+    }).await
+}
