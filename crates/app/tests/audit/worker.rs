@@ -53,7 +53,8 @@ async fn wait_delivered(observer: &mut PgConnection, tenant: TenantId, key: &str
 
 #[tokio::test]
 #[ignore = "MODULE=audit.worker: actual host batch worker, source NOTIFY, tenant chain contention and uncertainty"]
-async fn worker_progresses_other_tenants_and_recovers_uncertain_effects() -> Result<()> {
+async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncertainty() -> Result<()>
+{
     let mut fixture = crate::test_support::authority::Authority::open().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -71,35 +72,39 @@ async fn worker_progresses_other_tenants_and_recovers_uncertain_effects() -> Res
         let mut startup = owner.startup()?;
         startup.stage_resource(DynManagedResource::new_box(listener.clone()));
         let worker = Worker::open(&config, listener.signals.mdm_audit.clone(), |r| startup.stage_resource(r)).await?;
+        // Preparation only: the assertions below are exclusively driven by the production worker.
+        crate::audit_test_support::projection::drain(tenant, config.audit.integrity()?).await?;
+        crate::audit_test_support::projection::drain(management, config.audit.integrity()?).await?;
+        enqueue(&fixture.audit, tenant, "worker-unknown").await?;
+        enqueue(&management_store, management, "worker-sibling").await?;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        worker.delivery.inject_next_projection_fault(
+            rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+            async move { let _ = entered.send(()); let _ = released.await; },
+        )?;
         let mut launch = startup.commit();
         launch.stage_task_with_token(listener.clone().registration().critical());
         launch.stage_deferred_task_with_token(worker.clone().registration().critical());
         launch.finish();
         let result = async {
-            enqueue(&fixture.audit, tenant, "worker-seed").await?;
-            wait_delivered(&mut observer, tenant, "worker-seed").await?;
-            let mut blocker = PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
-            let mut hold = blocker.begin().await?;
-            sqlx::query("SELECT tenant_id FROM rss_audit.heads WHERE tenant_id=$1::uuid FOR UPDATE")
-                .bind(tenant.to_string()).fetch_all(&mut *hold).await?;
-            let checked = async {
-                enqueue(&fixture.audit, tenant, "worker-held").await?;
-                enqueue(&management_store, management, "worker-independent").await?;
-                wait_delivered(&mut observer, management, "worker-independent").await?;
-                ensure!(!delivered(&mut observer, tenant, "worker-held").await?, "fixture must actually block one chain");
+            // The first actual effect cannot acquire its connection until released. A serial
+            // implementation cannot deliver either sibling during this barrier, even by reordering.
+            let concurrent = async {
+                tokio::time::timeout(ACTION_BUDGET, started).await??;
+                tokio::time::timeout(ACTION_BUDGET / 2, async {
+                    loop {
+                        let first = delivered(&mut observer, tenant, "worker-unknown").await?;
+                        let second = delivered(&mut observer, management, "worker-sibling").await?;
+                        if first || second { ensure!(first != second, "paused effect unexpectedly completed"); break; }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }).await??;
                 Ok::<_, anyhow::Error>(())
             }.await;
-            hold.rollback().await?;
-            blocker.close().await?;
-            checked?;
-            wait_delivered(&mut observer, tenant, "worker-held").await?;
-            #[cfg(feature = "integration")]
-            worker.delivery.inject_next_projection_fault(
-                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
-                std::future::ready(()),
-            )?;
-            enqueue(&fixture.audit, tenant, "worker-unknown").await?;
-            enqueue(&management_store, management, "worker-sibling").await?;
+            let _ = release.send(());
+            concurrent?;
             wait_delivered(&mut observer, tenant, "worker-unknown").await?;
             wait_delivered(&mut observer, management, "worker-sibling").await?;
             #[cfg(feature = "integration")]

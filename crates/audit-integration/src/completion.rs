@@ -38,9 +38,6 @@ pub async fn complete(
     status: u16,
     failure: Option<ResponseFailure>,
 ) -> Option<Replacement> {
-    if failure == Some(ResponseFailure::Forbidden) && audit.snapshot().actor.is_some() {
-        audit.intent(crate::AuditIntent::Security);
-    }
     let snapshot = audit.snapshot();
     let mut replacement = if failure == Some(ResponseFailure::Deadline) {
         protected_result(failure, snapshot.write_outcome)
@@ -185,6 +182,7 @@ mod tests {
         audit.set_action("nested_read", I::Routine);
         assert_eq!(audit.snapshot().intent, I::Sensitive(S::CredentialReveal));
         assert!(requires_fact(&audit.snapshot(), 200));
+        audit.mark_commit_started();
         audit.mark_committed();
         assert!(!requires_fact(&audit.snapshot(), 200));
         assert!(requires_fact(&audit.snapshot(), 403));

@@ -225,6 +225,7 @@ impl Service {
         proof: Option<&rss_mdm_agent_wire::runtime::Secret>,
         audit: &RequestAudit,
     ) -> Result<Record, Error> {
+        audit.intent(rss_mdm_audit_integration::AuditIntent::Management);
         self.proof(actor, audit)?;
         let context = input.context(actor, target_fingerprint)?;
         if matches!(input.configuration, Configuration::RelyingParty { .. })
@@ -242,7 +243,7 @@ impl Service {
         audit.operation(
             input.operation_id,
             "enterprise_configuration",
-            rss_mdm_audit_integration::AuditIntent::Routine,
+            rss_mdm_audit_integration::AuditIntent::Management,
         );
         if let Some(value) = self
             .enterprise_replay(actor, input.operation_id, &digest)

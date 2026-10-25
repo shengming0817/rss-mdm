@@ -270,18 +270,11 @@ async fn resolve_in(
 pub async fn resolve(
     app: &Access,
     proof: &AuthorizedPrincipal,
-    audit: &RequestAudit,
     id: &str,
     input: &Selection,
     budget: UploadBudget,
 ) -> Result<Binding, Error> {
-    audit.require_final_request();
     proof.require(Permission::ResourceWrite, None)?;
-    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
-    audit.set_action(
-        "management_write",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
     transaction::inspect(
         &app.runtime,
         app.tenant,
@@ -307,11 +300,7 @@ pub async fn current(
     upload: Uuid,
     budget: UploadBudget,
 ) -> Result<Upload, Error> {
-    audit.operation(
-        upload,
-        "management_write",
-        rss_mdm_audit_integration::AuditIntent::Management,
-    );
+    audit.resource_target(rss_mdm_audit_integration::TargetKind::Resource, id);
     proof.require(Permission::ResourceWrite, None)?;
     let value = budget
         .work(store(app)?.status(
@@ -347,7 +336,6 @@ pub async fn current(
     let binding = resolve(
         app,
         proof,
-        audit,
         id,
         &Selection::from_binding(&value.binding)?,
         budget,
@@ -555,7 +543,7 @@ pub async fn mirror(
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let binding = resolve(app, proof, audit, id, input, budget).await?;
+    let binding = resolve(app, proof, id, input, budget).await?;
     let source = binding
         .resource()?
         .source
@@ -683,7 +671,13 @@ pub async fn begin_upload(
         "management_write",
         rss_mdm_audit_integration::AuditIntent::Management,
     );
-    let binding = resolve(app, proof, audit, id, input, budget).await?;
+    audit.require_final_request();
+    audit.operation(
+        upload,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    let binding = resolve(app, proof, id, input, budget).await?;
     Ok(store(app)?
         .begin(
             upload,
@@ -706,6 +700,12 @@ pub async fn append_upload<R: tokio::io::AsyncRead + Unpin + Send>(
     offset: u64,
     reader: R,
 ) -> Result<Append, Error> {
+    audit.operation(
+        upload,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let old = current(app, proof, audit, id, upload, budget).await?;
@@ -733,6 +733,12 @@ pub async fn complete_upload(
     id: &str,
     upload: Uuid,
 ) -> Result<(), Error> {
+    audit.operation(
+        upload,
+        "management_write",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.require_final_request();
     let proof = session.proof;
     let budget = store(app)?.upload_budget()?;
     let old = current(app, proof, audit, id, upload, budget).await?;

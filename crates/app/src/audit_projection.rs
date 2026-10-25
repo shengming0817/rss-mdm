@@ -136,6 +136,7 @@ impl Worker {
         let mut pending: Vec<Pending> = Vec::new();
         let mut claim_after = Instant::now();
         let mut failures = 0_u32;
+        let mut last_claim_error = None;
         let mut last_progress = None;
         let mut uncertain_total = 0_u64;
         let mut resolved_total = 0_u64;
@@ -153,6 +154,7 @@ impl Worker {
                     let result = self.delivery.resolve(&item.identity, operation()).await;
                     if result.as_ref().is_err_and(|error| error.is_retryable()) {
                         item.failures = item.failures.saturating_add(1);
+                        item.error = result.as_ref().err().copied();
                         item.after = Instant::now() + retry_delay(item.failures);
                     }
                     (item, result)
@@ -196,6 +198,7 @@ impl Worker {
             if let Some(batch) = batch {
                 match batch {
                     Ok(report) => {
+                        last_claim_error = report.failure;
                         progressed += report.projected;
                         projected_total += report.projected as u64;
                         uncertain_total += report.recoveries.len() as u64;
@@ -204,6 +207,7 @@ impl Worker {
                             identity,
                             after: Instant::now(),
                             failures: 0,
+                            error: None,
                         }));
                         if let Some(error) = report.failure {
                             claim_failed = error.is_retryable();
@@ -212,23 +216,18 @@ impl Worker {
                     }
                     Err(error) => {
                         claim_failed = error.is_retryable();
+                        last_claim_error = Some(error);
                         retain_failure(&mut failure, error);
                     }
                 }
             }
             if progressed > 0 {
-                failures = 0;
+                if !claim_failed {
+                    failures = 0;
+                }
                 last_progress = Some(Instant::now());
-                self.health.progress(progressed, deferred);
+                self.health.progress(progressed, deferred + pending.len());
             }
-            *self.health.projection.lock().expect("projection health") = Some(serde_json::json!({
-                "phase":"batch_and_recovery", "elapsed_ms":started.elapsed().as_millis(),
-                "capacity":self.capacity.get(), "pending_recovery":pending.len(),
-                "projected_total":projected_total, "uncertain_total":uncertain_total,
-                "resolved_total":resolved_total, "consecutive_failures":failures,
-                "last_progress_age_ms":last_progress.map(|at: Instant| at.elapsed().as_millis()),
-                "failure":failure.map(AuditProjectionError::as_label),
-            }));
             if let Some(error) = failure {
                 self.health.transient_failure();
                 if !error.is_retryable() {
@@ -241,34 +240,18 @@ impl Worker {
             } else if started >= claim_after {
                 claim_after = Instant::now();
             }
-            if failure.is_some() || last_diagnostic.elapsed() >= RESCAN {
-                eprintln!(
-                    "{}",
-                    serde_json::json!({
-                        "event":"mdm_audit_projection_progress", "phase":"batch_and_recovery",
-                        "elapsed_ms":started.elapsed().as_millis(), "projected":progressed,
-                        "deferred":deferred, "pending_recovery":pending.len(),
-                        "capacity":self.capacity.get(), "consecutive_failures":failures,
-                        "retry_ms":claim_after.saturating_duration_since(Instant::now()).as_millis(),
-                        "last_progress_age_ms":last_progress.map(|at| at.elapsed().as_millis()),
-                        "failure":failure.map(AuditProjectionError::as_label),
-                    })
-                );
-                last_diagnostic = Instant::now();
-            }
-            if stop.is_cancelled() {
-                break;
-            }
-            if progressed > 0 && !claim_failed && pending.len() < self.capacity.get() {
-                continue;
-            }
+            let immediate = progressed > 0 && !claim_failed && pending.len() < self.capacity.get();
             let now = Instant::now();
             let mut delay = if claim_after > now {
                 claim_after - now
             } else {
                 RESCAN
             };
-            if claim_after <= now && pending.len() < self.capacity.get() {
+            if !immediate
+                && !stop.is_cancelled()
+                && claim_after <= now
+                && pending.len() < self.capacity.get()
+            {
                 match self.delivery.next_wakeup(operation()).await {
                     Ok(wakeup) => {
                         if let Some(remaining) = wakeup
@@ -278,8 +261,11 @@ impl Worker {
                         {
                             delay = delay.min(remaining);
                         }
+                        if !claim_failed {
+                            last_claim_error = None;
+                        }
                         if failure.is_none() {
-                            self.health.progress(0, deferred);
+                            self.health.progress(0, deferred + pending.len());
                         }
                     }
                     Err(error) if error.is_retryable() => {
@@ -287,13 +273,43 @@ impl Worker {
                         delay = retry_delay(failures);
                         claim_after = Instant::now() + delay;
                         self.health.transient_failure();
-                        diagnose(error);
+                        last_claim_error = Some(error);
+                        retain_failure(&mut failure, error);
                     }
                     Err(error) => return Err(error),
                 }
             }
             if let Some(at) = pending.iter().map(|p| p.after).min() {
                 delay = delay.min(at.saturating_duration_since(Instant::now()));
+            }
+            let recovery_failures = pending.iter().map(|p| u64::from(p.failures)).sum::<u64>();
+            let active_failure = failure
+                .or(last_claim_error)
+                .or_else(|| pending.iter().find_map(|p| p.error));
+            if active_failure.is_some() {
+                self.health.transient_failure();
+            }
+            let observation = serde_json::json!({
+                "event":"mdm_audit_projection_progress", "phase":"batch_and_recovery",
+                "elapsed_ms":started.elapsed().as_millis(), "projected":progressed,
+                "deferred":deferred, "capacity":self.capacity.get(),
+                "pending_recovery":pending.len(), "claim_failures":failures,
+                "recovery_failures":recovery_failures, "projected_total":projected_total,
+                "uncertain_total":uncertain_total, "resolved_total":resolved_total,
+                "retry_ms":claim_after.saturating_duration_since(Instant::now()).as_millis(),
+                "last_progress_age_ms":last_progress.map(|at: Instant| at.elapsed().as_millis()),
+                "failure":active_failure.map(AuditProjectionError::as_label),
+            });
+            *self.health.projection.lock().expect("projection health") = Some(observation.clone());
+            if failure.is_some() || last_diagnostic.elapsed() >= RESCAN {
+                eprintln!("{observation}");
+                last_diagnostic = Instant::now();
+            }
+            if stop.is_cancelled() {
+                break;
+            }
+            if immediate {
+                continue;
             }
             // A notification cannot bypass infrastructure backoff. Recovery deadlines remain
             // independent, and a stored Notify permit survives the scan/wait race.
@@ -319,6 +335,7 @@ struct Pending {
     identity: PgProjectionRecovery,
     after: Instant,
     failures: u32,
+    error: Option<AuditProjectionError>,
 }
 fn retain_failure(current: &mut Option<AuditProjectionError>, error: AuditProjectionError) {
     if current.is_none_or(AuditProjectionError::is_retryable) {
@@ -390,6 +407,6 @@ pub(crate) async fn verify_profile(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "integration"))]
 #[path = "../tests/audit/worker.rs"]
 mod tests;

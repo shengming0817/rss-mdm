@@ -120,11 +120,13 @@ impl RequestAudit {
     /// Select necessity at the business boundary before authorization or disclosure.
     pub fn intent(&self, intent: crate::AuditIntent) {
         let mut state = self.0.state.lock().expect("audit lock");
-        // A narrower routine helper cannot erase a disclosure/security requirement.
+        // A nested ordinary read cannot erase an outer business/disclosure requirement.
         if !matches!(
             state.snapshot.intent,
             crate::AuditIntent::Sensitive(_) | crate::AuditIntent::Security
-        ) {
+        ) && !(state.snapshot.intent == crate::AuditIntent::Management
+            && intent == crate::AuditIntent::Routine)
+        {
             state.snapshot.intent = intent;
         }
     }
