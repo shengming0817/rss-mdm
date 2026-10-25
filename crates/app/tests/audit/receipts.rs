@@ -204,7 +204,7 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
         pool.clone(),
         Integrity::Plain,
         tenant,
-        BacklogLimits::new(1, 1_000_000)?,
+        BacklogLimits::new(2, 1_000_000)?,
     )
     .await?;
     let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(30));
@@ -284,7 +284,46 @@ async fn backlog_reserve_and_projection_release_are_atomic() -> Result<()> {
         .await?;
     ensure!(full.events == 1 && full.source_bytes == before.source_bytes);
     ensure!(full.reserved_events == 1 && full.reserved_source_bytes > 0 && full.reserve_exhausted);
-    ensure!(bytes(&pool, tenant).await?.len() == 2);
+    // A saturated business source cannot consume request-completion capacity.
+    let failed_request = RequestAudit::new(tenant.to_string(), "exhausted_business_reserve");
+    ensure!(
+        rss_mdm_audit_integration::completion::complete(
+            &store,
+            &failed_request,
+            503,
+            Some(rss_mdm_audit_integration::completion::ResponseFailure::AuditReserveExhausted),
+        )
+        .await
+        .is_none(),
+        "business reserve exhaustion suppressed independent request settlement"
+    );
+    let persisted = bytes(&pool, tenant)
+        .await?
+        .into_iter()
+        .map(|value| serde_json::from_slice::<serde_json::Value>(&value))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    ensure!(persisted.iter().any(|fact| fact["source"] == "mdm.request"
+        && fact["request"] == failed_request.request_id().to_string()
+        && fact["outcome"] == "failed"));
+    let another = RequestAudit::new(tenant.to_string(), "capacity_read");
+    ensure!(matches!(
+        store
+            .settle_request(&another, 200, "success", &budget.source_control())
+            .await,
+        Err(Error::BacklogFull)
+    ));
+    store
+        .settle_request(&another, 403, "denied", &budget.source_control())
+        .await?;
+    another.finalize(None);
+    let both = store
+        .backlog(
+            tenant,
+            OperationDeadline::from_remaining(Duration::from_secs(5)),
+        )
+        .await?;
+    ensure!(both.events == 2 && both.reserved_events == 2 && both.max_events == 2);
+    ensure!(bytes(&pool, tenant).await?.len() == 4);
     crate::audit_test_support::projection::drain(tenant, Integrity::Plain).await?;
     let empty = store
         .backlog(

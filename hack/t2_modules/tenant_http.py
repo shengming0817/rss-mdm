@@ -152,7 +152,7 @@ def audit_backpressure(fixture):
     from candidate_fixture import INSTANCE
     with management_host(fixture) as h:
         # The Webhook consumer needs only its own management permission and device scope.
-        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=h.business,principalId=h.business_actor['principal'])),grants=[dict(operation='webhook_write',scope=dict(kind='tenant')),dict(operation='inventory_read',scope=dict(kind='all_devices'))])
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=h.business,principalId=h.business_actor['principal'])),grants=[dict(operation='webhook_write',scope=dict(kind='tenant')),dict(operation='inventory_read',scope=dict(kind='all_devices')),dict(operation='authorization_write',scope=dict(kind='tenant'))])
         encoded=json.dumps(rule).replace("'","''")
         h.sql(f"SET rss.tenant_id='{h.business}'; INSERT INTO mdm_access.authorization_rules VALUES('{h.business}','{INSTANCE}','{uuid.uuid4()}',1,'{encoded}'::jsonb)")
         h.host.close()
@@ -227,13 +227,22 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
             require(process.returncode == 0, 'audit projection lock cleanup failed: ' + errors)
 
     def fill(browser, tenant_id, route):
-        for _ in range(limit + 1):
-            count = int(sql(f"SELECT coalesce((SELECT events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}'),0)"))
-            if count == limit:
-                require(sql(f"SELECT reserved_events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}'") == '0', 'failure reserve was already consumed')
-                return
-            require(browser.call('GET', route)[0] == 200, 'ordinary source fill rejected before capacity')
-        raise RuntimeError('successful reads did not fill the audit source')
+        for source in ('mdm.business', 'mdm.request'):
+            for _ in range(limit // 2 + 1):
+                count = int(sql(f"SELECT coalesce((SELECT events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}' AND source_id='{source}'),0)"))
+                if count == limit // 2:
+                    require(sql(f"SELECT reserved_events FROM mdm_audit.backlog WHERE tenant_id='{tenant_id}' AND source_id='{source}'") == '0', 'failure reserve was already consumed')
+                    break
+                # Normal business and request capacity are independent. Fill each through its real owner.
+                if source == 'mdm.business':
+                    current = json.loads(sql(f"SELECT jsonb_build_object('id',id,'revision',revision,'value',document) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant_id}' AND document IS NOT NULL ORDER BY id LIMIT 1"))
+                    prefix = BASE + '/authorization/rules/' if tenant_id == management else '/api/v1/authorization/rules/'
+                    change = dict(operationId=str(uuid.uuid4()), expectedRevision=current['revision'], value=current['value'])
+                    require(browser.call('PUT', prefix + current['id'], change)[0] == 200, source + ' fill rejected before capacity')
+                else:
+                    require(browser.call('GET', route)[0] == 200, source + ' fill rejected before capacity')
+            else:
+                raise RuntimeError(source + ' did not fill its source quota')
 
     subscription = str(uuid.uuid4())
     settings = json.dumps(dict(presentation=dict(name='Quota rollback'), endpoint='https://receiver.invalid/', eventTypes=['device.registered'], selection=dict(kind='allDevices'), keyReference='retired-key', networkReference='retired-network'))
@@ -243,13 +252,13 @@ def _audit_backpressure(config, manager, target_admin, management, tenant, passw
         for kind in ('registry', 'provisioning', 'administrator', 'webhook'):
             drained()
             operation = str(uuid.uuid4())
-            before = sql(f"SELECT (SELECT count(*) FROM public.mdm_tenants)||':'||(SELECT count(*) FROM rss_transactional_messaging.tenant_epoch)||':'||(SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
-            tenant_before = sql(f"SELECT revision||':'||coalesce(notes,'') FROM public.mdm_tenants WHERE tenant_id='{tenant}'")
             with hold_projection():
                 if kind != 'webhook':
                     fill(admin, management, BASE+'/tenants')
                 if kind in ('administrator', 'webhook'):
                     fill(target, tenant, '/api/v1/authorization')
+                before = sql(f"SELECT (SELECT count(*) FROM public.mdm_tenants)||':'||(SELECT count(*) FROM rss_transactional_messaging.tenant_epoch)||':'||(SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
+                tenant_before = sql(f"SELECT revision||':'||coalesce(notes,'') FROM public.mdm_tenants WHERE tenant_id='{tenant}'")
                 if kind == 'registry':
                     revision = int(tenant_before.split(':', 1)[0])
                     response = admin.call('PUT', BASE+'/tenants/'+tenant, dict(expectedRevision=revision,notes='must rollback'), {'Idempotency-Key':operation})

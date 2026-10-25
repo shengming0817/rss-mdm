@@ -3319,6 +3319,7 @@ dependencies = [
  "rss-mdm-telemetry-service",
  "rss-observation",
  "rss-request-context",
+ "rss-runtime",
  "rss-transactional-messaging",
  "serde",
  "serde_json",

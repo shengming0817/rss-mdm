@@ -1777,6 +1777,8 @@ MODULES['agent.current_user'] = replace(MODULES['agent.current_user'], scope='te
 consume(('crates/registration-service/src/device/registration_user.rs','crates/management-http/src/enrollment/registration_user.rs'), 'enrollment.quotas device.views')
 consume(('crates/registration-service/src/agent/current_user.rs',), 'device.views')
 
+consume(('crates/agent-channel/src/boundary.rs',), 'agent.pki agent.current_user')
+
 # Tenant defaults remain App orchestration over the existing owners.
 consume(('crates/app/src/baseline/*.rs','crates/app/schema/baseline.sql','crates/authorization-service/src/baseline.rs'), 'telemetry.ingress.postgres authorization.initialization catalog.contract')
 consume(('crates/app/src/setup/default_telemetry.rs',), 'telemetry.storage deployment.management-tenant')

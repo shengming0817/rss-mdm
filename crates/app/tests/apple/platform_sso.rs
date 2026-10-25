@@ -133,6 +133,7 @@ async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
         },
     )
     .into_axum();
+    let router = resources.native_router(router);
     resources.finish(async {
         let association = Request::builder().uri("/.well-known/apple-app-site-association").header("host", "mdm.example.test").body(Body::empty())?;
         let response = router.clone().oneshot(association).await?;
@@ -452,7 +453,7 @@ async fn binding_with_configuration(f: &mut Fixture, device: &str, login: Value)
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
     let policy = Uuid::new_v4();
-    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":login,"windowsAccounts":["local"],"selfEnrollment":true,"role":null}}})).await?;
+    f.policy_post(&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"device_access","mac":login,"windows":{"kind":"rss_factor","accounts":["local"]},"selfEnrollment":true,"role":null}}})).await?;
     // Policy publication starts scope reconciliation; first association requires its current result.
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)

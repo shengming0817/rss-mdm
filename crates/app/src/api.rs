@@ -216,6 +216,12 @@ pub(crate) async fn application_fixture(
                 )
             }
         }
+        let requests = crate::test_support::runtime::NativeRequests::new();
+        resources.resource(requests.clone());
+        fixture_routers.browser = requests.wrap(fixture_routers.browser);
+        for (_, channel) in &mut fixture_routers.listeners {
+            channel.router = requests.wrap(std::mem::take(&mut channel.router));
+        }
         Ok((
             fixture_routers,
             execution_service,

@@ -269,7 +269,7 @@ impl Fixture {
                         routes = routes.merge(Router::new().nest("/api/v1", rss_mdm_management_http::software_publication::http::routes().with_state(Arc::new(rss_mdm_management_http::software_publication::http::HttpState { publications: publications.clone(), access: authority.authorization.clone() })).into_axum()));
                         public = public.merge(rss_mdm_management_http::software_native::routes().with_state(Arc::new(rss_mdm_management_http::software_native::StateData { directory: publications, content: content.clone(), requests: Arc::new(tokio::sync::Semaphore::new(8)) })).into_axum());
                     }
-                    let router = authority.router_with_public(routes, public)?;
+                    let router = resources.native_router(authority.router_with_public(routes, public)?);
                     let author = crate::test_support::authority::Authority::prepared_browser("other")?;
                     let author_id = prepared_subject(&author)?;
                     let mut grants = crate::test_support::identity::device_grants(

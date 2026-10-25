@@ -492,7 +492,7 @@ impl ExecutionService {
             storage::lock(tx, p.device()).await?; crate::actions::agent::principal(service, tx, p).await?;
             let hash = fingerprint(input)?;
             let now = storage::now(tx).await?;
-            service.audit_store.prepare_in(tx,audit,std::slice::from_ref(partition)).await?;
+            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,std::slice::from_ref(partition)).await?;
             // Search the same authenticated identities as status before selecting today's access basis.
             for actor in request_actors(p, proof)? {
                 if let Some(response) = db::replay(tx, &actor, input.operation_id, &hash).await? {

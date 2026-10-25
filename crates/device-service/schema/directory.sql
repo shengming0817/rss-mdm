@@ -11,6 +11,19 @@ BEGIN
  RETURN CASE WHEN TG_OP='DELETE' THEN OLD ELSE NEW END;
 END $$;
 REVOKE ALL ON FUNCTION mdm_devices.advance_query_revision() FROM PUBLIC;
+-- Native Execution declares outbox partitions before processing receipts. Fence this
+-- trigger-owned row first, after its device/operation locks, matching source writes.
+CREATE FUNCTION mdm_devices.lock_query_revision(tenant uuid) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+ IF tenant IS DISTINCT FROM nullif(current_setting('rss.tenant_id',true),'')::uuid THEN
+  RAISE EXCEPTION 'tenant mismatch' USING ERRCODE='42501';
+ END IF;
+ INSERT INTO mdm_devices.checkpoints(tenant_id,watermark) VALUES(tenant,0) ON CONFLICT(tenant_id) DO NOTHING;
+ PERFORM 1 FROM mdm_devices.checkpoints WHERE tenant_id=tenant FOR UPDATE;
+END $$;
+REVOKE ALL ON FUNCTION mdm_devices.lock_query_revision(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION mdm_devices.lock_query_revision(uuid) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;
+
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.current_users FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.registration_users FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();
 CREATE TRIGGER directory_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.requests FOR EACH ROW EXECUTE FUNCTION mdm_devices.advance_query_revision();

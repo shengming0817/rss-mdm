@@ -14,13 +14,15 @@ CREATE TABLE mdm_audit.receipts (
     enqueued_at bigint NOT NULL CHECK (enqueued_at>=0),
     PRIMARY KEY (tenant_id, source_id, event_id)
 );
-CREATE INDEX receipts_backlog ON mdm_audit.receipts(tenant_id,enqueued_at) WHERE projected_at IS NULL;
+CREATE INDEX receipts_backlog ON mdm_audit.receipts(tenant_id,source_id,enqueued_at) WHERE projected_at IS NULL;
 CREATE TABLE mdm_audit.backlog (
-    tenant_id uuid PRIMARY KEY,
+    tenant_id uuid NOT NULL,
+    source_id text NOT NULL CHECK (source_id IN ('mdm.business','mdm.request')),
     events bigint NOT NULL DEFAULT 0,
     bytes bigint NOT NULL DEFAULT 0,
     reserved_events bigint NOT NULL DEFAULT 0,
     reserved_bytes bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, source_id),
     CHECK (events>=0 AND bytes>=0 AND reserved_events>=0 AND reserved_bytes>=0)
 );
 ALTER TABLE mdm_audit.receipts ENABLE ROW LEVEL SECURITY;

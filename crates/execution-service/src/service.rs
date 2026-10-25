@@ -56,7 +56,7 @@ impl ExecutionService {
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
         actions::native_recovery::lock_device(tx, device).await?;
-        self.audit_store.prepare_in(tx, audit, &[]).await?;
+        crate::transaction::prepare_audit_in(&self.audit_store, tx, audit, &[]).await?;
         self.reconcile_messaging
             .wake_in(tx, &target(self.tenant, device), (), |_, _| {
                 Box::pin(async { Ok(()) })
@@ -477,7 +477,7 @@ impl ExecutionService {
             let permissions=if reauthorize {op.authority.required().to_vec()}else{vec![Permission::OperationCancel]};
             let auth=storage::authorized_native(tx,proof,device,&permissions).await?;
             storage::lock(tx,&format!("request:{}",change.request_id)).await?;actions::native_recovery::lock_device(tx,device).await?;
-            service.audit_store.prepare_in(tx,audit,&[]).await?;
+            crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;
             let fingerprint=Sha256::digest(checked_input(serde_json::to_vec(&("mdm.command-change/v1",proof.actor(),device,id,change,reauthorization)))?).to_vec();
             let event_key = format!("command-change:{}:{}", audit.snapshot().actor.ok_or(Error::Malformed)?, change.request_id);
             if let Some(value)=replay(tx,change.request_id,&fingerprint,audit).await? {audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);let fact = Fact::business(audit, &event_key, &fingerprint, 200, "success", None)?; service.audit_store.append_in(tx, &fact, true).await?;return Ok(value);}

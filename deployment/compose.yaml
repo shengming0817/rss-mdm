@@ -139,6 +139,7 @@ services:
     labels: *owner
     volumes: ["operator:/run/mdm:ro"]
   server:
+    stop_grace_period: 75s
     profiles: [product]
     image: ${MDM_SERVER_IMAGE:-rss-mdm-local:unbuilt}
     labels: *owner

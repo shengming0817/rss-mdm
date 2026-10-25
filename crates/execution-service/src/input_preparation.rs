@@ -53,7 +53,7 @@ impl Inputs {
         let mut frozen = match input {
             PublicationInput::DeviceAccess {
                 mac,
-                windows_accounts,
+                windows,
                 self_enrollment,
                 role,
             } => {
@@ -63,7 +63,7 @@ impl Inputs {
                 let frozen = Frozen::DeviceAccess {
                     configuration: rss_mdm_agent_wire::runtime::AccessConfiguration {
                         mac: (*mac).clone(),
-                        windows_accounts: (*windows_accounts).clone(),
+                        windows: (*windows).clone(),
                         self_enrollment: *self_enrollment,
                         enabled: true,
                         role: role.map(|r| match r {

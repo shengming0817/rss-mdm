@@ -141,11 +141,15 @@ impl DeviceProtocol {
                 )
             };
         }
-        match self {
+        let owner = crate::test_support::runtime::NativeRequests::new();
+        let router = match self {
             Self::Agent => wrap!(rss_mdm_agent_channel),
             Self::Windows => wrap!(rss_mdm_windows_channel),
             Self::Apple => wrap!(rss_mdm_apple_channel),
-        }
+        };
+        router
+            .layer(axum::Extension(owner.gate.clone()))
+            .layer(axum::Extension(owner))
     }
     fn category(self, response: &axum::response::Response) -> &'static str {
         match self {

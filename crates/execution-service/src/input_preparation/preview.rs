@@ -1,7 +1,9 @@
 //! Validate draft material without collection registration, sealing or assignment identities.
 use super::*;
 pub(crate) enum PreviewInputs {
-    DeviceAccess,
+    DeviceAccess {
+        windows: rss_mdm_agent_wire::runtime::AccessWindowsConfiguration,
+    },
     DeviceLifecycle,
     Credential {
         architecture: Architecture,
@@ -32,11 +34,14 @@ impl Inputs {
         snapshot: &crate::authorization::Snapshot,
     ) -> Result<PreviewInputs> {
         match input {
-            PublicationInput::DeviceAccess { .. } => {
+            PublicationInput::DeviceAccess { windows, .. } => {
                 if !self.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
-                return Ok(PreviewInputs::DeviceAccess);
+                windows.validate().map_err(|_| Error::Malformed)?;
+                return Ok(PreviewInputs::DeviceAccess {
+                    windows: (*windows).clone(),
+                });
             }
             PublicationInput::Unmanage { .. } => return Ok(PreviewInputs::DeviceLifecycle),
             PublicationInput::Credential { architecture, .. } => {

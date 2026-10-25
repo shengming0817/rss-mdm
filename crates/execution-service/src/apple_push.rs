@@ -90,6 +90,7 @@ impl ExecutionService {
                             )
                         })
                         .collect::<std::result::Result<Vec<_>, _>>()?;
+                    crate::transaction::lock_directory(tx).await?;
                     tx.prepare_outbox_partitions(&partitions).await?;
                     for (row, needed) in rows {
                         let registration = row.registration;
@@ -206,7 +207,7 @@ impl ExecutionService {
         audit.target(&wake.registration.to_string());
         audit.identify_service("apple-push");
         let result=crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,&audit,(self,wake,status,outcome,&audit),|ctx,tx|Box::pin(async move {
-            let (service,wake,status,outcome,audit)=*ctx;service.audit_store.prepare_in(tx,audit,&[]).await?;let tenant=service.tenant.to_string();let registration=wake.registration;let id=wake.id;let revision=wake.revision;
+            let (service,wake,status,outcome,audit)=*ctx;crate::transaction::prepare_audit_in(&service.audit_store,tx,audit,&[]).await?;let tenant=service.tenant.to_string();let registration=wake.registration;let id=wake.id;let revision=wake.revision;
             let outcome_name=outcome.as_str();
             let fingerprint=checked_input(serde_json::to_vec(&(registration,id,revision,status,outcome_name)))?;
             let fact=Fact::business(audit,&format!("apple-push:{id}:settle"),&fingerprint,200,"success",None)?

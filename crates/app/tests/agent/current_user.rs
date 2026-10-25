@@ -332,3 +332,112 @@ async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Resu
         Ok(())
     }).await
 }
+
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: presence reads and denials persist independently of business audit locks"]
+async fn current_user_read_persists_without_business_audit_contention() -> Result<()> {
+    use sqlx::Connection;
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1"])).await?;
+        let mut owner = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+        let mut hold = owner.begin().await?;
+        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id,source_id) VALUES($1::uuid,'mdm.business') ON CONFLICT DO NOTHING")
+            .bind(case_tenant()).execute(&mut *hold).await?;
+        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
+            .bind(case_tenant()).fetch_one(&mut *hold).await?;
+        let request = Request::get(CURRENT).header("host", "mdm.example.test:9445")
+            .extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap())
+            .body(Body::empty())?;
+        let response = tokio::time::timeout(Duration::from_secs(1), f.router.clone().oneshot(request)).await??;
+        ensure!(response.status() == StatusCode::OK, "ordinary read waited for audit quota");
+        let id = response.headers()["x-request-id"].to_str()?.to_owned();
+        response.into_body().collect().await?;
+        hold.rollback().await?;
+        let count = |id: String| async move {
+            let mut c = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+            Ok::<i64, anyhow::Error>(sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid AND convert_from(source_bytes,'UTF8')::jsonb->>'request'=$2")
+                .bind(case_tenant()).bind(id).fetch_one(&mut c).await?)
+        };
+        ensure!(count(id).await? == 1, "ordinary read lost its persistent fact");
+        let response = f.router.clone().oneshot(Request::get(CURRENT)
+            .header("host", "mdm.example.test:9445").body(Body::empty())?).await?;
+        ensure!(response.status() == StatusCode::UNAUTHORIZED);
+        let id = response.headers()["x-request-id"].to_str()?.to_owned();
+        response.into_body().collect().await?;
+        ensure!(count(id).await? == 1, "authentication denial lost its durable fact");
+        Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=agent.current_user: slow preflight must not cancel a later source transaction"]
+async fn slow_login_preflight_preserves_source_settlement() -> Result<()> {
+    use sqlx::{Connection, PgConnection};
+    let mut f = Fixture::new().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async {
+        f.register_profile(json!(["inventory.collect.v1"])).await?;
+        let options = crate::device::test_support::options("postgres")?;
+        let mut identity_owner = PgConnection::connect_with(&options).await?;
+        let mut quota_owner = PgConnection::connect_with(&options).await?;
+        let mut observer = PgConnection::connect_with(&options).await?;
+        let mut identity_hold = identity_owner.begin().await?;
+        let identity_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *identity_hold).await?;
+        sqlx::query("SELECT tenant_id FROM identity_authority.guard WHERE tenant_id=$1::uuid FOR UPDATE")
+            .bind(case_tenant()).fetch_one(&mut *identity_hold).await?;
+        let mut quota_hold = quota_owner.begin().await?;
+        let quota_pid:i32 = sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(&mut *quota_hold).await?;
+        sqlx::query("INSERT INTO mdm_audit.backlog(tenant_id,source_id) VALUES($1::uuid,'mdm.business') ON CONFLICT DO NOTHING")
+            .bind(case_tenant()).execute(&mut *quota_hold).await?;
+        sqlx::query("SELECT tenant_id FROM mdm_audit.backlog WHERE tenant_id=$1::uuid AND source_id='mdm.business' FOR UPDATE")
+            .bind(case_tenant()).fetch_one(&mut *quota_hold).await?;
+        let router=f.router.clone();
+        let token=f.author.cookies["__Host-identity-session"].clone();
+        let operation=Uuid::new_v4();
+        let clock=crate::lifecycle::RuntimeTimer;
+        let started=rss_request_context::Clock::now(&clock);
+        let pending=tokio::spawn(async move {
+            let request=Request::builder().method(Method::PUT).uri(CURRENT)
+                .header("host","mdm.example.test:9445").header("content-type","application/json")
+                .header("x-rss-user-session",token)
+                .extension(evidence(crate::test_support::agent_execution::case_credential()).unwrap())
+                .body(Body::from(json!({"operationId":operation,"expectedRevision":0}).to_string()))?;
+            let response=router.oneshot(request).await?;
+            let status=response.status();
+            let bytes=response.into_body().collect().await?.to_bytes();
+            Ok::<_,anyhow::Error>((status,serde_json::from_slice::<Value>(&bytes)?))
+        });
+        let auth_wait=wait_current_user_blocker(&mut observer,identity_pid,false).await;
+        if auth_wait.is_ok() { tokio::time::sleep(Duration::from_millis(6300)).await; }
+        identity_hold.rollback().await?;
+        let source_wait=if auth_wait.is_ok() {wait_current_user_blocker(&mut observer,quota_pid,true).await} else {Ok(())};
+        if auth_wait.is_ok() && source_wait.is_ok() {tokio::time::sleep(Duration::from_millis(2500)).await;}
+        quota_hold.rollback().await?;
+        let result=tokio::time::timeout(Duration::from_secs(5),pending).await???;
+        auth_wait?;source_wait?;
+        ensure!(rss_request_context::Clock::now(&clock).saturating_duration_since(started)>Duration::from_secs(8),"fixture did not cross the old shared cutoff");
+        ensure!(result.0==StatusCode::OK && result.1["state"]=="active","source settlement was cut short after preflight: {result:?}");
+        ensure!(call(&f,Method::GET,None,true,false).await?.1["revision"]==1);
+        let count:i64=sqlx::query_scalar("SELECT count(*) FROM mdm_access.registration_operations WHERE tenant_id=$1::uuid AND operation_id=$2")
+            .bind(case_tenant()).bind(operation).fetch_one(&mut observer).await?;
+        ensure!(count==1,"current-user operation did not commit exactly once");
+        observer.close().await?;identity_owner.close().await?;quota_owner.close().await?;
+        Ok(())
+    }).await
+}
+async fn wait_current_user_blocker(
+    observer: &mut sqlx::PgConnection,
+    blocker: i32,
+    source: bool,
+) -> Result<()> {
+    tokio::time::timeout(Duration::from_secs(4),async {
+        loop {
+            let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND CASE WHEN $2 THEN application_name LIKE 'mdm-current-user:%' ELSE usename='mdm_identity_runtime' END)")
+                .bind(blocker).bind(source).fetch_one(&mut *observer).await?;
+            if waiting {return Ok::<_,anyhow::Error>(());}
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.context("current-user did not reach its real preflight/source blocker")?
+}

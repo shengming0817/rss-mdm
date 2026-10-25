@@ -52,7 +52,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "ad23f769db9f35a0a34583e686a5c218b73e8e80e6447cc7b4a89eda00533c24";
+    "1698cda67864df85f0781c4b7b6aef820851f33328dbf205f8ec2b71bb34ebc8";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +211,9 @@ pub enum Capability {
     /// Typed local-account Device Access operations.
     #[serde(rename = "device_access.v1")]
     DeviceAccessV1,
+    /// Native Windows Hello management, independent of RSS credential-provider availability.
+    #[serde(rename = "device_access.whfb.v1")]
+    DeviceAccessWhfbV1,
 }
 impl Capability {
     /// Software support always refers to one concrete native/script scope profile.
@@ -218,6 +221,7 @@ impl Capability {
         !matches!(
             self,
             Self::DeviceAccessV1
+                | Self::DeviceAccessWhfbV1
                 | Self::InventoryCollectionV1
                 | Self::TaskExecuteV1
                 | Self::MdmEnrollmentV1
@@ -254,6 +258,7 @@ impl Capability {
             Self::DeviceUnmanageV1 => "device.unmanage.v1",
             Self::InventoryNativeV1 => "inventory.native.v1",
             Self::DeviceAccessV1 => "device_access.v1",
+            Self::DeviceAccessWhfbV1 => "device_access.whfb.v1",
             Self::CredentialsWindowsV1 => "credentials.windows.v1",
             Self::TelemetryCollectV1 => "telemetry.collect.v1",
             Self::TelemetryCounterLocalV1 => "telemetry.counter.local.v1",
@@ -263,7 +268,7 @@ impl Capability {
 /// The only supported ordered capability sets for Agent V1.
 pub fn supported_capabilities(value: &[Capability]) -> bool {
     value.first() == Some(&Capability::InventoryCollectionV1)
-        && value.len() <= 26
+        && value.len() <= 27
         && value.windows(2).all(|pair| pair[0] < pair[1])
 }
 
@@ -307,7 +312,7 @@ pub struct BindingProfile {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub epoch: Uuid,
     /// Exact accepted capability set.
-    #[schemars(extend("minItems" = 1, "maxItems" = 22, "uniqueItems" = true))]
+    #[schemars(extend("minItems" = 1, "maxItems" = 27, "uniqueItems" = true))]
     #[serde(deserialize_with = "profile_capabilities")]
     pub capabilities: Vec<Capability>,
     /// Server-selected built-in collector versions for this registration.

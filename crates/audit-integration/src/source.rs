@@ -144,11 +144,12 @@ impl FrozenFact {
         ))
     }
     pub(crate) fn partition(&self) -> Result<PartitionIdentity, Error> {
-        partition(
-            self.identity()?.tenant(),
-            &self.source.resource_kind,
-            &self.source.resource,
-        )
+        let kind = if self.source.source == "mdm.request" {
+            format!("request:{}", self.source.resource_kind)
+        } else {
+            self.source.resource_kind.clone()
+        };
+        partition(self.identity()?.tenant(), &kind, &self.source.resource)
     }
     pub(crate) fn message(&self) -> Result<PendingMessage<Vec<u8>>, Error> {
         let identity = self.identity()?;
@@ -346,6 +347,30 @@ mod tests {
             .chain([b' '])
             .collect::<Vec<_>>();
         assert!(FrozenFact::decode(&altered).is_err());
+    }
+    #[test]
+    fn completion_and_business_do_not_share_an_outbox_partition() {
+        let audit = context();
+        let business = FrozenFact::freeze(
+            &Fact::business(&audit, "write", b"input", 200, "success", None).unwrap(),
+            time(10),
+        )
+        .unwrap();
+        let completion =
+            FrozenFact::freeze(&Fact::request(&audit, 200, "success").unwrap(), time(10)).unwrap();
+        assert_ne!(
+            business.partition().unwrap(),
+            completion.partition().unwrap()
+        );
+        assert_eq!(
+            business.partition().unwrap(),
+            partition(
+                business.identity().unwrap().tenant(),
+                &business.source.resource_kind,
+                &business.source.resource
+            )
+            .unwrap()
+        );
     }
     #[test]
     fn ambiguous_failed_response_can_use_reserve_without_claiming_business_failure() {

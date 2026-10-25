@@ -48,6 +48,7 @@ services:
       - state:/var/lib/rss-mdm
     restart: unless-stopped
   server:
+    stop_grace_period: 75s
     image: ${MDM_SERVER_IMAGE:?server image required}
     user: "10001:10001"
     depends_on:

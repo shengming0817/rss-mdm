@@ -69,8 +69,9 @@ pub async fn serve(
     let compiled = config
         .compile()
         .map_err(|e| ProcessError::at("startup.configuration", e))?;
+    let admission = Arc::new(std::sync::OnceLock::new());
     let mut scope = LifecycleScope::<(), ProcessError, std::io::Error>::try_new(
-        TotalDrainBudget::new(Duration::from_secs(40)).map_err(|_| {
+        TotalDrainBudget::new(Duration::from_secs(60)).map_err(|_| {
             ProcessError::at("startup.budget", Error::Configuration(ConfigIssue::Budget))
         })?,
         Arc::new(RuntimeTimer),
@@ -557,14 +558,26 @@ pub async fn serve(
                     launch.stage_task_with_token(
                         rss_axum::serve_http1_registration(
                             listener,
-                            app.browser,
+                            app.browser.layer(axum::middleware::from_fn_with_state(
+                                admission.clone(),
+                                crate::native::admission::lifecycle,
+                            )),
                             crate::native::gateway::Transport { gateway },
                             "mdm-http",
                             http_policy(),
                         )
                         .critical(),
                     );
-                    launch.finish();
+                    let (control, gate) = launch
+                        .finish_with_admission("native-accepted-requests", Duration::from_secs(35));
+                    admission.set(gate).map_err(|_| ProcessError::Stage {
+                        stage: "startup.admission",
+                        kind: "admission already bound",
+                    })?;
+                    control.open().map_err(|_| ProcessError::Stage {
+                        stage: "startup.admission",
+                        kind: "admission could not open",
+                    })?;
                     std::future::pending().await
                 })
             },

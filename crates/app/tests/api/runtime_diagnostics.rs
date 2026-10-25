@@ -783,7 +783,7 @@ async fn management_audit_capacity_is_visible_without_cross_tenant_counts() -> R
             rss_audit_postgres::Integrity::Plain,
             runtime.clone(),
             own,
-            BacklogLimits::new(1, 1_000_000)?,
+            BacklogLimits::new(2, 1_000_000)?,
             &budget.control(),
         )
         .await?,

@@ -70,7 +70,7 @@ impl ExecutionService {
                     let attempt = input.attempt_id;
                     let authority = policy.frozen.grant;
                     let deadline = run.deadline;
-                    s.audit_store.prepare_in(tx, audit, &[]).await?;
+                    crate::transaction::prepare_audit_in(&s.audit_store,tx, audit, &[]).await?;
                     let (receipt, replay) = tx
                         .with_connection(move |c| {
                             Box::pin(async move {

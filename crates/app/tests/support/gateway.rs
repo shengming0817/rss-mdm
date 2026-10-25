@@ -125,7 +125,7 @@ pub(crate) async fn registration(
     ));
     Ok(rss_axum::serve_http1_registration(
         listener,
-        router,
+        super::runtime::native_router(router),
         Transport(tokio_rustls::TlsAcceptor::from(Arc::new(tls))),
         "fixture-protocol-gateway",
         crate::lifecycle::http_policy(),
