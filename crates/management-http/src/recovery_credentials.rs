@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, RawQuery, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -98,6 +98,83 @@ async fn revoke(
 ) -> Result<Json<Material>, Error> {
     s.credentials
         .revoke(&auth.proof, &device, id, version, &audit)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+/// Explicit authorization changes only custody collection; it never installs a profile or rotates a key.
+pub fn filevault_routes(
+    service: Option<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+) -> Router {
+    let Some(service) = service else {
+        return Router::new();
+    };
+    Router::new()
+        .route(
+            "/devices/{device}/recovery-credentials/filevault/configuration",
+            get(read_filevault_configuration)
+                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action])
+                .post(configure_filevault)
+                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+        )
+        .route(
+            "/devices/{device}/recovery-credentials/filevault/link",
+            post(link_filevault).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+        )
+        .with_state(service)
+}
+async fn configure_filevault(
+    State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    input: Result<
+        Json<rss_mdm_recovery_credentials::filevault::Configure>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
+    let Json(input) = input.map_err(|_| Error::Malformed)?;
+    s.configure(&auth.proof, &device, &input, &audit)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+async fn link_filevault(
+    State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    input: Result<
+        Json<rss_mdm_recovery_credentials::FilevaultLink>,
+        axum::extract::rejection::JsonRejection,
+    >,
+) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
+    let Json(input) = input.map_err(|_| Error::Malformed)?;
+    s.link(&auth.proof, &device, &input, &audit)
+        .await
+        .map(Json)
+        .map_err(Into::into)
+}
+
+async fn read_filevault_configuration(
+    State(s): State<Arc<rss_mdm_recovery_credentials::FilevaultService>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Path(device): Path<String>,
+    selection: Result<
+        Query<rss_mdm_recovery_credentials::FilevaultSelection>,
+        axum::extract::rejection::QueryRejection,
+    >,
+) -> Result<Json<rss_mdm_agent_wire::filevault::Configuration>, Error> {
+    let Query(selection) = selection.map_err(|_| Error::Malformed)?;
+    audit.set_action(
+        "filevault_configuration_read",
+        rss_mdm_audit_integration::AuditIntent::Routine,
+    );
+    audit.target_device(&device);
+    s.management_configuration(&auth.proof, &device, &selection)
         .await
         .map(Json)
         .map_err(Into::into)

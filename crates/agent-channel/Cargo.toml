@@ -6,6 +6,7 @@ rust-version.workspace=true
 publish.workspace=true
 autotests=false
 [dependencies]
+rss-mdm-recovery-credentials.workspace=true
 rss-mdm-http-contract.workspace = true
 flate2.workspace = true
 rss-mdm-telemetry-service.workspace = true

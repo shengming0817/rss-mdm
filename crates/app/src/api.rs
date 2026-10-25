@@ -908,6 +908,13 @@ pub(crate) fn from_state(
             agent_enrollment: state.agent_enrollment.clone(),
             pki: state.pki.clone(),
             pki_clock: Arc::new(crate::agent_pki::PkiClock(state.clock.clone())),
+            filevault: state.execution.recovery_credentials().map(|p| {
+                Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
+                    state.access.archive_pool(),
+                    state.audit_store.clone(),
+                    p.clone(),
+                ))
+            }),
             recovery_credentials: state.execution.recovery_credentials().map(|p| {
                 Arc::new(rss_mdm_recovery_credentials::Credentials::new(
                     state.access.archive_pool(),
@@ -1037,6 +1044,19 @@ pub(crate) fn from_state(
         ));
         let runtime = runtime.merge(rss_mdm_agent_channel::boundary::wrap(
             rss_mdm_apple_channel::platform_sso::agent_routes(apple_state.clone(), service.clone()),
+            envelope.clone(),
+        ));
+        let runtime = runtime.merge(rss_mdm_agent_channel::boundary::wrap(
+            rss_mdm_agent_channel::filevault::routes(
+                service.clone(),
+                state.execution.recovery_credentials().map(|p| {
+                    Arc::new(rss_mdm_recovery_credentials::FilevaultService::new(
+                        state.access.archive_pool(),
+                        state.audit_store.clone(),
+                        p.clone(),
+                    ))
+                }),
+            ),
             envelope.clone(),
         ));
         let router = Router::new().nest("/api/v1/agent/runtime", runtime).nest(

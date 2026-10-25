@@ -776,6 +776,7 @@ pub(crate) async fn reconcile_in(
 }
 
 pub async fn finish_in(
+    service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     run: &runs::Run,
     input: &wire::TaskEventRequest,
@@ -797,6 +798,49 @@ pub async fn finish_in(
         && plan.binding.state != access::State::Revoked
     {
         return Err(Error::Conflict.into());
+    }
+    let observed_binding = plan.binding.clone();
+    let current_report = if project {
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                Ok(access::storage::locked_observation_in(
+                    c,
+                    observed_binding.tenant,
+                    observed_binding.id,
+                )
+                .await
+                .map(|current| {
+                    current.generation == observed_binding.generation
+                        && current.revision == observed_binding.revision
+                }))
+            })
+        })
+        .await?
+        .map_err(Error::from)?
+    } else {
+        false
+    };
+    if current_report
+        && let wire::AccessEffect::Applied { mac: Some(mac), .. } = &value.effect
+        && let Some(facts) = &mac.platform_sso
+    {
+        let valid = tx
+            .with_connection_context(
+                &mut (service, &plan.binding, facts),
+                |(service, binding, facts), c| {
+                    Box::pin(async move {
+                        Ok(service
+                            .apple_results
+                            .platform_sso_observation(c, binding, facts)
+                            .await)
+                    })
+                },
+            )
+            .await?
+            .map_err(Error::from)?;
+        if !valid {
+            return Err(Error::Conflict.into());
+        }
     }
     provisioning::finish(tx, run, input.attempt_id(), value, project).await?;
     let tenant = plan.binding.tenant;

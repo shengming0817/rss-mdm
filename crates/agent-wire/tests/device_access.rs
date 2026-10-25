@@ -166,8 +166,7 @@ fn mac_application_requires_its_own_secure_token_observation() {
             role: AccessRole::Standard,
             windows: None,
             mac: Some(AccessMacFacts {
-                password_sync: AccessObservation::Unknown,
-                keychain_sync: AccessObservation::Unknown,
+                platform_sso: None,
                 secure_token: state,
                 volume_owner: AccessObservation::Unknown,
                 filevault_unlock: AccessObservation::Unknown,
@@ -345,7 +344,7 @@ fn unbind_signature_binds_explicit_account_disposition() {
 }
 
 #[test]
-fn password_application_requires_independent_password_keychain_and_volume_facts() {
+fn password_application_requires_native_registration_and_volume_facts() {
     use rss_mdm_agent_wire::platform_sso::{AuthenticationMode, LoginPolicy};
     let mut config = configuration();
     let login = config.mac.as_mut().unwrap();
@@ -368,16 +367,21 @@ fn password_application_requires_independent_password_keychain_and_volume_facts(
                 } else {
                     AccessObservation::Present
                 },
-                password_sync: if missing == 0 {
-                    AccessObservation::Unknown
-                } else {
-                    AccessObservation::Present
-                },
-                keychain_sync: if missing == 1 {
-                    AccessObservation::Unknown
-                } else {
-                    AccessObservation::Present
-                },
+                platform_sso: Some(AccessMacPlatformSsoFacts {
+                    configuration: if missing == 0 {
+                        AccessObservation::Unknown
+                    } else {
+                        AccessObservation::Present
+                    },
+                    device_registered: AccessObservation::Present,
+                    user_registered: if missing == 1 {
+                        AccessObservation::Absent
+                    } else {
+                        AccessObservation::Present
+                    },
+                    user_source_id: Uuid::from_u128(100),
+                    user_source_version: 1,
+                }),
                 filevault_unlock: if missing == 2 {
                     AccessObservation::Unknown
                 } else {
@@ -584,4 +588,43 @@ fn mixed_policy_retirement_uses_actual_platform() {
     };
     assert!(effect.complete(&configuration, TaskPlatform::Macos));
     assert!(!effect.complete(&configuration, TaskPlatform::Windows));
+}
+
+#[test]
+fn cms_upload_is_bounded_and_receipt_cannot_acknowledge_different_material() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use rss_mdm_agent_wire::filevault::{CMS_BYTES, Receipt, Upload};
+    use sha2::{Digest, Sha256};
+    let bytes = vec![7; CMS_BYTES];
+    let mut input = Upload {
+        operation_id: Uuid::new_v4(),
+        custody_id: Uuid::new_v4(),
+        custody_epoch: 1,
+        configuration_revision: 1,
+        expected_revision: 0,
+        recipient_id: "a".repeat(64),
+        cms_digest: format!("{:x}", Sha256::digest(&bytes)),
+        cms: STANDARD.encode(&bytes),
+    };
+    assert_eq!(input.decode().unwrap(), bytes);
+    let ack = Receipt {
+        operation_id: input.operation_id,
+        custody_id: input.custody_id,
+        custody_epoch: 1,
+        configuration_revision: 1,
+        recipient_id: input.recipient_id.clone(),
+        cms_digest: input.cms_digest.clone(),
+        material: Uuid::new_v4(),
+        version: 1,
+        escrowed: true,
+    };
+    assert!(ack.matches(&input));
+    input.configuration_revision = 2;
+    assert!(!ack.matches(&input));
+    input.cms = STANDARD.encode(vec![7; CMS_BYTES + 1]);
+    assert!(input.decode().is_err());
+    input.cms = STANDARD.encode(&bytes);
+    input.cms_digest = "0".repeat(64);
+    assert!(input.decode().is_err());
+    assert!(!format!("{input:?}").contains(&input.cms));
 }

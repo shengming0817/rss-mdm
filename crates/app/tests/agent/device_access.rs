@@ -335,7 +335,7 @@ async fn ack_does_not_apply_and_mac_token_evidence_is_account_bound() -> Result<
         ensure!(received.0==StatusCode::OK && received.1["items"][0]["receivedRevision"]==1 && received.1["items"][0]["appliedRevision"].is_null(),"received {received:?}");
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];
-        let mut result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let mut result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"platformSso":null,"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         let mut wrong=result.clone();wrong["effect"]["account"]["generatedUid"]=json!(Uuid::new_v4());
         ensure!(event(&f,&task,&c,&registration,wrong).await?.0==StatusCode::CONFLICT);
         let applied=event(&f,&task,&c,&registration,result.take()).await?;ensure!(applied.0==StatusCode::OK,"applied {applied:?}");
@@ -383,7 +383,7 @@ async fn administrator_creation_and_late_completion_cannot_revive_unlinked_bindi
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];let account=Uuid::new_v4();
-        let mut result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"needs_administrator","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let mut result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":1,"revision":1,"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"platformSso":null,"secureToken":"needs_administrator","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         let pending=event(&f,&task,&c,&registration,result.clone()).await?;ensure!(pending.0==StatusCode::OK,"pending token {pending:?}");
         let observed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{device}/device-access"),None).await?;
         ensure!(observed.1["items"][0]["serverState"]=="pending" && observed.1["items"][0]["appliedRevision"].is_null());
@@ -436,7 +436,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let revised=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":binding_revision,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
         ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==1,"configuration preserves binding generation {revised:?}");
         let account=Uuid::new_v4();let spec=&task["payload"]["task"];
-        let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"platformSso":null,"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
         let list=format!("/api/v1/devices/{device}/device-access");
         let pending=f.author.call(&f.router,Method::GET,&list,None).await?;
@@ -451,7 +451,7 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.0==StatusCode::OK);
         let spec=&task["payload"]["task"];
-        let late=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"administrator","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let late=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"administrator","mac":{"platformSso":null,"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,late).await?.0==StatusCode::OK);
         let revoked=f.author.call(&f.router,Method::GET,&list,None).await?;
         ensure!(revoked.1["items"][0]["serverState"]=="revoked" && revoked.1["items"][0]["appliedRevision"].is_null());
@@ -520,7 +520,7 @@ async fn retirement_keeps_unmanage_polling_open_and_normal_access_closed() -> Re
         let offered=offer(&f,&c,&registration).await?;let task=offered.1["task"].clone();
         for kind in ["received","start"] {ensure!(event(&f,&task,&c,&registration,json!({"kind":kind})).await?.0==StatusCode::OK);}
         let spec=&task["payload"]["task"];
-        let result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
+        let result=json!({"kind":"device_access_result","bindingId":spec["bindingId"],"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"platformSso":null,"secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
         ensure!(event(&f,&task,&c,&registration,result).await?.0==StatusCode::OK);
         let scope=Uuid::new_v4();f.scope(scope,json!([{"kind":"device","id":execution::case_device_id()}])).await?;
         let exit=Uuid::new_v4();let path=format!("/api/v1/policies/{exit}");
@@ -1090,3 +1090,5 @@ fn hello_context() -> Value {
         json!({"kind":"entra","tenantId":Uuid::from_u128(40),"objectId":Uuid::from_u128(41)});
     value
 }
+
+mod filevault;

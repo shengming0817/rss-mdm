@@ -246,8 +246,8 @@ for name, entry, fixtures in (
     MODULES[name] = replace(MODULES['deployment.management-tenant'], id=name, python=('tenant_http', entry), fixtures=fixtures)
 
 add('recovery-credentials.http',fixtures=('identity','agent_pki','task_signing'),selectors=('recovery_credentials_tests::',),
-    sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs'),
-    tests=('crates/app/tests/recovery_credentials/mod.rs',),support=())
+    sources=('crates/recovery-credentials/src/*','crates/recovery-credentials/schema/*','crates/management-http/src/recovery_credentials.rs','crates/app/src/recovery_credentials.rs','crates/agent-channel/src/filevault.rs','crates/agent-wire/src/filevault.rs'),
+    tests=('crates/app/tests/recovery_credentials/mod.rs','crates/app/tests/recovery_credentials/filevault.rs'),support=())
 MODULES['recovery-credentials.http']=replace(MODULES['recovery-credentials.http'],scope='tenant',db_mode='fresh', fixtures=(*MODULES['recovery-credentials.http'].fixtures, 'content'))
 add('certificate-archive.http',fixtures=('identity',),selectors=('certificate_archive_tests::',),
     sources=('crates/certificate-archive-service/src/*','crates/certificate-archive-service/schema/*','crates/management-http/src/certificate_archive/*','crates/app/src/certificate_archive.rs'),
@@ -1814,7 +1814,7 @@ MODULES['execution.agent.task_trust'] = replace(MODULES['execution.agent.task_tr
 consume(('hack/ingress_network.py',), 'gateway.network')
 # Device Access owns the joint human/device ceremony and exact application receipts.
 add('device-access.http',selectors=('agent::t2::device_access::',),fixtures=('identity','agent_pki','task_signing','local_worker'),
-    sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/app/src/registration_lifecycle.rs'),
+    sources=('crates/agent-wire/schema/runtime/access-*.schema.json','crates/registration-service/src/device_access.rs','crates/registration-service/src/device_access/*','crates/registration-service/schema/device-access.sql','crates/execution-service/src/device_access.rs','crates/execution-service/src/device_access/*','crates/agent-wire/src/device_access.rs','crates/management-http/src/device_access.rs','crates/agent-channel/src/tasks.rs','crates/agent-channel/src/filevault.rs','crates/app/src/registration_lifecycle.rs'),
     tests=('crates/app/tests/agent/device_access.rs','crates/app/tests/agent/device_access/*.rs'),support=(),actors=(('tenant','admin'),('tenant','other')))
 MODULES['device-access.http']=replace(MODULES['device-access.http'],scope='tenant', fixtures=(*MODULES['device-access.http'].fixtures, 'content'))
 for selector in (

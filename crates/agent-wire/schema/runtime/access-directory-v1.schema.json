@@ -376,13 +376,16 @@
           "$ref": "#/$defs/AccessObservation",
           "description": "Actual FileVault unlock eligibility, not merely the disk encryption setting."
         },
-        "keychainSync": {
-          "$ref": "#/$defs/AccessObservation",
-          "description": "Native login keychain synchronization, independent of account password success."
-        },
-        "passwordSync": {
-          "$ref": "#/$defs/AccessObservation",
-          "description": "Native account password synchronization, never inferred from the IdP exchange."
+        "platformSso": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessMacPlatformSsoFacts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "System configuration and registration readback. None means not yet observed.\nPassword and login-keychain synchronization are owned by macOS, not inferred here."
         },
         "secureToken": {
           "$ref": "#/$defs/AccessObservation",
@@ -394,11 +397,45 @@
         }
       },
       "required": [
-        "passwordSync",
-        "keychainSync",
         "secureToken",
         "volumeOwner",
         "filevaultUnlock"
+      ],
+      "type": "object"
+    },
+    "AccessMacPlatformSsoFacts": {
+      "additionalProperties": false,
+      "description": "Native PSSO readback for one exact user source; the server verifies its current parent.",
+      "properties": {
+        "configuration": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "Both system login configurations match the requested configuration."
+        },
+        "deviceRegistered": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "System LoginManager device registration, independent from the server receipt."
+        },
+        "userRegistered": {
+          "$ref": "#/$defs/AccessObservation",
+          "description": "System LoginManager user registration, independent from token issuance."
+        },
+        "userSourceId": {
+          "description": "Exact server-admitted user registration observed by the extension.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "userSourceVersion": {
+          "description": "Source generation, not the account binding revision.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "configuration",
+        "deviceRegistered",
+        "userRegistered",
+        "userSourceId",
+        "userSourceVersion"
       ],
       "type": "object"
     },

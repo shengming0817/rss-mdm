@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Current device-scoped collection authorization and public recipient metadata.",
+  "properties": {
+    "custodyEpoch": {
+      "description": "Recovery-owner generation, fenced independently from device enrollment.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "custodyId": {
+      "description": "Recovery-owner identity, independent from transport registration.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "enabled": {
+      "description": "Whether the server explicitly authorizes collection.",
+      "type": "boolean"
+    },
+    "materialRevision": {
+      "description": "Current material revision for optimistic concurrency.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "recipientCertificate": {
+      "description": "Public certificate for the independently deployed escrow profile; never a private key.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "recipientId": {
+      "description": "Exact configured escrow certificate fingerprint.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "revision": {
+      "description": "Current authorization revision; zero means no configured custody.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "enabled",
+    "revision",
+    "custodyEpoch",
+    "materialRevision"
+  ],
+  "title": "Configuration",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/filevault-configuration.schema.json"
+}

@@ -63,6 +63,9 @@ pub async fn rss_use_in(
 /// Registration lock precedes material locks everywhere, including disclosure and retirement.
 pub async fn active_in(c: &mut PgConnection, tenant: Uuid, binding: &Binding) -> Result<(), Error> {
     binding.validate()?;
+    if matches!(binding.subject, Subject::Filevault { .. }) {
+        return crate::filevault::active(c, tenant, binding).await;
+    }
     let channel = match binding.subject {
         Subject::RssLogin { .. }
         | Subject::Bitlocker { .. }
@@ -133,6 +136,18 @@ pub async fn reserve_in(
     }
     if let Some(version) = sqlx::query_scalar("SELECT version FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND operation=$3").bind(tenant).bind(id).bind(operation).fetch_optional(&mut *c).await? {
         return Ok(Coordinates { tenant, material:id, binding:binding.clone(), version });
+    }
+    if matches!(binding.subject, Subject::Filevault { .. }) {
+        let versions: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_one(&mut *c)
+        .await?;
+        if versions >= 4096 {
+            return Err(Error::Conflict);
+        }
     }
     let revision: i64 = row.try_get("revision")?;
     if revision != expected_revision {
@@ -262,14 +277,15 @@ pub async fn retire_in(
     registration: Uuid,
 ) -> Result<(), Error> {
     sqlx::query(
-        "UPDATE mdm_recovery.entries SET retired=true WHERE tenant_id=$1::uuid AND registration=$2",
+        "UPDATE mdm_recovery.entries SET retired=true WHERE tenant_id=$1::uuid AND registration=$2 AND subject->>'kind'<>'filevault'",
     )
     .bind(tenant)
     .bind(registration)
     .execute(&mut *c)
     .await?;
-    sqlx::query("UPDATE mdm_recovery.versions v SET validity='revoked',invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) FROM mdm_recovery.entries e WHERE (v.tenant_id,v.entry)=(e.tenant_id,e.id) AND e.tenant_id=$1::uuid AND e.registration=$2")
-        .bind(tenant).bind(registration).execute(c).await?;
+    sqlx::query("UPDATE mdm_recovery.versions v SET validity='revoked',invalidated_at=coalesce(invalidated_at,floor(extract(epoch FROM clock_timestamp()))::bigint) FROM mdm_recovery.entries e WHERE (v.tenant_id,v.entry)=(e.tenant_id,e.id) AND e.tenant_id=$1::uuid AND e.registration=$2 AND e.subject->>'kind'<>'filevault'")
+        .bind(tenant).bind(registration).execute(&mut *c).await?;
+    crate::filevault::retire_source(c, tenant, registration).await?;
     Ok(())
 }
 
@@ -808,5 +824,17 @@ pub async fn access_unbound_in(
         sqlx::query("UPDATE mdm_recovery.entries SET current_version=NULL WHERE tenant_id=$1 AND id=$2 AND NOT EXISTS(SELECT 1 FROM mdm_recovery.versions WHERE tenant_id=$1 AND entry=$2 AND pending)")
             .bind(tenant).bind(entry).execute(&mut *c).await?;
     }
+    Ok(())
+}
+
+/// A correlated native response can deduplicate to an already escrowed version of the same PRK.
+pub async fn replace_native_coordinates_in(
+    c: &mut PgConnection,
+    tenant: Uuid,
+    operation: Uuid,
+    value: &Coordinates,
+) -> Result<(), Error> {
+    sqlx::query("UPDATE mdm_recovery.native_actions SET coordinates=$3 WHERE tenant_id=$1 AND operation=$2 AND action IN('collect_filevault','rotate_filevault')")
+        .bind(tenant).bind(operation).bind(serde_json::to_value(value).map_err(|_|Error::Malformed)?).execute(c).await?;
     Ok(())
 }

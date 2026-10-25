@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable acceptance of one exact submission, independent of endpoint validity.",
+  "properties": {
+    "cmsDigest": {
+      "description": "Lowercase SHA-256 of the decoded original CMS bytes.",
+      "type": "string"
+    },
+    "configurationRevision": {
+      "description": "Exact authorization revision selected before reading the file.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "custodyEpoch": {
+      "description": "Recovery-owner generation, fenced independently from device enrollment.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "custodyId": {
+      "description": "Recovery-owner identity, independent from transport registration.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "escrowed": {
+      "description": "Durable custody is not proof of a successful recovery unlock.",
+      "type": "boolean"
+    },
+    "material": {
+      "description": "Durably stored recovery material identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "operationId": {
+      "description": "Stable idempotency identity retained before sending.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "recipientId": {
+      "description": "Exact configured escrow certificate fingerprint.",
+      "type": "string"
+    },
+    "version": {
+      "description": "Immutable stored material version.",
+      "format": "int64",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operationId",
+    "custodyId",
+    "custodyEpoch",
+    "configurationRevision",
+    "recipientId",
+    "cmsDigest",
+    "material",
+    "version",
+    "escrowed"
+  ],
+  "title": "Receipt",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/filevault-receipt.schema.json"
+}

@@ -77,8 +77,11 @@ pub(crate) async fn read(
         "SELECT jsonb_build_object('id',e.id,'binding',jsonb_build_object('device',e.device,'registration',e.registration,'generation',e.generation,'subject',e.subject),'version',v.version,'current',coalesce(e.current_version=v.version,false),'validity',v.validity,'escrowed',v.sealed IS NOT NULL,'operation',v.operation,'createdAt',v.created_at,'invalidatedAt',v.invalidated_at) FROM mdm_recovery.entries e JOIN mdm_recovery.versions v ON (v.tenant_id,v.entry)=(e.tenant_id,e.id) WHERE e.tenant_id=",
     );
     sql.push_bind(p.tenant_id().to_owned())
-        .push("::uuid AND e.device=")
-        .push_bind(device.to_owned());
+        .push("::uuid AND ((e.subject->>'kind'<>'filevault' AND e.device=")
+        .push_bind(device.to_owned())
+        .push(") OR mdm_recovery.filevault_accessible(e.subject,")
+        .push_bind(device.to_owned())
+        .push("))");
     rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), column).map_err(error)?;
     let rows: Vec<Value> = sql.build_query_scalar().fetch_all(&mut *c).await?;
     for row in &rows {

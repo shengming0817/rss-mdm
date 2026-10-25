@@ -60,9 +60,46 @@
       "read_only": true,
       "updates": [],
       "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "filevault_custodies",
+      "read_write": true,
+      "updates": [
+        "active",
+        "revision",
+        "enabled",
+        "recipient"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "filevault_sources",
+      "read_write": true,
+      "updates": [
+        "custody",
+        "epoch",
+        "active",
+        "association",
+        "association_version"
+      ],
+      "delete_policy": null
+    },
+    {
+      "schema": "mdm_recovery",
+      "table": "filevault_receipts",
+      "read_write": true,
+      "updates": [],
+      "delete_policy": null
     }
   ],
-  "functions": [],
+  "functions": [
+    {
+      "name": "mdm_recovery.filevault_accessible",
+      "search_path": "search_path=pg_catalog"
+    }
+  ],
   "external_relations": [],
   "verified_schemas": []
 }

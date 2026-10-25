@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+rss-mdm-device-service.workspace = true
+rss-mdm-inventory-service.workspace = true
 rss-mdm-query.workspace = true
 rss-mdm-query-postgres.workspace = true
 rss-mdm-agent-wire.workspace = true
