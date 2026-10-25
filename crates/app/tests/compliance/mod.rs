@@ -64,7 +64,7 @@ async fn assign(
     .await
 }
 
-async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
+fn grants(device: Option<&str>) -> Result<Vec<crate::authorization::Grant>> {
     let mut grants = crate::test_support::identity::device_grants(
         device,
         &["compliance_read", "inventory_read", "inventory_assign"],
@@ -84,7 +84,7 @@ async fn grants(subject: &str, device: Option<&str>) -> Result<()> {
             });
         }
     }
-    crate::test_support::identity::set_grants(case_tenant(), subject, grants).await
+    Ok(grants)
 }
 
 async fn task_phase(b: &mut Browser, router: &Router, path: &str, phase: &str) -> Result<Value> {
@@ -109,7 +109,7 @@ struct Fixture {
     subject: String,
     reader: Arc<InventoryReader>,
     plan_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
-    webhooks: Arc<crate::webhooks::Backend>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 impl Fixture {
     async fn open() -> Result<Self> {
@@ -126,28 +126,85 @@ impl Fixture {
             )
             .await?,
         );
-        let access = database(&base).await?;
-        let audit = access.audit_store_fixture(&config.audit).await?;
-        let (router, execution, plan_runtime, _, resources) = crate::api::application_fixture(
-            config,
-            Arc::new(crate::clock::SystemClock),
+        let mut authority = authority::Authority::from_config(base.clone()).await?;
+        let mut resources = std::mem::take(&mut authority.resources);
+        let tenant = authority.identity.tenant;
+        let plan_runtime = crate::planning::test_support::runtime(tenant).await;
+        resources.resource(SourceResource(plan_runtime.clone()));
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let plan_audit = Arc::new(
+            authority
+                .audit
+                .on_runtime(plan_runtime.clone(), tenant, &budget.control())
+                .await?,
+        );
+        let key = rss_mdm_flow_service::storage::cursor_key(&plan_runtime, tenant).await?;
+        let clock = Arc::new(crate::clock::SystemClock);
+        let planning = Arc::new(
+            crate::planning::Planning::new(
+                plan_audit.clone(),
+                plan_runtime.clone(),
+                tenant,
+                clock.clone(),
+                &key,
+                Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                    plan_audit.clone(),
+                )),
+            )
+            .await?,
+        );
+        let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+        let compliance = crate::planning::test_support::compliance(&planning).await;
+        let inventory = crate::inventory_runtime::InventoryRuntime::fixture(
+            config.runtime_database.options()?,
+            Arc::new(rss_mdm_inventory_service::Store::from_pool(
+                authority.pool.clone(),
+            )),
+            tenant,
             monotonic(),
-            access,
-            None,
-            audit,
+            authority.audit.clone(),
         )
         .await?;
-        let webhooks = execution
-            .webhooks
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("missing webhook assembly"))?
-            .clone();
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
+        resources.resource(InventoryFixtureResource(inventory.clone()));
+        let assets = Arc::new(crate::assets::AssetService::new(
+            inventory,
+            plan_audit.clone(),
+            plan_runtime.clone(),
+            tenant,
+            Arc::new(crate::clock::InventoryClock(clock.clone())),
+            &key,
+            Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+        ));
+        let router = authority.router(
+            Router::new()
+                .nest(
+                    "/api/v1",
+                    rss_mdm_management_http::compliance::http::routes()
+                        .with_state(compliance)
+                        .into_axum()
+                        .merge(
+                            rss_mdm_management_http::assets::routes()
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::assets::http::HttpState { assets },
+                                ))
+                                .into_axum(),
+                        )
+                        .merge(
+                            rss_mdm_management_http::planning::http::routes()
+                                .with_state(Arc::new(
+                                    rss_mdm_management_http::planning::http::HttpState {
+                                        planning,
+                                        groups,
+                                    },
+                                ))
+                                .into_axum(),
+                        ),
+                )
+                .merge(authority.authorization()),
+        )?;
         let browser = authority::Authority::prepared_browser("admin")?;
-        let subject = browser_subject(&browser, &router).await?;
-        grants(&subject, None).await?;
+        let subject = prepared_subject(&browser)?;
+        identity::seed_grants(case_tenant(), &subject, grants(None)?).await?;
         pg(&format!(
             "INSERT INTO mdm_access.devices VALUES('{TENANT}','compliance-a'),('{TENANT}','compliance-b')",
             TENANT = case_tenant()
@@ -160,7 +217,7 @@ impl Fixture {
             subject,
             reader,
             plan_runtime,
-            webhooks,
+            audit: plan_audit,
         })
     }
     async fn rule(&self) -> Result<(Uuid, String, Value)> {

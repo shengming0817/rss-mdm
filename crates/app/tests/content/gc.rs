@@ -325,10 +325,20 @@ async fn switchable_delete_privilege_fails_admission() -> Result<()> {
 async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()> {
     use rss_mdm_resource as r;
     use rss_mdm_software_service::catalog::ContentPort;
-    let fixture = Fixture::with_peer_and_uploads(None, Some(1)).await?;
+    let mut config: Config =
+        serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    config.content.as_mut().unwrap().max_uploads = 1;
+    let store = crate::execution_assembly::open_content(&config, config.native_protector()?)
+        .await?
+        .unwrap();
+    let mut resources = Resources::default();
+    resources.resource(crate::execution_assembly::ContentResource(store.clone()));
+    resources.finish(async {
     let bytes = &[0x4e; 128 * 1024 + 3];
-    let artifact = fixture.seed_content(bytes).await?;
-    let store = fixture.content.as_ref().unwrap();
+    let artifact = r::Artifact::new(r::Id::new("installer")?, bytes.len() as u64, r::Digest::of(bytes))?;
+    let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
+    rss_mdm_content_service::fixture::artifact(&store, &artifact, bytes.to_vec(), now+86400).await?;
+    let source = rss_mdm_software_service::catalog::SourceDefinition { id: "pin-evidence".into(), revision: "1".into(), protocol: rss_mdm_software_service::catalog::SourceProtocol::Private }.snapshot()?;
     let version = r::Version::new(
         rss_request_context::TenantId::parse(case_tenant())?,
         r::Id::new(Uuid::new_v4().to_string())?,
@@ -340,7 +350,7 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
             r::Id::new("default")?,
             r::Declaration::Software {
                 definition: serde_json::from_value(publication_support::private_definition(
-                    fixture.registered["snapshot"].clone(),
+                    serde_json::to_value(source)?,
                     bytes,
                 ))?,
             },
@@ -396,4 +406,5 @@ async fn catalog_evidence_retains_pin_without_reserving_transfer() -> Result<()>
     })
     .await??;
     Ok(())
+    }).await
 }

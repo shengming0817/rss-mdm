@@ -75,38 +75,8 @@ fn receipt(row: &sqlx::postgres::PgRow) -> Result<Receipt, Error> {
         expires_at: row.try_get("expires_at").map_err(db)?,
     })
 }
-/// Call inside an authorized, audited transaction; credentials are persisted before provider calls.
-pub async fn prepare(
-    c: &mut PgConnection,
-    tenant: TenantId,
-    operation: Uuid,
-    input: &Request,
-    actor: &str,
-    protection: &Protector,
-) -> Result<Receipt, Error> {
-    if operation.is_nil()
-        || input.expected_revision < 0
-        || input.expected_revision == i64::MAX
-        || input.profile.is_empty()
-        || input.profile.len() > 64
-        || !input
-            .profile
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-    {
-        return Err(Error::Configuration);
-    }
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2824))")
-        .bind(tenant.to_string())
-        .execute(&mut *c)
-        .await
-        .map_err(db)?;
-    let request = Zeroizing::new(serde_json::to_vec(&(input, actor)).map_err(|_| Error::Metadata)?);
-    if let Some(row)=sqlx::query("SELECT * FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant.to_string()).bind(operation).fetch_optional(&mut *c).await.map_err(db)? {
-        protection.verify_mac_with_key(&row.try_get::<String,_>("fingerprint_key").map_err(db)?,&request,&operation_aad(tenant,operation)?,&row.try_get::<Vec<u8>,_>("fingerprint").map_err(db)?).map_err(|_|Error::Conflict)?;
-        return receipt(&row);
-    }
-    let credentials = match &input.source {
+fn credentials(source: &Source) -> Result<Credentials, Error> {
+    Ok(match source {
         Source::Generate => {
             let mut secret = Zeroizing::new(vec![0u8; 32]);
             ring::rand::SystemRandom::new()
@@ -150,7 +120,41 @@ pub async fn prepare(
                 expires_at: *expires_at,
             }
         }
-    };
+    })
+}
+
+/// Call inside an authorized, audited transaction; credentials are persisted before provider calls.
+pub async fn prepare(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    operation: Uuid,
+    input: &Request,
+    actor: &str,
+    protection: &Protector,
+) -> Result<Receipt, Error> {
+    if operation.is_nil()
+        || input.expected_revision < 0
+        || input.expected_revision == i64::MAX
+        || input.profile.is_empty()
+        || input.profile.len() > 64
+        || !input
+            .profile
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+    {
+        return Err(Error::Configuration);
+    }
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2824))")
+        .bind(tenant.to_string())
+        .execute(&mut *c)
+        .await
+        .map_err(db)?;
+    let request = Zeroizing::new(serde_json::to_vec(&(input, actor)).map_err(|_| Error::Metadata)?);
+    if let Some(row)=sqlx::query("SELECT * FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND operation_id=$2").bind(tenant.to_string()).bind(operation).fetch_optional(&mut *c).await.map_err(db)? {
+        protection.verify_mac_with_key(&row.try_get::<String,_>("fingerprint_key").map_err(db)?,&request,&operation_aad(tenant,operation)?,&row.try_get::<Vec<u8>,_>("fingerprint").map_err(db)?).map_err(|_|Error::Conflict)?;
+        return receipt(&row);
+    }
+    let credentials = credentials(&input.source)?;
     let now: i64 =
         sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
             .fetch_one(&mut *c)
@@ -408,4 +412,79 @@ pub async fn rewrap(
         sqlx::query("UPDATE mdm_content_connections.versions SET credentials=$3 WHERE tenant_id=$1::uuid AND revision=$2").bind(tenant.to_string()).bind(revision).bind(next).execute(&mut *c).await.map_err(db)?;
     }
     Ok(rows.len() as u64)
+}
+
+/// A valid pending connection before deployment reconciliation; no reservation is executed.
+#[cfg(feature = "integration")]
+pub async fn pending_fixture_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    operation: Uuid,
+    input: &Request,
+    protection: &Protector,
+) -> Result<(), Error> {
+    let credentials = credentials(&input.source)?;
+    let revision = input
+        .expected_revision
+        .checked_add(1)
+        .ok_or(Error::Configuration)?;
+    let bytes = Zeroizing::new(serde_json::to_vec(&credentials).map_err(|_| Error::Metadata)?);
+    let sealed = protection
+        .seal_bytes(&bytes, &aad(tenant, revision)?)
+        .map_err(|_| Error::Metadata)?;
+    let request = Zeroizing::new(
+        serde_json::to_vec(&(input, "reconcile-fixture")).map_err(|_| Error::Metadata)?,
+    );
+    let fingerprint = protection
+        .mac(&request, &operation_aad(tenant, operation)?)
+        .map_err(|_| Error::Metadata)?;
+    sqlx::query("INSERT INTO mdm_content_connections.heads(tenant_id,revision) VALUES($1::uuid,$2) ON CONFLICT(tenant_id) DO UPDATE SET revision=excluded.revision WHERE mdm_content_connections.heads.revision=$3")
+        .bind(tenant.to_string()).bind(revision).bind(input.expected_revision).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint,expires_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)")
+        .bind(tenant.to_string()).bind(revision).bind(operation).bind(&input.profile).bind(matches!(input.source, Source::Generate))
+        .bind(sealed).bind(protection.fingerprint_id()).bind(fingerprint.as_slice()).bind(credentials.expires_at).execute(c).await.map_err(db)?;
+    Ok(())
+}
+
+/// Qualified fixture state without connection-management operations or receipts.
+#[cfg(feature = "integration")]
+pub async fn qualified_fixture_in(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    source: Source,
+    metadata: &Metadata,
+    protection: &Protector,
+) -> Result<(), Error> {
+    let credentials = credentials(&source)?;
+    let existing: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM mdm_content_connections.heads WHERE tenant_id=$1::uuid)",
+    )
+    .bind(tenant.to_string())
+    .fetch_one(&mut *c)
+    .await
+    .map_err(db)?;
+    if existing {
+        let current = load(c, tenant, 1, protection).await?;
+        return if current.metadata == *metadata
+            && current.credentials.access_key == credentials.access_key
+            && current.credentials.secret_key == credentials.secret_key
+            && current.credentials.session_token == credentials.session_token
+            && current.credentials.expires_at == credentials.expires_at
+        {
+            Ok(())
+        } else {
+            Err(Error::Conflict)
+        };
+    }
+    let plain = Zeroizing::new(serde_json::to_vec(&credentials).map_err(|_| Error::Metadata)?);
+    let sealed = protection
+        .seal_bytes(&plain, &aad(tenant, 1)?)
+        .map_err(|_| Error::Metadata)?;
+    let fingerprint = protection
+        .mac(&plain, &operation_aad(tenant, Uuid::from_u128(2823))?)
+        .map_err(|_| Error::Metadata)?;
+    sqlx::query("INSERT INTO mdm_content_connections.heads(tenant_id,revision,desired_revision) VALUES($1::uuid,1,1)").bind(tenant.to_string()).execute(&mut *c).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint,state,endpoint,region,bucket,namespace,private_ca,qualified_at,expires_at,selected) VALUES($1::uuid,1,$2,'controlled-s3',false,$3,$4,$5,'qualified',$6,$7,$8,$9,$10,floor(extract(epoch FROM clock_timestamp()))::bigint,$11,true)")
+        .bind(tenant.to_string()).bind(Uuid::from_u128(2823)).bind(sealed).bind(protection.fingerprint_id()).bind(fingerprint.as_slice()).bind(&metadata.endpoint).bind(&metadata.region).bind(&metadata.bucket).bind(&metadata.namespace).bind(&metadata.private_ca).bind(credentials.expires_at).execute(c).await.map_err(db)?;
+    Ok(())
 }

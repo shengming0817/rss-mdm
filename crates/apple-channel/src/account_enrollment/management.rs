@@ -46,14 +46,23 @@ pub(super) async fn list(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    directory(&app, &auth.proof).await.map(Json)
+    directory(
+        &app.access,
+        app.apple.as_deref(),
+        app.clock.as_ref(),
+        &auth.proof,
+    )
+    .await
+    .map(Json)
 }
 pub async fn directory(
-    app: &HttpState,
+    store: &crate::Store,
+    apple: Option<&crate::Apple>,
+    clock: &dyn rss_mdm_inventory_service::clock::Clock,
     proof: &AuthorizedPrincipal,
 ) -> Result<serde_json::Value, Error> {
     proof.manage(Permission::RegistrationConfigurationRead)?;
-    let mut tx = app.access.begin_read(proof.tenant_id()).await?;
+    let mut tx = store.begin_read(proof.tenant_id()).await?;
     let rows = sqlx::query(
         "SELECT id FROM mdm_apple.organizations WHERE tenant_id=$1::uuid ORDER BY id LIMIT 1001",
     )
@@ -77,7 +86,14 @@ pub async fn directory(
         .map_err(db)?;
         let ade = ade
             .as_ref()
-            .map(|r| crate::ade::management::status_row(r, crate::ade::now(app)?))
+            .map(|r| {
+                crate::ade::management::status_row(
+                    r,
+                    clock
+                        .unix_seconds()
+                        .ok_or(Error::Unavailable(Failure::Clock))?,
+                )
+            })
             .transpose()?;
         let Some(row) = sqlx::query(
             "SELECT * FROM mdm_apple.account_configuration WHERE tenant_id=$1::uuid AND id=$2",
@@ -97,12 +113,10 @@ pub async fn directory(
             return Err(Error::Unavailable(Failure::Capacity));
         }
         let accounts=accounts.into_iter().map(|r|Ok(serde_json::json!({"account":r.try_get::<String,_>("account").map_err(db)?,"principalId":r.try_get::<Uuid,_>("principal").map_err(db)?,"instanceId":r.try_get::<Uuid,_>("instance").map_err(db)?,"revision":r.try_get::<i64,_>("revision").map_err(db)?,"enabled":r.try_get::<bool,_>("enabled").map_err(db)?}))).collect::<Result<Vec<_>,Error>>()?;
-        let configured = app
-            .apple()
-            .ok()
+        let configured = apple
             .and_then(|apple| apple.account_keys.get(&key))
             .is_some_and(|s| {
-                app.clock
+                clock
                     .unix_seconds()
                     .is_some_and(|now| s.expires() > now as u64)
             });

@@ -1,84 +1,138 @@
-use crate::planning::test_support::*;
+use super::super::{integrity, pool};
+use crate::audit_test_support::source_runtime;
+use crate::test_support::{case, process::pg};
+use rss_mdm_audit_integration::{AuditStore, budget::AuditBudget};
+use rss_request_context::TenantId;
+use std::time::Duration;
 
 #[tokio::test]
 #[ignore = "MODULE=audit.integrity: real capability storage and transactions"]
 async fn audit_startup_rejects_each_borrowed_owner_snapshot_isolation() {
-    let store = audit_store().await;
+    let tenant = TenantId::parse(case::tenant()).unwrap();
+    let access = pool("mdm_access").await.unwrap();
+    let source = source_runtime(&access, tenant).await.unwrap();
+    let budget = AuditBudget::new(Duration::from_secs(5));
+    let store = AuditStore::new(
+        access.clone(),
+        integrity(false).unwrap(),
+        source.clone(),
+        tenant,
+        Default::default(),
+        &budget.control(),
+    )
+    .await
+    .unwrap();
     for role in [
         "mdm_flow_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {
-        let original = sql(&format!(
+        let original = pg(&format!(
             "SELECT coalesce((SELECT split_part(setting,'=',2) FROM pg_roles r CROSS JOIN LATERAL unnest(r.rolconfig) setting WHERE r.rolname='{role}' AND setting LIKE 'default_transaction_isolation=%'),'')"
-        ));
-        sql(&format!(
+        )).unwrap();
+        pg(&format!(
             "ALTER ROLE {role} SET default_transaction_isolation='repeatable read'"
-        ));
-        let runtime = runtime_role(tenant(), role).await;
+        ))
+        .unwrap();
+        let owner = pool(role).await.unwrap();
+        let runtime = source_runtime(&owner, tenant).await.unwrap();
         let result = store
             .on_runtime(
                 runtime.clone(),
-                tenant(),
+                tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                     .control(),
             )
             .await;
         runtime.close().await;
-        sql(&if original.is_empty() {
+        owner.close().await;
+        pg(&if original.trim().is_empty() {
             format!("ALTER ROLE {role} RESET default_transaction_isolation")
         } else {
             format!(
                 "ALTER ROLE {role} SET default_transaction_isolation='{}'",
-                original.replace('\'', "''")
+                original.trim().replace('\'', "''")
             )
-        });
+        })
+        .unwrap();
         assert!(result.is_err(), "{role}: owner isolation admission");
-        let runtime = runtime_role(tenant(), role).await;
+        let owner = pool(role).await.unwrap();
+        let runtime = source_runtime(&owner, tenant).await.unwrap();
         store
             .on_runtime(
                 runtime.clone(),
-                tenant(),
+                tenant,
                 &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                     .control(),
             )
             .await
             .unwrap();
         runtime.close().await;
+        owner.close().await;
     }
+    source.close().await;
+    access.close().await;
 }
 
 #[tokio::test]
 #[ignore = "MODULE=audit.integrity: actual borrowed worker startup permissions"]
 async fn audit_startup_validates_each_borrowed_owner_permissions() {
-    let mode = super::super::integrity(true).unwrap();
-    let store = audit_store_with_integrity(mode).await;
+    let tenant = TenantId::parse(case::tenant()).unwrap();
+    let access = pool("mdm_access").await.unwrap();
+    let source = source_runtime(&access, tenant).await.unwrap();
+    let budget = AuditBudget::new(Duration::from_secs(5));
+    let store = AuditStore::new(
+        access.clone(),
+        integrity(true).unwrap(),
+        source.clone(),
+        tenant,
+        Default::default(),
+        &budget.control(),
+    )
+    .await
+    .unwrap();
+    pg("GRANT UPDATE(source_bytes) ON mdm_audit.receipts TO mdm_access").unwrap();
+    let denied = AuditStore::new(
+        access.clone(),
+        integrity(true).unwrap(),
+        source.clone(),
+        tenant,
+        Default::default(),
+        &AuditBudget::new(Duration::from_secs(5)).control(),
+    )
+    .await;
+    pg("REVOKE UPDATE(source_bytes) ON mdm_audit.receipts FROM mdm_access").unwrap();
+    assert!(
+        denied.is_err(),
+        "receipt column UPDATE must fail Audit owner admission"
+    );
     for role in [
         "mdm_flow_runtime",
         "mdm_command_runtime",
         "mdm_software_driver",
     ] {
-        let runtime = runtime_role(tenant(), role).await;
+        let owner = pool(role).await.unwrap();
+        let runtime = source_runtime(&owner, tenant).await.unwrap();
         for table in [
             "mdm_audit.receipts",
             "rss_audit.records",
             "rss_ledger.entries",
         ] {
-            sql(&format!("GRANT UPDATE ON {table} TO {role}"));
+            pg(&format!("GRANT UPDATE ON {table} TO {role}")).unwrap();
             let result = store
                 .on_runtime(
                     runtime.clone(),
-                    tenant(),
+                    tenant,
                     &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                         .control(),
                 )
                 .await;
-            sql(&format!("REVOKE UPDATE ON {table} FROM {role}"));
+            pg(&format!("REVOKE UPDATE ON {table} FROM {role}")).unwrap();
             assert!(result.is_err(), "{role} {table}: owner privilege admission");
             store
                 .on_runtime(
                     runtime.clone(),
-                    tenant(),
+                    tenant,
                     &rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5))
                         .control(),
                 )
@@ -86,5 +140,8 @@ async fn audit_startup_validates_each_borrowed_owner_permissions() {
                 .unwrap();
         }
         runtime.close().await;
+        owner.close().await;
     }
+    source.close().await;
+    access.close().await;
 }

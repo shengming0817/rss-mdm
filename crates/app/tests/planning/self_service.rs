@@ -182,7 +182,9 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
                 .await?
                 .0 == StatusCode::CONFLICT
             );
-            let stack = worker(&f.base).await?;
+            let stack =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             let task = claim(&f.router).await?;
             ensure!(task["payload"]["task"]["taskId"] == accepted.1["runId"]);
             ensure!(
@@ -306,7 +308,7 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
             .0
             == StatusCode::ACCEPTED
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
     let capabilities = pg(&format!("SELECT capabilities FROM mdm_agent.bindings WHERE tenant_id='{}' AND registration='{}'", case_tenant(), registration.trim()))?;
@@ -361,7 +363,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
             .0
             == StatusCode::ACCEPTED
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     task_event(&f.router, &task, json!({"kind":"received"})).await?;
     let revoked = f
@@ -370,7 +372,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+    crate::test_support::identity::change_management_grants(case_tenant(), &f.author_id, revoked)
         .await?;
     let mut start = json!({"kind":"start"});
     ensure!(
@@ -382,7 +384,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
     );
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, true).await?.0 == StatusCode::OK);
     task_event(&f.router, &task, json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":1,"failure":null}})).await?;
-    crate::test_support::identity::set_management_grants(
+    crate::test_support::identity::change_management_grants(
         case_tenant(),
         &f.author_id,
         f.grants.clone(),
@@ -452,7 +454,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .filter(|g| g.operation != crate::authorization::Permission::ScriptExecute)
         .cloned()
         .collect();
-    crate::test_support::identity::set_management_grants(case_tenant(), &f.author_id, revoked)
+    crate::test_support::identity::change_management_grants(case_tenant(), &f.author_id, revoked)
         .await?;
     let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
@@ -485,7 +487,6 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn device_access_logged_in_user_requires_exact_os_session_and_helper_without_system_fallback()
 -> Result<()> {
-    use sha2::{Digest, Sha256};
     let mut f = Fixture::new().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -498,25 +499,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
     let bytes = b"#!/bin/sh\nprintf '{\"version\":\"1.2\",\"healthy\":true}\n'\n";
     let script = json!({"profile":"posix_sh","runAs":"logged_in_user","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"version":{"type":"string"},"healthy":{"type":"boolean"}},"required":["version","healthy"],"additionalProperties":false},"purpose":{"kind":"action"},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
     let resource_id = Uuid::new_v4();
-    let digest: [u8; 32] = Sha256::digest(bytes).into();
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
-    resource(&mut f.author, &f.router, resource_id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"logged-in-user-script","length":bytes.len(),"sha256":digest},"definition":script}}]})).await?;
-    ensure!(upload(&f.author, &f.router, resource_id, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(resource_id, bytes, script).await?;
     let mut value = definition(resource_id, false);
     value["selfService"]["access"] = json!({"kind":"device"});
     let (id, policy) = publish_definition(&mut f, value.clone()).await?;
@@ -573,7 +556,7 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         accepted.0 == StatusCode::ACCEPTED,
         "Device access must not require an enterprise session: {accepted:?}"
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let mut changed = local.clone();
     changed["revision"] = json!(5);
     changed["interactiveUser"]["identity"] = json!("502");
@@ -696,7 +679,9 @@ async fn check_in_interval_is_shared_by_automatic_and_targeted_calls() -> Result
             value["action"]["schedule"]["trigger"] =
                 json!({"kind":"check_in","minimumSeconds":3600});
             let (id, policy) = publish_definition(&mut f, value).await?;
-            let stack = worker(&f.base).await?;
+            let stack =
+                crate::test_support::software_execution::worker(&f.base, f.execution.clone())
+                    .await?;
             let automatic = claim(&f.router).await?;
             ensure!(automatic["payload"]["task"]["authorization"]["kind"] == "policy");
             complete(&f.router, &automatic).await?;
@@ -776,37 +761,18 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     resources.finish(async {
     f.register().await?;
     claim_request(&f.router, Uuid::new_v4()).await?;
-    f.grants.push(Grant {
-        operation: Permission::InventoryFieldsWrite,
-        scope: Scope::Tenant,
-    });
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
-        .await?;
     let key = "custom.self_service_secret";
     let field = json!({"key":key,"version":1,"valueType":{"kind":"string","maxLength":128,"allowEmpty":false},"nullable":false,"manual":false,"sources":{"agent.script":100},"platforms":["macos"],"sensitivity":"sensitive","unit":null,"searchable":true,"itemKey":null});
-    ensure!(f.author.call(&f.router, Method::PUT, &format!("/api/v1/asset-fields/{key}"), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":field}}))).await?.0 == StatusCode::OK);
+    let tenant = f.planning.tenant;
+    let field = serde_json::from_value(field)?;
+    let inserted = f.plan_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |connection| Box::pin(async move { rss_mdm_inventory_postgres::publish_field_in(connection, tenant, 0, &field).await.map_err(|e| sqlx::Error::Protocol(e.to_string())) })).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
+    ensure!(inserted);
     let resource_id = Uuid::new_v4();
     let bytes = b"printf '{}'";
-    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let script = json!({"profile":"posix_sh","runAs":"system","encoding":"utf8","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"bindings":{},"output":{"type":"object","properties":{"secret":{"type":"string"}},"required":["secret"],"additionalProperties":false},"purpose":{"kind":"collection","scope":{"kind":"device"},"applicability":{"minimumOsVersion":null,"minimumBuild":null,"editions":[],"enrollments":[],"tools":{},"capabilities":[]},"mappings":{key:{"pointer":"/secret","conversion":{"kind":"identity"},"columns":{}}}},"timeoutSeconds":60,"outputBytes":4096,"maxRows":1});
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        0,
-        json!({"action":"create","kind":"script"}),
-    )
-    .await?;
-    resource(&mut f.author, &f.router, resource_id, 1, json!({"action":"version","version":"v1","kind":"script","variants":[{"platform":"macos","architecture":"aarch64","key":"default","declaration":{"kind":"script","artifact":{"reference":"self-service-secret","length":bytes.len(),"sha256":digest},"definition":script}}]})).await?;
-    ensure!(upload(&f.author, &f.router, resource_id, bytes).await? == StatusCode::CREATED);
-    resource(
-        &mut f.author,
-        &f.router,
-        resource_id,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    f.seed_script_resource(resource_id, bytes, script).await?;
     f.scope(
         case_task_scope(),
         json!([{"kind":"device","id":case_device_id()}]),
@@ -814,18 +780,11 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
     .await?;
     let (id, policy) = publish_definition(&mut f, definition(resource_id, false)).await?;
     let input = request(id, &policy, json!({}));
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(input.clone()), true, true)
-            .await?
-            .0
-            == StatusCode::ACCEPTED
-    );
-    let stack = worker(&f.base).await?;
-    let task = claim(&f.router).await?;
-    task_event(&f.router, &task, json!({"kind":"received"})).await?;
-    task_event(&f.router, &task, json!({"kind":"start"})).await?;
+    let accepted = call(&f, Method::POST, INVOKE, Some(input.clone()), true, true).await?;
+    ensure!(accepted.0 == StatusCode::ACCEPTED);
+    let run: Uuid = serde_json::from_value(accepted.1["runId"].clone())?;
     let canary = "self-service-private-canary";
-    task_event(&f.router, &task, json!({"kind":"result","exitCode":0,"quality":"complete","output":{"secret":canary},"diagnostics":{"stdout":canary,"stderr":canary,"durationMs":1,"executedAt":1,"failure":null}})).await?;
+    seed_script_result(&f, run, json!({"secret":canary}), canary).await?;
     let path = format!("{INVOKE}/{}", input["operationId"].as_str().unwrap());
     let mut full = f.grants.clone();
     full.push(Grant {
@@ -838,7 +797,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         .cloned()
         .collect();
     for grants in [no_read, f.grants.clone()] {
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
         let denied = call(&f, Method::GET, &path, None, true, true).await?;
         ensure!(
             denied.0 == StatusCode::OK
@@ -848,7 +807,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             "read denied without leakage: {denied:?}"
         );
     }
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, full).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, full).await?;
     let permitted = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
         permitted.0 == StatusCode::OK
@@ -856,7 +815,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && permitted.1["result"]["evidence"]["diagnostics"]["stdout"] == canary
             && permitted.1["result"]["evidence"]["diagnostics"]["stderr"] == canary
     );
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
         .await?;
     let denied = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
@@ -866,7 +825,6 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && !denied.1.to_string().contains(canary),
         "withdrawal must suppress the full result"
     );
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -893,11 +851,10 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
     let accepted_one = call(&f, Method::POST, INVOKE, Some(one.clone()), true, true).await?;
     ensure!(accepted_one.0 == StatusCode::ACCEPTED);
     let original = f.author.clone();
-    let mut employee = Browser::default();
-    ensure!(employee.login(&f.router, "admin").await? == StatusCode::OK);
-    let other = browser_subject(&employee, &f.router).await?;
+    let employee = crate::test_support::authority::Authority::prepared_browser("admin")?;
+    let other = prepared_subject(&employee)?;
     ensure!(other != f.author_id);
-    crate::test_support::identity::set_grants(case_tenant(), &other, f.grants.clone()).await?;
+    crate::test_support::identity::seed_grants(case_tenant(), &other, f.grants.clone()).await?;
     f.author = employee;
     let mut two = request(second, &second_policy, json!({}));
     two["operationId"] = json!(shared);
@@ -975,35 +932,25 @@ async fn employee_request_ids_are_independent_and_unknown_is_hidden() -> Result<
             == 1
     );
     post(&mut f.author,&f.router,&format!("/api/v1/policies/{available}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":available_policy["revision"],"input":{"action":"disable"}})).await?;
-    // Pending on the first Policy becomes a genuine Unknown through the existing reducer.
-    let stack = worker(&f.base).await?;
-    let task = claim(&f.router).await?;
-    task_event(&f.router, &task, json!({"kind":"received"})).await?;
-    task_event(&f.router, &task, json!({"kind":"start"})).await?;
-    let run = task["payload"]["task"]["taskId"].as_str().unwrap();
-    pg(&format!(
-        "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{run}'"
-    ))?;
-    let policy = task["payload"]["task"]["authorization"]["policyId"]
-        .as_str()
-        .unwrap();
-    for _ in 0..2 {
-        f.execution
-            .recover_action_fixture(Uuid::parse_str(policy)?)
-            .await?;
-    }
-    ensure!(
-        pg(&format!(
-            "SELECT state->>'execution' FROM mdm_commands.action_runs WHERE id='{run}'"
-        ))?
-        .trim()
-            == "unknown"
-    );
+    let run = Uuid::parse_str(first_run)?;
+    let tenant = f.authority.identity.tenant;
+    f.command_runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
+        tx.with_connection(move |c| Box::pin(async move {
+            let (value, created): (Value, i64) = sqlx::query_as("SELECT state,created_at FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).fetch_one(&mut *c).await?;
+            let mut state: rss_mdm_execution_service::actions::state::RunState = serde_json::from_value(value).expect("stored run");
+            state.delivery = rss_mdm_execution_service::actions::state::Delivery::Received { attempt: Uuid::new_v4(), lease_until: state.deadline };
+            state.execution = rss_mdm_execution_service::actions::state::Execution::Unknown;
+            state.started_at = Some(created);
+            sqlx::query("UPDATE mdm_commands.action_runs SET state=$3 WHERE tenant_id=$1::uuid AND id=$2")
+                .bind(tenant.to_string()).bind(run).bind(serde_json::to_value(state).expect("run state")).execute(c).await?;
+            Ok(())
+        })).await
+    })).await.fold(Ok, Err, Err, Err, Err, Err)?;
     ensure!(
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
         "Unknown or pending script remained in directory"
     );
-    crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
 }
@@ -1023,8 +970,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     )
     .await?;
     let (resource, _, _) = f.resource().await?;
-    let mut admin = Browser::default();
-    ensure!(admin.login(&f.router, "admin").await? == StatusCode::OK);
+    let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
     let group = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{group}");
     let group_value = json!({"name":"Self service employees","enabled":true,"members":[crate::test_support::identity::user(case_tenant(), &f.author_id)]});
@@ -1042,8 +988,8 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             .0
             == StatusCode::OK
     );
-    let publisher = browser_subject(&admin, &f.router).await?;
-    crate::test_support::identity::set_grants(case_tenant(), &publisher, f.grants.clone()).await?;
+    let publisher = prepared_subject(&admin)?;
+    crate::test_support::identity::seed_grants(case_tenant(), &publisher, f.grants.clone()).await?;
     let mut published = Vec::new();
     for access in [
         json!({"kind":"device"}),
@@ -1067,7 +1013,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
     cross_tenant["selfService"]["access"] = json!({"kind":"users","selectors":[{"kind":"user","instanceId":crate::test_support::identity::INSTANCE,"tenantId":Uuid::new_v4(),"principalId":f.author_id}]});
     let invalid = f.author.call(&f.router, Method::POST, &format!("/api/v1/policies/{}", Uuid::new_v4()), Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":cross_tenant}}))).await?;
     ensure!(invalid.0 == StatusCode::BAD_REQUEST);
-    crate::test_support::identity::set_grants(case_tenant(), &f.author_id, Vec::new()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, Vec::new()).await?;
     let device_directory = call(&f, Method::GET, DIRECTORY, None, true, false).await?;
     ensure!(
         device_directory.0 == StatusCode::OK
@@ -1110,7 +1056,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             && human_directory.1["items"] == employee_directory.1["items"],
         "caller origin must not change qualified subjects: {human_directory:?}"
     );
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let (device, policy) = &published[0];
     let device_input = request(*device, policy, json!({}));
     let accepted = call(
@@ -1324,14 +1270,12 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         software::Platform::MacOs,
         json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         software::context(software::Platform::MacOs),
-        false,
-        true,
     )
     .await?;
+    f.seed_root(json!([])).await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let mut other = Browser::default();
-    ensure!(other.login(&f.router, "admin").await? == StatusCode::OK);
+    let mut other = crate::test_support::authority::Authority::prepared_browser("admin")?;
     let employee = f
         .author
         .call(&f.router, Method::GET, "/api/v1/authorization", None)
@@ -1360,7 +1304,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
             administrator_grants.push(grant);
         }
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         administrator["principalId"].as_str().unwrap(),
         administrator_grants,
@@ -1387,7 +1331,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         .call(&f.router, Method::GET, "/api/v1/authorization", None)
         .await?
         .1;
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         current["principalId"].as_str().unwrap(),
         Vec::new(),
@@ -1532,7 +1476,7 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         (b, two)
     };
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{}' AND policy_version IN ('{}','{}') AND software_effect IS NOT NULL",case_tenant(),policies[0].1["versionId"].as_str().unwrap(),policies[1].1["versionId"].as_str().unwrap()))?.trim() == "1", "competing new requests must commit one exact effect and one Run");
-    let stack = software::worker(&f.base, f.content.clone()).await?;
+    let stack = software::worker(&f.base, f.execution.clone()).await?;
     let employee = &f.author;
     ensure!(
         software_self_service_call(
@@ -1636,23 +1580,6 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
     }).await
 }
 
-#[test]
-fn explicit_unpublished_access_null_follows_the_write_contract() {
-    let schema: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../management-http/schema/PolicyWrite.json"
-    ))
-    .unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    let body = serde_json::json!({"operationId":uuid::Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"scope":uuid::Uuid::new_v4(),"action":{"kind":"execution","resource":{"id":"repair","version":"v1","platform":"macos","architecture":"aarch64","variant":"default"},"parameters":{},"runLifetimeSeconds":300},"selfService":{"access":null,"published":false,"presentation":{"displayName":"Repair","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]}}}}});
-    assert!(validator.is_valid(&body));
-    let mut missing = body;
-    missing["input"]["definition"]["selfService"]
-        .as_object_mut()
-        .unwrap()
-        .remove("access");
-    assert!(!validator.is_valid(&missing));
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.self_service"]
 async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts_separate()
@@ -1670,8 +1597,6 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             "software.msi.user.v1"
         ]),
         local.clone(),
-        false,
-        false,
     )
     .await?;
     let resources = std::mem::take(&mut f.resources);
@@ -1681,33 +1606,11 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     let digest = rss_mdm_resource::Digest::of(bytes).bytes();
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let definition = json!({"material":{"format":"msi","installer":"package"},"source":f.source_snapshot,"package":"Private.UserInstall","version":"1","artifacts":{"package":{"reference":"user-msi","length":bytes.len(),"sha256":digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"user","install":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{CCCCCCCC-DDDD-EEEE-FFFF-AAAAAAAAAAAA}","version":"1"},"upgradeInvocation":invocation},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-    let path = format!("/api/v1/resources/{resource_id}");
-    crate::test_support::software::write(
-        &mut f.author,
-        &f.router,
-        &path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
-    crate::test_support::software::write(&mut f.author,&f.router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    software::upload_windows(&f.author, &f.router, resource_id, bytes).await?;
-    crate::test_support::software::write(
-        &mut f.author,
-        &f.router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
-    crate::test_support::software::write(
-        &mut f.author,
-        &f.router,
-        &format!("/api/v1/software/resources/{resource_id}/versions/v1"),
-        0,
-        json!({"action":"enable"}),
-    )
-    .await?;
+    let version = software::seed_resource(&f.planning.runtime, f.planning.tenant, resource_id, "windows", "x86_64", definition).await?;
+    let content = f.content.as_deref().expect("software content");
+    let artifact = rss_mdm_resource::Artifact::new(rss_mdm_resource::Id::new("user-msi")?, bytes.len() as u64, rss_mdm_resource::Digest::of(bytes))?;
+    rss_mdm_content_service::fixture::artifact(content, &artifact, bytes.to_vec(), crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400).await?;
+    software::seed_enabled(&f.planning.runtime, content, &version).await?;
     let mut definition = software::authored(resource_id, f.scope, "available_install");
     definition["action"]["resource"]["variants"] = json!({"windows_x86_64":"default"});
     definition["selfService"] = json!({"access":{"kind":"device"},"published":true,"presentation":{"displayName":"User installation","description":"","prerequisites":"","sideEffects":"Install for current OS account","category":"Apps","keywords":[]}});
@@ -1742,7 +1645,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     )
     .await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
-    let stack = software::worker(&f.base, f.content.clone()).await?;
+    let stack = software::worker(&f.base, f.execution.clone()).await?;
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let response = poll(local.clone()).await?;

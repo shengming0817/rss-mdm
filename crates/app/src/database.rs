@@ -48,11 +48,6 @@ impl Database {
         self.registration.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn authorization(&self) -> &rss_mdm_authorization_service::Store {
-        &self.authorization
-    }
-
     pub async fn connect(options: PgConnectOptions) -> Result<Self, Error> {
         let pool = PgPoolOptions::new()
             .max_connections(4)
@@ -148,13 +143,6 @@ impl Database {
         self.pool.close().await;
     }
     #[cfg(test)]
-    pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        Self::configure_transaction(&mut tx, tenant).await?;
-        Ok(tx)
-    }
-    /// Pure work discovery uses the normal tenant boundary without Audit head ownership.
-    #[cfg(test)]
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,
         tenant: &str,
@@ -181,6 +169,9 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+    verify_product_storage(&mut tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
     let contracts = [
         crate::first_use::ACCESS_CONTRACT,
         crate::user_profiles::ACCESS_CONTRACT,
@@ -276,6 +267,10 @@ impl Database {
 pub(crate) async fn verify_product_storage(
     connection: &mut sqlx::PgConnection,
 ) -> Result<(), sqlx::Error> {
+    // Deparsers must not abbreviate same-name schemas through the role's "$user" path.
+    sqlx::query("SET LOCAL search_path=pg_catalog,public")
+        .execute(&mut *connection)
+        .await?;
     let actual: String = sqlx::query_scalar(include_str!("product-storage.sql"))
         .fetch_one(connection)
         .await?;

@@ -47,7 +47,7 @@ async fn upload_recovery_download_range_and_authorization() -> Result<()> {
                 original.0 == StatusCode::OK && original.1 == enabled,
                 "recovery preserves the historical enable receipt without granting new access"
             );
-            crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![])
+            crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, vec![])
                 .await?;
             ensure!(
                 user.call(&fixture.router, Method::GET, &admission_path, None)
@@ -69,28 +69,11 @@ pub(super) async fn upload_recovery(
     let origin = &fixture.origin;
     let registered = &fixture.registered;
     let mut user = fixture.user.clone();
-    let resource = Uuid::new_v4();
-    let resource_path = format!("/api/v1/resources/{resource}");
-    write(
-        &mut user,
-        router,
-        &resource_path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
     let bytes = vec![7u8; length];
     let definition =
         publication_support::private_definition(registered["snapshot"].clone(), &bytes);
-    write(&mut user,router,&resource_path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    write(
-        &mut user,
-        router,
-        &resource_path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    let (resource, _) =
+        crate::test_support::software::seed_software_version(runtime, definition).await?;
     let admission_path = format!("/api/v1/software/resources/{resource}/versions/v1");
     let enable =
         json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"enable"}});
@@ -330,30 +313,10 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
     let mut fixture = Fixture::open(false).await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
-    let mut user = fixture.user.clone();
-    let router = &fixture.router;
-    let resource = Uuid::new_v4();
-    let path = format!("/api/v1/resources/{resource}");
+    let user = fixture.user.clone();
     let bytes = b"validated";
-    write(
-        &mut user,
-        router,
-        &path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
-    let definition =
-        publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
-    write(&mut user,router,&path,1,json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    write(
-        &mut user,
-        router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    let definition = publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
+    let (resource, _) = crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
     let cookie = user
         .cookies
         .iter()
@@ -410,29 +373,11 @@ async fn corrupt_uploads_have_no_binding_and_distinct_operations_bind_verified_c
 }
 
 async fn upload_resource(fixture: &Fixture, bytes: &[u8]) -> Result<Uuid> {
-    let mut user = fixture.user.clone();
-    let resource = Uuid::new_v4();
-    let path = format!("/api/v1/resources/{resource}");
-    write(
-        &mut user,
-        &fixture.router,
-        &path,
-        0,
-        json!({"action":"create","kind":"software"}),
-    )
-    .await?;
     let definition =
         publication_support::private_definition(fixture.registered["snapshot"].clone(), bytes);
-    write(&mut user, &fixture.router, &path, 1, json!({"action":"version","version":"v1","kind":"software","variants":[{"platform":"windows","architecture":"x86_64","key":"default","declaration":{"kind":"software","definition":definition}}]})).await?;
-    write(
-        &mut user,
-        &fixture.router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
-    Ok(resource)
+    let (resource, _) =
+        crate::test_support::software::seed_software_version(&fixture.runtime, definition).await?;
+    Ok(Uuid::parse_str(&resource)?)
 }
 fn streaming_request(fixture: &Fixture, method: Method, path: &str) -> reqwest::RequestBuilder {
     let cookie = fixture
@@ -581,7 +526,7 @@ async fn streaming_revalidates_permission_and_original_session_before_success() 
                     let logged_out = user.call(&fixture.router, Method::POST, &format!("/api/v1/identity/tenants/{}/session/logout",case_tenant()), None).await?;
                     ensure!(logged_out.0 == StatusCode::NO_CONTENT, "logout: {logged_out:?}");
                 } else {
-                    crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, vec![]).await?;
+                    crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, vec![]).await?;
                 }
                 sender.send(Ok(bytes[1..].to_vec())).await?;
                 Ok(())
@@ -597,7 +542,7 @@ async fn streaming_revalidates_permission_and_original_session_before_success() 
             if !revoke_session {
                 let grants = [crate::authorization::Permission::ResourceRead, crate::authorization::Permission::ResourceWrite]
                     .into_iter().map(|operation| crate::authorization::Grant {operation, scope:crate::authorization::Scope::Tenant}).collect();
-                crate::test_support::identity::set_grants(case_tenant(), &fixture.subject, grants).await?;
+                crate::test_support::identity::change_grants(case_tenant(), &fixture.subject, grants).await?;
             }
         }
         Ok(())

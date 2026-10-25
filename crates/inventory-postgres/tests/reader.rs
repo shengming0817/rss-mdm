@@ -57,12 +57,8 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .bind(tenant)
             .execute(&mut *catalog_tx)
             .await?;
-        rss_mdm_inventory_postgres::register_collection_in(
-            &mut catalog_tx,
-            scope(tenant, source).tenant(),
-            &definition,
-        )
-        .await?;
+        sqlx::query("INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES($1::uuid,'inventory','1',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(source).bind(definition.fingerprint()?).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_string(&definition)?).execute(&mut *catalog_tx).await?;
         catalog_tx.commit().await?;
         let mut tx = writer.begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
@@ -173,7 +169,6 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "rls",
         ),
     ] {
-        normal_reader().await?;
         owner.execute(grant).await?;
         let rejected = InventoryReader::connect(options("mdm_api")?)
             .await
@@ -197,7 +192,10 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
                 "{grant}"
             );
         }
-        normal_reader().await?;
+        InventoryReader::connect(options("mdm_api")?)
+            .await?
+            .close()
+            .await;
     }
     for (create, drop) in [
         (
@@ -209,7 +207,6 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "DROP FUNCTION mdm.reader_test_function()",
         ),
     ] {
-        normal_reader().await?;
         sqlx::raw_sql(create).execute(&mut owner).await?;
         let rejected = InventoryReader::connect(options("mdm_api")?)
             .await
@@ -220,7 +217,10 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             rejected.to_string() == "Inventory admission rejected: dml",
             "unexpected rejection: {rejected:#}"
         );
-        normal_reader().await?;
+        InventoryReader::connect(options("mdm_api")?)
+            .await?
+            .close()
+            .await;
     }
     let administrator: PgConnectOptions = std::env::var("MDM_ADMIN_URL")?
         .parse::<PgConnectOptions>()?
@@ -240,7 +240,10 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             "REVOKE CREATE ON SCHEMA public FROM mdm_api",
         ),
     ] {
-        normal_reader().await?;
+        InventoryReader::connect(options("mdm_api")?)
+            .await?
+            .close()
+            .await;
         sqlx::raw_sql(sqlx::AssertSqlSafe(grant))
             .execute(&mut administrator)
             .await?;
@@ -252,9 +255,11 @@ async fn reader_is_exact_tenant_scoped_and_read_only() -> anyhow::Result<()> {
             .execute(&mut administrator)
             .await?;
         assert_eq!(rejected.to_string(), "Inventory admission rejected: dml");
-        normal_reader().await?;
+        InventoryReader::connect(options("mdm_api")?)
+            .await?
+            .close()
+            .await;
     }
-    normal_reader().await?;
     administrator
         .execute("CREATE ROLE reader_inheritor LOGIN")
         .await?;

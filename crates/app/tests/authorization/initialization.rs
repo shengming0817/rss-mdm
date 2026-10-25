@@ -4,13 +4,12 @@ use crate::audit_test_support::audit_count;
 #[tokio::test]
 #[ignore = "MODULE=authorization.initialization: real authorization contract"]
 async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
-    let Fixture {
-        resources,
-        base,
-        subject,
-        audit_store,
-        ..
-    } = fixture().await?;
+    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
+    let subject = prepared_subject(&authority::Authority::prepared_browser("other")?)?;
+    let (pool, source, audit_store) = crate::audit_test_support::request_store().await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool));
+    resources.resource(SourceResource(source));
     resources.finish(async {
     crate::authorization::store::initialize_authorization(
         &audit_store,
@@ -72,12 +71,9 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         initial.id,
         TENANT = case_tenant()
     ))?;
-    let reopened = database(&base).await?;
+    let (reopened_pool, reopened_source, reopened) = crate::audit_test_support::request_store().await?;
     let replayed = crate::authorization::store::initialize_authorization(
-        reopened
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        reopened.as_ref(),
         isolated.clone(),
         init_key,
     )
@@ -85,10 +81,7 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
     ensure!(replayed.id == initial.id && replayed.revision == initial.revision);
     ensure!(matches!(
         crate::authorization::store::initialize_authorization(
-            reopened
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?
-                .as_ref(),
+            reopened.as_ref(),
             isolated.clone(),
             Uuid::new_v4()
         )
@@ -96,7 +89,8 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
         Err(rss_mdm_authorization_service::Error::Conflict)
     ));
     ensure!(pg(&format!("SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{TENANT}' AND instance='{}' AND id='{}'", isolated.instance_id, initial.id, TENANT = case_tenant()))?.trim() == "t");
-    reopened.close().await;
+    reopened_source.close().await;
+    reopened_pool.close().await;
     // A valid-looking but absent target never acquires the irreversible bootstrap marker.
     let wrong_key = Uuid::new_v4();
     let mut init = json!({"database":base["access_database"],"identityDatabase":base["identity"]["database"],
@@ -140,10 +134,12 @@ async fn initialization_receipt_atomicity_and_recovery() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=authorization.initialization: bounded transaction and ACK recovery"]
 async fn bounded_initialization_recovery() -> Result<()> {
-    let mut fixture = authority::Authority::open().await?;
-    let fixture_resources = std::mem::take(&mut fixture.resources);
-    fixture_resources.finish(async {
-    let store = fixture.audit.as_ref();
+    let (pool, source, audit_store) = crate::audit_test_support::request_store().await?;
+    let mut resources = Resources::default();
+    resources.resource(PoolResource(pool));
+    resources.resource(SourceResource(source));
+    resources.finish(async {
+    let store = audit_store.as_ref();
     // The same command deadline projection is used before COMMIT and after a durable but unacknowledged COMMIT.
     for (fault, committed) in [
         (rss_transactional_messaging_postgres::PgTransactionFault::CommitPending, false),

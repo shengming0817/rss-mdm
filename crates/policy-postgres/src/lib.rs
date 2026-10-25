@@ -26,3 +26,7 @@ const ADMISSION: Admission = Admission {
     ],
     catalog: include_str!("catalog.json"),
 };
+
+/// Validated persisted prerequisites for integration consumers.
+#[cfg(feature = "integration")]
+pub mod fixture;

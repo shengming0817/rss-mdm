@@ -58,10 +58,16 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     bind(&mut connection, case_tenant()).await?;
     storage::admit(&mut connection, tenant).await?;
     let id = Uuid::new_v4();
-    let definition: Definition<Value> = serde_json::from_value(json!({
-        "presentation":{"name":"adapter policy","vendor":{"padding":"x".repeat(53000),"values":vec![0;3500]}},"severity":"high","enabled":true,"platform":"all",
+    let mut definition: Definition<Value> = serde_json::from_value(json!({
+        "presentation":{"name":"adapter policy","vendor":{"padding":"","values":[0,1]}},"severity":"high","enabled":true,"platform":"all",
         "target":{"kind":"all"},"criteria":{"kind":"predicate","field":"custom.is_loaner","op":"eq","value":{"kind":"boolean","value":false}}
     }))?;
+    let base_bytes: i32 = sqlx::query_scalar("SELECT octet_length(($1::jsonb)::text)")
+        .bind(serde_json::to_value(&definition)?)
+        .fetch_one(&mut connection)
+        .await?;
+    definition.presentation.get_mut("vendor").unwrap()["padding"] =
+        json!("x".repeat(65536 - base_bytes as usize));
     let rule = storage::Rule {
         id,
         revision: 1,
@@ -86,8 +92,12 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     ensure!(restored.definition.presentation == rule.definition.presentation);
     let mut oversized = rule.clone();
     oversized.id = Uuid::new_v4();
-    oversized.definition.presentation.get_mut("vendor").unwrap()["padding"] =
-        json!("x".repeat(57000));
+    let Value::String(padding) =
+        &mut oversized.definition.presentation.get_mut("vendor").unwrap()["padding"]
+    else {
+        unreachable!()
+    };
+    padding.push('x');
     ensure!(serde_json::to_vec(&oversized.definition)?.len() < 65536);
     ensure!(!storage::put(&mut connection, tenant, &oversized, &[], &[]).await?);
     ensure!(
@@ -202,9 +212,12 @@ async fn immutable_versions_results_and_tenant_transactions() -> Result<()> {
     let foreign = case::peer();
     bind(&mut connection, foreign).await?;
     ensure!(
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM mdm_compliance.results")
-            .fetch_one(&mut connection)
-            .await?
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM mdm_compliance.results WHERE task=$1 AND device='device-a'"
+        )
+        .bind(task)
+        .fetch_one(&mut connection)
+        .await?
             == 0
     );
     ensure!(

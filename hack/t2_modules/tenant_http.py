@@ -10,114 +10,164 @@ from verification_result import require
 BASE = '/api/v1/tenant-administration'
 
 
-def exercise(admin, normal, delegate, config, management, business, password, sql, command, common,
-             builds, root, stack, login, write, rule, owner, database):
-    def call(method, path, body=None, operation=None, browser=admin):
-        headers = {'Idempotency-Key': operation or str(uuid.uuid4())} if method != 'GET' else {}
-        return browser.call(method, BASE + path, body, headers)
-
-    create = dict(name='HTTP tenant',administratorLogin='initial-admin',administratorPassword=password)
-    key = str(uuid.uuid4())
-    require(call('POST','/tenants',create)[0] == 405, 'bare creation route remains public')
-    require(admin.call('POST', BASE + '/provisionings', create)[0] == 400, 'missing key accepted')
-    require(call('POST', '/provisionings', dict(create, operationId=key))[0] == 400, 'JSON operation ID accepted')
-    require(call('POST', '/provisionings', create, key, normal)[0] == 401, 'business session entered registry')
-    require(call('POST', '/provisionings', create, key, delegate)[0] == 403, 'unprivileged manager created tenant')
-    status, receipt = call('POST', '/provisionings', create, key)
-    require(status == 202 and receipt['operationId'] == key and receipt['result']['phase'] == 'host_pending' and receipt['result']['administratorId'], 'complete provisioning did not reach host pending: ' + str((status,receipt)))
-    tenant = receipt['result']['tenantId']
-    require(call('POST','/provisionings',create,key)==(202,receipt),'provisioning replay changed identity')
-    require(call('GET','/provisionings/'+key)==(200,receipt),'provisioning operation lookup failed')
-    require(call('POST', '/provisionings', dict(create,name='different'), key)[0] == 409, 'key conflict accepted')
-    require(call('GET', '/tenants/' + tenant)[1]['tenantId']==tenant, 'detail differs')
-    require(any(t['tenantId'] == tenant for t in call('GET','/tenants')[1]['items']), 'list omitted tenant')
-    edit_key = str(uuid.uuid4())
-    status, edited = call('PUT','/tenants/' + tenant,dict(expectedRevision=1,notes='updated'),edit_key)
-    require(status == 200 and edited['result']['revision'] == 2 and edited['result']['name'] is None, 'replace/CAS failed')
-    require(call('PUT','/tenants/' + tenant,dict(expectedRevision=1))[0] == 409, 'stale revision accepted')
-    require(call('GET','/operations/' + key) == (200,receipt), 'original operation snapshot changed')
-    require(call('DELETE','/tenants/' + management,dict(expectedRevision=1))[0] == 403, 'reserved tenant deleted')
-    require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=2))[0] == 409, 'fully provisioned tenant was deletable')
-    require(call('GET','/operations/not-a-uuid') == (400, {'code':'malformed_request'}), 'invalid operation did not use JSON error contract')
-    request = dict(login='tenant-admin-one',password=password)
-    admin_key = str(uuid.uuid4())
-    path = '/tenants/' + tenant + '/administrators'
-    status, first = call('POST',path,request,admin_key)
-    require(status == 200 and first['result']['ruleRevision'] == 1, 'administrator provisioning failed: ' + str((status,first)))
-    require(call('POST',path,request,admin_key) == (200,first), 'administrator replay changed')
-    require(call('POST',path,dict(request,password=password+'changed'),admin_key)[0] == 409, 'password fingerprint conflict ignored')
-    require(call('POST',path,request)[0] == 409, 'existing login was taken over')
-    status, second = call('POST',path,dict(request,login='tenant-admin-two'))
-    require(status == 200 and second['result']['principalId'] != first['result']['principalId'], 'subsequent administrator blocked')
-    require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=2))[0] == 409, 'provisioned tenant remained deletable')
-    require(call('GET','/operations/' + admin_key) == (200,first), 'administrator operation lookup failed')
-    administrator_rollback(call, path, tenant, password, sql)
-    operator = json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'"))
-    require(operator['tenantId'] == management, 'source actor lost')
-    stored = sql(f"SELECT request::text FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'")
-    require(password not in stored and 'fingerprint' in stored, 'password persisted in receipt request')
-    target_config = deepcopy(config)
-    target_config['identity']['tenant_id'] = tenant
-    target_config['identity']['oidc'] = None
-    target_host = Host(builds,private(root/'target-runtime.json',target_config),root/'target-host',require_ready=False)
-    stack.callback(target_host.close)
-    target_admin = Browser(target_host,config['product_origin'])
-    login(target_admin,tenant,'tenant-admin-one')
-    status, effective = target_admin.call('GET','/api/v1/authorization')
-    permissions = {g['operation'] for g in effective.get('grants',[])}
-    require(status == 200 and {'identity_accounts_manage','identity_providers_manage','inventory_read','device_wipe','authorization_write'} <= permissions,
-            'target administrator lacks business capabilities')
-    require(not any(p.startswith('tenant_') for p in permissions), 'target administrator gained installation powers')
-    require(target_admin.call('GET',BASE+'/tenants')[0] == 401, 'target administrator crossed tenant boundary')
-    require(all(g['scope']['kind']=='all_devices' for g in effective['grants'] if g['operation'] in {'inventory_read','device_wipe'}), 'device scope incomplete')
-    # Revoking a provisioned grant must not be undone by operation replay.
-    rule_id = first['result']['ruleId']
-    sql(f"SET rss.tenant_id='{tenant}'; UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id='{tenant}' AND id='{rule_id}'")
-    require(call('POST',path,request,admin_key) == (200,first), 'replay after grant revocation changed')
-    require(sql(f"SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id='{rule_id}'") == 't', 'replay regranted administrator')
-    # Change target password through the independent second administrator; original fingerprint stays valid.
-    other = Browser(target_host,config['product_origin'])
-    login(other,tenant,'tenant-admin-two')
-    require(other.call('POST',f"/api/v1/identity/tenants/{tenant}/accounts/{first['result']['principalId']}/password",dict(password=password+'rotated'))[0] == 200, 'target password reset failed')
-    require(call('POST',path,request,admin_key) == (200,first), 'password change invalidated immutable replay')
-    target_host.close()
-    audit_backpressure(target_config, admin, other, management, tenant, password, sql, builds, root, stack, owner, database, write)
-
-    # The preceding recovery/backpressure phase can exceed the five-minute
-    # recent-auth window. Exercise delegation with freshly authenticated actors;
-    # the explicit expiry rejection below still tests the production boundary.
-    login(admin, management)
-    login(delegate, management, 'delegate')
-    grant_id = str(uuid.uuid4())
-    status, delegated_actor = delegate.call('GET','/api/v1/identity-host/tenants/' + management + '/context')
-    require(status == 200, 'delegate context unavailable')
-    delegated_principal = delegated_actor['principalId']
-    _, delegation = write(admin,grant_id,0,rule(delegated_principal,['tenant_administrator_create']))
-    delegated_key = str(uuid.uuid4())
-    delegated_body = dict(request,login='delegated-admin')
-    status, delegated_receipt = call('POST',path,delegated_body,delegated_key,delegate)
-    require(status == 200, 'explicit administrator provisioning delegation failed: ' + str((status, delegated_receipt)))
-    write(admin,grant_id,delegation['revision'],None)
-    require(call('POST',path,delegated_body,delegated_key,delegate)[0] == 403, 'revoked source grant retained replay authority')
-    require(call('POST',path,delegated_body,delegated_key) == (200,delegated_receipt), 'new authorized operator cannot query original replay')
-    require(json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{delegated_key}'"))['principalId'] == delegated_principal,
-            'replay rewrote original operator')
-    sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at-301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
-    require(call('POST',path,request,admin_key)[0] == 403, 'expired recent authentication allowed replay')
-    sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at+301 WHERE tenant_id='{management}' AND principal_id='{operator['principalId']}'")
-    # Optional block controls all registry routes, not a partial startup mode.
-    absent = deepcopy(target_config)
-    del absent['tenant_administration']
-    absent_host = Host(builds,private(root/'without-registry.json',absent),root/'without-registry-host',require_ready=False)
-    stack.callback(absent_host.close)
-    require(Browser(absent_host,config['product_origin']).call('GET',BASE+'/tenants')[0] == 404, 'disabled registry routes were mounted')
-    absent_host.close()
-    lost_commit_ack(target_config,password,sql,builds,root,stack,admin,tenant)
-    provisioning_pages_and_active_directory(admin, sql)
+def provisioning(fixture):
+    from t2_modules.management_tenant import management_host
+    with management_host(fixture) as h:
+        admin,normal,delegate=h.admin,h.normal,h.delegate
+        config,management,business,password=h.config,h.management,h.business,h.password
+        sql,command,common,builds,root,stack,login,write,rule=h.sql,h.command,h.common,h.builds,h.root,h.stack,h.login,h.write,h.rule
+        def call(method,path,body=None,operation=None,browser=admin):
+            headers={'Idempotency-Key':operation or str(uuid.uuid4())} if method!='GET' else {}
+            return browser.call(method,BASE+path,body,headers)
+        create = dict(name='HTTP tenant',administratorLogin='initial-admin',administratorPassword=password)
+        key = str(uuid.uuid4())
+        require(call('POST','/tenants',create)[0] == 405, 'bare creation route remains public')
+        require(admin.call('POST', BASE + '/provisionings', create)[0] == 400, 'missing key accepted')
+        require(call('POST', '/provisionings', dict(create, operationId=key))[0] == 400, 'JSON operation ID accepted')
+        require(call('POST', '/provisionings', create, key, normal)[0] == 401, 'business session entered registry')
+        require(call('POST', '/provisionings', create, key, delegate)[0] == 403, 'unprivileged manager created tenant')
+        status, receipt = call('POST', '/provisionings', create, key)
+        require(status == 202 and receipt['operationId'] == key and receipt['result']['phase'] == 'host_pending' and receipt['result']['administratorId'], 'complete provisioning did not reach host pending: ' + str((status,receipt)))
+        tenant = receipt['result']['tenantId']
+        require(call('POST','/provisionings',create,key)==(202,receipt),'provisioning replay changed identity')
+        require(call('GET','/provisionings/'+key)==(200,receipt),'provisioning operation lookup failed')
+        require(call('POST', '/provisionings', dict(create,name='different'), key)[0] == 409, 'key conflict accepted')
+        require(call('GET', '/tenants/' + tenant)[1]['tenantId']==tenant, 'detail differs')
+        require(any(t['tenantId'] == tenant for t in call('GET','/tenants')[1]['items']), 'list omitted tenant')
+        edit_key = str(uuid.uuid4())
+        status, edited = call('PUT','/tenants/' + tenant,dict(expectedRevision=1,notes='updated'),edit_key)
+        require(status == 200 and edited['result']['revision'] == 2 and edited['result']['name'] is None, 'replace/CAS failed')
+        require(call('PUT','/tenants/' + tenant,dict(expectedRevision=1))[0] == 409, 'stale revision accepted')
+        require(call('GET','/operations/' + key) == (200,receipt), 'original operation snapshot changed')
+        require(call('DELETE','/tenants/' + management,dict(expectedRevision=1))[0] == 403, 'reserved tenant deleted')
+        require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=2))[0] == 409, 'fully provisioned tenant was deletable')
+        require(call('GET','/operations/not-a-uuid') == (400, {'code':'malformed_request'}), 'invalid operation did not use JSON error contract')
 
 
-def audit_backpressure(config, manager, target_admin, management, tenant, password, sql,
-                       builds, root, stack, owner, database, write):
+def administrator(fixture):
+    from t2_modules.management_tenant import management_host
+    with management_host(fixture) as h:
+        admin,normal,delegate=h.admin,h.normal,h.delegate
+        config,management,business,password=h.config,h.management,h.business,h.password
+        sql,command,common,builds,root,stack,login,write,rule=h.sql,h.command,h.common,h.builds,h.root,h.stack,h.login,h.write,h.rule
+        def call(method,path,body=None,operation=None,browser=admin):
+            headers={'Idempotency-Key':operation or str(uuid.uuid4())} if method!='GET' else {}
+            return browser.call(method,BASE+path,body,headers)
+        tenant=business
+        request = dict(login='tenant-admin-one',password=password)
+        admin_key = str(uuid.uuid4())
+        path = '/tenants/' + tenant + '/administrators'
+        status, first = call('POST',path,request,admin_key)
+        require(status == 200 and first['result']['ruleRevision'] == 1, 'administrator provisioning failed: ' + str((status,first)))
+        require(call('POST',path,request,admin_key) == (200,first), 'administrator replay changed')
+        require(call('POST',path,dict(request,password=password+'changed'),admin_key)[0] == 409, 'password fingerprint conflict ignored')
+        require(call('POST',path,request)[0] == 409, 'existing login was taken over')
+        status, second = call('POST',path,dict(request,login='tenant-admin-two'))
+        require(status == 200 and second['result']['principalId'] != first['result']['principalId'], 'subsequent administrator blocked')
+        require(call('DELETE','/tenants/' + tenant,dict(expectedRevision=1))[0] == 409, 'provisioned tenant remained deletable')
+        require(call('GET','/operations/' + admin_key) == (200,first), 'administrator operation lookup failed')
+        operator = json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'"))
+        require(operator['tenantId'] == management, 'source actor lost')
+        stored = sql(f"SELECT request::text FROM public.mdm_tenant_operations WHERE operation_id='{admin_key}'")
+        require(password not in stored and 'fingerprint' in stored, 'password persisted in receipt request')
+        target_admin = Browser(h.host,config['product_origin'])
+        login(target_admin,tenant,'tenant-admin-one')
+        status, effective = target_admin.call('GET','/api/v1/authorization')
+        permissions = {g['operation'] for g in effective.get('grants',[])}
+        require(status == 200 and {'identity_accounts_manage','identity_providers_manage','inventory_read','device_wipe','authorization_write'} <= permissions,
+                'target administrator lacks business capabilities')
+        require(not any(p.startswith('tenant_') for p in permissions), 'target administrator gained installation powers')
+        require(target_admin.call('GET',BASE+'/tenants')[0] == 401, 'target administrator crossed tenant boundary')
+        require(all(g['scope']['kind']=='all_devices' for g in effective['grants'] if g['operation'] in {'inventory_read','device_wipe'}), 'device scope incomplete')
+        # Revoking a provisioned grant must not be undone by operation replay.
+        rule_id = first['result']['ruleId']
+        sql(f"SET rss.tenant_id='{tenant}'; UPDATE mdm_access.authorization_rules SET document=NULL,revision=revision+1 WHERE tenant_id='{tenant}' AND id='{rule_id}'")
+        require(call('POST',path,request,admin_key) == (200,first), 'replay after grant revocation changed')
+        require(sql(f"SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id='{rule_id}'") == 't', 'replay regranted administrator')
+        # Change target password through the independent second administrator; original fingerprint stays valid.
+        other = Browser(h.host,config['product_origin'])
+        login(other,tenant,'tenant-admin-two')
+        require(other.call('POST',f"/api/v1/identity/tenants/{tenant}/accounts/{first['result']['principalId']}/password",dict(password=password+'rotated'))[0] == 200, 'target password reset failed')
+        require(call('POST',path,request,admin_key) == (200,first), 'password change invalidated immutable replay')
+
+
+def recent_auth(fixture):
+    from t2_modules.management_tenant import management_host
+    from candidate_fixture import ADMIN
+    with management_host(fixture) as h:
+        admin,normal,delegate=h.admin,h.normal,h.delegate
+        config,management,business,password=h.config,h.management,h.business,h.password
+        sql,command,common,builds,root,stack,login,write,rule=h.sql,h.command,h.common,h.builds,h.root,h.stack,h.login,h.write,h.rule
+        def call(method,path,body=None,operation=None,browser=admin):
+            headers={'Idempotency-Key':operation or str(uuid.uuid4())} if method!='GET' else {}
+            return browser.call(method,BASE+path,body,headers)
+        tenant=business;path='/tenants/'+tenant+'/administrators';source_principal=ADMIN
+        grant_id = str(uuid.uuid4())
+        status, delegated_actor = delegate.call('GET','/api/v1/identity-host/tenants/' + management + '/context')
+        require(status == 200, 'delegate context unavailable')
+        delegated_principal = delegated_actor['principalId']
+        _, delegation = write(admin,grant_id,0,rule(delegated_principal,['tenant_administrator_create']))
+        delegated_key = str(uuid.uuid4())
+        delegated_body = dict(login='delegated-admin',password=password)
+        status, delegated_receipt = call('POST',path,delegated_body,delegated_key,delegate)
+        require(status == 200, 'explicit administrator provisioning delegation failed: ' + str((status, delegated_receipt)))
+        write(admin,grant_id,delegation['revision'],None)
+        require(call('POST',path,delegated_body,delegated_key,delegate)[0] == 403, 'revoked source grant retained replay authority')
+        require(call('POST',path,delegated_body,delegated_key) == (200,delegated_receipt), 'new authorized operator cannot query original replay')
+        require(json.loads(sql(f"SELECT operator FROM public.mdm_tenant_operations WHERE operation_id='{delegated_key}'"))['principalId'] == delegated_principal,
+                'replay rewrote original operator')
+        sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at-301 WHERE tenant_id='{management}' AND principal_id='{source_principal}'")
+        require(call('POST',path,delegated_body,delegated_key)[0] == 403, 'expired recent authentication allowed replay')
+        sql(f"UPDATE identity_authority.sessions SET local_authenticated_at=local_authenticated_at+301 WHERE tenant_id='{management}' AND principal_id='{source_principal}'")
+
+
+def optional_routes(fixture):
+    from t2_modules.tenants import HostProcesses
+    from types import SimpleNamespace
+    from pathlib import Path
+    config=json.loads(Path(fixture.env['MDM_TEST_CONFIG']).read_text())
+    config.pop('tenant_administration',None)
+    builds=SimpleNamespace(processes=HostProcesses(),executables={'rss-mdm':fixture.binary})
+    host=Host(builds,private(fixture.root/'without-registry.json',config),fixture.root/'without-registry-host',require_ready=False)
+    try: require(Browser(host,config['product_origin']).call('GET',BASE+'/tenants')[0]==404,'disabled registry routes were mounted')
+    finally: host.close()
+
+
+def provisioning_pages_and_active_directory(fixture):
+    from t2_modules.management_tenant import management_host
+    with management_host(fixture) as h:
+        _provisioning_pages_and_active_directory(h.admin,h.sql)
+
+
+def administrator_rollback(fixture):
+    from t2_modules.management_tenant import management_host
+    with management_host(fixture) as h:
+        def call(method,path,body=None,operation=None):
+            return h.admin.call(method,BASE+path,body,{'Idempotency-Key':operation or str(uuid.uuid4())})
+        _administrator_rollback(call,'/tenants/'+h.business+'/administrators',h.business,h.password,h.sql)
+
+
+def audit_backpressure(fixture):
+    from t2_modules.management_tenant import management_host
+    from candidate_fixture import INSTANCE
+    with management_host(fixture) as h:
+        # The Webhook consumer needs only its own management permission and device scope.
+        rule=dict(subject=dict(kind='user',user=dict(instanceId=INSTANCE,tenantId=h.business,principalId=h.business_actor['principal'])),grants=[dict(operation='webhook_write',scope=dict(kind='tenant')),dict(operation='inventory_read',scope=dict(kind='all_devices')),dict(operation='authorization_write',scope=dict(kind='tenant'))])
+        encoded=json.dumps(rule).replace("'","''")
+        h.sql(f"SET rss.tenant_id='{h.business}'; INSERT INTO mdm_access.authorization_rules VALUES('{h.business}','{INSTANCE}','{uuid.uuid4()}',1,'{encoded}'::jsonb)")
+        h.host.close()
+        _audit_backpressure(h.config,h.admin,h.normal,h.management,h.business,h.password,h.sql,h.builds,h.root,h.stack,fixture.owner,fixture.database,h.write)
+
+
+def lost_commit_ack(fixture):
+    from t2_modules.management_tenant import management_host
+    with management_host(fixture) as h:
+        h.host.close()
+        _lost_commit_ack(h.config,h.password,h.sql,h.builds,h.root,h.stack,h.admin,h.business)
+
+
+def _audit_backpressure(config, manager, target_admin, management, tenant, password, sql,
+                       builds, root, stack, owner, database):
     """Real source quota refusal preserves the product reason across all App adapters."""
     import time
     from contextlib import contextmanager
@@ -232,7 +282,7 @@ def audit_backpressure(config, manager, target_admin, management, tenant, passwo
         sql(f"DELETE FROM mdm_webhook.versions WHERE tenant_id='{tenant}' AND subscription='{subscription}'; DELETE FROM mdm_webhook.subscriptions WHERE tenant_id='{tenant}' AND id='{subscription}'")
 
 
-def administrator_rollback(call, path, tenant, password, sql):
+def _administrator_rollback(call, path, tenant, password, sql):
     def counts():
         return sql(f"SELECT (SELECT count(*) FROM identity_authority.accounts WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM identity_authority.local_credentials WHERE tenant_id='{tenant}')||':'||(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')")
     operation = str(uuid.uuid4())
@@ -247,7 +297,6 @@ def administrator_rollback(call, path, tenant, password, sql):
         sql('DROP TRIGGER reject_admin_receipt ON public.mdm_tenant_operations; DROP FUNCTION public.reject_admin_receipt()')
     require(call('POST',path,request,operation)[0] == 200, 'rolled back request could not retry')
     # Fill remaining capacity using valid documents or tombstones, and prove account rollback.
-    original = sql(f"SELECT string_agg(quote_literal(id::text),',') FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}'")
     for mode in ('rows','bytes'):
         if mode == 'rows':
             fill = f"10000-(SELECT count(*) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}')"
@@ -255,7 +304,7 @@ def administrator_rollback(call, path, tenant, password, sql):
         else:
             fill = f"(8388608-(SELECT coalesce(sum(octet_length(document::text)),0) FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}'))/octet_length(template.document::text)"
             document = 'template.document'
-        sql(f"SET rss.tenant_id='{tenant}'; INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) SELECT template.tenant_id,template.instance,gen_random_uuid(),1,{document} FROM (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND document IS NOT NULL LIMIT 1) template CROSS JOIN LATERAL generate_series(1,({fill})::int)")
+        seeded = json.loads(sql(f"SET rss.tenant_id='{tenant}'; WITH inserted AS (INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) SELECT template.tenant_id,template.instance,gen_random_uuid(),1,{document} FROM (SELECT * FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND document IS NOT NULL LIMIT 1) template CROSS JOIN LATERAL generate_series(1,({fill})::int) RETURNING id) SELECT coalesce(json_agg(id),'[]'::json) FROM inserted"))
         operation = str(uuid.uuid4())
         before = counts()
         try:
@@ -263,10 +312,11 @@ def administrator_rollback(call, path, tenant, password, sql):
             require(counts() == before, 'capacity rejection left partial account/rule')
             require(sql(f"SELECT count(*) FROM public.mdm_tenant_operations WHERE operation_id='{operation}'") == '0', 'capacity rejection saved receipt')
         finally:
-            sql(f"SET rss.tenant_id='{tenant}'; DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id NOT IN ({original})")
+            identifiers=','.join("'"+str(uuid.UUID(value))+"'" for value in seeded)
+            if identifiers: sql(f"SET rss.tenant_id='{tenant}'; DELETE FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id IN ({identifiers})")
 
 
-def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
+def _lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
     """Drop actual PostgreSQL COMMIT acknowledgements without terminating TLS."""
     from concurrent.futures import ThreadPoolExecutor
     import time
@@ -305,6 +355,7 @@ def lost_commit_ack(config,password,sql,builds,root,stack,authenticated,tenant):
             body = dict(login='ack-admin',password=password)
             role = 'mdm_identity_provisioning'
         sql(f"CREATE FUNCTION public.hold_tenant_ack() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(2); RETURN NEW; END $$; CREATE CONSTRAINT TRIGGER tenant_ack AFTER INSERT ON public.mdm_tenant_operations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.operation_id='{operation}'::uuid) EXECUTE FUNCTION public.hold_tenant_ack();")
+        stack.callback(sql, 'DROP TRIGGER IF EXISTS tenant_ack ON public.mdm_tenant_operations; DROP FUNCTION IF EXISTS public.hold_tenant_ack()')
         with ThreadPoolExecutor(max_workers=1) as worker:
             response = worker.submit(browser.call,'POST',BASE+route,body,{'Idempotency-Key':operation})
             until = time.monotonic()+8
@@ -344,6 +395,8 @@ class AckProxy:
         self.discard = threading.Event()
         self.stop = threading.Event()
         self.sockets = []
+        self.transfers = []
+        self.lock = threading.Lock()
         self.listener = socket.socket()
         self.listener.bind(('127.0.0.1',0))
         self.listener.listen()
@@ -352,33 +405,55 @@ class AckProxy:
         def transfer(source,target,backward):
             try:
                 while not self.stop.is_set():
-                    data = source.recv(16384)
+                    try: data = source.recv(16384)
+                    except socket.timeout: continue
                     if not data: break
                     if not backward or not self.discard.is_set(): target.sendall(data)
             except OSError:
                 pass
             finally:
-                source.close(); target.close()
+                for connection in (source, target):
+                    try: connection.shutdown(socket.SHUT_RDWR)
+                    except OSError: pass
+                    connection.close()
         def accept():
             while not self.stop.is_set():
                 try: client,_ = self.listener.accept()
                 except socket.timeout: continue
                 except OSError: break
-                server = socket.create_connection((database['host'],database['port']),timeout=15)
-                client.settimeout(15)
-                self.sockets.extend((client,server))
-                threading.Thread(target=transfer,args=(client,server,False),daemon=True).start()
-                threading.Thread(target=transfer,args=(server,client,True),daemon=True).start()
+                try:
+                    server = socket.create_connection((database['host'],database['port']),timeout=1)
+                except OSError:
+                    client.close()
+                    continue
+                client.settimeout(0.2)
+                server.settimeout(0.2)
+                with self.lock:
+                    if self.stop.is_set():
+                        client.close();server.close();break
+                    self.sockets.extend((client,server))
+                    for source,target,backward in ((client,server,False),(server,client,True)):
+                        thread=threading.Thread(target=transfer,args=(source,target,backward),daemon=True)
+                        self.transfers.append(thread);thread.start()
         self.thread = threading.Thread(target=accept,daemon=True)
         self.thread.start()
     def close(self):
         self.stop.set()
         self.listener.close()
-        for connection in self.sockets: connection.close()
-        self.thread.join(timeout=2)
+        import socket
+        import time
+        with self.lock:
+            for connection in self.sockets:
+                try: connection.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                connection.close()
+        end=time.monotonic()+2
+        self.thread.join(timeout=max(0,end-time.monotonic()))
+        for thread in self.transfers: thread.join(timeout=max(0,end-time.monotonic()))
+        require(not self.thread.is_alive() and not any(t.is_alive() for t in self.transfers),'COMMIT proxy did not release its threads')
 
 
-def provisioning_pages_and_active_directory(admin, sql):
+def _provisioning_pages_and_active_directory(admin, sql):
     # Seed the minimal valid reserved receipts: listing does not require accounts or hosts to run.
     seed = uuid.uuid4().hex
     ids = f"SELECT md5('{seed}'||i::text)::uuid FROM generate_series(1,1101) i"

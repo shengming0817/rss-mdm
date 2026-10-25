@@ -243,7 +243,7 @@ async fn login_bound_projection_and_definition_lifecycle() -> Result<()> {
                 .principal
                 .as_uuid()
                 .to_string();
-            identity::set_grants(
+            identity::seed_grants(
                 case_tenant(),
                 &principal,
                 vec![
@@ -394,7 +394,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                     crate::identity::deadline(),
                 )
                 .await?;
-            identity::set_grants(
+            identity::seed_grants(
                 case_tenant(),
                 &session.account().principal.as_uuid().to_string(),
                 vec![
@@ -500,7 +500,7 @@ async fn definition_receipts_and_audit_are_atomic() -> Result<()> {
                 Err(Error::NotFound)
             ));
             // A current role withdrawal applies even to retained proof and durable receipt reads.
-            identity::set_grants(case_tenant(), p.principal_id(), vec![]).await?;
+            identity::change_grants(case_tenant(), p.principal_id(), vec![]).await?;
             ensure!(matches!(
                 store::one(&f.audit, &p, &audit, input.operation_id, true).await,
                 Err(Error::Forbidden)

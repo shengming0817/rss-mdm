@@ -1,15 +1,20 @@
-use crate::device::test_support::{admin, case_a as case_tenant, options};
+use crate::device::test_support::{admin, case_a as case_tenant};
+use crate::enrollment::Password;
 use crate::enrollment::test_support::create;
-use crate::{Database, enrollment::Password};
 use anyhow::ensure;
 use rss_mdm_registration_service::Error;
+use std::sync::Arc;
 use uuid::Uuid;
 #[tokio::test]
 #[ignore = "make t2 MODULE=enrollment.recovery"]
 async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()> {
     let proof = admin(case_tenant(), "admin-a").await?;
     let other = admin(case_tenant(), "other-a").await?;
-    let store = Database::connect(options("mdm_access")?).await?;
+    let (pool, source, store) = crate::audit_test_support::request_store().await?;
+    let registration = rss_mdm_registration_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+    );
     let password = Password::new(crate::enrollment::random())?;
     let key = Uuid::new_v4();
     let receipt = create(
@@ -41,17 +46,13 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
         Some(Error::Conflict)
     ));
     ensure!(matches!(
-        crate::enrollment::store::enrollment_target(
-            &store.registration(),
-            &other,
-            receipt.enrollment_id
-        )
-        .await,
+        crate::enrollment::store::enrollment_target(&registration, &other, receipt.enrollment_id)
+            .await,
         Err(Error::Forbidden)
     ));
     ensure!(matches!(
         crate::enrollment::store::enrollment_authorization(
-            &store.registration(),
+            &registration,
             crate::test_support::case::peer(),
             receipt.enrollment_id,
             &password
@@ -61,7 +62,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
     ));
     ensure!(matches!(
         crate::enrollment::store::enrollment_authorization(
-            &store.registration(),
+            &registration,
             case_tenant(),
             receipt.enrollment_id,
             &Password::new(crate::enrollment::random())?
@@ -70,7 +71,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
         Err(Error::Unauthorized)
     ));
     let auth = crate::enrollment::store::enrollment_authorization(
-        &store.registration(),
+        &registration,
         case_tenant(),
         receipt.enrollment_id,
         &password,
@@ -81,6 +82,7 @@ async fn immutable_receipts_and_authorization_coordinates() -> anyhow::Result<()
             && auth.source == rss_mdm_inventory::ReportSource::MdmWindows
             && auth.windows_profile == Some(crate::enrollment::WindowsProfile::Full)
     );
-    store.close().await;
+    source.close().await;
+    pool.close().await;
     Ok(())
 }

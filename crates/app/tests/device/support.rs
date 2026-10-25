@@ -3,7 +3,6 @@
     reason = "sequential integration matrices preserve each failure and recovery assertion; production code remains checked"
 )]
 use super::*;
-use crate::enrollment::Password;
 use anyhow::Context;
 use sqlx::postgres::{PgConnectOptions, PgSslMode};
 pub(crate) fn case_a() -> &'static str {
@@ -48,20 +47,25 @@ pub(crate) async fn admin(tenant: &str, token: &str) -> anyhow::Result<Authorize
                     ),
                 )
                 .await?;
-            let access = Database::connect(options("mdm_access")?).await?;
-            let proof = AuthorizedPrincipal::new(proof)?
-                .load_authorization(access.authorization())
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_with(options("mdm_access")?)
                 .await?;
-            access.close().await;
+            let access = rss_mdm_authorization_service::Store::from_pool(
+                pool.clone(),
+                Arc::new(crate::lifecycle::RuntimeTimer),
+            );
+            let result = AuthorizedPrincipal::new(proof)?
+                .load_authorization(&access)
+                .await;
+            pool.close().await;
+            let proof = result?;
             Ok(proof)
         })
         .await
 }
 
 pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
-    if user == "mdm_access" {
-        return Ok(crate::test_support::identity::config(case_a())?.access_options()?);
-    }
     Ok(std::env::var(if user == "postgres" {
         "MDM_ADMIN_URL"
     } else {
@@ -78,38 +82,6 @@ pub(crate) fn options(user: &str) -> anyhow::Result<PgConnectOptions> {
     })
     .ssl_mode(PgSslMode::VerifyFull)
     .ssl_root_cert(std::env::var("PG_CA_FILE")?))
-}
-pub(crate) async fn request(
-    store: &Database,
-    admin: &AuthorizedPrincipal,
-    device: &str,
-    channel: Channel,
-) -> anyhow::Result<Uuid> {
-    let audit = RequestAudit::new(admin.tenant_id().into(), "enrollment_create");
-    admin.bind_audit(&audit).unwrap();
-    audit.target(device);
-    let key = Uuid::new_v4();
-    audit.operation(key, "enrollment_create");
-    let receipt = crate::enrollment::store::create_enrollment(
-        store
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
-        admin.enrollment(device)?,
-        &Password::new(crate::enrollment::random())?,
-        match channel {
-            Channel::Agent => ReportSource::AgentBuiltin,
-            Channel::Mdm => ReportSource::MdmWindows,
-        },
-        (channel == Channel::Mdm)
-            .then_some(rss_mdm_registration_service::enrollment::WindowsProfile::Device),
-        Uuid::new_v4(),
-        key,
-        &audit,
-    )
-    .await?;
-    audit.finalize(None);
-    Ok(receipt.enrollment_id)
 }
 pub(crate) async fn bind(
     service: &DeviceService,

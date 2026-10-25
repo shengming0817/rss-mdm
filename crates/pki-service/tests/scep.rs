@@ -22,6 +22,17 @@ fn signed_body_is_required_and_replay_window_is_bounded() {
     assert!(decode(&key, "rss", &headers, bytes, now + 301).is_err());
     assert!(decode(&key, "other", &headers, bytes, now).is_err());
     assert!(decode(&key, "rss", &headers, b"{}", now).is_err());
+    let empty_signature = ring::hmac::sign(&key, b"{}")
+        .as_ref()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    let mut empty_headers = headers.clone();
+    empty_headers.insert("x-smallstep-signature", empty_signature.parse().unwrap());
+    assert!(matches!(
+        decode(&key, "rss", &empty_headers, b"{}", now),
+        Err(rss_mdm_pki_service::Error::Request)
+    ));
     headers.append("x-smallstep-signature", signature.parse().unwrap());
     assert!(decode(&key, "rss", &headers, bytes, now).is_err());
 }

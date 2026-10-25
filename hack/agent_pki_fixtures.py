@@ -41,6 +41,10 @@ def prepare(root, configuration, password, *, configuration_devices=0, materials
         openssl('req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=rss-mdm-agent',
                 '-keyout', root/('agent-csr-'+name+'.key'), '-outform', 'DER', '-out', root/(name+'.der'))
         (root/('agent-csr-'+name+'.key')).chmod(0o600)
+    if 'agent-large-csr' in materials:
+        openssl('req', '-new', '-newkey', 'rsa:8192', '-nodes', '-subj', '/CN=rss-mdm-agent',
+                '-keyout', root/'recovery-long.key', '-outform', 'DER', '-out', root/'recovery-long.der')
+        (root/'recovery-long.key').chmod(0o600)
     openssl('pkcs8', '-topk8', '-nocrypt', '-in', root/'agent-csr-agent.key', '-outform', 'DER', '-out', root/'agent.pk8')
     (root/'agent.pk8').chmod(0o600)
 

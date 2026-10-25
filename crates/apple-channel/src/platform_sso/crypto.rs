@@ -415,15 +415,21 @@ mod tests {
             hex("A146E4A23BDA2E53826C04D2F442BCFBD87BC2719D74B8A7DA00AF976267712E")
         );
     }
-    fn signer() -> Signer {
+    fn signer(seed: u32) -> Signer {
         let g = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let k = PKey::from_ec_key(EcKey::generate(&g).unwrap()).unwrap();
+        let private = BigNum::from_u32(seed).unwrap();
+        let mut public = EcPoint::new(&g).unwrap();
+        public
+            .mul_generator2(&g, &private, &mut BigNumContext::new().unwrap())
+            .unwrap();
+        let k = PKey::from_ec_key(EcKey::from_private_components(&g, &private, &public).unwrap())
+            .unwrap();
         Signer::from_pem(&k.private_key_to_pem_pkcs8().unwrap()).unwrap()
     }
     #[test]
     fn signatures_bind_key_type_and_exact_bytes() {
-        let a = signer();
-        let b = signer();
+        let a = signer(1);
+        let b = signer(2);
         let token = a.sign("proof", &json!({"nonce":"123"})).unwrap();
         assert_eq!(verify(&token, &a.public, "proof").unwrap()["nonce"], "123");
         assert!(verify(&token, &b.public, "proof").is_err());
@@ -432,7 +438,7 @@ mod tests {
     }
     #[test]
     fn encrypted_response_binds_recipient_and_nonce() {
-        let s = signer();
+        let s = signer(1);
         let apv = encode(&party(b"Apple", &s.public, Some("nonce")).unwrap());
         let token = encrypt(&s.public, "nonce", &apv, &json!({"id_token":"signed"})).unwrap();
         assert!(encrypt(&s.public, "other", &apv, &json!({})).is_err());

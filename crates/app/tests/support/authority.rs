@@ -41,12 +41,28 @@ impl Authority {
                             INSTANCE,
                         )?,
                     );
-                    let identity = Arc::new(
+                    #[cfg(feature = "integration")]
+                    let identity = if config.identity.enterprise.is_some() {
+                        crate::identity::Identity::for_oidc_fixture(
+                            &config,
+                            policy,
+                            Default::default(),
+                            |resource| resources.acquire(resource),
+                        )
+                        .await?
+                    } else {
                         crate::identity::Identity::connect(&config, policy, None, |resource| {
                             resources.acquire(resource)
                         })
-                        .await?,
-                    );
+                        .await?
+                    };
+                    #[cfg(not(feature = "integration"))]
+                    let identity =
+                        crate::identity::Identity::connect(&config, policy, None, |resource| {
+                            resources.acquire(resource)
+                        })
+                        .await?;
+                    let identity = Arc::new(identity);
                     let tenant = rss_request_context::TenantId::parse(&config.identity.tenant_id)?;
                     let source = crate::audit_test_support::source_runtime(&pool, tenant).await?;
                     resources.resource(SourceResource(source.clone()));
@@ -150,6 +166,28 @@ impl Authority {
     }
 
     pub(crate) fn router_with_public(&self, routes: Router, public: Router) -> Result<Router> {
+        let authentication = rss_mdm_management_http::authentication_routes(
+            rss_mdm_http_contract::Router::from_identity_router(self.identity.routes()),
+            rss_mdm_management_http::boundary::Envelope {
+                admission: Arc::new(tokio::sync::Semaphore::new(32)),
+                requests: Arc::new(tokio::sync::Semaphore::new(32)),
+                host: "mdm.example.test".into(),
+                clock: monotonic(),
+                audit_store: self.audit.clone(),
+                tenant: self.identity.tenant.to_string(),
+            },
+        )
+        .into_axum();
+        Ok(self
+            .protect(routes)?
+            .merge(public)
+            .merge(authentication)
+            .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
+                "127.0.0.1".parse()?,
+            ))))
+    }
+
+    pub(crate) fn protect(&self, routes: Router) -> Result<Router> {
         let requests = Arc::new(tokio::sync::Semaphore::new(32));
         Ok(routes
             .route_layer(middleware::from_fn_with_state(
@@ -160,7 +198,6 @@ impl Authority {
                 }),
                 crate::authorization::http::protect,
             ))
-            .layer(axum::extract::DefaultBodyLimit::max(16384))
             .layer(middleware::from_fn_with_state(
                 rss_mdm_management_http::boundary::Envelope {
                     admission: Arc::new(tokio::sync::Semaphore::new(32)),
@@ -168,12 +205,10 @@ impl Authority {
                     clock: monotonic(),
                     audit_store: self.audit.clone(),
                     requests,
-                    tenant: case_tenant().into(),
+                    tenant: self.identity.tenant.to_string(),
                 },
                 rss_mdm_management_http::boundary::admit,
             ))
-            .merge(public)
-            .merge(self.identity.routes())
             .layer(axum::Extension(rss_identity_http_axum::ClientAddress(
                 "127.0.0.1".parse()?,
             ))))

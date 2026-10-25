@@ -41,7 +41,7 @@ async fn expiry_worker_and_fatal_storage_diagnostic() -> anyhow::Result<()> {
     ))
     .await?;
     client.expiry_recovery(clock).await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 #[cfg(feature = "integration")]
@@ -67,41 +67,20 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let config = crate::test_support::identity::config(case_tenant())?;
-        let audit = self.app.audit_store.clone();
-        let identity = self.app.identity.clone();
+        let audit = self.audit_store.clone();
+        let sessions = self.sessions.clone();
         let restart_clock = clock.clone();
-        let (resources, restarted) =
+        let (resources, (restarted, restarted_runtime)) =
             crate::test_support::runtime::Resources::build(move |resources| {
                 Box::pin(async move {
-                    let content = crate::execution_assembly::open_content(
-                        &config,
-                        config.native_protector()?,
-                    )
-                    .await?;
-                    if let Some(content) = &content {
-                        resources
-                            .resource(crate::execution_assembly::ContentResource(content.clone()));
-                    }
-                    let restarted = crate::execution_assembly::open(
-                        &config,
-                        config.native_protector()?,
+                    let (restarted, _, runtime) = crate::test_support::command::command_service(
                         audit,
-                        content,
-                        std::collections::BTreeMap::new(),
+                        sessions,
                         rss_device_command_postgres::CommandClock::Controlled(restart_clock),
-                        Arc::new(
-                            rss_mdm_authorization_service::session::SessionAuthority::new(
-                                identity.authority.clone(),
-                                identity.tenant,
-                            ),
-                        ),
                     )
                     .await?;
-                    resources.resource(rss_mdm_execution_service::Resource(
-                        restarted.service.clone(),
-                    ));
-                    Ok(restarted)
+                    resources.resource(rss_mdm_execution_service::Resource(restarted.clone()));
+                    Ok((restarted, runtime))
                 })
             })
             .await?;
@@ -131,10 +110,10 @@ impl Client {
             max_backoff: Duration::from_secs(1),
             max_attempts: 3,
         })?;
-        let scope = recovery_scope(self.app.identity.tenant);
+        let scope = recovery_scope(self.tenant);
         let mut fence = pg.begin().await?;
         crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
-        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.app.identity.tenant).await?;
+        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.tenant).await?;
         let release = async {
             tokio::time::timeout(Duration::from_secs(1),async {
                 loop {
@@ -147,7 +126,7 @@ impl Client {
                 // Exercise the real producer wake while the worker is waiting for its
                 // earlier business fence. The old protect-before-watermark path times out.
                 sqlx::query("SET LOCAL lock_timeout='250ms'").execute(&mut *fence).await?;
-                let target = rss_mdm_execution_service::target(self.app.identity.tenant,case_device());
+                let target = rss_mdm_execution_service::target(self.tenant,case_device());
                 sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")
                     .bind(case_tenant()).bind(target.scope().reconciler()).bind(target.entity())
                     .execute(&mut *fence).await?;
@@ -158,7 +137,7 @@ impl Client {
         };
         let notify = tokio::sync::Notify::new();
         let (report,released) = tokio::join!(
-            restarted.service.run_recovery(&scope,policy,&control,&notify), release
+            restarted.run_recovery(&scope,policy,&control,&notify), release
         );
         released?;
         let report = report?;
@@ -180,13 +159,12 @@ impl Client {
         // The runtime is already admitted; a schema comment is not a hot-path probe.
         // Revoke the actual claim capability so PostgreSQL must reject the due work.
         let reconcile = rss_reconcile_postgres::PgMessagingStore::new(
-            restarted.runtime.clone(), self.app.identity.tenant, deadline(),
+            restarted_runtime.clone(), self.tenant, deadline(),
         ).await?;
-        let target = rss_mdm_execution_service::target(self.app.identity.tenant, case_device());
-        restarted
-            .runtime
+        let target = rss_mdm_execution_service::target(self.tenant, case_device());
+        restarted_runtime
             .local_tx_with_context(
-                self.app.identity.tenant,
+                self.tenant,
                 deadline(),
                 (reconcile, target),
                 |(reconcile, target), tx| {
@@ -200,17 +178,16 @@ impl Client {
             )
             .await
             .fold(Ok, Err, Err, Err, Err, Err)?;
-        sqlx::raw_sql("REVOKE EXECUTE ON FUNCTION rss_reconcile.claim_due(uuid,text,integer,bigint) FROM mdm_command_runtime")
+        sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due(uuid,text,integer,bigint) RENAME TO claim_due_unavailable")
             .execute(&mut pg)
             .await?;
         let fatal_timer = recovery::Timer::new();
         let fatal_control =
             rss_reconcile::Control::new(&fatal_timer, Duration::from_secs(2), &cancel);
         let fatal = restarted
-            .service
             .run_recovery(&scope, policy, &fatal_control, &tokio::sync::Notify::new())
             .await;
-        sqlx::raw_sql("GRANT EXECUTE ON FUNCTION rss_reconcile.claim_due(uuid,text,integer,bigint) TO mdm_command_runtime")
+        sqlx::raw_sql("ALTER FUNCTION rss_reconcile.claim_due_unavailable(uuid,text,integer,bigint) RENAME TO claim_due")
             .execute(&mut pg)
             .await?;
         ensure!(
@@ -233,7 +210,6 @@ impl Client {
         let execution_signals = signals.execution();
         let mut worker = Box::pin(
             restarted
-                .service
                 .run_worker(&worker_cancel, &execution_signals),
         );
         tokio::select! {

@@ -413,6 +413,20 @@ pub async fn lock(tx: &mut sqlx::PgConnection, tenant: &str, instance: &str) -> 
     Ok(())
 }
 
+/// Seed a valid initialized administrator without executing initialization or writing its receipts.
+#[cfg(feature = "integration")]
+pub async fn seed_initialization_in(tx: &mut sqlx::PgConnection, user: User) -> Result<(), Error> {
+    user.validate(&user.tenant_id, &user.instance_id)?;
+    let installation = crate::tenancy::InstallationTenants::load(tx).await?;
+    let rule = administrator_rule(user.clone(), installation.is_management(&user.tenant_id));
+    installation.validate_rule(&user.tenant_id, &rule)?;
+    sqlx::query("INSERT INTO mdm_access.authorization_initializations(tenant_id,instance,operation_id,principal) VALUES($1::uuid,$2::uuid,$3,$4::uuid)")
+        .bind(&user.tenant_id).bind(&user.instance_id).bind(Uuid::new_v4()).bind(&user.principal_id).execute(&mut *tx).await.map_err(db)?;
+    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+        .bind(&user.tenant_id).bind(&user.instance_id).bind(Uuid::new_v4()).bind(serde_json::to_value(rule).map_err(|_|Error::Malformed)?).execute(tx).await.map_err(db)?;
+    Ok(())
+}
+
 #[cfg(any(test, feature = "integration"))]
 pub async fn initialize_authorization(
     store: &rss_mdm_audit_integration::AuditStore,

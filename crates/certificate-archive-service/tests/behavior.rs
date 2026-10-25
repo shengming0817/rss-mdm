@@ -106,6 +106,15 @@ fn generated_ca_and_https_have_real_signatures_san_and_matching_keys() {
     };
     let issuer = find(&ca, "certificate.pem");
     let leaf = find(&bundle, "certificate.pem");
+    let key_file = bundle
+        .files
+        .iter()
+        .find(|f| f.name.ends_with(".pk8"))
+        .unwrap();
+    let key =
+        openssl::pkey::PKey::private_key_from_pkcs8(&STANDARD.decode(&key_file.data).unwrap())
+            .unwrap();
+    assert!(key.public_eq(&leaf.public_key().unwrap()));
     assert!(leaf.verify(&issuer.public_key().unwrap()).unwrap());
     assert_eq!(
         facts
@@ -254,13 +263,23 @@ fn request_binding_rejects_another_generated_identity() {
         Err(Error::Malformed)
     ));
     apns.algorithm = Algorithm::Rsa2048;
+    let (bundle, facts) = generation::generate(&apns, None, 1_790_000_000).unwrap();
+    assert!(!facts.is_empty());
+    assert!(facts.iter().all(|f| f.certificates.is_empty()));
+    assert!(facts.iter().any(|f| f.format == Format::Csr));
     assert!(
-        generation::generate(&apns, None, 1_790_000_000)
-            .unwrap()
-            .1
+        facts
             .iter()
-            .all(|f| f.certificates.is_empty())
+            .any(|f| f.format == Format::PrivateKey && f.contains_private_key)
     );
+    let request = bundle
+        .files
+        .iter()
+        .find(|f| f.name == "request.csr")
+        .unwrap();
+    let csr =
+        openssl::x509::X509Req::from_pem(&STANDARD.decode(request.data.as_str()).unwrap()).unwrap();
+    assert!(csr.verify(&csr.public_key().unwrap()).unwrap());
 }
 
 #[test]

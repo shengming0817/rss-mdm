@@ -112,6 +112,15 @@ impl Config {
             .await
             .map_err(|_| invalid())?,
         );
+        let policy_store = Arc::new(
+            rss_mdm_policy_postgres::PolicyStore::new(
+                runtime.clone(),
+                tenant,
+                rss_mdm_flow_service::transaction::deadline(),
+            )
+            .await
+            .map_err(|_| invalid())?,
+        );
         match Planning::new(
             audit_store.clone(),
             runtime.clone(),
@@ -160,6 +169,7 @@ impl Config {
                     cursor_key: key.clone(),
                     runtime: runtime.clone(),
                     planning: Arc::new(service),
+                    policy_store,
                     catalog,
                     software_resources,
                     assets,
@@ -176,14 +186,20 @@ impl Config {
                     publication_runtime: None,
                 };
                 let setup = self
-                    .open_publications(tenant, &mut service, content, &mut acquire)
+                    .open_publications(
+                        tenant,
+                        Arc::get_mut(&mut service.publications)
+                            .expect("unshared startup directory"),
+                        content,
+                        &mut acquire,
+                    )
                     .await;
-                if let Err(error) = setup {
-                    if let Some(p) = &service.publication_runtime {
-                        p.close().await;
+                match setup {
+                    Ok(publication_runtime) => service.publication_runtime = publication_runtime,
+                    Err(error) => {
+                        runtime.close().await;
+                        return Err(error);
                     }
-                    runtime.close().await;
-                    return Err(error);
                 }
                 Ok(Arc::new(service))
             }
@@ -193,15 +209,15 @@ impl Config {
             }
         }
     }
-    async fn open_publications(
+    pub(crate) async fn open_publications(
         &self,
         tenant: TenantId,
-        planning: &mut Flow,
+        directory: &mut rss_mdm_software_service::management::publication::service::PublicationDirectory,
         content: Option<Arc<rss_mdm_content_service::Store>>,
         acquire: &mut impl FnMut(Resource),
-    ) -> std::result::Result<(), Error> {
+    ) -> std::result::Result<Option<Arc<PgRuntime>>, Error> {
         if self.publication.sources.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         use rss_mdm_software_service::publication as p;
         let invalid = || Error::Configuration(crate::ConfigIssue::Publication);
@@ -233,12 +249,11 @@ impl Config {
             runtime: runtime.clone(),
             role: Role::Publication,
         });
-        planning.publication_runtime = Some(runtime.clone());
+
         let audit_budget =
             rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
         let publication_audit = Arc::new(
-            planning
-                .publications
+            directory
                 .audit_store
                 .on_runtime(runtime.clone(), tenant, &audit_budget.control())
                 .await?,
@@ -270,8 +285,7 @@ impl Config {
             )
             .await
             .map_err(|_| Error::Unavailable(Failure::FlowSource))?;
-            if Arc::get_mut(&mut planning.publications)
-                .expect("unshared startup directory")
+            if directory
                 .services
                 .insert(source.name.clone(), Arc::new(service))
                 .is_some()
@@ -279,7 +293,7 @@ impl Config {
                 return Err(invalid());
             }
         }
-        Ok(())
+        Ok(Some(runtime))
     }
 }
 #[derive(Clone, Copy)]
@@ -307,10 +321,6 @@ impl rss_runtime::ManagedResource for Resource {
     }
 }
 
-#[cfg(test)]
-#[path = "../tests/flow/unit.rs"]
-mod tests;
-
 pub(crate) struct Flow {
     pub(crate) audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
     pub(crate) cursor_key: Vec<u8>,
@@ -318,6 +328,7 @@ pub(crate) struct Flow {
     pub(crate) catalog: Arc<crate::resource_catalog::ResourceCatalog>,
     pub(crate) software_resources: Arc<rss_mdm_resource_postgres::ResourceStore>,
     pub(crate) planning: Arc<Planning>,
+    pub(crate) policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
     pub(crate) assets: Arc<crate::assets::AssetService>,
     pub(crate) groups: Arc<rss_mdm_inventory_service::groups::Groups>,
     pub(crate) compliance: Arc<rss_mdm_inventory_service::compliance::Compliance>,
@@ -413,8 +424,6 @@ async fn admit_storage_in(
     if !valid {
         return Err(sqlx::Error::Protocol("host capability admission".into()).into());
     }
-    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
-        .await?;
     let contracts = [
         (
             "telemetry",

@@ -330,7 +330,7 @@ impl Fixture {
     }
     pub(super) async fn create_restart(&mut self) -> Result<Uuid> {
         let id = Uuid::new_v4();
-        let body = json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
+        let body = json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.clock.unix_seconds()?+300});
         let path = format!("/api/v1/devices/{}/operations", case_device());
         let reply = self
             .browser

@@ -65,10 +65,11 @@ def enterprise(stack):
 
 def seed_inventory(stack):
     registration='99999999-9999-4999-8999-999999999991';epoch='99999999-9999-4999-8999-999999999992'
-    definition=dict(dataset='inventory',version='auth-fixture-v1',source='mdm.windows',scope={'kind':'device'},fields=[dict(
-        key='device.model',version=1,valueType=dict(kind='string',maxLength=256,allowEmpty=False),
-        nullable=False,manual=False,sources={'mdm.windows':0},platforms=['windows'],
-        sensitivity='standard',unit=None,searchable=True,itemKey=None)])
+    field=dict(timeSeries=None,key='device.model',version=1,valueType=dict(kind='string',maxLength=256,allowEmpty=False),
+               nullable=False,manual=False,sources={'mdm.windows':0},platforms=['windows'],
+               sensitivity='standard',unit=None,searchable=True,itemKey=None)
+    definition=dict(dataset='inventory',version='auth-fixture-v1',source='mdm.windows',
+                    fields=[dict(definition=field,scope={'kind':'device'})])
     document=json.dumps(definition,separators=(',',':'))
     fingerprint=hashlib.sha256(document.encode()).hexdigest()
     coverage=json.dumps(dict(id='inventory',version='auth-fixture-v1',definition=fingerprint,format='typed-fields-v1'),separators=(',',':'))
@@ -78,13 +79,12 @@ def seed_inventory(stack):
     BEGIN;
     SET LOCAL rss.tenant_id = '{TENANT}';
     INSERT INTO mdm_access.grants(tenant_id,id,actor,instance,device,purpose,state,expires_at) VALUES('{TENANT}','99999999-9999-4999-8999-999999999993','2364-synthetic-read-fixture','{INSTANCE}','device-1','enrollment','consumed',clock_timestamp()+interval '200 seconds');
-    INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows');
-    INSERT INTO mdm_access.devices VALUES('{TENANT}','device-1');
-    INSERT INTO mdm_access.registrations VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active');
-    INSERT INTO mdm_access.credentials VALUES('{TENANT}','99999999-9999-4999-8999-999999999995','{registration}','mdm',repeat('a',64),'active');
+    INSERT INTO mdm_access.requests(tenant_id,id,grant_id,source,windows_profile,state,expected_generation,password_digest,password_version,credential_ref,expires_at,issuance_operation) VALUES('{TENANT}','99999999-9999-4999-8999-999999999994','99999999-9999-4999-8999-999999999993','mdm.windows','Device','bound',0,repeat('a',64),1,gen_random_uuid(),clock_timestamp()+interval '300 seconds',gen_random_uuid());
+    INSERT INTO mdm_access.devices(tenant_id,id) VALUES('{TENANT}','device-1');
+    INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) VALUES('{TENANT}','{registration}','device-1','mdm',1,'99999999-9999-4999-8999-999999999994','active','primary','{epoch}');
     INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled) VALUES('{TENANT}','{registration}','mdm.windows','{epoch}',true);
     INSERT INTO mdm.collection_definitions(tenant_id,dataset,version,source,fingerprint,coverage,definition) VALUES('{TENANT}','inventory','auth-fixture-v1','mdm.windows','{fingerprint}','{coverage}','{document}');
-    INSERT INTO mdm.inventory(tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','{value}','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}',0);
+    INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,registration,source,epoch,collection_sequence) VALUES('{{"kind":"device"}}','{TENANT}','mdm.observation.v1','{INVENTORY_GENERATION}','{scope}','{coverage}','device.model','{value}','synthetic-2364',1,2,'known','{registration}','mdm.windows','{epoch}',0);
     COMMIT;
     """)
 
@@ -143,9 +143,9 @@ def run(candidate, tools_image, output):
             mismatch=installation_mismatch(primary)
             with Candidate(candidate,network=primary.network,host='mdm-other.example.test',
                            instance=str(uuid.uuid4()),tenant=TENANT,diagnostics=output,require_ui=True) as other:
-                # Browser uses stream 443; host smoke retains the mapped stream listener.
+                # Browser uses TLS 443; host smoke retains the mapped TLS listener.
                 for stack in [primary,other]:
-                    conf=(stack.root/'nginx.conf').read_text().replace('listen 8443;', 'listen 443;\n        listen 8443;')
+                    conf=(stack.root/'nginx.conf').read_text().replace('listen 8443 ssl;', 'listen 443 ssl;\n        listen 8443 ssl;').replace('listen 8443 ssl default_server;', 'listen 443 ssl default_server; listen 8443 ssl default_server;')
                     (stack.root/'nginx.conf').write_text(conf)
                     (stack.root/'container/gateway/nginx.conf').write_text(conf)
                     stack.copy_runtime()
@@ -238,6 +238,9 @@ def run_normal(input_file, output):
                 require(all(isinstance(value,str) and len(value)<=2000 for value in diagnostic.values()),'invalid diagnostic')
                 # Do not persist dynamic cookies/callback values from a failed browser.
                 secrets=private+raw.get('privateValues',[])
+                scenarios=raw.get('scenarios',[])
+                require(isinstance(scenarios,list) and len(scenarios)<=64,'invalid scenario failures')
+                failure['scenarios']=safe_evidence(scenarios,secrets)
                 for key,value in diagnostic.items():
                     try:failure[key]=safe_evidence(value,secrets)
                     except RuntimeError:failure[key]='diagnostic-withheld'

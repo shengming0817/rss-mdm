@@ -265,16 +265,15 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
         "INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES('{}','{device}')",
         tenant()
     ));
-    // Each scope is an independent prerequisite, not one timed business mutation.
-    for _ in 0..33 {
-        service
-            .runtime
-            .local_tx_with_context(
-                tenant(),
-                deadline(),
-                (service.as_ref(), &device),
-                |(service, seeded_device), tx| {
-                    Box::pin(async move {
+    service
+        .runtime
+        .local_tx_with_context(
+            tenant(),
+            deadline(),
+            (service.as_ref(), &device),
+            |(service, seeded_device), tx| {
+                Box::pin(async move {
+                    for _ in 0..33 {
                         service
                             .seed_scope_in(
                                 tx,
@@ -293,20 +292,21 @@ async fn installation_fallback_and_scope_pages_do_not_repeat_wakes() {
                                     sqlx::Error::Protocol(e.to_string()),
                                 )
                             })?;
-                        Ok(())
-                    })
-                },
-            )
-            .await
-            .fold(
-                |_| (),
-                |e| panic!("{e:?}"),
-                |e| panic!("{e:?}"),
-                |e| panic!("{e:?}"),
-                |e| panic!("{e:?}"),
-                |e| panic!("{e:?}"),
-            );
-    }
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
+
     let devices = vec![device];
     let initial_revision = revisions(&devices)[0];
     // Start after registration ingress; only the real inventory trigger supplies

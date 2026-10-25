@@ -4,12 +4,11 @@
 )]
 use crate::audit_test_support::audit_count;
 use crate::test_support::*;
-use crate::test_support::{http::Browser, http::set_device_grants};
+use crate::test_support::{http::Browser, http::change_device_grants};
 pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) -> Result<()> {
     let issue = "/api/v1/enrollments";
-    set_device_grants(
+    change_device_grants(
         browser,
-        router,
         crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )
@@ -108,9 +107,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
     );
     browser.operation = Some(uuid::Uuid::new_v4());
     ensure!(browser.call(router, Method::POST, issue, Some(json!({"deviceId":"outside","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","source":"mdm.windows","windowsProfile":"Device"}))).await?.0 == StatusCode::FORBIDDEN);
-    set_device_grants(
-        browser,
-        router,
+    change_device_grants(browser,
         crate::test_support::case::name("device-1"),
         &["inventory_read"],
     )
@@ -134,9 +131,7 @@ pub(crate) async fn enrollment_matrix(router: &Router, browser: &mut Browser) ->
             == StatusCode::FORBIDDEN
     );
     browser.operation = Some(uuid::Uuid::new_v4());
-    set_device_grants(
-        browser,
-        router,
+    change_device_grants(browser,
         crate::test_support::case::name("device-1"),
         &["inventory_read", "enrollment"],
     )

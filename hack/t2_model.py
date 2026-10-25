@@ -54,7 +54,7 @@ class Module:
     db_mode: str | None = 'reuse'
     scope: str | None = 'objects'
     policies: tuple[CasePolicy, ...] = ()
-    python: str | None = None
+    python: tuple[str, str] | None = None
     children: tuple[str, ...] = ()
     expected_cases: int | None = None
 
@@ -73,7 +73,7 @@ class Module:
             result.update(('cargo', 'cargo-nextest'))
         if self.postgres or 'gateway' in self.fixtures or 'idp' in self.fixtures or 's3' in self.fixtures or 'scep' in self.fixtures or 'telemetry' in self.fixtures:
             result.add('docker')
-        if self.postgres or set(self.fixtures) & {
+        if self.postgres or self.id == 'gateway.tls' or set(self.fixtures) & {
             's3',
             'tls',
             'telemetry',
@@ -132,7 +132,7 @@ def resolve_cases(module, names):
                 or type(value.configuration_devices) is not int or value.configuration_devices < 0):
             raise ValueError('invalid preparation needs: ' + module.id + ': ' + name)
         allowed_materials = {'windows-weak-csr', 'windows-rogue-client', 'windows-renewal', 'pki-recovery',
-                             'agent-long-lived', 'agent-bootstrap', 'other'}
+                             'agent-long-lived', 'agent-large-csr', 'archive-issued', 'agent-bootstrap', 'other'}
         if len(set(value.materials)) != len(value.materials) or set(value.materials) - allowed_materials:
             raise ValueError('invalid cryptographic materials: ' + module.id + ': ' + name)
         if 'agent_pki' in value.fixtures and value.db_mode == 'reuse' and value.scope == 'objects' and (value.materials or value.configuration_devices):
@@ -151,7 +151,6 @@ def resolve_cases(module, names):
             'local_worker' in value.fixtures
             and value.db_mode == 'reuse'
             and value.scope == 'objects'
-            or {'local_worker', 'shared_worker'} <= set(value.fixtures)
         ):
             raise ValueError(
                 'conflicting consumer ownership: ' + module.id + ': ' + name

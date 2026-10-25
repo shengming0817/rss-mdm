@@ -74,7 +74,7 @@ pub(crate) async fn request_store() -> anyhow::Result<(
         .ssl_mode(PgSslMode::VerifyFull)
         .ssl_root_cert(std::env::var("PG_CA_FILE")?);
     let pool = PgPoolOptions::new()
-        .max_connections(1)
+        .max_connections(4)
         .connect_with(options)
         .await?;
     let timer = crate::lifecycle::RuntimeTimer;

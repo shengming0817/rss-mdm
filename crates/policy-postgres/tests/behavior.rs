@@ -80,6 +80,7 @@ async fn configuration_cas_replay_and_runtime_isolation() {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
+#[cfg(feature = "integration")]
 async fn scope_changes_preserve_execution_version() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
@@ -96,9 +97,19 @@ async fn scope_changes_preserve_execution_version() {
             enabled: true,
         },
     );
-    execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &first, |input, tx| {
+            Box::pin(async move { fixture::published_in(tx, input).await })
+        })
         .await
-        .unwrap();
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let frozen = sql(&format!(
         "SELECT to_jsonb(v) FROM mdm_policy.versions v WHERE tenant_id='{}' AND id='{}'",
         tenant(),
@@ -212,6 +223,7 @@ async fn admission_rejects_schema_and_reachable_privilege_drift() {
 }
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
+#[cfg(feature = "integration")]
 async fn explicit_trigger_does_not_edit_configuration() {
     let mut definition = definition();
     let core::Action::Configuration { resource, .. } = &definition.action else {
@@ -234,9 +246,19 @@ async fn explicit_trigger_does_not_edit_configuration() {
             enabled: true,
         },
     );
-    execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &first, |input, tx| {
+            Box::pin(async move { fixture::published_in(tx, input).await })
+        })
         .await
-        .unwrap();
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let before = serde_json::to_value(store.get(id, deadline()).await.unwrap().unwrap()).unwrap();
     let op = Uuid::new_v4();
     let version = first.policy.version;
@@ -264,6 +286,7 @@ async fn explicit_trigger_does_not_edit_configuration() {
 
 #[tokio::test]
 #[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
+#[cfg(feature = "integration")]
 async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
     let runtime = runtime().await;
     let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
@@ -278,9 +301,19 @@ async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
             enabled: true,
         },
     );
-    execute(&runtime, &store, Uuid::new_v4(), &first, deadline())
+    runtime
+        .local_tx_with_context(tenant(), deadline(), &first, |input, tx| {
+            Box::pin(async move { fixture::published_in(tx, input).await })
+        })
         .await
-        .unwrap();
+        .fold(
+            |_| (),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+        );
     let other = support::runtime().await;
     for version in [false, true] {
         let selected = if version { first.policy.version } else { id };

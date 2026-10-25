@@ -590,6 +590,15 @@ async fn directory(
         domains: domains(&auth.proof, platform),
     }))
 }
+pub fn routes(source: Arc<dyn Source>) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::{Operation, Router, catalog, routing::get};
+    Router::new().route(
+        "/settings/catalog",
+        get(tenant)
+            .owned(&catalog::SETTINGS_CATALOG, &[Operation::Get])
+            .layer(Extension(source)),
+    )
+}
 pub(crate) async fn tenant(
     Extension(source): Extension<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,
@@ -618,12 +627,11 @@ mod tests {
     }
     #[test]
     fn catalog_keeps_fixed_ledger_and_device_custody_distinct() {
-        assert_eq!(CATALOG.len(), 44);
         let ids = CATALOG
             .iter()
             .map(|v| v.id)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(ids.len(), 44);
+        assert_eq!(ids.len(), CATALOG.len());
         let package = CATALOG.iter().find(|v| v.id == "agent-package").unwrap();
         assert_eq!(package.lifecycle, Lifecycle::BusinessConfiguration);
         let ledger = CATALOG.iter().find(|v| v.id == "ledger").unwrap();

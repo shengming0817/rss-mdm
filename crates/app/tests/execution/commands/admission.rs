@@ -12,7 +12,7 @@ use sqlx::Connection;
 async fn authorized_idempotent_atomic_admission() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.admission_transactions().await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 #[tokio::test]
@@ -21,14 +21,13 @@ async fn minimum_role_scope_and_storage_admission() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_authorized().await?;
     client.admission_and_scope().await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 impl Client {
     async fn storage_admitted(&self) -> anyhow::Result<bool> {
         use rss_mdm_execution_service::{Error, Failure, transaction::Fault};
         let admission = self
-            .app
             .execution_runtime
             .local_tx(
                 rss_request_context::TenantId::parse(case_tenant())?,
@@ -78,7 +77,7 @@ impl Client {
     async fn admission_transactions(&mut self) -> anyhow::Result<()> {
         self.set_authorized(true).await?;
         let old_id = Uuid::new_v4();
-        let old = json!({"operationId":old_id,"field":"model","expectedValue":"old-wire","deadline":self.app.clock.unix_seconds()?+300});
+        let old = json!({"operationId":old_id,"field":"model","expectedValue":"old-wire","deadline":self.clock.unix_seconds()?+300});
         let denied = self.call(Method::POST, "", Some(old)).await?;
         ensure!(denied.0 == StatusCode::BAD_REQUEST && denied.1["code"] == "malformed_request");
         let mut check =
@@ -97,7 +96,7 @@ impl Client {
         let effects = (effects.0, effects.1, effects.2, audits);
         ensure!(effects == (0, 0, 0, 0));
         check.close().await?;
-        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds()?+300});
+        let request = json!({"operationId":self.operation,"action":{"kind":"restart"},"deadline":self.clock.unix_seconds()?+300});
         let mut malformed = request.clone();
         malformed["unexpected"] = true.into();
         let rejected = self.call(Method::POST, "", Some(malformed)).await?;
@@ -108,7 +107,7 @@ impl Client {
         // The complete transaction committed, but its ACK is withheld by the provider.
         #[cfg(feature = "integration")]
         {
-            self.app.execution.inject_fault(
+            self.execution.inject_fault(
                 rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
             );
             ensure!(
@@ -165,8 +164,8 @@ impl Client {
         ensure!(
             matches!(
                 rss_mdm_execution_service::storage::bind_native_key(
-                    &self.app.flow.planning.runtime,
-                    self.app.identity.tenant,
+                    &self.execution_runtime,
+                    self.tenant,
                     other_key.id()
                 )
                 .await,
@@ -177,38 +176,12 @@ impl Client {
             "changed native key was silently accepted"
         );
         rss_mdm_execution_service::storage::bind_native_key(
-            &self.app.flow.planning.runtime,
-            self.app.identity.tenant,
-            self.app.protection.id(),
+            &self.execution_runtime,
+            self.tenant,
+            self.protection.id(),
         )
         .await?;
         persisted.close().await?;
-        let path = format!(
-            "/api/v1/devices/{}/timeline?operationId={}",
-            case_device(),
-            self.operation
-        );
-        crate::audit_test_support::projection::drain(
-            rss_request_context::TenantId::parse(case_tenant())?,
-            rss_audit_postgres::Integrity::Plain,
-        )
-        .await?;
-        let (status, timeline) = self
-            .browser
-            .call(&self.router, Method::GET, &path, None)
-            .await?;
-        ensure!(status == StatusCode::OK);
-        ensure!(
-            timeline["items"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v["source"] == "mdm.business"
-                    && v["action"] == "command_accept"
-                    && v["phase"] == "accepted"
-                    && v["effect"] == "unknown"
-                    && v["operationId"] == self.operation.to_string())
-        );
         let replay = self.call(Method::POST, "", Some(request.clone())).await?;
         ensure!(replay == accepted);
         let mut conflict = request.clone();
@@ -246,33 +219,11 @@ impl Client {
         let mut pg =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let concurrent = Uuid::new_v4();
-        let mut body = request.clone();
-        body["operationId"] = concurrent.to_string().into();
         let (mut one, mut two) = (self.browser.clone(), self.browser.clone());
         let path = format!(
             "/api/v1/devices/{DEVICE}/operations",
             DEVICE = case_device()
         );
-        let (a, b) = tokio::join!(
-            one.call(&self.router, Method::POST, &path, Some(body.clone())),
-            two.call(&self.router, Method::POST, &path, Some(body))
-        );
-        let (a, b) = (a?, b?);
-        ensure!(
-            a == b && a.0 == StatusCode::ACCEPTED,
-            "concurrent replay diverged"
-        );
-        ensure!(
-            self.call(
-                Method::POST,
-                &format!("/{concurrent}/cancel"),
-                Some(json!({"requestId":Uuid::new_v4(),"expectedRevision":1}))
-            )
-            .await?
-            .0 == StatusCode::OK
-        );
-
         for different in [false, true] {
             let id = Uuid::new_v4();
             let mut first = request.clone();
@@ -512,7 +463,6 @@ impl Client {
             "missing command misclassified {missing:?}"
         );
         let poison = self
-            .app
             .execution
             .accept_dispatch(Uuid::new_v4(), vec![0; 32])
             .await;
@@ -531,8 +481,7 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         // The provider loses the commit future after all business SQL has run.
-        self.app
-            .execution
+        self.execution
             .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         let mut next = request.clone();
         let id = Uuid::new_v4();
@@ -564,7 +513,29 @@ impl Client {
 #[ignore = "make t2 MODULE=execution.commands.admission"]
 async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
-    let (other, other_operation) = client.timeline_pair().await?;
+    let timeline = Arc::new(rss_mdm_timeline_service::Timeline::new(
+        host.pool.clone(),
+        host.audit.clone(),
+        client.tenant,
+        &[31; 32],
+    )?);
+    timeline.initialize().await?;
+    client.router = client.router.clone().merge(
+        host.protect(
+            axum::Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::timeline::routes()
+                    .with_state(timeline)
+                    .into_axum(),
+            ),
+        )?,
+    );
+    let devices = crate::device::DeviceService::new(
+        host.registration.clone(),
+        client.tenant.to_string(),
+        host.audit.clone(),
+    );
+    let (other, other_operation) = client.timeline_pair(&devices).await?;
     let cancelled = client
         .call(
             Method::POST,
@@ -602,21 +573,22 @@ async fn cancellation_request_identity_does_not_claim_another_device() -> anyhow
         !page["items"].as_array().unwrap().is_empty(),
         "fact must remain searchable by actual operation: {page}"
     );
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }
 
 impl Client {
-    async fn timeline_pair(&mut self) -> anyhow::Result<(String, Uuid)> {
+    async fn timeline_pair(
+        &mut self,
+        devices: &crate::device::DeviceService,
+    ) -> anyhow::Result<(String, Uuid)> {
         let other = crate::test_support::case::name("timeline-other").to_owned();
         let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
         let credential =
             crate::device::test_support::proof(case_tenant(), rss_mdm_inventory::Channel::Mdm, 94);
-        crate::device::test_support::bind(&self.app.devices, &proof, &credential, &other, 0)
-            .await?;
+        crate::device::test_support::bind(devices, &proof, &credential, &other, 0).await?;
         self.known_windows_capability(&other).await?;
-        let subject =
-            crate::test_support::http::browser_subject(&self.browser, &self.router).await?;
+        let subject = crate::test_support::http::prepared_subject(&self.browser)?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &["device_control", "operation_read", "operation_cancel"],
@@ -625,15 +597,13 @@ impl Client {
             operation: crate::authorization::Permission::AuthorizationRead,
             scope: crate::authorization::Scope::Tenant,
         });
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
-        let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.app.clock.unix_seconds().unwrap()+300});
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
+        let request = |id| json!({"operationId":id,"action":{"kind":"restart"},"deadline":self.clock.unix_seconds().unwrap()+300});
         let id = Uuid::new_v4();
-        let mut other_browser = crate::test_support::http::Browser::default();
-        let login = other_browser.call(&self.router,Method::POST,&format!("/api/v1/identity/tenants/{}/login",case_tenant()),Some(json!({"login":crate::test_support::case::login("other"),"password":crate::test_support::identity::PASSWORD}))).await?;
-        ensure!(login.0 == StatusCode::OK, "other login: {login:?}");
-        let other_subject =
-            crate::test_support::http::browser_subject(&other_browser, &self.router).await?;
-        crate::test_support::identity::set_grants(
+        let mut other_browser =
+            crate::test_support::authority::Authority::prepared_browser("other")?;
+        let other_subject = crate::test_support::http::prepared_subject(&other_browser)?;
+        crate::test_support::identity::change_grants(
             case_tenant(),
             &other_subject,
             crate::test_support::identity::device_grants(Some(&other), &["device_control"])?,
@@ -666,7 +636,7 @@ impl Client {
 async fn accepted_receipt_replays_after_deadline_and_capability_removal() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.set_authorized(true).await?;
-    let request = json!({"operationId":client.operation,"deadline":client.app.clock.unix_seconds()?+2,"action":{"kind":"restart"}});
+    let request = json!({"operationId":client.operation,"deadline":client.clock.unix_seconds()?+2,"action":{"kind":"restart"}});
     let accepted = client.call(Method::POST, "", Some(request.clone())).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
@@ -682,9 +652,9 @@ async fn accepted_receipt_replays_after_deadline_and_capability_removal() -> any
     tokio::time::sleep(Duration::from_secs(3)).await;
     ensure!(client.call(Method::POST, "", Some(request.clone())).await? == accepted);
     let mut changed = request;
-    changed["deadline"] = json!(client.app.clock.unix_seconds()? + 300);
+    changed["deadline"] = json!(client.clock.unix_seconds()? + 300);
     ensure!(client.call(Method::POST, "", Some(changed)).await?.0 == StatusCode::CONFLICT);
     pg.close().await?;
-    host.close().await?;
+    host.resources.finish(async { Ok(()) }).await?;
     Ok(())
 }

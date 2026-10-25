@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 import re
@@ -90,14 +91,14 @@ class BrowserBoundaryTests(unittest.TestCase):
 
     def test_cross_origin_redirect_cannot_receive_idp_password(self):
         import subprocess
-        source=Path(auth_t3.__file__).with_name('auth_t3_browser.mjs').read_text()
-        function=source[source.index('async function keycloak('):source.index('let admin,member;')]
+        source=Path(auth_t3.__file__).with_name('auth_t3_browser.mjs')
+        function='import {keycloak} from '+json.dumps(source.as_uri())+';\n'
         probe="""
 const input={issuer:'https://idp.test/realms/mdm',idpPassword:'private'};
 const assert=(ok,message)=>{if(!ok)throw new Error(message)};
 let filled=0;
 const page={waitForURL:async()=>{},url:()=> 'https://attacker.test/login',locator:()=>({waitFor:async()=>{},fill:async()=>{filled++},click:async()=>{}})};
-try{await keycloak(page,'alice');throw new Error('accepted redirect')}catch(e){if(e.message!=='untrusted IdP navigation'||filled!==0)throw e}
+try{await keycloak(page,'alice',input);throw new Error('accepted redirect')}catch(e){if(e.message!=='untrusted IdP navigation'||filled!==0)throw e}
 """
         result=subprocess.run(['node','--input-type=module','-e',function+probe],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

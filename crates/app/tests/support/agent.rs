@@ -1,5 +1,5 @@
 //! Fixture peers use real signed certificates and a real TLS handshake.
-use super::{http::*, process::*, runtime::*, *};
+use super::{http::*, runtime::*, *};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rss_mdm_certificate::ClientCertificateEvidence;
 use rss_mdm_registration_service::agent::{Assembly, NativeAdmission, Pending, Service};
@@ -153,14 +153,14 @@ pub(crate) async fn complete_grant(
 pub(crate) fn application_service(
     access_audit: Arc<rss_mdm_audit_integration::AuditStore>,
     pki: &crate::agent_pki::AgentPki,
-    access: &crate::Database,
+    access: Arc<rss_mdm_registration_service::Store>,
     audit: Arc<rss_mdm_audit_integration::AuditStore>,
     execution: Arc<rss_mdm_execution_service::ExecutionService>,
 ) -> Result<Arc<Service>> {
     Ok(Arc::new(Service::new(Assembly {
         cursor: rss_mdm_query::cursor::CursorCodec::new(&[29; 32]).unwrap(),
         tenant: rss_request_context::TenantId::parse(case_tenant())?,
-        store: access.registration(),
+        store: access,
         access_audit,
         audit,
         issuer: pki.issuer.clone(),
@@ -185,39 +185,6 @@ pub(crate) fn csr() -> Result<String> {
         std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?).join("agent.der"),
     )?))
 }
-/// Seed current credentials while preserving certificate, TLS, and request verification.
-pub(crate) async fn seed_profile(
-    base: &Value,
-    execution: Arc<rss_mdm_execution_service::ExecutionService>,
-    label: &str,
-    device: &str,
-    profile: Value,
-) -> Result<Value> {
-    let config: crate::agent_pki::Config = serde_json::from_value(base["agent_pki"].clone())?;
-    let access = database(base).await?;
-    let result = async {
-        let audit = access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?;
-        let pki = config
-            .load(
-                base["identity"]["instance_id"].as_str().unwrap(),
-                audit.clone(),
-                Arc::new(crate::clock::SystemClock),
-                crate::device_pki::providers(&serde_json::from_value::<
-                    Vec<crate::device_pki::Provider>,
-                >(base["device_pki"].clone())?)?,
-                None,
-            )?
-            .ok_or_else(|| anyhow::anyhow!("agent fixture PKI missing"))?;
-        let service = application_service(audit.clone(), &pki, &access, audit, execution)?;
-        seed_service(&service, label, device, profile).await
-    }
-    .await;
-    access.close().await;
-    result
-}
-
 pub(crate) async fn seed_service(
     service: &Service,
     label: &str,
@@ -270,6 +237,7 @@ async fn seed_service_with_ack(
 
 /// Enrollment and credential-lifecycle specialties retain the complete public operation chain.
 pub(crate) async fn enroll_profile(
+    service: &rss_mdm_registration_service::agent::Service,
     router: &Router,
     browser: &mut Browser,
     label: &str,
@@ -301,21 +269,6 @@ pub(crate) async fn enroll_profile(
     )
     .await?;
     ensure!(status.is_success(), "candidate {status} {candidate}");
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let config: crate::agent_pki::Config = serde_json::from_value(base["agent_pki"].clone())?;
-    let db = database(&base).await?;
-    let pki = config
-        .load(
-            base["identity"]["instance_id"].as_str().unwrap(),
-            db.audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?,
-            Arc::new(crate::clock::SystemClock),
-            crate::device_pki::providers(&serde_json::from_value::<
-                Vec<crate::device_pki::Provider>,
-            >(base["device_pki"].clone())?)?,
-            None,
-        )?
-        .unwrap();
     let chain = candidate["certificateChain"]
         .as_array()
         .unwrap()
@@ -323,7 +276,7 @@ pub(crate) async fn enroll_profile(
         .map(|v| STANDARD.decode(v.as_str().unwrap()))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let peer = crate::test_support::agent_tls::peer(
-        pki.issuer.trust(),
+        service.trust(),
         &chain,
         &std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?),
     )
@@ -348,11 +301,15 @@ pub(crate) async fn enroll_profile(
     );
     Ok((request, candidate, registration))
 }
-pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<Agent> {
+pub(crate) async fn register(
+    service: &rss_mdm_registration_service::agent::Service,
+    router: &Router,
+    browser: &mut Browser,
+) -> Result<Agent> {
     let label = Box::leak(super::runtime::credential(&Uuid::new_v4().to_string()).into_boxed_str());
-    let (request,candidate,registration)=enroll_profile(router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
+    let (request,candidate,registration)=enroll_profile(service,router,browser,label,json!({"capabilities":["inventory.collect.v1"],"platform":"macos","architecture":"aarch64","executionContext":software_execution::context(software_execution::Platform::MacOs)})).await?;
     let device = registration["deviceId"].as_str().unwrap();
-    set_device_grants(browser, router, device, &["inventory_read", "credentials"]).await?;
+    change_device_grants(browser, device, &["inventory_read", "credentials"]).await?;
     Ok(Agent {
         password: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         credential: label,
@@ -361,9 +318,14 @@ pub(crate) async fn register(router: &Router, browser: &mut Browser) -> Result<A
         registration,
     })
 }
-pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
+pub(crate) async fn router(
+    fixture: &mut authority::Authority,
+) -> Result<(Router, Arc<rss_mdm_registration_service::agent::Service>)> {
     let service = service(fixture).await?;
-    let runtime = agent_runtime(&fixture.base).await?;
+    let runtime = agent_runtime(fixture).await?;
+    fixture
+        .resources
+        .resource(InventoryFixtureResource(runtime.clone()));
     let envelope = rss_mdm_agent_channel::boundary::Envelope {
         admission: Arc::new(tokio::sync::Semaphore::new(32)),
         host: "mdm.example.test:9445".into(),
@@ -396,62 +358,9 @@ pub(crate) async fn router(fixture: &authority::Authority) -> Result<Router> {
         );
     let browser = fixture.authorization().merge(fixture.enrollment()).nest(
         "/api/v1",
-        rss_mdm_management_http::agent_enrollment::routes(Some(service)).into_axum(),
+        rss_mdm_management_http::agent_enrollment::routes(Some(service.clone())).into_axum(),
     );
-    fixture.router_with_public(browser, crate::test_support::runtime::native_router(public))
-}
-
-/// Prepare additional task-capable targets from one real HTTP registration.
-/// Only access prerequisites are cloned; remote targets, commands, receipts and
-/// audit remain exclusively the output of the production operation under test.
-pub(crate) fn bulk_task_agents(canonical: &str, count: usize) -> Result<Vec<String>> {
-    ensure!(count <= 1000);
-    // Keep the one live HTTP peer first in target order; the remaining peers
-    // exercise fanout checkpoints without making this a relay-throughput test.
-    let canonical_sql = canonical.replace('\'', "''");
-    pg(&format!(
-        r#"
-BEGIN;
-CREATE TEMP TABLE task_targets ON COMMIT DROP AS
- SELECT 'restart-agent-' || lpad(n::text,3,'0') AS device, gen_random_uuid() AS grant_id,
-        gen_random_uuid() AS request, gen_random_uuid() AS registration
- FROM generate_series(1,{count}) n;
-INSERT INTO mdm_access.agent_grants(tenant_id,id,operation_id,source,actor,instance,device,platform,secret_digest,request_digest,state,expires_at)
- SELECT '{TENANT}',grant_id,request,'download','bulk-fixture','{INSTANCE}',device,'macos',repeat('0',64),repeat('0',64),'consumed',clock_timestamp()+interval '24 hours' FROM task_targets;
-INSERT INTO mdm_access.devices(tenant_id,id) SELECT '{TENANT}',device FROM task_targets;
-INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,agent_grant_id,state,purpose,epoch)
- SELECT '{TENANT}',registration,device,'agent',1,grant_id,'active','primary',gen_random_uuid() FROM task_targets;
-INSERT INTO mdm_access.credentials(tenant_id,id,registration,channel,locator,state)
- SELECT '{TENANT}',gen_random_uuid(),registration,'agent',
-        md5(registration::text)||md5(registration::text),'active' FROM task_targets;
-INSERT INTO mdm_access.report_sources(tenant_id,registration,source,epoch,enabled)
- SELECT '{TENANT}',t.registration,s.source,gen_random_uuid(),true
- FROM task_targets t CROSS JOIN mdm_access.report_sources s
- JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration)
- WHERE r.tenant_id='{TENANT}' AND r.device='{canonical_sql}' AND r.channel='agent' AND r.state='active' AND s.enabled;
-INSERT INTO mdm_agent.bindings(tenant_id,registration,wire_version,capabilities,platform,architecture,execution_context)
- SELECT '{TENANT}',registration,1,'["inventory.collect.v1","task.execute.v1"]','macos','aarch64','{execution_context}'::jsonb FROM task_targets;
-INSERT INTO mdm_commands.action_polls(tenant_id,registration,profiles) SELECT '{TENANT}',registration,'{{"profiles":["posix_sh"],"environment":{{"osVersion":"14.0.0.0","build":0,"edition":null,"tools":{{}}}}}}'::jsonb FROM task_targets;
-DO $$ BEGIN
- IF (SELECT count(*) FROM task_targets t JOIN mdm_access.registrations r ON r.id=t.registration
-     JOIN mdm_agent.bindings b ON b.registration=r.id
-     JOIN mdm_access.credentials c ON c.registration=r.id
-     JOIN mdm_access.agent_grants q ON q.id=r.agent_grant_id
-     JOIN mdm_access.devices d ON (d.tenant_id,d.id)=(r.tenant_id,r.device)
-     WHERE r.state='active' AND c.state='active'
-       AND b.capabilities='["inventory.collect.v1","task.execute.v1"]'
-       AND (SELECT count(*) FROM mdm_access.report_sources s WHERE s.registration=r.id AND s.enabled
-            AND s.source IN ('agent.builtin','agent.script','agent.osquery'))=3) <> {count}
- THEN RAISE EXCEPTION 'incomplete task target fixture'; END IF;
-END $$;
-COMMIT;
-"#,
-        TENANT = case_tenant(),
-        execution_context = serde_json::json!({"revision":1,"osVersion":[14,0,0,0],"userHelper":true,"systemBroker":true,"interactiveUser":null,"sourceCredentials":[],"msixSideload":false,"msixUnsigned":false}),
-    ))?;
-    let mut devices = vec![canonical.to_owned()];
-    devices.extend((1..=count).map(|n| format!("restart-agent-{n:03}")));
-    Ok(devices)
+    Ok((fixture.router_with_public(browser, public)?, service))
 }
 
 pub(crate) fn fixture_signing_input() -> Result<Value> {
@@ -550,18 +459,17 @@ pub(crate) async fn wait_agent_status(
 }
 
 pub(crate) async fn agent_runtime(
-    config: &Value,
+    authority: &authority::Authority,
 ) -> Result<Arc<crate::inventory_runtime::InventoryRuntime>> {
-    let access = database(config).await?;
-    let config: Config = serde_json::from_value(config.clone())?;
+    let config: Config = serde_json::from_value(authority.base.clone())?;
     Ok(crate::inventory_runtime::InventoryRuntime::fixture(
         config.runtime_database.options()?,
-        access.inventory(),
-        rss_request_context::TenantId::parse(case_tenant())?,
+        Arc::new(rss_mdm_inventory_service::Store::from_pool(
+            authority.pool.clone(),
+        )),
+        authority.identity.tenant,
         monotonic(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        authority.audit.clone(),
     )
     .await?)
 }

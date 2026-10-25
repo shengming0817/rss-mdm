@@ -3,9 +3,12 @@ use sqlx::Connection;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: binding query fields, stable pagination and authorization/data fencing"]
 async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async{
+        let delivery_worker = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        let outcome = async {
+
  let id=enterprise::ready(&mut f).await?;
  let device=execution::case_device_id();
  let path=format!("/api/v1/devices/{device}/device-access");
@@ -40,17 +43,21 @@ async fn binding_directory_uses_checked_queries_and_signed_continuations() -> Re
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::CONFLICT);
  let fresh=f.author.call(&f.router,Method::GET,&format!("{path}?{query}"),None).await?;
  let cursor=fresh.1["nextCursor"].as_str().context("fresh cursor")?;
- crate::test_support::identity::set_grants(case_tenant(),&f.author_id,vec![]).await?;
+ crate::test_support::identity::change_grants(case_tenant(),&f.author_id,vec![]).await?;
  ensure!(f.author.call(&f.router,Method::GET,&format!("{path}?{query}&cursor={cursor}"),None).await?.0==StatusCode::FORBIDDEN);
  c.close().await?;
  Ok(())
+        }.await;
+        let stopped = crate::test_support::runtime::stop_worker(delivery_worker).await;
+        outcome.and(stopped)
+
  }).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=device-access.http: native discovery has a bounded signed scan and rejects management query aliases"]
 async fn native_discovery_uses_signed_window_continuation() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async{
  let (policy,_)=setup_platform(&mut f,false,true).await?;

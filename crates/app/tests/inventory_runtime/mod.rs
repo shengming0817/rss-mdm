@@ -58,24 +58,24 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             .await
             .is_err()
     );
-    let access = Arc::new(Database::connect(options("mdm_access")?).await?);
+    let (pool, source, audit_store) = crate::audit_test_support::request_store().await?;
+    let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(pool.clone()));
+    let registration_store = Arc::new(rss_mdm_registration_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::registration_lifecycle::Bridge),
+    ));
     let service = Arc::new(DeviceService::new(
-        access.registration(),
+        registration_store.clone(),
         case_a().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        audit_store.clone(),
     ));
     let admin = admin(case_a(), "admin-a").await?;
     let credential = proof(case_a(), Channel::Mdm, 121);
     let (_, registration) = bind(&service, &admin, &credential, "collection-recovery", 0).await?;
     let first = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &credential,
         [Some("First"), Some("10")],
     )
@@ -99,16 +99,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         corrupt_epoch,
     )?;
     let read =
-        crate::collection::store::collection(&access.inventory(), &corrupt_scope, Some(first.id))
+        crate::collection::store::collection(&inventory.clone(), &corrupt_scope, Some(first.id))
             .await;
-    let pending = crate::collection::store::Delivery::new(
-        access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .pending_reports(case_a())
-    .await;
+    let pending = crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
+        .pending_reports(case_a())
+        .await;
     sqlx::query("UPDATE mdm_access.collection_runs SET epoch=$1::uuid WHERE tenant_id=$2::uuid AND id=$3::uuid")
         .bind(first.scope.epoch().as_str()).bind(case_a()).bind(first.id.to_string()).execute(&mut corrupt_root).await?;
     corrupt_root
@@ -120,16 +115,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         "relational scope corruption was accepted"
     );
     let canonical = first.batch().unwrap().encode().to_vec();
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     ensure!(runtime.inspect(&first).await?.receipt.is_none());
-    let reports = crate::collection::store::Delivery::new(
-        access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
-    )
-    .pending_reports(case_a())
-    .await?;
+    let reports = crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
+        .pending_reports(case_a())
+        .await?;
     let durable = reports
         .iter()
         .find(|r| r.batch().id().as_str() == first.id.to_string())
@@ -148,7 +138,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         service.management_principal(&credential).await,
         Err(rss_mdm_registration_service::Error::Unauthorized)
     ));
-    let mut tx = access.begin(case_a()).await?;
+    let mut tx = pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_a()).await?;
     ensure!(matches!(
         crate::device::store::revalidate_management(&mut tx, &stale).await,
         Err(rss_mdm_registration_service::Error::Unauthorized)
@@ -164,16 +155,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             ensure!(runtime.fixture_receive(&verified, fault).await.is_err());
             ensure!(runtime.inspect(&first).await?.receipt.is_none());
             ensure!(
-                crate::collection::store::Delivery::new(
-                    access.inventory(),
-                    access
-                        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                        .await?
-                )
-                .pending_reports(case_a())
-                .await?
-                .iter()
-                .any(|r| r.batch().id() == durable.batch().id())
+                crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
+                    .pending_reports(case_a())
+                    .await?
+                    .iter()
+                    .any(|r| r.batch().id() == durable.batch().id())
             );
         }
         let outcome = runtime
@@ -206,16 +192,11 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.fixture_lose_next_delivery_ack();
     runtime.fixture_deliver(durable).await?;
     ensure!(
-        !crate::collection::store::Delivery::new(
-            access.inventory(),
-            access
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?
-        )
-        .pending_reports(case_a())
-        .await?
-        .iter()
-        .any(|r| r.batch().id() == durable.batch().id()),
+        !crate::collection::store::Delivery::new(inventory.clone(), audit_store.clone())
+            .pending_reports(case_a())
+            .await?
+            .iter()
+            .any(|r| r.batch().id() == durable.batch().id()),
         "committed ACK response loss restored pending work"
     );
     // Replaying this exact already committed receipt must succeed without another intake.
@@ -226,7 +207,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
             && received.projection == crate::inventory_runtime::ProjectionStatus::Pending
     );
     ensure!(
-        crate::collection::store::collection(&access.inventory(), &first.scope, Some(first.id))
+        crate::collection::store::collection(&inventory.clone(), &first.scope, Some(first.id))
             .await?
             .unwrap()
             .batch()
@@ -236,7 +217,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     ensure!(
         crate::collection::store::collection(
-            &access.inventory(),
+            &inventory.clone(),
             &crate::device::scope(
                 TenantId::parse(case_b())?,
                 registration.registration,
@@ -250,7 +231,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     // A process restart between receipt and projection uses the original journal and definition.
     runtime.close_fixture().await?;
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &first).await?;
     ensure!(runtime.readiness.health().is_ready());
@@ -284,33 +265,24 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     let (_, registration) = bind(&service, &admin, &newer, "collection-recovery", 1).await?;
     let full = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &newer,
         [Some("New"), Some("11")],
     )
     .await?;
     let partial = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &newer,
         [Some("Unconfirmed"), None],
     )
     .await?;
     let failed = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &newer,
         [None, None],
     )
@@ -319,7 +291,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         matches!(partial.batch().unwrap().body(), Body::Snapshot(_))
             && matches!(failed.batch().unwrap().body(), Body::Snapshot(_))
     );
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &full).await?;
     wait_ready_projection(&runtime, &partial).await?;
@@ -338,7 +310,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
 
     // A borrowed repeatable-read snapshot never mixes a concurrently committed projection.
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     let owner = start(runtime.clone()).await?;
     let mut connection = PgConnection::connect_with(&options("mdm_api")?).await?;
     let mut snapshot = connection.begin().await?;
@@ -357,11 +329,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     .await?;
     let newer_run = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &newer,
         [Some("Newer"), Some("12")],
     )
@@ -394,11 +363,13 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
         .execute(&mut root)
         .await?;
     // The role cannot rewrite accepted bytes, reset sequence, or delete collection history.
-    let mut tx = access.begin(case_a()).await?;
+    let mut tx = pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_a()).await?;
     ensure!(sqlx::query("UPDATE mdm_access.collection_runs SET batch=$3 WHERE tenant_id=$1::uuid AND id=$2::uuid")
         .bind(case_a()).bind(full.id.to_string()).bind(canonical).execute(&mut *tx).await.is_err());
     tx.rollback().await?;
-    let mut tx = access.begin(case_a()).await?;
+    let mut tx = pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_a()).await?;
     ensure!(
         sqlx::query("DELETE FROM mdm_access.collection_runs")
             .execute(&mut *tx)
@@ -410,17 +381,14 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     // Stop after Inventory writes but before its projection transaction commits. Restart replays.
     let broken = report(
         &service,
-        &access.inventory(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?
-            .as_ref(),
+        &inventory.clone(),
+        audit_store.clone().as_ref(),
         &newer,
         [Some("After-failure"), Some("12")],
     )
     .await?;
     root.execute("CREATE FUNCTION mdm.reject_inventory_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; REVOKE ALL ON FUNCTION mdm.reject_inventory_test() FROM PUBLIC; CREATE TRIGGER reject_inventory_test AFTER INSERT OR UPDATE ON mdm.inventory FOR EACH ROW EXECUTE FUNCTION mdm.reject_inventory_test()").await?;
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     let owner = start(runtime.clone()).await?;
     let stopped =
         tokio::time::timeout(Duration::from_secs(8), runtime.fixture_wait_stopped()).await?;
@@ -450,7 +418,7 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     );
     runtime.close_fixture().await?;
     root.execute("DROP TRIGGER reject_inventory_test ON mdm.inventory; DROP FUNCTION mdm.reject_inventory_test()").await?;
-    let runtime = open(access.clone()).await?;
+    let runtime = open(inventory.clone(), audit_store.clone()).await?;
     let owner = start(runtime.clone()).await?;
     wait_ready_projection(&runtime, &broken).await?;
     ensure!(
@@ -476,11 +444,8 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     ensure!(
         report(
             &service,
-            &access.inventory(),
-            access
-                .audit_store_fixture(&crate::config::AuditConfig::Plain)
-                .await?
-                .as_ref(),
+            &inventory.clone(),
+            audit_store.clone().as_ref(),
             &newer,
             [Some("wrap"), Some("13")]
         )
@@ -500,21 +465,21 @@ async fn durable_report_recovery_and_projection() -> Result<()> {
     runtime.close_fixture().await?;
     reader.close().await;
     root.close().await?;
-    access.close().await;
+    source.close().await;
+    pool.close().await;
     Ok(())
 }
 
 #[tokio::test]
 #[ignore = "MODULE=inventory.runtime: pure discovery does not create an Audit or Ledger head"]
 async fn empty_discovery_has_no_audit_head() -> Result<()> {
-    let database = Arc::new(Database::connect(options("mdm_access")?).await?);
-    let audit = database
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let inventory = Arc::new(rss_mdm_inventory_service::Store::from_pool(pool.clone()));
     let tenant = Uuid::new_v4().to_string();
-    let delivery = crate::collection::store::Delivery::new(database.inventory(), audit);
+    let delivery = crate::collection::store::Delivery::new(inventory, audit);
     ensure!(delivery.pending_reports(&tenant).await?.is_empty());
-    let mut tx = database.begin(&tenant).await?;
+    let mut tx = pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, &tenant).await?;
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM rss_audit.heads WHERE tenant_id=$1::uuid")
             .bind(&tenant)
@@ -522,6 +487,7 @@ async fn empty_discovery_has_no_audit_head() -> Result<()> {
             .await?;
     ensure!(count == 0, "empty discovery created an Audit head");
     tx.rollback().await?;
-    database.close().await;
+    source.close().await;
+    pool.close().await;
     Ok(())
 }

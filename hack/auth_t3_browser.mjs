@@ -3,6 +3,19 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 const require=createRequire(import.meta.url);
+import {fileURLToPath} from 'node:url';
+const assert=(ok,message)=>{if(!ok)throw new Error(message)};
+export async function keycloak(page,user,input){
+  await page.waitForURL(new URL(input.issuer).origin+'/**');
+  await page.locator('#username').waitFor();
+  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
+  trusted();await page.locator('#username').fill(user);
+  trusted();await page.locator('#password').fill(input.idpPassword);
+  trusted();
+  await page.locator('#kc-login').click();
+}
+
+export async function main(){
 const {chromium}=require(process.env.MDM_PLAYWRIGHT_MODULE || '/opt/playwright-core');
 const input=JSON.parse(fs.readFileSync(process.argv[2] || '/fixture/browser-input.json','utf8'));
 const origin=input.origin, other=input.otherOrigin;
@@ -11,7 +24,6 @@ const api=`/api/v1/identity/tenants/${input.tenant}`;
 const inventory='/api/v1/devices/device-1/inventory';
 const checks={}, requests=[], privateValues=[];
 let stage='launch';
-const assert=(ok,message)=>{if(!ok)throw new Error(message)};
 const docker=(...args)=>{assert(faults,'fault control unavailable in normal mode');return faults.docker(...args)};
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function poll(check,seconds=60){const end=Date.now()+seconds*1000;while(Date.now()<end){try{if(await check())return}catch{}await delay(500)}throw new Error('readiness deadline')}
@@ -24,6 +36,7 @@ async function request(page,path,method='GET',body,headers={}){
     const text=await r.text();let value=null;try{value=JSON.parse(text)}catch{}
     return {status:r.status,value,id:r.headers.get('x-request-id')};
   },{path,method,body,headers});
+  for(const cookie of await page.context().cookies())privateValues.push(cookie.value);
   requests.push({stage,origin:new URL(page.url()).origin,method,path:path.split('?')[0],status:result.status,requestId:result.id});
   return result;
 }
@@ -31,12 +44,20 @@ async function post(page,path,body,token){
   if(token===undefined){const session=await request(page,api+'/session');assert(session.status===200,'session before write');token=session.value.csrfToken}
   return request(page,path,'POST',body,{'X-CSRF-Token':token});
 }
+async function landed(page){
+  const paths=[`/tenants/${input.tenant}/workspace`,`/tenants/${input.tenant}/settings/guide`];
+  await page.waitForURL(url=>url.origin===origin && paths.includes(url.pathname));
+  await page.locator('.console-page:not([aria-busy="true"]) h1').waitFor();
+  assert(await page.locator('.console-page-error').count()===0,'landing page failed');
+  await poll(async()=> (await request(page,api+'/session')).status===200);
+}
 async function login(page,user,password){
   await delay(3100); // Respect the real ingress rate policy; do not widen it for tests.
   await page.goto(origin+`/tenants/${input.tenant}/login`);
   await page.locator('#login-name').fill(user);await page.locator('#login-password').fill(password);
   await page.locator('form button[type=submit]').click();
-  await page.waitForURL('**/sessions');
+  await landed(page);
+  await page.goto(origin+`/tenants/${input.tenant}/sessions`);
   const r=await request(page,api+'/session');assert(r.status===200,'UI login');return r.value;
 }
 async function logoutUI(page,all=false){
@@ -49,18 +70,35 @@ async function logoutUI(page,all=false){
 async function cloneSession(page,url=origin){const ctx=await browser.newContext({locale:'en-US'});const cookies=await page.context().cookies(origin);await ctx.addCookies(cookies.map(c=>({...c,domain:new URL(url).hostname})));const p=await ctx.newPage();await p.goto(url+'/');return p}
 async function restart(){docker(['restart','--time','45',input.server]);await poll(async()=> (await request(admin,'/readyz')).status===200)}
 function sql(statement){return docker(['exec','-i',input.pg,'psql','-X','-At','-v','ON_ERROR_STOP=1','-U','postgres','-d','mdm_test'],statement)}
-async function keycloak(page,user){
-  await page.waitForURL(new URL(input.issuer).origin+'/**');
-  await page.locator('#username').waitFor();
-  const trusted=()=>assert(new URL(page.url()).origin===new URL(input.issuer).origin,'untrusted IdP navigation');
-  trusted();await page.locator('#username').fill(user);
-  trusted();await page.locator('#password').fill(input.idpPassword);
-  trusted();
-  await page.locator('#kc-login').click();
-}
 let admin,member;
+async function closeContexts(){
+  const errors=[];
+  for(const context of browser.contexts()){
+    try {
+      for(const cookie of await context.cookies())privateValues.push(cookie.value);
+      for(const page of context.pages())assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
+    } catch(error){ errors.push(error); }
+    finally { try { await context.close(); } catch(error){ errors.push(error); } }
+  }
+  if(errors.length)throw new AggregateError(errors,errors.map(error=>error.message).join('; '));
+}
+async function localUsers(){
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  member=await pageAt();await login(member,'member',input.memberPassword);
+}
+const failures=[];
+async function scenario(name, action){
+  stage=name;
+  try { await action(); }
+  catch(error){ failures.push({scenario:name,stage,errorClass:error.name,reason:error.message}); }
+  finally {
+    try { await closeContexts(); }
+    catch(error){ failures.push({scenario:name,stage:'cleanup',errorClass:error.name,reason:error.message}); }
+  }
+}
 try{
   browser=await chromium.launch({headless:true,chromiumSandbox:input.mode==='normal'});
+  await scenario('local_ui', async()=>{
   stage='local_ui';admin=await pageAt();await login(admin,'admin',input.adminPassword);
   member=await pageAt();const initial=await login(member,'member',input.memberPassword);
   assert(initial.identity.principalId===input.member,'member coordinate');
@@ -70,13 +108,20 @@ try{
   assert(await member.locator(`nav a[href$='/accounts'],nav a[href$='/providers']`).count()===0,'member navigation permissions');
   for(const path of ['/api','/api/not-a-route'])assert((await request(member,path)).status===404,'unknown API became SPA');
   checks.local_ui=true;
+  });
 
+  await scenario('account_ui', async()=>{
+
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
   stage='account_ui';await admin.goto(origin+`/tenants/${input.tenant}/accounts`);
   await admin.locator('#account-login').fill('ui-created-'+crypto.randomUUID());await admin.locator('#account-password').fill(input.memberPassword);
   const created=admin.waitForResponse(r=>new URL(r.url()).pathname===api+'/accounts'&&r.request().method()==='POST');
   await admin.locator('form').filter({has:admin.locator('#account-login')}).locator('button').click();
   assert((await created).status()===201,'UI account creation');await admin.getByRole('cell',{name:/ui-created/}).waitFor();checks.account_ui=true;
+  });
 
+  await scenario('inventory_permissions', async()=>{
+await localUsers();
   stage='inventory';let r=await request(member,inventory);
   assert(r.status===200&&r.value.asset.device.fields['device.model'].state.value.value==='Model-2364','real authorized inventory');
   assert((await request(member,'/api/v1/devices/outside/inventory')).status===403,'device scope');checks.inventory=true;
@@ -92,7 +137,11 @@ try{
   assert((await request(member,publisher)).status===403,'publisher permission deny');
   assert((await request(admin,publisher)).status===404,'publisher permitted source lookup');
   assert((await request(member,api+'/accounts')).status===403,'hidden accounts not authoritative');checks.permissions=true;
+  });
 
+  await scenario('session', async()=>{
+
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='cookie_csrf';const cookie=(await member.context().cookies(origin)).find(c=>c.name==='__Host-identity-session');
   assert(cookie&&cookie.secure&&cookie.httpOnly&&cookie.sameSite==='Lax'&&cookie.path==='/'&&cookie.domain===new URL(origin).hostname,'cookie attributes');
   assert(!await member.evaluate(()=>document.cookie.includes('__Host-identity-session')),'HttpOnly');
@@ -105,49 +154,73 @@ try{
   stage='refresh';const stale=await cloneSession(member);
   assert((await post(member,api+'/session/refresh')).status===200,'refresh');
   assert((await request(stale,'/api/v1/authorization')).status===401,'rotated credential');await stale.context().close();checks.refresh=true;
+  });
 
-  if(faults){stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
-  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;}
+  if(faults) await scenario('restart',async()=>{await localUsers();stage='restart';const before=(await request(member,api+'/session')).value.session.id;await restart();
+  assert((await request(member,api+'/session')).value.session.id===before,'session restart persistence');checks.restart=true;});
 
-  stage='isolation';assert((await request(attacker,'/api/v1/authorization')).status===401,'host cookie isolation');
+  await scenario('isolation', async()=>{
+
+  member=await pageAt();await login(member,'member',input.memberPassword);
+  const isolated=await pageAt(other);
+  stage='isolation';assert((await request(isolated,'/api/v1/authorization')).status===401,'host cookie isolation');
   const replay=await cloneSession(member,other);assert((await request(replay,'/api/v1/authorization')).status===401,'instance replay');
   assert((await request(member,`/api/v1/identity/tenants/${input.wrongTenant}/session`)).status===401,'tenant replay');
   assert((await request(member,`/api/v1/identity-host/tenants/${input.wrongTenant}/context`)).status===401,'context tenant replay');
-  await replay.context().close();await attacker.context().close();checks.isolation=true;
+  await replay.context().close();await isolated.context().close();checks.isolation=true;
+  });
 
   for(const [field,key] of [['enabled','account_disabled'],['membership','membership_removed']]){
+    await scenario(key,async()=>{
+    await localUsers();
     stage=key;const old=await cloneSession(member);
+    let restored=false;
+    try {
     assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:false})).status===200,'disable account/membership');
     assert((await request(member,inventory)).status===401,'disabled new request');
-    assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'restore account/membership');
+    assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'restore account/membership');restored=true;
     if(faults)await restart();assert((await request(old,inventory)).status===401,'revocation resurrected');
     await old.context().close();await member.context().clearCookies();await login(member,'member',input.memberPassword);checks[key]=true;
+    } finally {
+      if(!restored)assert((await post(admin,`${api}/accounts/${input.member}/${field}`,{enabled:true})).status===200,'account cleanup failed');
+    }
+    });
   }
+  await scenario('logout', async()=>{
+
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout';const old=await cloneSession(member);await logoutUI(member);
   assert((await request(old,inventory)).status===401,'logout authority');await old.context().close();checks.logout=true;
-  await login(member,'member',input.memberPassword);
+  });
+  await scenario('logout_all', async()=>{
+
+  member=await pageAt();await login(member,'member',input.memberPassword);
   stage='logout_all';const second=await pageAt();await login(second,'member',input.memberPassword);
   await logoutUI(member,true);assert((await request(second,inventory)).status===401,'all sessions revoked');await second.context().close();checks.logout_all=true;
-  await member.context().clearCookies();await login(member,'sso-member',input.memberPassword);
+  });
+  await scenario('enterprise', async()=>{
+
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  member=await pageAt();await login(member,'sso-member',input.memberPassword);
 
   stage='enterprise';const probe=await browser.newPage();await poll(async()=>{const r=await probe.goto(input.issuer+'/.well-known/openid-configuration');return r.status()===200});await probe.close();
   const settings={issuer:input.issuer,clientId:'mdm',redirectUri:origin+'/api/v1/identity/oidc/callback',scopes:['openid','profile','email'],claims:{subject:{kind:'oidc'},profile:{extensionsClaim:null,maxAgeSeconds:14400},groups:null,departmentSnapshot:null},jit:false};
-  r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
+  let r=await post(admin,api+'/providers',{settings,clientSecret:input.clientSecret,caPem:fs.readFileSync(input.caFile || '/fixture/ca.crt','utf8')});
   assert(r.status===201,'provider create');const provider=r.value.id;
   assert((await post(admin,`${api}/providers/${provider}/enabled`,{expectedVersion:r.value.version,enabled:true})).status===200,'provider enable');
   await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   await member.locator('#link-provider').selectOption(provider);await member.locator('#link-password').fill(input.memberPassword);
   await member.locator('form').filter({has:member.locator('#link-provider')}).locator('button').click();
-  await keycloak(member,'alice');await member.waitForURL('**/sessions');
+  await keycloak(member,'alice',input);await landed(member);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'link changed subject');
   await logoutUI(member);await member.context().clearCookies();
   await member.goto(origin+`/tenants/${input.tenant}/login`);
-  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice');await member.waitForURL('**/sessions');
+  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice',input);await landed(member);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'SSO subject binding');
   assert((await request(member,inventory)).status===200,'SSO authorized resource');
   assert((await request(member,api+'/accounts')).status===403,'SSO unauthorized resource');checks.enterprise=true;
 
-  stage='unknown_subject';const unknown=await pageAt();await unknown.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(unknown,'unknown');
+  stage='unknown_subject';const unknown=await pageAt();await unknown.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(unknown,'unknown',input);
   await unknown.waitForURL(origin+'/**');assert((await request(unknown,api+'/session')).status===401,'unknown subject');await unknown.context().close();checks.unknown_subject=true;
 
   stage='private_binding';const deniedSettings={...settings,clientId:'unapproved-client'};
@@ -155,14 +228,22 @@ try{
   assert(r.status===201,'unapproved provider persisted without network access');
   const tested=await post(admin,`${api}/providers/${r.value.id}/test`,{expectedVersion:r.value.version});
   assert(tested.status===200&&tested.value.passed===false&&tested.value.diagnostic.reason==='egress_denied','unapproved private client connected');checks.private_binding=true;
+  });
 
-  let independent,persisted;
   if(faults){
-  stage='idp_down';docker(['stop','--time','10',input.idp]);independent=await pageAt();await login(independent,'admin',input.adminPassword);
+  await scenario('idp_down',async()=>{
+  let independent;
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  stage='idp_down';docker(['stop','--time','10',input.idp]);try { independent=await pageAt();await login(independent,'admin',input.adminPassword);
   assert((await request(independent,api+'/accounts')).status===200,'IdP-independent account management');
   assert((await request(independent,inventory)).status===200,'IdP-independent request');
   const createdLocal=await post(independent,api+'/accounts',{login:'while-idp-down',password:input.memberPassword});assert(createdLocal.status===201,'IdP-independent account write');checks.idp_down=true;
-
+  } finally { docker(['start',input.idp]); }
+  });
+  await scenario('pg_down',async()=>{
+  let independent,persisted;
+  admin=await pageAt();await login(admin,'admin',input.adminPassword);
+  independent=await pageAt();await login(independent,'admin',input.adminPassword);
   await independent.goto(origin+`/tenants/${input.tenant}/sessions`);
   stage='pg_down';persisted=await cloneSession(independent);docker(['pause',input.pg]);
   try{
@@ -177,15 +258,16 @@ try{
   }finally{docker(['unpause',input.pg])}
   await restart();assert((await request(persisted,api+'/session')).status===200,'failed logout lost authoritative session');
   assert((await post(persisted,api+'/session/logout')).status===204,'recovery logout');checks.pg_down=true;
-
+  });
   }
+  await scenario('safe_logs',async()=>{
   stage='safe_logs';for(const value of [input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])assert(!consoleText.join('\n').includes(value),'console secret');
   assert(!consoleText.some(v=>/[?&]code=/.test(v)),'console callback code');
-  for(const page of [admin,member,independent,persisted].filter(Boolean)){
-    assert(!/[?&](code|state)=/.test(page.url()),'callback remains in application URL');
-    const cookies=await page.context().cookies();for(const c of cookies)privateValues.push(c.value);
-  }
+  await closeContexts();
   checks.safe_logs=true;
+  });
+  stage='scenarios';
+  assert(failures.length===0,failures.map(f=>f.scenario+':'+f.stage).join(', '));
   const result={checks,requests,browser:browser.version(),privateValues};
   await browser.close();process.stdout.write(JSON.stringify(result));
  }catch(error){
@@ -194,5 +276,13 @@ try{
   for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret]){
     if(value)reason=reason.split(value).join('[private]');
   }
-  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason}));process.exitCode=1;
+  const scenarios=failures.map(f=>{
+    let reason=f.reason.replace(/https?:\/\/\S+/g,'[url]');
+    for(const value of [...privateValues,input.adminPassword,input.memberPassword,input.idpPassword,input.clientSecret])if(value)reason=reason.split(value).join('[private]');
+    return {...f,reason};
+  });
+  process.stderr.write(JSON.stringify({stage,errorClass:error.name,reason,scenarios,checks}));process.exitCode=1;
 }
+
+}
+if(process.argv[1] && process.argv[1]===fileURLToPath(import.meta.url))await main();

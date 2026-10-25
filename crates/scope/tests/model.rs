@@ -105,7 +105,7 @@ fn formula_explanations_and_permutations() {
     assert_eq!(resolve_device(&i).unwrap().unwrap(), expected);
 }
 #[test]
-fn incomplete_failure_and_cross_tenant_are_not_empty_sets() {
+fn incomplete_and_failed_sources_are_not_empty_sets() {
     for state in [Membership::Incomplete, Membership::Failed] {
         for role in 0..3 {
             let mut i = input();
@@ -250,7 +250,7 @@ fn unknown_exclusion_blocks_only_the_affected_device() {
 }
 
 #[test]
-fn known_or_match_satisfies_targets_and_limits_but_not_unknown_exclusions() {
+fn known_or_match_satisfies_targets_and_limits() {
     let mut i = input();
     let mut unknown = source("unknown", false);
     unknown.contains = Membership::Unknown;

@@ -183,33 +183,30 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         &origin,
         crate::windows::test_support::monotonic(),
     )?);
-    channel.push.as_mut().unwrap().configuration = host
-        .app
-        .windows
-        .as_ref()
-        .unwrap()
-        .channel
-        .push
-        .as_ref()
-        .unwrap()
-        .configuration;
-    let database = host.store.windows_store();
-    let eligibility = crate::windows::WakeEligibility(host.app.execution.clone());
+    channel.push.as_mut().unwrap().configuration =
+        host.windows.channel.push.as_ref().unwrap().configuration;
+    let database = host.windows_state.access.clone();
+    let eligibility = crate::windows::WakeEligibility(host.commands.service.clone());
     ensure!(
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?,
         "no work must not wake a device"
     );
-    let mut command =
-        crate::execution::test_support::Client::start(host.browser.clone(), host.app.clone())
-            .await?;
+    let mut command = crate::execution::test_support::Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     command.accept_authorized().await?;
     command.publish_operation(command.operation).await?;
     let before: i64 =
@@ -220,9 +217,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -254,9 +251,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -267,9 +264,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -285,9 +282,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -297,9 +294,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -597,6 +594,31 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
         .await
         .is_err()
     );
+    tx.rollback().await?;
+    c.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "MODULE=windows.management: runtime cannot forge WNS qualification"]
+async fn runtime_role_cannot_insert_provider_success() -> Result<()> {
+    use sqlx::Connection;
+    let mut c =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?)
+            .await?;
+    let mut tx = c.begin().await?;
+    let tenant = uuid::Uuid::new_v4();
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO mdm_wns.heads VALUES($1,0,NULL)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let error = sqlx::query("INSERT INTO mdm_wns.versions(tenant_id,revision,operation_id,actor,fingerprint_key,fingerprint,pfn,sid_digest,configuration,material,qualified_at,selected) VALUES($1,1,$2,'fake','fake',decode(repeat('00',32),'hex'),'fake',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),decode('00','hex'),1,true)")
+        .bind(tenant).bind(uuid::Uuid::new_v4()).execute(&mut *tx).await.unwrap_err();
+    ensure!(error.as_database_error().and_then(|e| e.code()).as_deref() == Some("42501"));
     tx.rollback().await?;
     c.close().await?;
     Ok(())

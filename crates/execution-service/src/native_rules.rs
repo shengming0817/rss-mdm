@@ -17,6 +17,15 @@ mod tests {
     use super::*;
     #[test]
     fn every_live_authority_guard_is_required() {
+        assert!(
+            Eligibility {
+                latest: true,
+                within_deadline: true,
+                active: true,
+                authority_valid: true
+            }
+            .allows()
+        );
         for missing in 0..4 {
             let e = Eligibility {
                 latest: missing != 0,

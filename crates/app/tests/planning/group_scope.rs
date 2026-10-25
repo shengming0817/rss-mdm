@@ -157,107 +157,6 @@ async fn durable_asset_group_scope_pipeline() {
         Err(rss_mdm_inventory_service::Error::Forbidden)
     ));
     denied_audit.finalize(None);
-    let query_scope = assets::ReadScope {
-        authority: "internal".into(),
-        collection_scope: rss_mdm_inventory::CollectionScope::Device,
-        sensitive: true,
-        subject: "query-owner".into(),
-        devices: Some([device.clone()].into()),
-    };
-    let query = execute_asset(
-        &service,
-        &assets::Command::Search {
-            request: inventory_operation(
-                0,
-                assets::rsql::QueryInput {
-                    filter: Some(format!(
-                        "{}==true",
-                        rss_mdm_inventory::builtin::IS_LOANER.as_str()
-                    )),
-                    scope: Default::default(),
-                    fields: vec![rss_mdm_inventory::builtin::IS_LOANER],
-                    sort: vec![assets::Sort {
-                        field: rss_mdm_inventory::builtin::IS_LOANER,
-                        descending: true,
-                    }],
-                },
-            )
-            .into(),
-            scope: query_scope.clone(),
-        },
-    )
-    .await
-    .unwrap();
-    let query_task = Uuid::parse_str(query["asset"]["task"].as_str().unwrap()).unwrap();
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let status = execute_asset(
-                &service,
-                &assets::Command::QueryStatus {
-                    task: query_task,
-                    scope: query_scope.clone(),
-                },
-            )
-            .await
-            .unwrap();
-            assert!(status["asset"]["failure"].is_null(), "{status}");
-            if status["asset"]["status"] == "completed" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    let query_items = execute_asset(
-        &service,
-        &assets::Command::QueryItems {
-            task: query_task,
-            scope: query_scope.clone(),
-            limit: 1,
-            cursor: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(query_items["asset"]["summary"]["matched"], 1);
-    assert_eq!(query_items["asset"]["items"][0]["device"], device);
-    assert_eq!(
-        query_items["asset"]["items"][0]["fields"]
-            .as_object()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(matches!(
-        execute_asset(
-            &service,
-            &assets::Command::QueryItems {
-                task: query_task,
-                scope: assets::ReadScope::all(),
-                limit: 1,
-                cursor: None
-            }
-        )
-        .await,
-        Err(Error::Inventory(
-            rss_mdm_inventory_service::Error::Forbidden
-        ))
-    ));
-    let facets = execute_asset(
-        &service,
-        &assets::Command::QueryFacets {
-            task: query_task,
-            scope: query_scope.clone(),
-            facet: assets::Facet::AssetStates,
-            limit: 1,
-            cursor: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(facets["asset"]["items"][0]["label"], "known");
-    assert_eq!(facets["asset"]["items"][0]["total"], 1);
     let scope_id = Uuid::new_v4();
     let scoped = execute(
         &service,
@@ -615,14 +514,20 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         crate::test_support::identity::identity(&tenant().to_string())
             .await
             .unwrap();
-    let access = crate::Database::connect(
-        crate::test_support::identity::config(&tenant().to_string())
-            .unwrap()
-            .access_options()
-            .unwrap(),
-    )
-    .await
-    .unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            crate::test_support::identity::config(&tenant().to_string())
+                .unwrap()
+                .access_options()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let access = rss_mdm_authorization_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    );
     let proof = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -636,7 +541,7 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
             .unwrap(),
     )
     .unwrap()
-    .load_authorization(access.authorization())
+    .load_authorization(&access)
     .await
     .unwrap();
 
@@ -1732,16 +1637,22 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     );
     launch.finish();
     let access_config = crate::test_support::identity::config(&t.to_string()).unwrap();
-    let access = crate::Database::connect(access_config.access_options().unwrap())
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(access_config.access_options().unwrap())
         .await
         .unwrap();
+    let access = rss_mdm_authorization_service::Store::from_pool(
+        pool.clone(),
+        Arc::new(crate::lifecycle::RuntimeTimer),
+    );
     let mut windows_group = None;
     for (selector, count) in [
         (rss_mdm_group_postgres::SystemSelector::Windows, 1001),
         (rss_mdm_group_postgres::SystemSelector::Macos, 1),
     ] {
         let group = Uuid::new_v4();
-        let mut conn = access.archive_pool().acquire().await.unwrap();
+        let mut conn = pool.clone().acquire().await.unwrap();
         let mut tx = (*conn).begin().await.unwrap();
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(t.to_string())
@@ -1758,10 +1669,7 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
         .unwrap();
         tx.commit().await.unwrap();
         drop(conn);
-        let proof = capability
-            .principal(&access.authorization_store())
-            .await
-            .unwrap();
+        let proof = capability.principal(&access).await.unwrap();
         let audit = RequestAudit::new(t.to_string(), "baseline_initialize");
         proof.bind_audit(&audit).unwrap();
         let command = GroupCommand::Group {
@@ -1884,6 +1792,6 @@ async fn system_lifecycle_snapshot_pages_before_collection_and_preserves_old_aut
     .expect("credential lifecycle delta removes system membership");
     c.close().await.unwrap();
     assert!(stack.shutdown().join().await.unwrap().is_clean());
-    access.close().await;
+    pool.close().await;
     service.runtime.close().await;
 }

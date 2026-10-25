@@ -37,8 +37,6 @@ pub(crate) struct Assembly {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    #[cfg(test)]
-    pub(crate) execution_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
@@ -55,16 +53,6 @@ pub(crate) struct Assembly {
 }
 
 #[cfg(test)]
-impl Assembly {
-    pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
-        self.apple.as_ref().ok_or(Error::Unsupported)
-    }
-    pub(crate) fn windows(&self) -> Result<&Arc<crate::windows::Windows>, Error> {
-        self.windows.as_ref().ok_or(Error::Unsupported)
-    }
-}
-
-#[cfg(test)]
 pub(crate) async fn application_fixture(
     config: crate::config::Config,
     clock: Arc<dyn Clock>,
@@ -74,7 +62,7 @@ pub(crate) async fn application_fixture(
     audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 ) -> Result<
     (
-        axum::Router,
+        crate::native::Routers,
         crate::execution_assembly::Assembly,
         Arc<rss_transactional_messaging_postgres::PgRuntime>,
         Arc<rss_mdm_flow_service::planning::Planning>,
@@ -168,7 +156,9 @@ pub(crate) async fn application_fixture(
             .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         let telemetry = match &compiled.config.telemetry {
             Some(config) => {
-                let service = config.open(&planning, execution.service.clone()).await?;
+                let service = config
+                    .open(planning.planning.clone(), execution.service.clone())
+                    .await?;
                 resources.resource(crate::telemetry::Resource(service.clone()));
                 resources.resource(crate::telemetry::fixture_task(
                     service.clone(),
@@ -216,7 +206,7 @@ pub(crate) async fn application_fixture(
         .await
         .map_err(|_| Error::Unavailable(crate::Failure::Database))?;
         // Test carrier projects real, completed TLS evidence; the production browser router stays separate.
-        for (kind, tls) in fixture_routers.listeners {
+        for (kind, tls) in fixture_routers.listeners.drain(..) {
             if kind == crate::native::ChannelKind::Agent {
                 fixture_routers.browser = crate::test_support::gateway::browser_agent(
                     fixture_routers.browser,
@@ -227,8 +217,12 @@ pub(crate) async fn application_fixture(
         }
         let requests = crate::test_support::runtime::NativeRequests::new();
         resources.resource(requests.clone());
+        fixture_routers.browser = requests.wrap(fixture_routers.browser);
+        for (_, channel) in &mut fixture_routers.listeners {
+            channel.router = requests.wrap(std::mem::take(&mut channel.router));
+        }
         Ok((
-            requests.wrap(fixture_routers.browser),
+            fixture_routers,
             execution_service,
             plan_runtime,
             fixture_planning,
@@ -317,8 +311,6 @@ pub(crate) async fn from_compiled(
         protection,
         content: content_writer,
         runtime: _execution_runtime,
-        #[cfg(test)]
-            webhooks: fixture_webhooks,
     } = execution;
     let devices = Arc::new(crate::device::DeviceService::new(
         access.registration(),
@@ -578,10 +570,6 @@ pub(crate) async fn from_compiled(
         binding,
     )
     .await?;
-    #[cfg(test)]
-    fixture_webhooks
-        .set(webhooks.clone())
-        .map_err(|_| Error::Conflict)?;
     let platform_configuration = apple
         .as_ref()
         .and_then(|apple| apple.platform_sso.as_ref())
@@ -608,8 +596,6 @@ pub(crate) async fn from_compiled(
         inputs,
         queries,
         protection,
-        #[cfg(test)]
-        execution_runtime: _execution_runtime,
         audit_store,
         audit_projection_health,
         apple,
@@ -626,21 +612,6 @@ pub(crate) async fn from_compiled(
         devices,
         requests: Arc::new(tokio::sync::Semaphore::new(4)),
     });
-    // Existing durable intent only: normal fixtures and non-initialized tenants are never seeded.
-    // A failed attempt remains visible and resumes under the same identities after restart.
-    #[cfg(test)]
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(120),
-        crate::baseline::resume(&state),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("baseline initialization blocked: {error}"),
-        Err(_) => eprintln!(
-            "baseline initialization outcome unknown; resume original intent after restart"
-        ),
-    }
     let routers = from_state(state, host, monotonic);
     Ok(routers)
 }
@@ -792,12 +763,61 @@ pub(crate) fn from_state(
         management_boundary.clone(),
     );
     let directory = crate::settings::Directory {
-        state: state.clone(),
-        apple: apple_state.clone(),
+        tenant: state.identity.tenant,
+        management_tenant: state.identity.management_tenant,
+        identity: state.identity.authority.clone(),
+        federation: state.identity.federation.clone(),
+        tenant_administration: state.identity.tenant_administration.clone(),
+        user_profiles: Arc::new(crate::user_profiles::Backend {
+            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                ring::hmac::HMAC_SHA256,
+                &state.flow.cursor_key,
+            )),
+            identity: state.identity.authority.clone(),
+            tenant: state.identity.tenant,
+            instance: state.identity.instance,
+            audit: state.audit_store.clone(),
+        }),
+        audit: state.audit_store.clone(),
+        clock: state.clock.clone(),
+        protection: state.protection.clone(),
+        pki: state.pki.clone(),
+        software_runtime: state.flow.runtime.clone(),
+        registration: state.agent_enrollment.clone(),
+        webhooks: state.webhooks.clone(),
+        windows: state.access.windows_store(),
+        windows_loaded: state.windows.is_some(),
+        windows_push_revision: state
+            .windows
+            .as_ref()
+            .filter(|w| w.channel.push.is_some())
+            .and_then(|w| w.config.push.as_ref().map(|p| p.revision)),
+        apple_materials: state
+            .apple
+            .as_ref()
+            .map(|apple| apple.config.materials.clone()),
+        s3_revision: state
+            .content_writer
+            .as_ref()
+            .and_then(|store| match &store.config.storage {
+                rss_mdm_content_service::Storage::S3(value) => i64::try_from(value.revision).ok(),
+                _ => None,
+            }),
+        signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
+        recovery: state.execution.recovery_credentials(),
+        apple_store: apple_state.access.clone(),
+        apple: apple_state.apple.clone(),
     };
     let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
     let first_use = Arc::new(crate::first_use::FirstUse {
-        directory,
+        directory: settings.clone(),
+        tenant: state.identity.tenant,
+        instance: state.identity.instance,
+        audit: state.audit_store.clone(),
+        admission: rss_mdm_registration_service::admission::Admission::new(
+            state.access.registration(),
+            state.audit_store.clone(),
+        ),
         channels: channels.clone(),
     });
     let tenant_administration = rss_mdm_management_http::tenant_administration::router(
@@ -916,7 +936,7 @@ pub(crate) fn from_state(
                 state.flow.planning.reconcile_messaging.clone(),
                 state.flow.audit_store.clone(),
                 state.identity.tenant,
-                state.flow.planning.policy_store.clone(),
+                state.flow.policy_store.clone(),
                 state.inputs.clone(),
             )),
             assets: state.flow.assets.clone(),
@@ -1186,7 +1206,7 @@ pub(crate) fn software_access(
 }
 
 /// Compose the Apple business owner's settlement class with the common HTTP boundary.
-async fn apple_management_settlement(
+pub(crate) async fn apple_management_settlement(
     request: axum::extract::Request,
     next: middleware::Next,
 ) -> Response {

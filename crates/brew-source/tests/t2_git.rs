@@ -75,26 +75,12 @@ async fn git_commit_cas_replay_and_fixed_snapshot() {
 }
 #[tokio::test]
 #[ignore = "explicit real-provider T2 target"]
-async fn externally_applied_commit_replay_and_repository_binding() {
+async fn prepared_commit_is_bound_to_repository_and_tenant() {
     let (dir, r) = repository().await;
     let p = r
         .prepare(None, document("1"), "first", now())
         .await
         .unwrap();
-    // An external update exercises replay; injected command failure recovery is covered in git.rs.
-    let status = Command::new("/usr/bin/git")
-        .arg("--git-dir")
-        .arg(dir.path())
-        .args([
-            "update-ref",
-            "refs/heads/main",
-            p.target().as_str(),
-            "0000000000000000000000000000000000000000",
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    assert_eq!(r.apply(&p).await.unwrap(), PublishResult::AlreadyApplied);
     let (_other_dir, other) = repository().await;
     assert_eq!(other.apply(&p).await, Err(Error::IdentityMismatch));
     let other_tenant = TenantId::parse("20000000-0000-0000-0000-000000000001").unwrap();

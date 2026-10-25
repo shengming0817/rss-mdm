@@ -37,7 +37,7 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
             scope: Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,
@@ -45,12 +45,12 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
     .await?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            f.app.flow.planning.clone(),
+            f.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.app.flow.assets.clone(),
-        f.app.flow.compliance.clone(),
+        f.assets.clone(),
+        f.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -325,7 +325,12 @@ async fn template_access_rights_change_rejects_first_report() -> Result<()> {
 async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let definition = f.collection_template().await?;
     let owner = f.policy_worker().await?;
     let queued = f.queue_collection(&definition, &peer).await;
@@ -339,7 +344,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
             .await?;
     match withdrawal {
         "grant" => {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 crate::test_support::identity::device_grants(
@@ -409,7 +414,12 @@ async fn user_collection_cannot_cross_device_or_other_user_namespace() -> Result
     use lifecycle::command;
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let user = Uuid::new_v4();
     let other = Uuid::new_v4();
     peer.user_token(user, 41).await?;

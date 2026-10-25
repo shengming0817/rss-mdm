@@ -1,6 +1,32 @@
 //! Device mTLS and the existing enterprise session jointly bind the current user.
 use crate::test_support::{agent::*, agent_execution::Fixture, http::Browser, runtime::*, *};
 use anyhow::Context;
+async fn fixture() -> Result<Fixture> {
+    let mut f = Fixture::new().await?;
+    let tenant = f.authority.identity.tenant;
+    let associations = Arc::new(rss_mdm_device_service::Associations::new(
+        f.authority.audit.clone(),
+        tenant,
+        &[7; 32],
+    )?);
+    let sessions = Arc::new(
+        rss_mdm_authorization_service::session::SessionAuthority::new(
+            f.authority.identity.authority.clone(),
+            tenant,
+        ),
+    );
+    let routes = rss_mdm_management_http::device_views::routes(
+        sessions,
+        f.authority.identity.authority.clone(),
+        None,
+    )
+    .with_state(associations)
+    .into_axum();
+    f.router = f
+        .router
+        .merge(f.authority.protect(Router::new().nest("/api/v1", routes))?);
+    Ok(f)
+}
 const CURRENT: &str = "/api/v1/agent/runtime/current-user";
 async fn call(
     f: &Fixture,
@@ -65,7 +91,7 @@ async fn owner(f: &mut Fixture, change: Option<Value>) -> Result<Value> {
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: real identity, device authority, atomic owner initialization and CAS"]
 async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -95,8 +121,8 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
         ensure!(filled["revision"].as_u64()==Some(cleared["revision"].as_u64().unwrap()+1) && filled["user"]==initial_owner["user"]);
         let old_author=f.author.clone();
         f.author=crate::test_support::authority::Authority::prepared_browser("admin")?;
-        let admin=crate::test_support::http::browser_subject(&f.author,&f.router).await?;
-        crate::test_support::identity::set_grants(case_tenant(),&admin,f.grants.clone()).await?;
+        let admin=crate::test_support::http::prepared_subject(&f.author)?;
+        crate::test_support::identity::seed_grants(case_tenant(),&admin,f.grants.clone()).await?;
         let switch=json!({"operationId":Uuid::new_v4(),"expectedRevision":bound.1["revision"]});
         let switched=call(&f,Method::PUT,Some(switch),true,true).await?;
         ensure!(switched.0==StatusCode::OK && switched.1["user"]["principalId"]==admin);
@@ -124,7 +150,7 @@ async fn login_switch_logout_replay_and_concurrent_first_login() -> Result<()> {
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: directory people authorization, session revocation and device generation/credential fences"]
 async fn directory_people_are_verified_and_authorized_before_search() -> Result<()> {
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let registered=f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -144,14 +170,14 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         // Hide ownership so a current-user search cannot pass by matching the same owner.
         let mut grants=crate::test_support::identity::device_grants(Some(device),&["inventory_read"])?;
         grants.extend(crate::test_support::identity::device_grants(Some(dummy),&["inventory_read"])?);
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let hidden=f.author.call(&f.router,Method::GET,&search,None).await?;
         ensure!(hidden.0==StatusCode::OK && hidden.1["items"].as_array().is_some_and(|items|items.is_empty()));
         let list=f.author.call(&f.router,Method::GET,"/api/v1/device-views",None).await?;
         let endpoint=list.1["items"].as_array().unwrap().iter().flat_map(|g|g["endpoints"].as_array().unwrap()).find(|e|e["id"]==device).context("endpoint")?;
         ensure!(endpoint.get("currentUser").is_none()&&endpoint.get("registrationUser").is_none());
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants.clone()).await?;
+        crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grants.clone()).await?;
         let visible=f.author.call(&f.router,Method::GET,&search,None).await?;
         ensure!(visible.0==StatusCode::OK && visible.1["items"].as_array().is_some_and(|items|items.len()==1),"visible {visible:?}");
         let projected=visible.1["items"][0]["endpoints"][0]["currentUser"].clone();
@@ -183,7 +209,7 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
         ensure!(expired.0==StatusCode::OK && expired.1["endpoints"][0]["currentUser"]["state"]=="invalidated");
         crate::test_support::process::pg(&format!("UPDATE mdm_access.agent_issuances i SET not_after={} FROM mdm_access.credentials k WHERE (k.tenant_id,k.id)=(i.tenant_id,i.credential) AND k.tenant_id='{}' AND k.registration='{}'",expiry.trim(),case_tenant(),registration))?;
         // A separate live management session can observe revocation of the exact Agent session.
-        f.author=manager_session(&f.router).await?;
+        f.author=crate::test_support::authority::Authority::prepared_browser("other")?;
         let page=f.author.call(&f.router,Method::GET,"/api/v1/device-views?limit=1",None).await?;
         ensure!(page.0==StatusCode::OK,"page {page:?}");
         let cursor=page.1["nextCursor"].as_str().context("two authorized endpoints")?.to_owned();
@@ -196,29 +222,24 @@ async fn directory_people_are_verified_and_authorized_before_search() -> Result<
             let next=f.author.call(&f.router,Method::GET,&format!("/api/v1/device-views?limit=1&cursor={cursor}"),None).await?;
             ensure!(next.1["code"]=="device_view_cursor_invalidated","revoked cursor: {next:?}");
             let grant=f.grants.clone();
-            crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grant).await?;
+            crate::test_support::identity::change_grants(case_tenant(),&f.author_id,grant).await?;
             ensure!(owner(&mut f,None).await?["user"]==owner_before["user"]);
             Ok(())
         }).await
     }).await
 }
-async fn manager_session(router: &Router) -> Result<Browser> {
-    let mut browser = Browser::default();
-    ensure!(browser.login(router, "other").await? == StatusCode::OK);
-    Ok(browser)
-}
 #[tokio::test]
 #[ignore = "MODULE=agent.current_user: Identity management can take product authorization while directory rechecks a session"]
 async fn directory_releases_product_locks_before_identity_recheck() -> Result<()> {
     use sqlx::{Connection, Executor, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;
         ensure!(call(&f,Method::PUT,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0})),true,true).await?.0==StatusCode::OK);
         let mut grants=f.grants.clone();
         grants.push(crate::authorization::Grant{operation:crate::authorization::Permission::InventorySensitiveRead,scope:crate::authorization::Scope::Tenant});
-        crate::test_support::identity::set_grants(case_tenant(),&f.author_id,grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,grants).await?;
         let mut authority=crate::test_support::authority::Authority::open().await?;
         let authority_resources=std::mem::take(&mut authority.resources);
         authority_resources.finish(async {
@@ -267,7 +288,7 @@ async fn directory_releases_product_locks_before_identity_recheck() -> Result<()
 #[ignore = "MODULE=agent.current_user: GET releases device locks for logout while Identity waits, then rejects its stale binding"]
 async fn agent_read_releases_device_lock_and_rejects_concurrent_logout() -> Result<()> {
     use sqlx::{Connection, PgConnection};
-    let mut f = Fixture::new().await?;
+    let mut f = fixture().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         f.register_profile(json!(["inventory.collect.v1"])).await?;

@@ -61,7 +61,14 @@ class SmokeCompletion(unittest.TestCase):
     def test_cleanup_attempts_every_owned_resource(self):
         with mock.patch.object(candidate, "docker", side_effect=[RuntimeError("first"), "", ""]) as docker:
             with self.assertRaisesRegex(RuntimeError, "candidate cleanup failed"):
-                candidate.cleanup(["proxy", "server"], "inputs")
+                owner=candidate.Candidate.__new__(candidate.Candidate)
+                owner.name="owned";owner.created=["proxy","server"];owner.volumes=["inputs"]
+                owner.server="server";owner.gateway="gateway";owner.private_values=[]
+                owner.diagnostics=Path("unused");owner.diagnostic_filename="failure.json"
+                owner.compose_environment={"owned":"compose"};owner.compose=mock.Mock()
+                owner.ingress=None;owner.pki_stack=mock.Mock();owner.temporary=mock.Mock()
+                with mock.patch.object(candidate,"failure_evidence"):
+                    owner.__exit__(None,None,None)
             self.assertEqual(docker.call_args_list, [mock.call("rm", "-f", "server",stage=candidate.Stage.REMOVE_CONTAINER), mock.call("rm", "-f", "proxy",stage=candidate.Stage.REMOVE_CONTAINER), mock.call("volume", "rm", "inputs",stage=candidate.Stage.REMOVE_VOLUME)])
 
     def test_failed_verification_cannot_leave_success_evidence(self):
@@ -85,14 +92,34 @@ class SmokeCompletion(unittest.TestCase):
             self.assertEqual(list(directory.iterdir()), [])
 
     def test_cleanup_preserves_primary_and_records_cleanup_failure(self):
-        primary = RuntimeError("verification failed")
-        with mock.patch.object(candidate, "docker", side_effect=RuntimeError("cleanup failed")):
-            with self.assertRaisesRegex(RuntimeError, "verification failed"):
-                try:
-                    raise primary
-                finally:
-                    candidate.cleanup(["server"], "inputs")
-        self.assertEqual(primary.__notes__, ["candidate cleanup failed (2 resources)"])
+        for primary in [RuntimeError("verification failed"),None]:
+            with self.subTest(primary=primary),tempfile.TemporaryDirectory() as temporary:
+                owner=candidate.Candidate.__new__(candidate.Candidate)
+                owner.name="owned";owner.created=["server","idp"];owner.volumes=["inputs"]
+                owner.server="server";owner.gateway="gateway";owner.private_values=[]
+                owner.diagnostics=Path(temporary);owner.diagnostic_filename="failure.json"
+                owner.compose_environment={"owned":"compose"}
+                owner.compose=mock.Mock(side_effect=candidate.DockerFailure(candidate.Stage.REMOVE_CONTAINER,"exit",9))
+                owner.ingress=None;owner.pki_stack=mock.Mock();owner.temporary=mock.Mock()
+                owner.pki_stack.close.side_effect=RuntimeError("PKI cleanup")
+                def docker(*args,**kwargs):
+                    if args[0]=='inspect':return 'running:0'
+                    if args[0]=='logs':return 'safe product log'
+                    raise candidate.DockerFailure(kwargs['stage'],'exit',7)
+                with mock.patch.object(candidate,'docker',side_effect=docker):
+                    with self.assertRaises(RuntimeError) as caught:
+                        if primary:
+                            try:raise primary
+                            finally:owner.__exit__(type(primary),primary,None)
+                        else:owner.__exit__(None,None,None)
+                if primary:self.assertIs(caught.exception,primary)
+                evidence=json.loads((Path(temporary)/'failure.json').read_text())
+                self.assertEqual(evidence['error_class'],'RuntimeError' if primary else 'CleanupFailure')
+                self.assertEqual({r['name'] for r in evidence['cleanup']},{'server','idp','inputs','owned'})
+                self.assertTrue(any(r['stage']=='pki' for r in evidence['cleanup']))
+                self.assertTrue(any(r['exit_code']==9 for r in evidence['cleanup']))
+                if primary:self.assertEqual(evidence['containers']['server']['log'],'safe product log')
+                owner.temporary.cleanup.assert_not_called()
 
 
 class RuntimeOwnership(unittest.TestCase):

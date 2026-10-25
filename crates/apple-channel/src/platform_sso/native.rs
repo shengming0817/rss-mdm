@@ -73,11 +73,20 @@ mod tests {
         nid::Nid,
         pkey::PKey,
     };
-    fn key() -> (crypto::Signer, PublicKey) {
-        let key = PKey::from_ec_key(
-            EcKey::generate(&EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap()).unwrap(),
-        )
-        .unwrap();
+    fn key(seed: u32) -> (crypto::Signer, PublicKey) {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let private = openssl::bn::BigNum::from_u32(seed).unwrap();
+        let mut public = openssl::ec::EcPoint::new(&group).unwrap();
+        public
+            .mul_generator2(
+                &group,
+                &private,
+                &mut openssl::bn::BigNumContext::new().unwrap(),
+            )
+            .unwrap();
+        let key =
+            PKey::from_ec_key(EcKey::from_private_components(&group, &private, &public).unwrap())
+                .unwrap();
         (
             crypto::Signer::from_pem(&key.private_key_to_pem_pkcs8().unwrap()).unwrap(),
             crypto::coordinates(&key).unwrap(),
@@ -85,9 +94,9 @@ mod tests {
     }
     #[test]
     fn native_request_binds_both_keys_subject_audiences_and_freshness() {
-        let (server, _) = key();
-        let (device, device_key) = key();
-        let (user, user_key) = key();
+        let (server, _) = key(1);
+        let (device, device_key) = key(2);
+        let (user, user_key) = key(3);
         let rt = Runtime::new(
             Configuration {
                 team_id: "ABCDEFGHIJ".into(),

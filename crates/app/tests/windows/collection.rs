@@ -107,7 +107,14 @@ async fn template_flow(
     } else {
         None
     };
-    let mut f = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut f = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[
@@ -131,7 +138,7 @@ async fn template_flow(
             scope: Scope::Tenant,
         });
     }
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         grants,
@@ -139,12 +146,12 @@ async fn template_flow(
     .await?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            host.app.flow.planning.clone(),
+            host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.app.flow.assets.clone(),
-        host.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -162,8 +169,8 @@ async fn template_flow(
             .critical(),
     );
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),
@@ -251,18 +258,30 @@ async fn template_flow(
         post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     } else {
         crate::test_support::planning_http::seed_native_template(
-            &host.app.flow.planning,
+            &host.planning.runtime,
+            host.planning.tenant,
             id,
             rss_mdm_resource::Platform::Windows,
             template,
         )
         .await?;
-        ensure!(
-            upload_for(&f.browser, &f.router, id, &bytes, "windows", "x86_64").await?
-                == StatusCode::CREATED
-        );
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("native-template")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(&bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            host.commands
+                .content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("native content"))?,
+            &artifact,
+            bytes.clone(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
         crate::test_support::agent_execution::seed_scope(
-            &host.app.flow.planning,
+            &host.planning,
             scope,
             json!([{"kind":"device","id":case_device()}]),
         )
@@ -478,7 +497,14 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
-    f = Client::with_browser(host.browser.clone(), host.app.clone(), browser);
+    f = Client::with_browser(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+        browser,
+    );
     let mut end = packet.clone();
     end.header.message_id += 1;
     end.commands = vec![s::Command::Status(s::Status {
@@ -523,8 +549,8 @@ async fn template_flow(
     );
     // Reconcile the committed success again after restart. Rewinding only the run
     // while retaining its terminal webhook creates an impossible partial commit.
-    host.app
-        .execution
+    host.commands
+        .service
         .recover_native_run_fixture(runs[0])
         .await?;
     let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
@@ -541,8 +567,8 @@ async fn template_flow(
     )?;
     let mut launch = resumed.startup()?.commit();
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),
@@ -640,8 +666,8 @@ async fn pending_at(
     target: rss_mdm_execution_service::Target,
     now: i64,
 ) -> anyhow::Result<bool> {
-    host.app
-        .execution_runtime
+    host.commands
+        .runtime
         .local_tx(
             rss_request_context::TenantId::parse(case_tenant())?,
             rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -708,7 +734,7 @@ async fn authenticate_during_recovery(
             let locked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted AND classid::bigint=((hashtextextended($2,2348)>>32)&4294967295) AND objid::bigint=(hashtextextended($2,2348)&4294967295) AND objsubid=1)")
                 .bind(worker).bind(key).fetch_one(&mut *observer).await?;
             ensure!(locked, "recovery did not hold this device's channel fence");
-            let leaf = host.app.windows()?.channel.ca.verify(
+            let leaf = host.windows.as_ref().channel.ca.verify(
                 &[tokio_rustls::rustls::pki_types::CertificateDer::from(peer.certificate.as_slice())],
                 crate::windows::test_support::now(),
             )?;
@@ -717,7 +743,7 @@ async fn authenticate_during_recovery(
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 rss_mdm_registration_service::Purpose::Primary,
             ).credential(leaf.fingerprint())?;
-            let principal = host.app.devices.management_principal(&credential).await?;
+            let principal = host.devices.management_principal(&credential).await?;
             ensure!(principal.registration() == peer.intent.registration && principal.device() == case_device(),
                 "authentication returned another registration while recovery held the channel");
             // The holder is still blocked by our row transaction: the read did not
@@ -732,7 +758,7 @@ async fn authenticate_during_recovery(
         result
     };
     let (recovered, authenticated) = tokio::join!(
-        host.app.execution.recover_native_run_fixture(row),
+        host.commands.service.recover_native_run_fixture(row),
         authentication
     );
     let closed = connection.close().await;
@@ -772,7 +798,7 @@ async fn denied_template_result(
         }
     }
     let revoke = || {
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             crate::test_support::case::admin(),
             vec![],
@@ -1023,7 +1049,7 @@ async fn dynamic_result(
         if completion == Completion::RevokedInventory
             && leaf_gets.iter().any(|(_, u)| u.ends_with("/Name"))
         {
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::change_grants(
                 case_tenant(),
                 crate::test_support::case::admin(),
                 vec![],
@@ -1199,7 +1225,7 @@ async fn dynamic_result(
         retained == serde_json::to_value(&agent_value)?,
         "native collection modified Agent software"
     );
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         crate::test_support::case::admin(),
         vec![],
@@ -1211,8 +1237,8 @@ async fn dynamic_result(
     )?;
     let mut launch = recovery.startup()?.commit();
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),

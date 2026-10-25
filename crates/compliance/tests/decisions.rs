@@ -68,7 +68,17 @@ fn platform_evidence_preserves_all_valid_agent_sources() {
     )
     .unwrap();
     assert_eq!(result.status, S::Compliant);
-    assert_eq!(result.applicability.sources.len(), 3);
+    assert_eq!(
+        result
+            .applicability
+            .sources
+            .iter()
+            .map(|v| v.source.as_str())
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["agent.builtin", "agent.script", "agent.osquery"]
+            .into_iter()
+            .collect()
+    );
 }
 
 #[test]

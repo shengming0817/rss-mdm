@@ -4,7 +4,7 @@ use anyhow::Context;
 use sqlx::{Connection, Executor, PgConnection};
 
 async fn fixture() -> anyhow::Result<(
-    Arc<Database>,
+    crate::test_support::runtime::Resources,
     DeviceService,
     AuthorizedPrincipal,
     PgConnection,
@@ -14,13 +14,17 @@ async fn fixture() -> anyhow::Result<(
         "device T2 requires integration"
     );
     let admin_a = admin(case_a(), "admin-a").await?;
-    let access = Arc::new(Database::connect(options("mdm_access")?).await?);
+    let (pool, source, audit) = crate::audit_test_support::request_store().await?;
+    let mut access = crate::test_support::runtime::Resources::default();
+    access.resource(crate::test_support::runtime::PoolResource(pool.clone()));
+    access.resource(crate::test_support::runtime::SourceResource(source));
     let service = DeviceService::new(
-        access.registration(),
+        Arc::new(rss_mdm_registration_service::Store::from_pool(
+            pool,
+            Arc::new(crate::registration_lifecycle::Bridge),
+        )),
         case_a().into(),
-        access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?,
+        audit,
     );
     let mut root = PgConnection::connect_with(&options("postgres")?).await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")

@@ -3,14 +3,47 @@ use super::*;
 #[tokio::test]
 #[ignore = "MODULE=authorization.membership: real authorization contract"]
 async fn membership_activation_removal_and_replay() -> Result<()> {
-    let Fixture {
-        resources,
-        router,
-        mut admin,
-        mut member,
-        subject,
-        ..
-    } = fixture().await?;
+    let mut authority = authority::Authority::open().await?;
+    let tenant = authority.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    authority
+        .resources
+        .resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(
+        authority
+            .audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let planning = Arc::new(
+        crate::planning::Planning::new(
+            audit.clone(),
+            runtime,
+            tenant,
+            Arc::new(crate::clock::SystemClock),
+            &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                audit,
+            )),
+        )
+        .await?,
+    );
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = Router::new().nest(
+        "/api/v1",
+        rss_mdm_management_http::planning::http::routes()
+            .with_state(Arc::new(
+                rss_mdm_management_http::planning::http::HttpState { planning, groups },
+            ))
+            .into_axum(),
+    );
+    let router = authority.router(authority.authorization().merge(routes))?;
+    let mut admin = authority.browser("admin")?;
+    let mut member = authority.browser("other")?;
+    let subject = prepared_subject(&member)?;
+    let resources = authority.resources;
     resources.finish(async {
     let group_id = Uuid::new_v4();
     let group_path = format!("/api/v1/authorization/user-groups/{group_id}");
@@ -27,8 +60,15 @@ async fn membership_activation_removal_and_replay() -> Result<()> {
     )
     .await?;
     ensure!(created_group.0 == StatusCode::OK);
-    let group_rule_path = format!("/api/v1/authorization/rules/{}", Uuid::new_v4());
-    ensure!(put(&mut admin, &router, &group_rule_path, Uuid::new_v4(), 0, json!({"subject":{"kind":"user_group","id":group_id},"grants":[grant("group_read",json!({"kind":"tenant"})),grant("inventory_read",json!({"kind":"all_devices"}))]})).await?.0 == StatusCode::OK);
+    let rule_id = Uuid::new_v4();
+    let group_rule_path = format!("/api/v1/authorization/rules/{rule_id}");
+    let rule: crate::authorization::Rule = serde_json::from_value(json!({"subject":{"kind":"user_group","id":group_id},"grants":[grant("group_read",json!({"kind":"tenant"})),grant("inventory_read",json!({"kind":"all_devices"}))]}))?;
+    rule.validate(case_tenant(), INSTANCE)?;
+    let mut tx = authority.pool.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)").bind(case_tenant()).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO mdm_access.authorization_rules(tenant_id,instance,id,revision,document) VALUES($1::uuid,$2::uuid,$3,1,$4)")
+        .bind(case_tenant()).bind(INSTANCE).bind(rule_id).bind(serde_json::to_value(rule)?).execute(&mut *tx).await?;
+    tx.commit().await?;
     let target = format!("/api/v1/groups/{}", Uuid::new_v4());
     ensure!(member.call(&router, Method::GET, &target, None).await?.0 == StatusCode::NOT_FOUND);
     let mut disabled = group.clone();

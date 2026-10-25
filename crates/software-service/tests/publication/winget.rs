@@ -5,8 +5,28 @@ use super::*;
 async fn full_version_publication_recovery_and_public_artifact_boundary() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let mut document = server.winget_document();
+    let ExportDocument::Winget { manifest } = &mut document else {
+        unreachable!()
+    };
+    let mut arm = manifest["Versions"][0]["Installers"][0].clone();
+    arm["Architecture"] = "arm64".into();
+    arm["InstallerUrl"] = format!("{}artifacts/arm64.msi", server.base).into();
+    manifest["Versions"][0]["Installers"]
+        .as_array_mut()
+        .unwrap()
+        .push(arm);
+    let input = seed(runtime.clone(), &content, &server, document).await;
     let p = submit_publication(&service, &input).await;
     assert!(matches!(
         service.published(p.id().digest().bytes(), cutoff()).await,
@@ -28,7 +48,14 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
             && !work.withdrawal)
     );
     drop(service);
-    let service = server.service(runtime.clone(), server.winget()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
     assert!(matches!(
         service
             .reconcile(p.id(), p.attempt, at(10), cutoff())
@@ -105,6 +132,8 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
     assert_eq!(server.state.lock().unwrap().posts, 0);
     assert_eq!(server.state.lock().unwrap().deletes, 0);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -112,8 +141,17 @@ async fn full_version_publication_recovery_and_public_artifact_boundary() {
 async fn unstarted_publication_recovery_preserves_its_original_identity() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let input = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let p = submit_publication(&service, &input).await;
     let page = service.reconciliation_page("", 32, cutoff()).await.unwrap();
     let work = page
@@ -147,6 +185,8 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
     );
     assert_eq!(server.state.lock().unwrap().posts, 0);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }
 
 #[tokio::test]
@@ -154,8 +194,17 @@ async fn unstarted_publication_recovery_preserves_its_original_identity() {
 async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
     let server = Server::new().await;
     let runtime = runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed_draft(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let input = seed_draft(runtime.clone(), &content, &server, server.winget_document()).await;
     let input = bound_input(&service, &input);
     let counts = || {
         sql(
@@ -270,4 +319,6 @@ async fn draft_publication_rolls_back_every_write_and_replay_rechecks_access() {
     ));
     assert_eq!(counts(), after);
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }

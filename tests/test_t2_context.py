@@ -40,7 +40,7 @@ class ContextTests(unittest.TestCase):
             self.assertEqual(value['actors'], [])
             self.assertTrue(policy.postgres)
             self.assertEqual(set(policy.fixtures), expected)
-        self.assertEqual(policies[1].scope, 'tenant')
+        self.assertEqual(policies[1].scope, 'pair')
 
     def test_contract_rejects_missing_wrong_typed_and_unprepared_fields(self):
         from copy import deepcopy

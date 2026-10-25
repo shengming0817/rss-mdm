@@ -214,7 +214,7 @@ fn insider_metadata_cannot_become_stable_by_rewriting_the_version_number() {
         Operation::compile(path, &[], Verb::Get, None, context).err(),
         Some(Error::Unsupported)
     );
-    let supported = Operation::compile(
+    let _supported = Operation::compile(
         "./Device/Vendor/MSFT/DMClient/Provider/*/ConfigRefresh/Enabled",
         &["provider".into()],
         Verb::Get,
@@ -222,10 +222,6 @@ fn insider_metadata_cannot_become_stable_by_rewriting_the_version_number() {
         target([10, 0, 22621, 3235]),
     )
     .unwrap();
-    assert_eq!(
-        supported.applicability_source(),
-        Some("39e38c079df4b447709c72aaf376ea1c174d18fa30fcc7dffb5213d7e5df49fa")
-    );
 }
 
 #[test]

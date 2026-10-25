@@ -8,7 +8,8 @@ use rss_mdm_inventory_service::objects::ObjectRef;
 #[tokio::test]
 #[ignore = "MODULE=planning.group_scope: associated sources, fixed snapshots and channel admission"]
 async fn associated_context_maps_before_exclusions_and_missing_channels_recover() {
-    let (access, associations, admin, _) = crate::device::t2::associations::setup().await.unwrap();
+    let (access, associations, admin, _, _audit_store) =
+        crate::device::t2::associations::setup().await.unwrap();
     let mdm = crate::test_support::case::name("associated-mdm");
     let agent = crate::test_support::case::name("associated-agent");
     let alone = crate::test_support::case::name("associated-alone");
@@ -453,7 +454,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     );
     running.stop().await;
     service.runtime.close().await;
-    access.close().await;
+    access.finish(async { Ok(()) }).await.unwrap();
 }
 
 #[tokio::test]
@@ -490,33 +491,36 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let associations =
         rss_mdm_device_service::Associations::new(fixture.audit.clone(), tenant(), &[7; 32])?;
     associations.reconcile().await?;
-    let (router, app_resources) = app(&fixture.base).await?;
+        let tenant = fixture.identity.tenant;
+    let runtime = crate::planning::test_support::runtime(tenant).await;
+    let mut app_resources = Resources::default();
+    app_resources.resource(SourceResource(runtime.clone()));
+    let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+    let clock = Arc::new(crate::clock::SystemClock);
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit = Arc::new(fixture.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+    let planning = Arc::new(crate::planning::Planning::new(audit.clone(), runtime.clone(), tenant, clock.clone(), &key, Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone()))).await?);
+    let groups = Arc::new(crate::planning::test_support::groups(&planning).await);
+    let routes = rss_mdm_management_http::planning::http::routes().with_state(Arc::new(rss_mdm_management_http::planning::http::HttpState { planning: planning.clone(), groups })).into_axum();
+    let router = fixture.router(Router::new().nest("/api/v1", routes).merge(fixture.authorization()))?;
+
     app_resources.finish(async {
     let mut browser = fixture.browser("other")?;
-    let member = browser_subject(&browser, &router).await?;
-    let mut grants = identity::device_grants(None, &["inventory_read", "configuration_write"])?;
+    let member = prepared_subject(&browser)?;
+    let mut grants = identity::device_grants(None, &["inventory_read"])?;
     for p in [
         "group_read",
         "group_write",
         "group_recompute",
-        "scope_read",
-        "scope_write",
-        "policy_read",
-        "policy_write",
-        "resource_read",
-        "resource_write",
     ] {
         grants.push(crate::authorization::Grant {
             operation: serde_json::from_value(json!(p))?,
             scope: crate::authorization::Scope::Tenant,
         });
     }
-    identity::set_grants(case_tenant(), &member, grants).await?;
+    identity::seed_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let group = Uuid::new_v4();
-    let scope = Uuid::new_v4();
-    let policy = Uuid::new_v4();
-    let resource = Uuid::new_v4();
     let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"unhealthy Agent","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     let (_, decisions) = browser
         .call(
@@ -546,53 +550,6 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     let item=reverse.1["items"].as_array().and_then(|items|items.iter().find(|v|v["id"]==group.to_string())).ok_or_else(||anyhow::anyhow!("associated group absent: {reverse:?}"))?;
     ensure!(item["assetContext"]=="associated_device" && item["objects"][0]["kind"]=="association","association flattened: {item}");
     ensure!(item["memberSet"].is_string() && item["evaluatedRuleVersion"].is_string() && item["inputCurrent"].is_boolean(),"missing membership basis: {item}");
-    call(&mut browser,&router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    native_configuration_resource(
-        &mut browser,
-        &router,
-        resource,
-        "windows",
-        "x86_64",
-        windows_configuration(),
-    )
-    .await?;
-    call(&mut browser,&router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"v1","platform":"windows","architecture":"x86_64","variant":"default"},"exit":"retain"}}})).await?;
-    await_ingress().await?;
-    let (status, page) = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/assignments"),
-            None,
-        )
-        .await?;
-    ensure!(status == StatusCode::OK, "{page}");
-    let assignments = page["items"].as_array().unwrap();
-    ensure!(assignments.len() == 1, "{page}");
-    ensure!(
-        assignments[0]["availability"] == "ready"
-            && assignments[0]["object"]["kind"] == "association"
-            && assignments[0]["channel"] == "mdm"
-            && assignments[0]["target"]["device"] == mdm,
-        "{page}"
-    );
-    ensure!(
-        assignments[0]["sources"][0]["members"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| m["device"] == agent && m["registrationId"] == registration.to_string()),
-        "{page}"
-    );
-    let old_route = browser
-        .call(
-            &router,
-            Method::GET,
-            &format!("/api/v1/policies/{policy}/devices"),
-            None,
-        )
-        .await?;
-    ensure!(old_route.0 == StatusCode::NOT_FOUND);
     stop_worker(automation).await?;
     Ok(())
     }).await

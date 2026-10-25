@@ -7,7 +7,8 @@ from t2_environment import run
 from verification_result import require
 ROOT=Path(__file__).resolve().parents[2]
 
-def verify_startup_deadlines(binary, root, env):
+def verify_startup_deadlines(fixture):
+    binary, root, env = fixture.binary, fixture.root, fixture.env
     import socket
     config=json.loads((root/'runtime.json').read_text())
     secrets=['api-fixture','access-fixture','runtime-fixture','identity-runtime-fixture','identity-maintenance-fixture','o'*40]
@@ -61,6 +62,3 @@ def verify_startup_deadlines(binary, root, env):
         if child is not None and child.poll() is None:
             child.terminate();child.communicate(timeout=10)
     print('database and Identity startup stalls rejected within budget with safe stage diagnostics',flush=True)
-
-def execute(fixture):
-    verify_startup_deadlines(fixture.binary, fixture.root, fixture.env)

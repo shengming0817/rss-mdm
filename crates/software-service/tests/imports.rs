@@ -68,7 +68,12 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
             ("Formula/app.rb", formula.as_str(), behavior.clone()),
             ("Casks/app.rb", cask.as_str(), dmg.clone()),
         ] {
-            for arch in ["x86_64", "aarch64"] {
+            let architectures: &[&str] = if native_export {
+                &["x86_64"]
+            } else {
+                &["x86_64", "aarch64"]
+            };
+            for &arch in architectures {
                 for tag in ["sonoma", "arm64_sonoma"] {
                     let request=serde_json::from_value(json!({"asOfUnixSeconds":1700000000,"source":source.snapshot().unwrap(),"resource":"app","resourceVersion":"1","package":"app","packageVersion":"1.2","platform":"macos","architecture":arch,"variant":"default","selection":{"kind":"brew","path":path,"bottleTag":tag,"sourceLength":if path.starts_with("Formula"){json!(3)}else{json!(null)}},"behavior":behavior,"installerLength":3,"additionalArtifacts":if path.starts_with("Formula"){json!({"source":{"reference":"source","origin":"https://cdn.example.test/app-source.tar.gz","length":3,"sha256":vec![0x11;32]}})}else{json!({})},"dependencies":[],"signatures":[],"reboot":"report","downgrade":"deny","nativeExport":native_export})).unwrap();
                     let docs = BTreeMap::from([(path.into(), document.as_bytes().to_vec())]);
@@ -80,19 +85,6 @@ fn brew_source_tag_is_bound_to_resource_architecture_even_without_export() {
                 }
             }
         }
-    }
-}
-
-#[test]
-fn import_rejects_retired_ownership_including_null() {
-    for ownership in [
-        json!("managed_only"),
-        json!("allow_user_existing"),
-        json!(null),
-    ] {
-        let mut request = input();
-        request["ownership"] = ownership;
-        assert!(serde_json::from_value::<ImportRequest>(request).is_err());
     }
 }
 

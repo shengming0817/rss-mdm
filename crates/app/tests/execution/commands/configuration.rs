@@ -17,9 +17,14 @@ fn task(nodes: &[&str], remove: bool) -> Value {
     let operations:Vec<_>=nodes.iter().map(|node| json!({"kind":"node","node":node,"instance":[],"operation":if remove{"delete"}else{"replace"},"value":if remove{Value::Null}else{json!({"type":"integer","value":"1"})}})).collect();
     json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"sequence","operations":operations}}})
 }
-async fn resource(client: &mut Client, nodes: &[&str]) -> anyhow::Result<String> {
+async fn resource(
+    client: &mut Client,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    nodes: &[&str],
+) -> anyhow::Result<String> {
     resource_input(
         client,
+        runtime,
         json!({"target":{"kind":"device"},"apply":task(nodes,false),"remove":task(nodes,true)}),
     )
     .await
@@ -231,7 +236,14 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut grants: Vec<Value> = [
         "resource_read",
         "resource_write",
@@ -265,12 +277,12 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     )?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            client.app.flow.planning.clone(),
+            host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        client.app.flow.assets.clone(),
-        client.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut startup = automation_owner.startup()?;
@@ -311,8 +323,8 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         }
     })
     .await??;
-    let a = resource(&mut client, &[CORTANA, CAMERA]).await?;
-    let b = resource(&mut client, &[TELEMETRY]).await?;
+    let a = resource(&mut client, &host.planning.runtime, &[CORTANA, CAMERA]).await?;
+    let b = resource(&mut client, &host.planning.runtime, &[TELEMETRY]).await?;
     let first = Uuid::new_v4();
     let second = Uuid::new_v4();
     for (id, resource) in [(first, &a), (second, &b)] {
@@ -353,7 +365,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
         );
     }
     // A remaining owner of one member must not let withdrawal clip a Sequence.
-    let keeper_resource = resource(&mut client, &[CORTANA]).await?;
+    let keeper_resource = resource(&mut client, &host.planning.runtime, &[CORTANA]).await?;
     let keeper = Uuid::new_v4();
     change(&mut client,&format!("/api/v1/policies/{keeper}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":keeper_resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     wait_diagnosis(&mut client, keeper, "native_group_conflict").await?;
@@ -425,8 +437,8 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
     }
     // Reconstruct the execution adapter and drive the same policy reconciliation on persisted facts.
     let config = crate::test_support::identity::config(case_tenant())?;
-    let audit = client.app.audit_store.clone();
-    let identity = client.app.identity.clone();
+    let audit = client.audit_store.clone();
+    let sessions = client.sessions.clone();
     let (resources, restarted) = crate::test_support::runtime::Resources::build(move |resources| {
         Box::pin(async move {
             let content =
@@ -442,12 +454,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
                 content,
                 std::collections::BTreeMap::new(),
                 rss_device_command_postgres::CommandClock::Postgres,
-                Arc::new(
-                    rss_mdm_authorization_service::session::SessionAuthority::new(
-                        identity.authority.clone(),
-                        identity.tenant,
-                    ),
-                ),
+                sessions,
             )
             .await?;
             resources.resource(rss_mdm_execution_service::Resource(
@@ -475,7 +482,7 @@ async fn native_object_sets_share_a_device_and_withdraw_only_their_own_objects()
             restarted
                 .service
                 .run_recovery(
-                    &recovery_scope(client.app.identity.tenant),
+                    &recovery_scope(client.tenant),
                     recovery_policy,
                     &control,
                     &tokio::sync::Notify::new(),
@@ -541,7 +548,14 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), host.app.clone()).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -568,7 +582,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     for registration in [agent_registration, alone_registration] {
         let epoch = Uuid::new_v4();
         let scope = crate::device::scope_dataset(
-            client.app.identity.tenant,
+            client.tenant,
             registration,
             "agent.script",
             epoch,
@@ -579,8 +593,8 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
         sqlx::query("INSERT INTO mdm.inventory(field_scope,tenant_id,journal,generation,scope,coverage,field,value,batch_id,observed_at,received_at,state,last_known,last_known_batch,last_known_observed,last_known_received,registration,source,epoch,collection_sequence) VALUES(replace(jsonb_build_object('kind','device')::text,' ',''),$1::uuid,'mdm.observation.v1','inventory-projection-v1',$2,$3,'custom.corporate_agent.healthy',$4,'health-fixture',1,2,'known',$4,'health-fixture',1,2,$5,'agent.script',$6,0)").bind(case_tenant()).bind(scope).bind(serde_json::to_string(&definition.coverage()?)?).bind(serde_json::to_value(Scalar::Boolean(false))?).bind(registration).bind(epoch).execute(&mut pg).await?;
     }
     let associations = rss_mdm_device_service::Associations::new(
-        client.app.audit_store.clone(),
-        client.app.identity.tenant,
+        client.audit_store.clone(),
+        client.tenant,
         &[7; 32],
     )?;
     associations.reconcile().await?;
@@ -617,7 +631,7 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     let policy = Uuid::new_v4();
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"Agent health remediation","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
     planning_http::call(&mut client.browser,&client.router,&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"group","id":group}],"limitations":null,"exclusions":[]}})).await?;
-    let resource = resource(&mut client, &[CORTANA]).await?;
+    let resource = resource(&mut client, &host.planning.runtime, &[CORTANA]).await?;
     change(&mut client,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"retain"}}})).await?;
     planning_http::await_ingress().await?;
     let operations = published(&mut client, policy).await?;
@@ -723,9 +737,8 @@ async fn associated_agent_health_executes_only_original_mdm_and_missing_channel_
     );
     let authority: rss_mdm_execution_service::authority::ExecutionAuthority =
         serde_json::from_value(frozen)?;
-    let source = crate::planning::execution_source::ExecutionSource::new(
-        client.app.flow.planning.objects.clone(),
-    );
+    let source =
+        crate::planning::execution_source::ExecutionSource::new(host.planning.objects.clone());
     let mut tx = pg.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())

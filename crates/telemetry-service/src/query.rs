@@ -570,16 +570,6 @@ mod tests {
         at: i64,
         value: i64,
     ) -> ObservedSample {
-        let profile = crate::tests::profile(rss_mdm_resource::TelemetryProjection::History);
-        let mut input = crate::tests::input();
-        input.observations[0].observed_at = at;
-        input.observations[0].sequence = at as u64;
-        input.observations[0].values.values_mut().for_each(|v| {
-            *v = rss_mdm_agent_wire::runtime::TelemetryReading::Valid {
-                value: rss_mdm_agent_wire::runtime::Scalar::Integer(value),
-                interval_start: None,
-            }
-        });
         let scope = Scope::new(
             rss_request_context::TenantId::parse("11111111-1111-4111-8111-111111111111").unwrap(),
             Id::new("mdm.telemetry").unwrap(),
@@ -589,18 +579,28 @@ mod tests {
             Id::new(format!("{registration}:{}", source.as_str())).unwrap(),
             Id::new(epoch.to_string()).unwrap(),
         );
-        let batch = crate::samples::prepare(
-            &profile,
-            &crate::tests::fields(),
-            &input,
+        let definition = crate::tests::fields()
+            .remove(0)
+            .time_series_definition(stream.scope().clone())
+            .unwrap();
+        let sample = Sample::new(SampleInput {
             stream,
-            "device",
-            3_000_000,
-        )
-        .unwrap()
+            series: Series::new(
+                definition,
+                Id::new("device").unwrap(),
+                Id::new("device").unwrap(),
+                Default::default(),
+            )
+            .unwrap(),
+            id: Id::new(uuid::Uuid::new_v4().to_string()).unwrap(),
+            sequence: at as u64,
+            observed_at: Timestamp::new(at).unwrap(),
+            interval: None,
+            reading: Reading::Valid(rss_timeseries::Value::Number(Number::I64(value))),
+        })
         .unwrap();
         ObservedSample {
-            sample: batch.samples()[0].clone(),
+            sample,
             received_at: Timestamp::new(3_000_000).unwrap(),
         }
     }

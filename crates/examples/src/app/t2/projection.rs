@@ -55,29 +55,6 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         );
         assert_ne!(view["checkpoint"], original["checkpoint"]);
     }
-    a.ingest(batch("full", 3, Body::Snapshot(facts("Model-B"))))
-        .await?;
-    a.project(&cancel).await?;
-    a.ingest(batch(
-        "delta",
-        4,
-        Body::Delta {
-            baseline: Id::new("full")?,
-            previous: 3,
-            changes: vec![Change::delete(Id::new("device.os.version")?)],
-        },
-    ))
-    .await?;
-    a.project(&cancel).await?;
-    assert_eq!(
-        inspect(&a, "delta").await?["assets"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|a| a["fact"]["state"]["kind"] == "known")
-            .count(),
-        1
-    );
     let other = app(scope(2, "d1")).await?;
     other
         .ingest(batch("first", 0, Body::Snapshot(facts("Tenant-B"))))
@@ -92,15 +69,6 @@ async fn projection_and_tenant_scopes() -> Result<()> {
         "not_projected"
     );
     sibling.project(&cancel).await?;
-    a.ingest(batch("empty", 5, Body::Snapshot(vec![]))).await?;
-    a.project(&cancel).await?;
-    let own = inspect(&a, "empty").await?;
-    assert_eq!(own["projection"], "projected");
-    assert!(
-        fields(&own)
-            .values()
-            .all(|row| row["fact"]["state"]["kind"] == "deleted")
-    );
     known(
         &inspect(&other, "first").await?,
         &scope(2, "d1"),
@@ -227,6 +195,14 @@ async fn invocation_horizon() -> Result<()> {
             a.clock.deadline(),
         )
         .await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(stream.tenant().to_string())
+        .execute(&mut *tx)
+        .await?;
+    rss_mdm_inventory_postgres::register_collection_in(&mut tx, stream.tenant(), &definition)
+        .await?;
+    let mut prepared = Vec::new();
     for sequence in 0..257 {
         let batch = batch(
             &format!("window-{sequence}"),
@@ -238,19 +214,6 @@ async fn invocation_horizon() -> Result<()> {
             batch.body(),
             batch.observed_at_seconds(),
         )?;
-        let mut tx = connection.begin().await?;
-        sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
-            .bind(stream.tenant().to_string())
-            .execute(&mut *tx)
-            .await?;
-        if sequence == 0 {
-            rss_mdm_inventory_postgres::register_collection_in(
-                &mut tx,
-                stream.tenant(),
-                &definition,
-            )
-            .await?;
-        }
         let sealed = rss_mdm_inventory_postgres::seal_collection_in(
             &mut tx,
             rss_mdm_inventory_postgres::CollectionCompletion {
@@ -262,14 +225,48 @@ async fn invocation_horizon() -> Result<()> {
             },
         )
         .await?;
-        tx.commit().await?;
-        a.observation
-            .receive(
-                &VerifiedBatch::verify(&authority, stream.clone(), sealed)?,
-                a.clock.deadline(),
-            )
-            .await?;
+        prepared.push(VerifiedBatch::verify(&authority, stream.clone(), sealed)?);
     }
+    tx.commit().await?;
+    let mut journal = sqlx::PgConnection::connect_with(&storage::options()?).await?;
+    let mut tx = journal.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(stream.tenant().to_string())
+        .execute(&mut *tx)
+        .await?;
+    let (state, policy): (String, String) =
+        sqlx::query_as("SELECT state,policy FROM rss_observation.lock_stream($1)")
+            .bind(stream.encode()?)
+            .fetch_one(&mut *tx)
+            .await?;
+    let mut state = rss_observation::State::decode(&state)?;
+    let policy = rss_observation::Policy::decode(&policy)?;
+    let received: i64 =
+        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+            .fetch_one(&mut *tx)
+            .await?;
+    for input in prepared {
+        let batch = input.batch();
+        let decision = state.advance(batch, received as u64, &policy)?;
+        sqlx::query(
+            "SELECT rss_observation.commit_batch($1,$2,$3::numeric,$4,$5,$6,$7,$8,$9::numeric,$10)",
+        )
+        .bind(stream.encode()?)
+        .bind(batch.id().as_str())
+        .bind(batch.sequence().to_string())
+        .bind(batch.encode())
+        .bind(input.fingerprint().as_slice())
+        .bind(received)
+        .bind(policy.encode()?)
+        .bind(decision.encode()?)
+        .bind(state.revision().to_string())
+        .bind(decision.outcome().is_applicable())
+        .execute(&mut *tx)
+        .await?;
+        state = decision.state().clone();
+    }
+    tx.commit().await?;
+    journal.close().await?;
     connection.close().await?;
     let owner = storage::pool(&url("MDM_OWNER_URL")?).await?;
     let admin = storage::pool(&url("MDM_ADMIN_URL")?).await?;

@@ -7,41 +7,74 @@ use rss_mdm_execution_service::{Task, storage, transaction};
 use rss_mdm_windows_mdm::native::{Execution, Request as Native, Value as NativeValue};
 use sqlx::Row;
 
-pub(crate) async fn issue(
-    app: &Arc<crate::api::Assembly>,
+pub(crate) async fn prepare(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
-    _root: &std::path::Path,
     installation: uuid::Uuid,
-) -> Result<BootstrapPeer> {
-    issue_observed(app, router, _root, installation, None).await
+) -> Result<PreparedBootstrap> {
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
+        router,
+        installation,
+        None,
+    )
+    .await
 }
-pub(crate) async fn issue_windows(
-    app: &Arc<crate::api::Assembly>,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
+pub(crate) async fn prepare_windows(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
-    root: &std::path::Path,
     installation: uuid::Uuid,
     message: &rss_mdm_windows_mdm::syncml::Message,
-) -> Result<BootstrapPeer> {
-    issue_observed(
-        app,
+) -> Result<PreparedBootstrap> {
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
         router,
-        root,
         installation,
         Some(Observed::Windows(message)),
     )
     .await
 }
-pub(crate) async fn issue_apple(
-    app: &Arc<crate::api::Assembly>,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
+pub(crate) async fn prepare_apple(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
-    root: &std::path::Path,
     installation: uuid::Uuid,
     payload: &plist::Dictionary,
-) -> Result<BootstrapPeer> {
-    issue_observed(
-        app,
+) -> Result<PreparedBootstrap> {
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
         router,
-        root,
         installation,
         Some(Observed::Apple(payload)),
     )
@@ -51,16 +84,23 @@ enum Observed<'a> {
     Windows(&'a rss_mdm_windows_mdm::syncml::Message),
     Apple(&'a plist::Dictionary),
 }
-async fn issue_observed(
-    app: &Arc<crate::api::Assembly>,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
+async fn prepare_observed(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
-    _root: &std::path::Path,
     installation: uuid::Uuid,
     observed: Option<Observed<'_>>,
-) -> Result<BootstrapPeer> {
+) -> Result<PreparedBootstrap> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     let root = root.as_path();
-    let (id, deadline, task) = transaction::inspect(&app.execution_runtime, rss_request_context::TenantId::parse(case_tenant())?, (&app.protection, installation), |ctx, tx| Box::pin(async move {
+    let (id, deadline, task) = transaction::inspect(runtime, rss_request_context::TenantId::parse(case_tenant())?, (protection, installation), |ctx, tx| Box::pin(async move {
         let (key, installation) = *ctx;
         let tenant = tx.tenant_id();
         let row = tx.with_connection(move |c| Box::pin(async move {
@@ -240,35 +280,10 @@ async fn issue_observed(
         .args(["-subj", &subject, "-outform", "DER", "-out"])
         .arg(&csr_file))?;
     let csr = std::fs::read(csr_file)?;
-    let config = app
-        .agent_enrollment
-        .as_ref()
-        .unwrap()
-        .bootstrap_configuration()?;
+    let config = enrollment.bootstrap_configuration()?;
     let now = crate::clock::SystemClock.unix_seconds()?;
-    let mut request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
+    let request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
     let approval = webhook(router, config, "challenge", &request).await?;
-    // Simulate the CA losing the first approved response after the transaction commits.
-    ensure!(
-        webhook(router, config, "challenge", &request).await? == approval,
-        "exact challenge retry must reuse the approval"
-    );
-    let mut changed = request.clone();
-    changed["scepTransactionID"] = json!(Uuid::new_v4());
-    ensure!(
-        webhook_response(router, config, "challenge", &changed)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    changed = request.clone();
-    changed["scepChallenge"] = json!(credential("different-bootstrap-challenge"));
-    ensure!(
-        webhook_response(router, config, "challenge", &changed)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
     let approved = &approval["data"]["subject"];
     ensure!(
         approved["commonName"] == cn
@@ -296,14 +311,36 @@ async fn issue_observed(
         approved["commonName"].as_str().unwrap()
     );
     let chain = super::pki::leaf(root, &csr, &subject, &[], now - 1, expiry)?;
-    request["x509Certificate"] = json!({"raw":STANDARD.encode(&chain[0])});
-    webhook(router, config, "notify", &request).await?;
-    Ok(BootstrapPeer {
-        app: app.clone(),
-        chain,
-        directory: temp,
+    Ok(PreparedBootstrap {
+        peer: BootstrapPeer {
+            channel: crate::native::ChannelRouter {
+                origins: channel.origins.clone(),
+                router: channel.router.clone(),
+                admission: channel.admission.clone(),
+            },
+            audit: audit.clone(),
+            enrollment: enrollment.clone(),
+            chain,
+            directory: temp,
+        },
+        request,
+        approval,
     })
 }
+pub(crate) struct PreparedBootstrap {
+    peer: BootstrapPeer,
+    pub(crate) request: Value,
+    pub(crate) approval: Value,
+}
+impl PreparedBootstrap {
+    pub(crate) async fn notify(mut self, router: &Router) -> Result<BootstrapPeer> {
+        let config = self.peer.enrollment.bootstrap_configuration()?;
+        self.request["x509Certificate"] = json!({"raw":STANDARD.encode(&self.peer.chain[0])});
+        webhook(router, config, "notify", &self.request).await?;
+        Ok(self.peer)
+    }
+}
+
 async fn webhook(
     router: &Router,
     config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
@@ -314,7 +351,7 @@ async fn webhook(
     ensure!(status.is_success(), "bootstrap {phase}: {status} {body}");
     Ok(body)
 }
-async fn webhook_response(
+pub(crate) async fn webhook_response(
     router: &Router,
     config: &rss_mdm_registration_service::agent::bootstrap::Configuration,
     phase: &str,
@@ -356,33 +393,25 @@ async fn webhook_response(
     Ok((status, serde_json::from_slice(&body)?))
 }
 pub(crate) struct BootstrapPeer {
-    app: Arc<crate::api::Assembly>,
+    channel: crate::native::ChannelRouter,
+    enrollment: Arc<rss_mdm_registration_service::agent::Service>,
+    audit: Arc<rss_mdm_audit_integration::AuditStore>,
     chain: Vec<Vec<u8>>,
     directory: tempfile::TempDir,
 }
-pub(crate) async fn grant(
-    router: &Router,
-    peer: &BootstrapPeer,
-    input: &Value,
-) -> Result<GrantResponse> {
-    grant_fault(router, peer, input, None).await
+pub(crate) async fn grant(peer: &BootstrapPeer, input: &Value) -> Result<GrantResponse> {
+    grant_fault(peer, input, None).await
 }
 pub(crate) async fn grant_fault(
-    _router: &Router,
     peer: &BootstrapPeer,
     input: &Value,
     fault: Option<rss_transactional_messaging_postgres::PgTransactionFault>,
 ) -> Result<GrantResponse> {
-    let routers = crate::api::from_state(
-        peer.app.clone(),
-        "mdm.example.test".into(),
-        super::runtime::monotonic(),
-    );
-    let (_, router) = routers
-        .listeners
-        .into_iter()
-        .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
-        .ok_or_else(|| anyhow::anyhow!("missing production Agent listener"))?;
+    let router = crate::native::ChannelRouter {
+        origins: peer.channel.origins.clone(),
+        router: peer.channel.router.clone(),
+        admission: peer.channel.admission.clone(),
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -393,8 +422,6 @@ pub(crate) async fn grant_fault(
         crate::test_support::gateway::registration(
             listener,
             router,
-            peer.app.audit_store.clone(),
-            case_tenant().into(),
             crate::native::ChannelKind::Agent,
         )
         .await?,
@@ -416,7 +443,7 @@ pub(crate) async fn grant_fault(
                 status == 401,
                 "bootstrap identity must not access daily Agent trust: {status}"
             );
-            peer.app.audit_store.inject_next_fault(fault);
+            peer.audit.inject_next_fault(fault);
         }
         let (status, body) = super::agent_http::agent_http(
             &mut io,

@@ -28,8 +28,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let fixture_resources = std::mem::take(&mut fixture.resources);
     fixture_resources.finish(async {
-    let initial = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
-    set_device_grants(&mut session.clone(), &initial, device, &["inventory_read"]).await?;
+    change_device_grants(&mut session.clone(), device, &["inventory_read"]).await?;
     let denied = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     let mut browser = session.clone();
     ensure!(browser.call(&denied, Method::GET, listing, None).await?.0 == StatusCode::FORBIDDEN);
@@ -41,7 +40,7 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             .0
             == StatusCode::FORBIDDEN
     );
-    set_device_grants(&mut browser, &denied, device, &["credentials"]).await?;
+    change_device_grants(&mut browser, device, &["credentials"]).await?;
     let allowed = fixture.router(fixture.authorization().merge(fixture.enrollment()))?;
     browser = session.clone();
     let listed = browser.call(&allowed, Method::GET, listing, None).await?;

@@ -173,6 +173,8 @@ pub(crate) enum Platform {
 /// Action assertions belong to callers; only the requested platform is prepared.
 pub(crate) struct Fixture {
     pub(crate) resources: super::runtime::Resources,
+    pub(crate) enrollment: Arc<rss_mdm_registration_service::agent::Service>,
+    platform: Platform,
     pub(crate) source_snapshot: Value,
     pub(crate) dependency: Uuid,
     pub(crate) dependency_digest: Value,
@@ -198,59 +200,152 @@ impl Fixture {
             Platform::Windows => json!(["inventory.collect.v1", "software.msi.system.v1"]),
             Platform::MacOs => json!(["inventory.collect.v1", "software.pkg.system.v1"]),
         };
-        Self::with_profiles(platform, capabilities, context(platform), true, true).await
+        let mut fixture = Self::with_profiles(platform, capabilities, context(platform)).await?;
+        let dependency = fixture.seed_dependency().await?;
+        fixture.seed_root(json!([dependency])).await?;
+        Ok(fixture)
+    }
+    pub(crate) async fn seed_dependency(&mut self) -> Result<Value> {
+        let platform = self.platform;
+        let (platform_name, architecture) = match platform {
+            Platform::MacOs => ("macos", "aarch64"),
+            Platform::Windows => ("windows", "x86_64"),
+        };
+        let planning = &self.planning;
+        let registered = json!({"snapshot":self.source_snapshot});
+        let dependency = self.dependency;
+        let dependency_bytes = &self.dependency_bytes;
+        let dependency_digest: [u8; 32] = Sha256::digest(dependency_bytes).into();
+        let dependency_definition = json!({"material":{"format":"pkg","installer":"scripts/install.sh"},"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_dependency_bytes =
+            format!("controlled windows dependency msi {dependency}").into_bytes();
+        let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
+        let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let dependency_resource = seed_resource(
+            &planning.runtime,
+            planning.tenant,
+            dependency,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                dependency_definition
+            } else {
+                windows_dependency_definition
+            },
+        )
+        .await?;
+        let bytes = if platform == Platform::MacOs {
+            dependency_bytes.as_slice()
+        } else {
+            windows_dependency_bytes.as_slice()
+        };
+        let artifact = rss_mdm_resource::Artifact::new(
+            rss_mdm_resource::Id::new("dep-installer")?,
+            bytes.len() as u64,
+            rss_mdm_resource::Digest::of(bytes),
+        )?;
+        rss_mdm_content_service::fixture::artifact(
+            self.content.as_deref().expect("software content"),
+            &artifact,
+            bytes.to_vec(),
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        )
+        .await?;
+        seed_enabled(
+            &planning.runtime,
+            self.content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &dependency_resource,
+        )
+        .await?;
+        self.dependency_digest = json!(dependency_resource.digest().bytes());
+        Ok(json!({"resource":dependency,"version":"v1","sha256":self.dependency_digest}))
+    }
+    pub(crate) async fn seed_root(&mut self, dependencies: Value) -> Result<()> {
+        let platform = self.platform;
+        let (platform_name, architecture) = match platform {
+            Platform::MacOs => ("macos", "aarch64"),
+            Platform::Windows => ("windows", "x86_64"),
+        };
+        let planning = &self.planning;
+        let registered = json!({"snapshot":self.source_snapshot});
+        let resource = self.resource;
+        let bytes = &self.bytes;
+        let digest: [u8; 32] = Sha256::digest(bytes).into();
+        let removal = &self.removal;
+        let removal_digest: [u8; 32] = Sha256::digest(removal).into();
+        let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
+        let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
+        let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+        let root_resource = seed_resource(
+            &planning.runtime,
+            planning.tenant,
+            resource,
+            platform_name,
+            architecture,
+            if platform == Platform::MacOs {
+                definition
+            } else {
+                windows_definition
+            },
+        )
+        .await?;
+        let materials: Vec<(&str, &[u8])> = if platform == Platform::MacOs {
+            vec![
+                ("installer", bytes.as_slice()),
+                ("remover", removal.as_slice()),
+            ]
+        } else {
+            vec![("win-installer", windows_bytes.as_slice())]
+        };
+        for (reference, bytes) in materials {
+            let artifact = rss_mdm_resource::Artifact::new(
+                rss_mdm_resource::Id::new(reference)?,
+                bytes.len() as u64,
+                rss_mdm_resource::Digest::of(bytes),
+            )?;
+            rss_mdm_content_service::fixture::artifact(
+                self.content.as_deref().expect("software content"),
+                &artifact,
+                bytes.to_vec(),
+                crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+            )
+            .await?;
+        }
+        seed_enabled(
+            &planning.runtime,
+            self.content
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
+            &root_resource,
+        )
+        .await?;
+        Ok(())
     }
     pub(crate) async fn with_profiles(
         platform: Platform,
         capabilities: Value,
         execution_context: Value,
-        prepare_dependency: bool,
-        prepare_root: bool,
     ) -> Result<Self> {
         let base: Value =
             serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-        Self::with_config(
-            platform,
-            capabilities,
-            execution_context,
-            base,
-            prepare_dependency,
-            prepare_root,
-        )
-        .await
+        Self::with_config(platform, capabilities, execution_context, base).await
     }
     pub(crate) async fn with_config(
         platform: Platform,
         capabilities: Value,
         execution_context: Value,
         base: Value,
-        prepare_dependency: bool,
-        prepare_root: bool,
     ) -> Result<Self> {
         let (resources, mut fixture) = crate::test_support::runtime::Resources::build(move |resources| Box::pin(async move {
-        let setup_guard = super::software::content_setup_guard().await?;
-        let access = database(&base).await?;
-        let audit = access
-            .audit_store_fixture(&crate::config::AuditConfig::Plain)
-            .await?;
-        let (router, execution, _, planning, application_resources) = crate::api::application_fixture(
-            serde_json::from_value(base.clone())?,
-            Arc::new(crate::clock::SystemClock),
-            monotonic(),
-            access,
-            None,
-            audit,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("software fixture application: {e:?}"))?;
-        resources.extend(application_resources);
-        drop(setup_guard);
-        let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
-            "127.0.0.1".parse()?,
-        )));
-        let mut author = Browser::default();
-        ensure!(author.login(&router, "other").await? == StatusCode::OK);
-        let subject = browser_subject(&author, &router).await?;
+        let mut agent = super::agent_execution::Fixture::from_config(base.clone()).await?;
+        resources.extend(std::mem::take(&mut agent.resources));
+        let router = agent.router.merge(agent.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(agent.queries.clone(), None).into_axum()))?);
+        let planning = agent.planning;
+        let author = crate::test_support::authority::Authority::prepared_browser("other")?;
+        let subject = prepared_subject(&author)?;
         let mut grants = crate::test_support::identity::device_grants(
             None,
             &[
@@ -276,7 +371,7 @@ impl Fixture {
                 scope: crate::authorization::Scope::Tenant,
             });
         }
-        crate::test_support::identity::set_grants(case_tenant(), &subject, grants).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &subject, grants).await?;
         let (_device, platform_name, architecture, credential) = match platform {
             Platform::MacOs => (
                 case_device(),
@@ -291,7 +386,7 @@ impl Fixture {
                 crate::test_support::runtime::credential("windows-software"),
             ),
         };
-        let registration=crate::test_support::agent::seed_profile(&base,execution.service.clone(),&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
+        let registration=crate::test_support::agent::seed_service(&agent.enrollment,&credential,_device,json!({"capabilities":capabilities,"platform":platform_name,"architecture":architecture,"executionContext":execution_context})).await?;
         let device = registration["deviceId"].as_str().unwrap();
         let scope = prepared_scope(&planning, &[device])
             .await
@@ -328,107 +423,22 @@ impl Fixture {
         let registered = json!({"snapshot": snapshot});
         let dependency = Uuid::new_v4();
         let dependency_bytes = format!("controlled dependency package {dependency}").into_bytes();
-        let dependency_digest: [u8; 32] = Sha256::digest(&dependency_bytes).into();
-        let dependency_definition = json!({"material":{"format":"pkg","installer":"scripts/install.sh"},"source":registered["snapshot"],"package":"Private.Dependency","version":"1","artifacts":{"scripts/install.sh":{"reference":"dep-installer","length":dependency_bytes.len(),"sha256":dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"scripts/install.sh","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.private.dependency","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        let windows_dependency_bytes =
-            format!("controlled windows dependency msi {dependency}").into_bytes();
-        let windows_dependency_digest: [u8; 32] = Sha256::digest(&windows_dependency_bytes).into();
-        let windows_dependency_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsDependency","version":"1","artifacts":{"package":{"reference":"dep-win-installer","length":windows_dependency_bytes.len(),"sha256":windows_dependency_digest}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        let dependency_version = if prepare_dependency {
-        let dependency_resource = seed_resource(
-            &planning,
-            dependency,
-            platform_name,
-            architecture,
-            if platform == Platform::MacOs {
-                dependency_definition
-            } else {
-                windows_dependency_definition
-            },
-        )
-        .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{dependency}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(dependency_bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
-        } else {
-            upload_windows(&author, &router, dependency, &windows_dependency_bytes).await?;
-        }
-        seed_enabled(
-            &planning,
-            execution
-                .content
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
-            &dependency_resource,
-        )
-        .await?;
-        json!({"resourceDigest": dependency_resource.digest().bytes()})
-        } else { Value::Null };
-        let dependencies = if prepare_dependency {
-            json!([{"resource":dependency,"version":"v1","sha256":dependency_version["resourceDigest"]}])
-        } else { json!([]) };
         let resource = Uuid::new_v4();
         let bytes = format!("controlled software package {resource}").into_bytes();
-        let digest: [u8; 32] = Sha256::digest(&bytes).into();
         let removal = format!("#!/bin/sh\n# {resource}\nexit 0\n").into_bytes();
-        let removal_digest: [u8; 32] = Sha256::digest(&removal).into();
-        let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered["snapshot"],"package":"Private.Controlled","version":"1","artifacts":{"package":{"reference":"installer","length":bytes.len(),"sha256":digest},"remove":{"reference":"remover","length":removal.len(),"sha256":removal_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"pkg","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":{"installer":"remove","invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"detect":{"kind":"pkg_receipt","receipt":"com.private.controlled","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
         let windows_bytes = format!("controlled windows root msi {resource}").into_bytes();
-        let windows_digest: [u8; 32] = Sha256::digest(&windows_bytes).into();
-        let windows_definition = json!({"material":{"format":"msi","installer":"package"},"source":registered["snapshot"],"package":"Private.WindowsControlled","version":"1","artifacts":{"package":{"reference":"win-installer","length":windows_bytes.len(),"sha256":windows_digest}},"reboot":"report","downgrade":"deny","dependencies":dependencies,"behavior":{"kind":"msi","installer":"package","scope":"system","install":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place","uninstall":null,"detect":{"kind":"msi_product","productCode":"{BBBBBBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}","version":"1"},"upgradeInvocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}}},"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-        if prepare_root {
-        let root_resource = seed_resource(
-            &planning,
-            resource,
-            platform_name,
-            architecture,
-            if platform == Platform::MacOs {
-                definition
-            } else {
-                windows_definition
-            },
-        )
-        .await?;
-        if platform == Platform::MacOs {
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(bytes.to_vec()))?;
-            upload_fixture(&router, request).await?;
-            let request=Request::builder().method(Method::POST).uri(format!("/api/v1/resources/{resource}/content?version=v1&variant=default&platform=macos&architecture=aarch64&artifact=remover&operation={}",Uuid::new_v4()))
-        .header("host","mdm.example.test").header("origin","https://mdm.example.test").header("x-identity-request","1")
-        .header("x-csrf-token",author.csrf.as_ref().unwrap())
-        .header("cookie",author.cookies.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>().join("; "))
-        .header("content-type","application/octet-stream").body(Body::from(removal.to_vec()))?;
-            upload_fixture(&router, request).await?;
-        } else {
-            upload_windows(&author, &router, resource, &windows_bytes).await?;
-        }
-        seed_enabled(
-            &planning,
-            execution
-                .content
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("software fixture requires content"))?,
-            &root_resource,
-        )
-        .await?;
-        }
 
         Ok(Self {
             resources: Default::default(),
+            platform,
             source_snapshot: registered["snapshot"].clone(),
             dependency,
-            dependency_digest: dependency_version["resourceDigest"].clone(),
+            dependency_digest: Value::Null,
             base,
-            queries: execution.queries,
-            content: execution.content,
-            execution: execution.service,
+            enrollment: agent.enrollment,
+            queries: agent.queries,
+            content: agent.content,
+            execution: agent.execution,
             router,
             author,
             resource,
@@ -462,74 +472,15 @@ pub(crate) async fn prepared_scope(
 
 pub(crate) async fn worker(
     base: &Value,
-    content: Option<Arc<rss_mdm_content_service::Store>>,
-) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
-
-    let base = base.clone();
-    let (resources, (config, worker)) = super::runtime::Resources::build(move |resources| {
-        Box::pin(async move {
-            let config: Config = serde_json::from_value(base.clone())?;
-            let mut authority = authority::Authority::from_config(base.clone()).await?;
-            resources.extend(std::mem::take(&mut authority.resources));
-            let content = match content {
-                Some(content) => Some(content),
-                None => {
-                    let content = crate::execution_assembly::open_content(
-                        &config,
-                        config.native_protector()?,
-                    )
-                    .await?;
-                    if let Some(content) = &content {
-                        resources
-                            .resource(crate::execution_assembly::ContentResource(content.clone()));
-                    }
-                    content
-                }
-            };
-            let worker = crate::execution_assembly::open(
-                &config,
-                config.native_protector()?,
-                authority.audit.clone(),
-                content,
-                std::collections::BTreeMap::new(),
-                rss_device_command_postgres::CommandClock::Postgres,
-                Arc::new(
-                    rss_mdm_authorization_service::session::SessionAuthority::new(
-                        authority.identity.authority.clone(),
-                        authority.identity.tenant,
-                    ),
-                ),
-            )
-            .await?
-            .service;
-            Ok((config, worker))
-        })
-    })
-    .await?;
-    worker_for(&config, worker, resources).await
-}
-pub(crate) async fn worker_for(
-    config: &Config,
     worker: Arc<rss_mdm_execution_service::ExecutionService>,
-    mut resources: super::runtime::Resources,
 ) -> Result<Option<rss_runtime::ShutdownStack>> {
-    if !crate::test_support::case::owns_worker() {
-        return Ok(None);
-    }
+    crate::test_support::case::require_worker();
+    let config: Config = serde_json::from_value(base.clone())?;
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let mut startup = stack.startup()?;
-    for resource in resources.0.drain(..) {
-        startup.stage_resource(resource);
-    }
-    startup.stage_resource(rss_runtime::DynManagedResource::new_box(
-        rss_mdm_execution_service::Resource(worker.clone()),
-    ));
     let notifications = crate::worker_wake::Listener::new(
         config.access_options()?,
         rss_request_context::TenantId::parse(&config.identity.tenant_id)?,
@@ -584,14 +535,14 @@ pub(crate) async fn ready_rollout(
 }
 
 pub(crate) async fn seed_resource(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    tenant: rss_request_context::TenantId,
     id: Uuid,
     platform: &str,
     architecture: &str,
     definition: Value,
 ) -> Result<rss_mdm_resource::Version> {
     use rss_mdm_resource::{Declaration, Id, Kind, Variant, Version};
-    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
     let version = Version::new(
         tenant,
         Id::new(id.to_string())?,
@@ -607,8 +558,7 @@ pub(crate) async fn seed_resource(
         )],
     )?;
     let stored = version.clone();
-    planning
-        .runtime
+    runtime
         .local_tx(tenant, crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 rss_mdm_resource_postgres::fixture::active_version_in(
@@ -631,15 +581,14 @@ pub(crate) async fn seed_resource(
     Ok(version)
 }
 pub(crate) async fn seed_enabled(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
     content: &rss_mdm_content_service::Store,
     version: &rss_mdm_resource::Version,
 ) -> Result<()> {
     use rss_mdm_software_service::catalog::ContentPort;
     let verified = content.verify(version).await?;
     let version = version.clone();
-    planning
-        .runtime
+    runtime
         .local_tx(version.tenant(), crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 rss_mdm_software_service::catalog::fixture::enabled_in(

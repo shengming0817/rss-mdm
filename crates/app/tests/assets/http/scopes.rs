@@ -126,7 +126,7 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         ensure!(retained.0 == StatusCode::OK && retained.1["asset"]["items"].as_array().unwrap().len() == 3);
         let mut grants = f.grants.clone();
         grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventoryFieldsWrite, scope: crate::authorization::Scope::Tenant });
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants.clone()).await?;
+        crate::test_support::identity::seed_grants(case_tenant(), &f.author_id, grants.clone()).await?;
         let mut secret = model.clone();
         secret.key = rss_mdm_inventory::FieldKey::parse("custom.scope_secret")?;
         secret.sensitivity = rss_mdm_inventory::Sensitivity::Sensitive;
@@ -136,7 +136,7 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         let hidden = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(hidden.0 == StatusCode::OK && hidden.1["asset"]["items"].as_array().unwrap().len() == 3 && !hidden.1.to_string().contains("900"));
         grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventorySensitiveRead, scope: crate::authorization::Scope::Tenant });
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, grants).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
         let visible = f.author.call(&f.router, Method::GET, &path, None).await?;
         ensure!(visible.0 == StatusCode::OK && visible.1["asset"]["items"].as_array().unwrap().len() == 4, "pending authorized scope missing: {visible:?}");
         // Permission changes invalidate a cursor rather than widening its frozen projection.
@@ -147,7 +147,7 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         ensure!(f.author.call(&f.router, Method::GET, &next(&path, source_cursor), None).await?.0 == StatusCode::CONFLICT);
         ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.1["asset"]["items"] == json!([]));
         ensure!(f.author.call(&f.router, Method::GET, &format!("{path}?limit=0"), None).await?.0 == StatusCode::BAD_REQUEST);
-        crate::test_support::identity::set_grants(case_tenant(), &f.author_id, vec![]).await?;
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
         ensure!(f.author.call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
         ensure!(Browser::default().call(&f.router, Method::GET, &path, None).await?.0 == StatusCode::UNAUTHORIZED);
         Ok(())

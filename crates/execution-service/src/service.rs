@@ -701,3 +701,6 @@ pub(crate) async fn reject_existing_operation(tx: &mut PgTransaction<'_>, id: Uu
         Ok(())
     }
 }
+
+#[cfg(feature = "integration")]
+mod fixture;

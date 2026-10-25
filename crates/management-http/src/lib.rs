@@ -27,7 +27,9 @@ use rss_mdm_registration_service::device;
 
 mod router;
 pub mod runtime_diagnostics;
-pub use router::{Services, router};
+pub use router::{
+    Services, device_action_routes, identity_context_routes, router, workspace_routes,
+};
 
 pub mod boundary;
 
@@ -44,19 +46,19 @@ pub fn authentication_routes(
 
 pub mod certificate_archive;
 pub mod device_views;
-mod timeline;
+pub mod timeline;
 
 pub mod software_native;
 
 pub mod agent_enrollment;
 
-mod pki;
+pub mod pki;
 
-mod windows_entra;
+pub mod windows_entra;
 
 pub mod recovery_credentials;
 
-mod software_content;
+pub mod software_content;
 pub mod webhooks;
 
 pub mod mail;
@@ -65,7 +67,7 @@ pub mod first_use;
 
 pub mod telemetry;
 
-mod device_access;
+pub mod device_access;
 pub mod user_profiles;
 
-mod enterprise_broker;
+pub mod enterprise_broker;

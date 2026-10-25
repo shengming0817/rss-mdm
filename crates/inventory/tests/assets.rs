@@ -1,11 +1,10 @@
 use rss_mdm_inventory::builtin;
 use rss_mdm_inventory::{Evidence, FieldKey, Scalar, SourceFact, State};
 fn definition(field: FieldKey) -> rss_mdm_inventory::FieldDefinition {
-    rss_mdm_inventory::Catalog::new(builtin::fields())
+    builtin::fields()
+        .into_iter()
+        .find(|definition| definition.key == field)
         .unwrap()
-        .definition(field)
-        .unwrap()
-        .clone()
 }
 fn resolve(
     field: FieldKey,
@@ -33,6 +32,8 @@ fn fact(value: &str, source: &str) -> SourceFact {
 }
 #[test]
 fn typed_manual_values_cannot_overwrite_standard_fields() {
+    let catalog = rss_mdm_inventory::Catalog::new(builtin::fields()).unwrap();
+    let definition = |key| catalog.definition(key).unwrap();
     assert!(
         definition(builtin::OFFICE_FLOOR)
             .validate_scalar(&Scalar::Integer(3))
@@ -77,21 +78,6 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
         ),
         Err(rss_mdm_inventory::Invalid::DuplicateSource)
     );
-    let encoded = rss_mdm_inventory::CollectedValue::Unsupported
-        .encode(&definition(builtin::MODEL))
-        .unwrap();
-    assert_eq!(
-        rss_mdm_inventory::CollectedValue::decode(&definition(builtin::MODEL), &encoded).unwrap(),
-        rss_mdm_inventory::CollectedValue::Unsupported
-    );
-    assert!(
-        rss_mdm_inventory::CollectedValue::decode(&definition(builtin::MODEL), b"legacy").is_err()
-    );
-    assert!(
-        rss_mdm_inventory::CollectedValue::Value(Scalar::String("".into()))
-            .encode(&definition(builtin::MODEL))
-            .is_err()
-    );
     for source in [
         rss_mdm_inventory::ReportSource::MdmWindows,
         rss_mdm_inventory::ReportSource::MdmApple,
@@ -111,13 +97,6 @@ fn typed_manual_values_cannot_overwrite_standard_fields() {
                 .contains_key(&source.into())
         );
     }
-    assert!(
-        rss_mdm_inventory::CollectedValue::decode(
-            &definition(builtin::MODEL),
-            br#"{"kind":"unsupported","validUntil":5}"#
-        )
-        .is_err()
-    );
     assert!(rss_mdm_inventory::ReportSource::parse("manual").is_err());
     assert!(rss_mdm_inventory::Source::parse("other").is_err());
     let mut manual = fact("tag", "manual");

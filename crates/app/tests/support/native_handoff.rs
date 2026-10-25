@@ -19,47 +19,23 @@ impl Handoff {
         let mut f = agent_execution::Fixture::from_config(base).await?;
         f.grants
             .extend(identity::device_grants(None, &["enrollment"])?);
-        identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+        identity::seed_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
         let windows = platform == Platform::Windows;
         let context = software_execution::context(if windows {
             software_execution::Platform::Windows
         } else {
             software_execution::Platform::MacOs
         });
-        let source=agent::seed_profile(&f.base,f.execution.clone(),agent_execution::case_credential(),agent_execution::case_device_id(),json!({"capabilities":["inventory.collect.v1","mdm.enrollment.v1"],"platform":if windows{"windows"}else{"macos"},"architecture":if windows{"x86_64"}else{"aarch64"},"executionContext":context})).await?;
+        let source=agent::seed_service(&f.enrollment,agent_execution::case_credential(),agent_execution::case_device_id(),json!({"capabilities":["inventory.collect.v1","mdm.enrollment.v1"],"platform":if windows{"windows"}else{"macos"},"architecture":if windows{"x86_64"}else{"aarch64"},"executionContext":context})).await?;
         let scope = Uuid::new_v4();
         f.scope(scope, json!([{"kind":"device","id":source["deviceId"]}]))
             .await?;
         let policy = Uuid::new_v4();
         planning_http::call(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"request_mdm_enrollment","organization":case_tenant(),"runLifetimeSeconds":600}}})).await?;
         let automation = start_automation(&f.base).await?;
-        let worker = agent_execution::worker(&f.base).await?;
-        let collection = source["collections"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| {
-                c["fields"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|v| v["key"] == "channel.mdm.enrollment")
-            })
-            .unwrap();
-        let report = Uuid::new_v4();
-        let accepted=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/reports",Some(agent_execution::case_credential()),Some(json!({"wireVersion":1,"collection":collection,"reportId":report,"sequence":0,"observedAt":1,"body":{"kind":"snapshot","values":[{"field":"channel.mdm.enrollment","value":{"kind":"value","value":{"kind":"string","value":"unenrolled"}}}]}}))).await?;
-        ensure!(
-            accepted.0 == StatusCode::ACCEPTED,
-            "handoff source: {accepted:?}"
-        );
-        wait_agent_status(
-            &f.router,
-            agent_execution::case_credential(),
-            report,
-            "snapshot",
-            "applied",
-        )
-        .await?;
+        let worker =
+            crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
+        inventory::seed_unenrolled(source["deviceId"].as_str().unwrap())?;
         planning_http::await_ingress().await?;
         let task=tokio::time::timeout(Duration::from_secs(30),async {loop{
             let result=agent_call(&f.router,Method::POST,"/api/v1/agent/runtime/tasks/claim",Some(agent_execution::case_credential()),Some(json!({"wireVersion":1,"executionContext":context,"environment":{"edition":if windows {Some("professional")}else{None},"tools":{},"nativeEngines":{}},"profiles":["posix_sh","bash","power_shell7","osquery"],"operationId":Uuid::new_v4()}))).await?;

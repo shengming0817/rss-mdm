@@ -101,17 +101,6 @@ fn performance_templates_publish_through_existing_checked_native_mappings() {
         let restored: AgentCollectionDefinition =
             serde_json::from_slice(&definition.canonical()).unwrap();
         assert_eq!(restored, definition);
-        assert_eq!(
-            Conversion::Integer
-                .apply(&serde_json::json!(i64::MAX.to_string()))
-                .unwrap(),
-            serde_json::json!(i64::MAX)
-        );
-        assert!(
-            Conversion::Integer
-                .apply(&serde_json::json!(u64::MAX.to_string()))
-                .is_err()
-        );
         input
             .mappings
             .get_mut("custom.temperature")

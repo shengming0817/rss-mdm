@@ -19,10 +19,14 @@ fn archive(input: &rss_mdm_software_service::publication::PublishInput) -> Comma
 async fn publication_reference_survives_admission_withdrawal_and_fences_archive() {
     let server = Server::new().await;
     let runtime = pg::runtime().await;
-    let publication = server.service(runtime.clone(), server.winget()).await;
+    let content = crate::publication_support::stored_content().await;
+    let (audit, audit_pool) = pg::audit_store(runtime.clone()).await;
+    let publication = server
+        .service(runtime.clone(), audit, content.clone(), server.winget())
+        .await;
     let planning = crate::planning::test_support::planning(pg::tenant()).await;
 
-    let referenced = seed(runtime.clone(), &server, server.winget_document()).await;
+    let referenced = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     crate::publication_support::submit_publication(&publication, &referenced).await;
     crate::publication_support::withdraw_version(&referenced).await;
     assert!(matches!(
@@ -31,6 +35,8 @@ async fn publication_reference_survives_admission_withdrawal_and_fences_archive(
     ));
 
     planning.runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
     runtime.close().await;
 }
 

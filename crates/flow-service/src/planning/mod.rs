@@ -39,7 +39,6 @@ pub struct Planning {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub groups: Arc<rss_mdm_group_postgres::GroupStore>,
     sources: sources::SourceHeads,
-    pub policy_store: Arc<rss_mdm_policy_postgres::PolicyStore>,
 }
 use crate::operation::Operation;
 use crate::transaction::*;
@@ -59,10 +58,6 @@ impl Planning {
             rss_reconcile_postgres::PgMessagingStore::new(runtime.clone(), tenant, deadline())
                 .await
                 .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
-        let policy_store =
-            rss_mdm_policy_postgres::PolicyStore::new(runtime.clone(), tenant, deadline())
-                .await
-                .map_err(|_| Error::Unavailable(Failure::PlanningAdmission))?;
         Ok(Self {
             audit_store: audit_store.clone(),
             automation_observation: std::sync::Mutex::new(Default::default()),
@@ -76,7 +71,6 @@ impl Planning {
             clock,
             groups: Arc::new(groups),
             sources: sources::SourceHeads::new(tenant),
-            policy_store: Arc::new(policy_store),
         })
     }
     // Business rejection must roll back already executed companion steps. Keep its

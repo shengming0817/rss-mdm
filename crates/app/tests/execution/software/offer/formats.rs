@@ -87,11 +87,13 @@ async fn chain(format: &str, bundle: bool, user: bool) -> Result<()> {
         ]),
         _ => anyhow::bail!("unknown matrix entry"),
     };
-    let mut f =
-        Fixture::with_profiles(platform, profiles, local.clone(), format != "msix", false).await?;
+    let mut f = Fixture::with_profiles(platform, profiles, local.clone()).await?;
+    if format != "msix" {
+        f.seed_dependency().await?;
+    }
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
-    let stack = worker(&f.base, f.content.clone()).await?;
+    let stack = worker(&f.base, f.execution.clone()).await?;
     let (behavior, bytes) = match format {
         "exe" => (
             json!({"kind":"exe","installer":"package","scope":"system","install":invocation(false),"upgradeInvocation":invocation(false),"upgrade":"in_place","uninstall":null,"layout":{"setup.exe":"package"},"detect":{"kind":"registry","scope":"system","key":"Software\\Acme\\App","value":"Version","version":"1.0"}}),

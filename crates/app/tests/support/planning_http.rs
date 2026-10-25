@@ -79,18 +79,20 @@ pub(crate) async fn await_ingress() -> Result<()> {
     anyhow::bail!("fixture ingress did not settle: {progress}")
 }
 
-/// Publish and upload the real immutable native input consumed by Configuration Policies.
+/// Prepare an active native input without Resource publication or upload side effects.
 pub(crate) async fn native_configuration_resource(
-    browser: &mut Browser,
-    router: &Router,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    tenant: rss_request_context::TenantId,
+    content: &rss_mdm_content_service::Store,
     id: uuid::Uuid,
     platform: &str,
     architecture: &str,
     input: Value,
 ) -> Result<()> {
     native_configuration_bytes(
-        browser,
-        router,
+        runtime,
+        tenant,
+        content,
         id,
         platform,
         architecture,
@@ -99,39 +101,56 @@ pub(crate) async fn native_configuration_resource(
     .await
 }
 
-/// Upload immutable native bytes, including unsigned Apple Profile data.
+/// Prepare immutable native bytes, including unsigned Apple Profile data.
 pub(crate) async fn native_configuration_bytes(
-    browser: &mut Browser,
-    router: &Router,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    tenant: rss_request_context::TenantId,
+    content: &rss_mdm_content_service::Store,
     id: uuid::Uuid,
     platform: &str,
     architecture: &str,
     bytes: &[u8],
 ) -> Result<()> {
-    let path = format!("/api/v1/resources/{id}");
-    call(
-        browser,
-        router,
-        &path,
-        0,
-        json!({"action":"create","kind":"configuration"}),
+    use rss_mdm_resource::{Artifact, Declaration, Digest, Id, Kind, Variant, Version};
+    let artifact = Artifact::new(
+        Id::new("native-input")?,
+        bytes.len() as u64,
+        Digest::of(bytes),
+    )?;
+    let version = Version::new(
+        tenant,
+        Id::new(id.to_string())?,
+        Id::new("v1")?,
+        Kind::Configuration,
+        vec![Variant::new(
+            serde_json::from_value(json!(platform))?,
+            serde_json::from_value(json!(architecture))?,
+            Id::new("default")?,
+            Declaration::Configuration {
+                artifact: artifact.clone(),
+            },
+        )],
+    )?;
+    rss_mdm_content_service::fixture::native_configuration(
+        content,
+        &artifact,
+        bytes.to_vec(),
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
     )
     .await?;
-    let digest = rss_mdm_resource::Digest::of(bytes).bytes();
-    call(browser, router, &path, 1, json!({"action":"version","version":"v1","kind":"configuration","variants":[{"platform":platform,"architecture":architecture,"key":"default","declaration":{"kind":"configuration","artifact":{"reference":"native-input","length":bytes.len(),"sha256":digest}}}]})).await?;
-    ensure!(
-        super::agent_execution::upload_for(browser, router, id, bytes, platform, architecture)
-            .await?
-            == StatusCode::CREATED
-    );
-    call(
-        browser,
-        router,
-        &path,
-        2,
-        json!({"action":"activate","version":"v1"}),
-    )
-    .await?;
+    runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_resource_postgres::fixture::active_version_in(
+                    tx,
+                    version,
+                    rss_contract::Timepoint::try_from(1_i64).unwrap(),
+                )
+                .await
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
     Ok(())
 }
 pub(crate) fn windows_configuration() -> Value {
@@ -140,7 +159,8 @@ pub(crate) fn windows_configuration() -> Value {
 
 /// Ordinary native consumers need an active template, not Resource publication tests.
 pub(crate) async fn seed_native_template(
-    planning: &rss_mdm_flow_service::planning::Planning,
+    runtime: &rss_transactional_messaging_postgres::PgRuntime,
+    tenant: rss_request_context::TenantId,
     id: uuid::Uuid,
     platform: rss_mdm_resource::Platform,
     template: rss_mdm_resource::NativeCollectionDefinition,
@@ -155,7 +175,7 @@ pub(crate) async fn seed_native_template(
         Digest::of(&bytes),
     )?;
     let version = Version::new(
-        planning.tenant,
+        tenant,
         Id::new(id.to_string())?,
         Id::new("v1")?,
         Kind::NativeCollection,
@@ -174,9 +194,8 @@ pub(crate) async fn seed_native_template(
             })
             .collect(),
     )?;
-    planning
-        .runtime
-        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
+    runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
             Box::pin(async move {
                 rss_mdm_resource_postgres::fixture::active_version_in(
                     tx,

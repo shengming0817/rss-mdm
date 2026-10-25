@@ -53,6 +53,18 @@ async fn policy(
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -66,7 +78,6 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .await?;
     let (identity, identity_resources) = crate::test_support::identity::identity(case_tenant()).await?;
     identity_resources.finish(async {
-    let access = database(&fixture.base).await?;
     let stale = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -79,7 +90,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             )
             .await?,
     )?
-    .load_authorization(access.authorization())
+    .load_authorization(&fixture.authority.authorization)
     .await?;
     for permission in [
         crate::authorization::Permission::PolicyRead,
@@ -91,7 +102,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             .filter(|grant| grant.operation != permission)
             .cloned()
             .collect();
-        crate::test_support::identity::set_grants(case_tenant(), &fixture.author_id, grants)
+        crate::test_support::identity::seed_grants(case_tenant(), &fixture.author_id, grants)
             .await?;
         let audit =
             rss_mdm_audit_integration::RequestAudit::new(case_tenant().into(), "management_read");
@@ -107,7 +118,7 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             },
         )
         .await;
-        crate::test_support::identity::set_grants(
+        crate::test_support::identity::change_grants(
             case_tenant(),
             &fixture.author_id,
             fixture.grants.clone(),
@@ -121,7 +132,6 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
             "cached preview proof admitted revoked {permission:?}"
         );
     }
-    access.close().await;
     let router = fixture.router;
     let plan_runtime = fixture.plan_runtime;
     let mut author = fixture.author;
@@ -132,13 +142,13 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
         .filter(|g| g.operation != crate::authorization::Permission::ResourceRead)
         .cloned()
         .collect();
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, without_resource).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &author_id, without_resource).await?;
     let denied=author.call(&router,Method::POST,&format!("/api/v1/policies/{}",Uuid::new_v4()),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(id,case_task_scope())}}))).await?;
     ensure!(
         denied.0 == StatusCode::FORBIDDEN,
         "publishing without ResourceRead: {denied:?}"
     );
-    crate::test_support::identity::set_grants(case_tenant(), &author_id, grants.clone()).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &author_id, grants.clone()).await?;
     let preview_before = pg(&format!(
         "SELECT jsonb_build_array((SELECT count(*) FROM mdm_policy.policies WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_policy.versions WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id='{tenant}'),(SELECT count(*) FROM mdm_automation.automation_jobs WHERE tenant_id='{tenant}'))",
         tenant = case_tenant()
@@ -179,6 +189,18 @@ async fn preview_publish_authorization_and_commit_replay() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn explicit_rerun_deduplicates() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -190,7 +212,7 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = fixture.router;
     let mut author = fixture.author;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
@@ -246,6 +268,18 @@ async fn explicit_rerun_deduplicates() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_scan_reaches_late_match() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture.register().await?;
@@ -258,7 +292,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
         )
         .await?;
     fixture.scope(case_empty_scope(), json!([])).await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let before = pg(&format!(
@@ -269,7 +303,8 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
     let ordered_namespace = case::id("policy-scan") & !0xffff;
     let template_id = Uuid::from_u128(ordered_namespace | 1);
     post(author,router,&format!("/api/v1/policies/{template_id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":policy_definition(resource,case_empty_scope())}})).await?;
-    let template = fixture.planning.policy_store.get(template_id, crate::identity::deadline()).await?.unwrap();
+    let policy_store = rss_mdm_policy_postgres::PolicyStore::new(fixture.planning.runtime.clone(), fixture.planning.tenant, crate::identity::deadline()).await?;
+    let template = policy_store.get(template_id, crate::identity::deadline()).await?.unwrap();
     let frozen: Value = serde_json::from_str(&pg(&format!("SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'", case_tenant(), template.version))?)?;
     let at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let prepared: Vec<_> = (2..=64).map(|n| {
@@ -277,7 +312,7 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
             &rss_mdm_policy::Change::Put { definition: Box::new(template.definition.clone()), enabled: true }, Uuid::new_v4(), template.execution_binding).unwrap().policy;
         rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(frozen.clone()), author: json!({"subject":fixture.author_id}), at }
     }).collect();
-    fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&fixture.planning.policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
+    fixture.planning.runtime.local_tx_with_context(fixture.planning.tenant, crate::identity::deadline(), (&policy_store, &prepared), |(store, publications), tx| Box::pin(async move {
         for publication in publications.iter() { store.publish_in(tx, publication).await?.unwrap(); }
         Ok(())
     })).await.fold(|_| (), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"), |e|panic!("{e:?}"));
@@ -312,6 +347,18 @@ async fn policy_scan_reaches_late_match() -> Result<()> {
 #[ignore = "make t2 MODULE=planning.agent_policy"]
 async fn policy_reference_and_archive_are_serialized() -> Result<()> {
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let (id, _bytes, _definition) = fixture.resource().await?;
@@ -450,6 +497,18 @@ fn script_effects() -> Result<String> {
 async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -551,8 +610,8 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
     );
     let mut without_signing = fixture.base.clone();
     without_signing["task_signing"] = serde_json::Value::Null;
-    without_signing["agent_pki"] = json!({"mode":"disabled"});
     let mut unsigned = Fixture::from_config(without_signing).await?;
+    unsigned.router = unsigned.router.clone().merge(unsigned.authority.protect(Router::new().nest("/api/v1", rss_mdm_management_http::planning::policies::http::previews(unsigned.queries.clone(), None).into_axum()))?);
     let resources = std::mem::take(&mut unsigned.resources);
     resources.finish(async {
     reject_script_at_all_entrances(&mut unsigned, definition.clone(), StatusCode::CONFLICT).await?;
@@ -570,6 +629,18 @@ async fn script_preparation_is_shared_without_preview_effects() -> Result<()> {
 async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<()> {
     use crate::test_support::software_execution::{Platform, context};
     let mut f = Fixture::new().await?;
+    f.router = f.router.clone().merge(
+        f.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    f.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
     f.register().await?;
@@ -581,7 +652,7 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
     let (resource, _, _) = f.resource().await?;
     let definition = policy_definition(resource, case_task_scope());
     let policy = publish(&mut f.author, &f.router, resource).await?;
-    let stack = worker(&f.base).await?;
+    let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     for (platform, architecture, profiles, state) in [
         ("macos", "aarch64", None, "channel_unknown"),
         (
@@ -672,6 +743,18 @@ async fn registered_script_eligibility_gates_preview_and_automatic() -> Result<(
 async fn management_accepts_large_legal_policy_parameters() -> Result<()> {
     use sha2::{Digest, Sha256};
     let mut fixture = Fixture::new().await?;
+    fixture.router = fixture.router.clone().merge(
+        fixture.authority.protect(
+            Router::new().nest(
+                "/api/v1",
+                rss_mdm_management_http::planning::policies::http::previews(
+                    fixture.queries.clone(),
+                    None,
+                )
+                .into_axum(),
+            ),
+        )?,
+    );
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
     fixture

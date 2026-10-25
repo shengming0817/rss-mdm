@@ -261,7 +261,7 @@ pub(super) async fn reopened(f: &mut Fixture, router: &Router, evidence: &Eviden
     );
     let mut next = evidence.query.clone();
     next["after"] = first["next"].clone();
-    identity::set_grants(case_tenant(), &f.author_id, vec![]).await?;
+    identity::change_grants(case_tenant(), &f.author_id, vec![]).await?;
     ensure!(
         f.author
             .call(router, Method::POST, QUERY, Some(next.clone()))
@@ -270,7 +270,7 @@ pub(super) async fn reopened(f: &mut Fixture, router: &Router, evidence: &Eviden
             == StatusCode::FORBIDDEN,
         "gap cursor bypassed current permission"
     );
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let last = post(&mut f.author, router, QUERY, next).await?;
     ensure!(
         last["reports"].as_array().is_some_and(|v| v.len() == 1) && last["next"].is_null(),
@@ -307,7 +307,7 @@ pub(super) async fn withdrawn(
     evidence: &Evidence,
     policy: &Value,
 ) -> Result<()> {
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     post(
         &mut f.author,
         router,
@@ -699,7 +699,7 @@ async fn restricted_queries(
     query: Value,
     continuation: Value,
 ) -> Result<()> {
-    identity::set_grants(
+    identity::change_grants(
         case_tenant(),
         &f.author_id,
         identity::device_grants(Some(case_device_id()), &["inventory_read"])?,
@@ -723,6 +723,6 @@ async fn restricted_queries(
         rows.len() == 1 && rows[0]["report"]["registrationId"] == evidence.body["registrationId"],
         "device-scoped grant did not retain own-device access: {permitted}"
     );
-    identity::set_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     Ok(())
 }

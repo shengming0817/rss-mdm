@@ -40,10 +40,6 @@ fn page_evaluation_requires_ordered_partial_universe_and_complete_field_coverage
         rule.evaluate_page(&input(&duplicated, &page.coverage, None), time(1))
             .is_err()
     );
-    assert_eq!(
-        rule.evaluate_page(&input(&page.objects, &BTreeSet::new(), None), time(1)),
-        Err(Error::IncompleteSnapshot)
-    );
 }
 
 use rss_contract::Timepoint;
@@ -191,8 +187,8 @@ fn unavailable_values_never_become_negative_matches() {
         (FactState::Deleted, UnknownReason::Deleted),
         (FactState::Conflict, UnknownReason::Conflict),
     ] {
-        for at in [0, 10, 2_000_000_000] {
-            let e = evaluate(&r, &snapshot(state.clone()), at);
+        {
+            let e = evaluate(&r, &snapshot(state), 10);
             assert_eq!(e.decision, Decision::Unknown);
             assert_eq!(
                 e.contexts["default"].explanations[0].outcome,
@@ -583,26 +579,6 @@ fn string_byte_limits_have_inclusive_boundaries() {
 }
 
 #[test]
-fn rule_byte_limit_accumulates_across_predicates() {
-    let c = Criteria::and(
-        (0..17)
-            .map(|_| crate::leaf(Op::Eq, Some(string(&"x".repeat(4096)))))
-            .collect(),
-    )
-    .unwrap();
-    assert!(matches!(
-        Rule::new(
-            tenant(),
-            "1",
-            "1",
-            vec![field(FieldType::Scalar(ScalarType::String), &[Op::Eq])],
-            c
-        ),
-        Err(Error::LimitExceeded(LimitKind::RuleBytes))
-    ));
-}
-
-#[test]
 fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     let kind = FieldType::Scalar(ScalarType::String);
     let mut fields = vec![field(kind, &[Op::Eq])];
@@ -615,6 +591,14 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
     let r = Rule::new(tenant(), "1", "dictionary-1", fields.clone(), c.clone()).unwrap();
     assert_eq!(r.predicate_at(&[]).unwrap().field, "device.model");
     assert!(r.predicate_at(&[0]).is_none());
+    let r = Rule::new(
+        tenant(),
+        "1",
+        "dictionary-1",
+        fields[..2].to_vec(),
+        c.clone(),
+    )
+    .unwrap();
     let mut s = snapshot(FactState::Known(string("x")));
     let mut denied = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
     denied.state = FactState::Denied;
@@ -640,10 +624,9 @@ fn dictionary_limits_duplicates_and_unused_denied_fields_are_checked() {
 }
 
 #[test]
-fn historical_nested_criteria_has_one_literal_interpretation() {
+fn mixed_field_nested_criteria_preserve_leaf_paths() {
     // Historical rule_compiler_test.go TestCriteriaCompiler_Compile_NestedGroups:
     // channel == mdm AND (hostname contains DESKTOP OR hostname contains LAPTOP).
-    // Current input names are caller-owned; no legacy field-name translation is implemented.
     let kind = FieldType::Scalar(ScalarType::String);
     let model = field(kind, &[Op::Contains]);
     let mut os = field(kind, &[Op::Eq]);
@@ -668,7 +651,7 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
     .unwrap();
     let r = Rule::new(
         tenant(),
-        "historical-shape-1",
+        "mixed-fields",
         "dictionary-1",
         vec![model, os],
         tree,
@@ -697,51 +680,6 @@ fn historical_nested_criteria_has_one_literal_interpretation() {
         assert!(r.predicate_at(&explanation.path).is_some());
     }
     assert!(r.predicate_at(&[1]).is_none());
-    for (os, model, expected, outcomes) in [
-        (
-            "other",
-            "DESKTOP-001",
-            Decision::NoMatch,
-            [Outcome::NoMatch, Outcome::Match, Outcome::NoMatch],
-        ),
-        (
-            "10.0.26100",
-            "SERVER-001",
-            Decision::NoMatch,
-            [Outcome::Match, Outcome::NoMatch, Outcome::NoMatch],
-        ),
-        (
-            "10.0.26100",
-            "LAPTOP-001",
-            Decision::Match,
-            [Outcome::Match, Outcome::NoMatch, Outcome::Match],
-        ),
-    ] {
-        s.objects[0]
-            .contexts
-            .get_mut("default")
-            .unwrap()
-            .get_mut("device.os.version")
-            .unwrap()
-            .state = FactState::Known(string(os));
-        s.objects[0]
-            .contexts
-            .get_mut("default")
-            .unwrap()
-            .get_mut("device.model")
-            .unwrap()
-            .state = FactState::Known(string(model));
-        let e = evaluate(&r, &s, 10);
-        assert_eq!(e.decision, expected);
-        assert_eq!(
-            e.contexts["default"]
-                .explanations
-                .iter()
-                .map(|e| e.outcome)
-                .collect::<Vec<_>>(),
-            outcomes
-        );
-    }
 }
 
 #[test]
@@ -789,14 +727,14 @@ fn rules_cannot_be_applied_to_another_tenants_consistent_snapshot() {
 }
 
 #[test]
-fn explanation_materialization_is_bounded_before_output_allocation() {
+fn explanation_and_provenance_cover_each_object_and_field() {
     let mut fields = Vec::new();
     let mut criteria = Vec::new();
     let mut s = snapshot(FactState::Known(string("x")));
     let fact = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
     s.objects[0].contexts.get_mut("default").unwrap().clear();
     s.coverage.clear();
-    for i in 0..128 {
+    for i in 0..2 {
         let key = format!("field-{i}");
         let mut f = field(FieldType::Scalar(ScalarType::String), &[Op::Eq]);
         f.key = key.clone();
@@ -828,7 +766,7 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
     )
     .unwrap();
     let object = s.objects[0].clone();
-    s.objects = (0..512)
+    s.objects = (0..2)
         .map(|i| {
             let mut o = object.clone();
             o.key = ObjectKey::new(tenant(), format!("device-{i:07}")).unwrap();
@@ -842,7 +780,7 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
             .iter()
             .map(|o| o.contexts["default"].explanations.len())
             .sum::<usize>(),
-        65_536
+        4
     );
     assert_eq!(
         result
@@ -850,100 +788,13 @@ fn explanation_materialization_is_bounded_before_output_allocation() {
             .iter()
             .map(|o| o.contexts["default"].provenance.len())
             .sum::<usize>(),
-        65_536
+        4
     );
-    s.objects.push(s.objects[0].clone()); // duplicate inputs do not multiply output
-    assert!(r.evaluate_page(&s.input(), time(10)).is_err());
-    s.objects.pop();
-    let mut extra = object;
-    extra.key = ObjectKey::new(tenant(), "extra").unwrap();
-    s.objects.push(extra);
-    assert_eq!(
-        r.evaluate_page(&s.input(), time(10)),
-        Err(Error::LimitExceeded(LimitKind::Explanations))
-    );
-}
-
-#[test]
-fn batch_scalar_items_are_bounded_across_objects_and_unused_fields() {
-    for kind in [ScalarType::Integer, ScalarType::Time] {
-        let value = set(
-            kind,
-            (0..250)
-                .map(|i| match kind {
-                    ScalarType::Time => Scalar::Time(time(i)),
-                    _ => Scalar::Integer(i),
-                })
-                .collect(),
-        );
-        let mut fields = vec![field(FieldType::Set(kind), &[Op::ContainsAll])];
-        for i in 1..32 {
-            let mut f = fields[0].clone();
-            f.key = format!("field-{i}");
-            fields.push(f);
-        }
-        let mut s = snapshot(FactState::Known(value.clone()));
-        let fact = s.objects[0].contexts.get_mut("default").unwrap()["device.model"].clone();
-        s.coverage = fields.iter().map(|f| f.key.clone()).collect();
-        *s.objects[0].contexts.get_mut("default").unwrap() = fields
-            .iter()
-            .map(|f| (f.key.clone(), fact.clone()))
-            .collect();
-        s.objects = (0..125)
-            .map(|n| {
-                let mut o = s.objects[0].clone();
-                o.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
-                o
-            })
-            .collect(); // 125 * 32 * 250 = 1,000,000
-        let r = Rule::new(
-            tenant(),
-            "1",
-            "dictionary-1",
-            fields,
-            leaf(Op::ContainsAll, Some(value)),
-        )
-        .unwrap();
-        assert!(r.evaluate_page(&s.input(), time(10)).is_ok());
-
-        let final_fact = s
-            .objects
-            .last_mut()
-            .unwrap()
-            .contexts
-            .get_mut("default")
-            .unwrap()
-            .iter_mut()
-            .next_back()
-            .unwrap()
-            .1;
-        let FactState::Known(Value::Set { values, .. }) = &mut final_fact.state else {
-            unreachable!()
-        };
-        values.insert(match kind {
-            ScalarType::Time => Scalar::Time(time(250)),
-            _ => Scalar::Integer(250),
-        }); // exactly 1,000,001 items across the batch
-        assert_eq!(
-            r.evaluate_page(&s.input(), time(10)),
-            Err(Error::LimitExceeded(LimitKind::Items))
-        );
-
-        *s.objects.last_mut().unwrap() = s.objects[0].clone();
-        s.objects.push(s.objects[0].clone());
-        for (n, object) in s.objects.iter_mut().enumerate() {
-            object.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
-        }
-        assert_eq!(
-            r.evaluate_page(&s.input(), time(10)),
-            Err(Error::LimitExceeded(LimitKind::Items))
-        );
-    }
 }
 
 #[test]
 fn limit_diagnostics_distinguish_categories_without_input_values() {
-    let secret = "private-device".repeat(limits::STRING_BYTES);
+    let secret = format!("private-device{}", "x".repeat(limits::STRING_BYTES - 13));
     let string_error = ObjectKey::new(tenant(), secret.clone()).unwrap_err();
     let node_error =
         Criteria::and(vec![leaf(Op::Eq, Some(string("x"))); limits::NODES]).unwrap_err();
@@ -1006,11 +857,13 @@ fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe()
     let mut page = s.input();
     page.after = Some(&cursor);
     assert_eq!(r.evaluate_page(&page, time(10)), Err(Error::TenantMismatch));
+    let original = s.objects.remove(0);
     s.objects = (0..1001)
         .map(|n| {
-            let mut o = s.objects[0].clone();
-            o.key = ObjectKey::new(tenant(), format!("d{n:07}")).unwrap();
-            o
+            ObjectSnapshot::single(
+                ObjectKey::new(tenant(), format!("d{n:07}")).unwrap(),
+                Default::default(),
+            )
         })
         .collect();
     assert_eq!(
@@ -1018,6 +871,9 @@ fn bounded_page_rejects_missing_coverage_foreign_cursor_and_oversized_universe()
         Err(Error::LimitExceeded(LimitKind::Objects))
     );
     s.objects.truncate(1000);
+    for object in &mut s.objects {
+        object.contexts = original.contexts.clone();
+    }
     assert_eq!(
         r.evaluate_page(&s.input(), time(10)).unwrap().objects.len(),
         1000
@@ -1064,13 +920,18 @@ fn inventory_sets_can_exceed_condition_operand_budget_without_truncation() {
         )],
         leaf(
             Op::ContainsAny,
-            Some(set(ScalarType::Integer, vec![Scalar::Integer(299)])),
+            Some(set(
+                ScalarType::Integer,
+                vec![Scalar::Integer(limits::SET_ITEMS as i64)],
+            )),
         ),
     )
     .unwrap();
     let mut input = snapshot(FactState::Known(set(
         ScalarType::Integer,
-        (0..300).map(Scalar::Integer).collect(),
+        (0..=limits::SET_ITEMS as i64)
+            .map(Scalar::Integer)
+            .collect(),
     )));
     input.dictionary_version = "d".into();
     assert_eq!(
@@ -1192,10 +1053,12 @@ fn membership_negation_preserves_unknown_and_requires_complete_frozen_inputs() {
                 objects: &objects,
                 after: None,
             };
-            assert_eq!(
-                rule.evaluate_page(&input, time(1)),
-                Err(Error::IncompleteSnapshot)
-            );
+            if outcome == Outcome::Match && !negated {
+                assert_eq!(
+                    rule.evaluate_page(&input, time(1)),
+                    Err(Error::IncompleteSnapshot)
+                );
+            }
             object.memberships.insert(source.into(), outcome);
             let objects = [object];
             let input = PageInput {

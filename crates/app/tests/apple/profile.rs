@@ -7,7 +7,12 @@ use sqlx::Connection;
 #[ignore = "MODULE=apple.profile: native error requires complete contrary evidence to retire reservations"]
 async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();
@@ -83,7 +88,12 @@ async fn failed_install_partial_manifest_keeps_ownership_until_proven_absent() -
 #[ignore = "MODULE=apple.profile: attempt, guards, command and audit share the original transaction"]
 async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()> {
     let mut f = Fixture::start().await?;
-    f.policy_grants().await?;
+    crate::test_support::identity::seed_grants(
+        case_tenant(),
+        crate::test_support::case::admin(),
+        Fixture::policy_grants()?,
+    )
+    .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let owner = f.policy_worker().await?;
     let profile = Uuid::new_v4();
@@ -126,8 +136,8 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
     // after preparation so only the real protocol request can consume it.
     f.stop_execution_worker().await?;
     // The commit fault is consumed after channel confirmation, reducer and audit SQL have run.
-    f.app
-        .execution
+    f.commands
+        .service
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(peer.send("/mdm", response.clone()).await?.0 == StatusCode::SERVICE_UNAVAILABLE);
     let state:(bool,bool)=sqlx::query_as("SELECT a.response IS NULL AND a.state='sent' AND NOT a.accepted,p.observed_at IS NULL AND p.retired_at IS NULL AND p.verification='unknown' FROM mdm_apple.attempts a JOIN mdm_apple.profiles p ON(p.tenant_id,p.operation)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2")

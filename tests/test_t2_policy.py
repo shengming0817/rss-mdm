@@ -30,11 +30,11 @@ class Policies(unittest.TestCase):
 
     def test_asset_storage_has_no_identity_or_signing_preparation(self):
         module = MODULES['assets.http']
-        names = [p.selector + ('case' if p.selector.endswith('::') else '') for p in module.policies]
-        values = dict(zip(names, resolve_cases(module, names)))
-        storage = {name: value for name, value in values.items() if '::storage::' in name}
-        self.assertEqual(len(storage), 3)
-        for name, value in storage.items():
+        storage = tuple(p for p in module.policies if '::storage::' in p.selector)
+        self.assertTrue(storage)
+        names = [p.selector for p in storage]
+        values = resolve_cases(replace(module, policies=storage), names)
+        for name, value in zip(names, values):
             with self.subTest(case=name):
                 self.assertEqual(value.fixtures, ('runtime_config',))
                 self.assertEqual(value.actors, ())

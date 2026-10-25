@@ -26,10 +26,9 @@ async fn history_boundaries(
             .0 == StatusCode::BAD_REQUEST
         );
     }
-    let mut other = Browser::default();
-    ensure!(other.login(router, "other").await? == StatusCode::OK);
-    let other_subject = browser_subject(&other, router).await?;
-    crate::test_support::identity::set_grants(
+    let mut other = crate::test_support::authority::Authority::prepared_browser("other")?;
+    let other_subject = prepared_subject(&other)?;
+    crate::test_support::identity::seed_grants(
         case_tenant(),
         &other_subject,
         crate::test_support::identity::device_grants(None, &["compliance_read"])?,
@@ -59,7 +58,7 @@ async fn history_boundaries(
                 &["compliance_read"],
             )?);
         }
-        crate::test_support::identity::set_grants(case_tenant(), subject, limited).await?;
+        crate::test_support::identity::change_grants(case_tenant(), subject, limited).await?;
         ensure!(b.call(router, Method::GET, rule_path, None).await?.0 == StatusCode::OK);
         ensure!(
             b.call(
@@ -72,48 +71,67 @@ async fn history_boundaries(
             .0 == StatusCode::FORBIDDEN
         );
     }
-    grants(subject, None).await?;
+    identity::change_grants(case_tenant(), subject, grants(None)?).await?;
     let tenant = case::peer();
-    let config = crate::test_support::identity::config(tenant)?;
-    let access = database(base).await?;
-    let audit = access.audit_store_fixture(&config.audit).await?;
-    let (other_router, _, _, _, resources) = crate::api::application_fixture(
-        config,
-        Arc::new(crate::clock::SystemClock),
-        monotonic(),
-        access,
-        None,
-        audit,
-    )
-    .await?;
+    let mut peer_base = base.clone();
+    peer_base["identity"]["tenant_id"] = json!(tenant);
+    let mut authority = authority::Authority::from_config(peer_base).await?;
+    let mut resources = std::mem::take(&mut authority.resources);
+    let runtime = crate::planning::test_support::runtime(authority.identity.tenant).await;
+    resources.resource(SourceResource(runtime.clone()));
+    let key =
+        rss_mdm_flow_service::storage::cursor_key(&runtime, authority.identity.tenant).await?;
+    let groups = Arc::new(
+        rss_mdm_group_postgres::GroupStore::new(
+            runtime.clone(),
+            authority.identity.tenant,
+            crate::identity::deadline(),
+        )
+        .await?,
+    );
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit_store = Arc::new(
+        authority
+            .audit
+            .on_runtime(
+                runtime.clone(),
+                authority.identity.tenant,
+                &budget.control(),
+            )
+            .await?,
+    );
+    let compliance = Arc::new(rss_mdm_inventory_service::compliance::Compliance::new(
+        rss_mdm_inventory_service::compliance::Dependencies {
+            tenant: authority.identity.tenant,
+            groups,
+            runtime,
+            audit_store,
+            clock: Arc::new(crate::clock::SystemClock),
+            tasks: Arc::new(crate::automation::inventory_tasks::InventoryTasks),
+            cursor_key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &key),
+        },
+    ));
+    let other_router = authority.router(
+        Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::compliance::http::routes()
+                .with_state(compliance)
+                .into_axum(),
+        ),
+    )?;
     resources
         .finish(async {
-            let other_router = other_router.layer(axum::Extension(
-                rss_identity_http_axum::ClientAddress("127.0.0.1".parse()?),
-            ));
             pg_tenant(
                 tenant,
                 &format!("INSERT INTO mdm_access.devices VALUES('{tenant}','compliance-a')"),
             )?;
-            crate::test_support::identity::set_grants(
+            crate::test_support::identity::seed_grants(
                 tenant,
                 case::context().admin_for(tenant),
                 crate::test_support::identity::device_grants(None, &["compliance_read"])?,
             )
             .await?;
-            let mut cross = Browser::default();
-            ensure!(
-                cross
-                    .call(
-                        &other_router,
-                        Method::POST,
-                        &format!("/api/v1/identity/tenants/{tenant}/login"),
-                        Some(json!({"login":case::login("admin"),"password":PASSWORD}))
-                    )
-                    .await?
-                    .0
-                    == StatusCode::OK
-            );
+            let mut cross = authority.browser("admin")?;
             ensure!(
                 cross
                     .call(&other_router, Method::GET, history, None)
@@ -257,7 +275,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
     )
     .await?;
     // Device-scoped authorization applies equally to history and current results.
-    grants(subject, Some("compliance-a")).await?;
+    identity::change_grants(case_tenant(), subject, grants(Some("compliance-a"))?).await?;
     for suffix in ["compliance", "compliance/history"] {
         let (s, _) = browser
             .call(
@@ -289,7 +307,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         )
         .await?;
     ensure!(s == StatusCode::FORBIDDEN);
-    grants(subject, None).await?;
+    identity::change_grants(case_tenant(), subject, grants(None)?).await?;
     // Disabling removes the rule from the aggregate but preserves all previous evidence.
     let mut def = definition(json!({"kind":"all"}));
     def["enabled"] = json!(false);
@@ -440,7 +458,12 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
             Ok::<_,anyhow::Error>(())
         }).await??;
         // Authentication and its original snapshot completed before the write reached the barrier.
-        grants(&fixture.subject, Some("compliance-a")).await?;
+        identity::change_grants(
+            case_tenant(),
+            &fixture.subject,
+            grants(Some("compliance-a"))?,
+        )
+        .await?;
         hold.commit().await?;
         Ok::<_, anyhow::Error>(())
     };
@@ -465,7 +488,7 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
     ))?)?;
     ensure!(!deleted);
 
-    crate::test_support::identity::set_grants(
+    crate::test_support::identity::change_grants(
         case_tenant(),
         &fixture.subject,
         vec![crate::authorization::Grant {
@@ -486,7 +509,7 @@ async fn queued_delete_observes_permission_revocation() -> Result<()> {
         attempted.0 == StatusCode::FORBIDDEN,
         "ComplianceWrite without InventoryRead changed an asset rule"
     );
-    grants(&fixture.subject, None).await?;
+    identity::change_grants(case_tenant(), &fixture.subject, grants(None)?).await?;
     ensure!(ok(&mut browser, &fixture.router, Method::GET, &path, None).await?["revision"] == 1);
     fixture.close().await;
     Ok(())

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 from build_run import require_lease
 from t2_environment import Environment
-from t2_fixtures import RunFixtures
 from t2_registry import MODULES
 from t2_model import ROOT
 
@@ -23,13 +22,9 @@ def main(argv=None):
         values['migration_config'] = Path(values['migration_config'])
     fixture = SimpleNamespace(**values, env=dict(os.environ), owner=Environment(group='t2'))
     print('START python/' + module_id, flush=True)
-    scenario = importlib.import_module('t2_modules.' + module.python)
-    if module.python == 'gateway':
-        context = SimpleNamespace(gateway_owner=Environment(group='t2-gateway'))
-        context.gateway = lambda config, files=None: RunFixtures.gateway(context, config, files)
-        scenario.main(context, fixture)
-    else:
-        scenario.execute(fixture)
+    source, function = module.python
+    scenario = importlib.import_module('t2_modules.' + source)
+    getattr(scenario, function)(fixture)
     print('PASS python/' + module_id, flush=True)
 
 

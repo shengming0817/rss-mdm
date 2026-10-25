@@ -95,19 +95,19 @@ fn custom_script_mapping_is_data_driven_and_none_is_explicit() {
 #[test]
 fn projection_budget_and_unknown_conversion_fail_before_interpretation() {
     let mut t = task();
-    let field = &mut t.fields[0];
-    field.value_type = ValueType::Enum {
-        values: (0..128)
-            .map(|i| format!("{i:03}{}", "a".repeat(250)))
-            .collect(),
-    };
     let mapping = t.mappings.values_mut().next().unwrap();
     mapping.mapping.conversion = Conversion::Enum {
         values: (0..128)
-            .map(|i| (i.to_string(), json!(format!("{i:03}{}", "a".repeat(250)))))
+            .map(|i| (i.to_string(), json!(format!("{i:03}{}", "a".repeat(400)))))
             .collect(),
     };
-    assert!(t.validate().is_err());
+    validate_projection_fields(&t.fields, Source::AgentNative, Platform::Windows).unwrap();
+    assert!(serde_json::to_vec(&(&t.fields, &t.mappings)).unwrap().len() > 49_152);
+    assert!(matches!(
+        validate_projection_size(&(&t.fields, &t.mappings)),
+        Err(WireError::InvalidValue)
+    ));
+    assert!(matches!(t.validate(), Err(WireError::InvalidValue)));
     assert!(
         serde_json::from_value::<ValueMapping>(
             json!({"pointer":"/x","conversion":{"kind":"shell"},"columns":{}})

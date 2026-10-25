@@ -54,10 +54,14 @@ fn tap_digest_binds_the_complete_sorted_inventory_and_arbitrary_bytes() {
 
 #[test]
 fn document_encoding_stops_at_the_shared_byte_budget() {
-    let exact = json!({"x":"a".repeat(8 * 1024 * 1024 - 8)});
+    let mut exact = json!({"x":"a".repeat(8 * 1024 * 1024 - 8)});
     assert!(winget_document_digest(&exact).is_ok());
-    let oversized = json!({"x":"a".repeat(8 * 1024 * 1024 - 7)});
-    assert!(winget_document_digest(&oversized).is_err());
-    let bytes = vec![255; 3 * 1024 * 1024];
+    let serde_json::Value::String(text) = &mut exact["x"] else {
+        unreachable!()
+    };
+    text.push('a');
+    assert!(winget_document_digest(&exact).is_err());
+    drop(exact);
+    let bytes = vec![255; 2 * 1024 * 1024 + 1];
     assert!(brew_documents_digest([("Formula/large.rb", bytes.as_slice())]).is_err());
 }

@@ -41,7 +41,35 @@ async fn mutation_unknown_commit_recovers_original_response() -> Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=compliance.recovery: real HTTP and durable worker contract"]
 async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
-    let fixture = Fixture::open().await?;
+    let mut fixture = Fixture::open().await?;
+    let config: Config = serde_json::from_value(fixture.base.clone())?;
+    let tenant = rss_request_context::TenantId::parse(case_tenant())?;
+    let runtime = crate::planning::test_support::runtime_role(tenant, "mdm_command_runtime").await;
+    fixture.resources.resource(SourceResource(runtime.clone()));
+    let binding = rss_transactional_messaging::fence::ExecutionBinding::new(
+        rss_transactional_messaging::fence::StorageIdentity::new(
+            config.flow.storage.target,
+            config.flow.storage.lineage,
+        )?,
+        vec![(
+            tenant,
+            rss_transactional_messaging::fence::Epoch::new(config.flow.storage.epoch)?,
+        )],
+    )?;
+    let protection = config.native_protector()?;
+    let webhooks = crate::webhooks::Backend::open(
+        config.webhooks,
+        runtime,
+        tenant,
+        fixture.audit.clone(),
+        Arc::new(crate::clock::SystemClock),
+        protection,
+        binding,
+    )
+    .await?;
+    fixture
+        .resources
+        .resource(crate::webhooks::Resource(webhooks.clone()));
     let router = &fixture.router;
     let base = &fixture.base;
     let mut browser = fixture.browser.clone();
@@ -165,7 +193,7 @@ async fn publication_terminal_page_and_audit_are_atomic() -> Result<()> {
     // Consume actual publication sources with command-runtime ACLs. The first run
     // changes PAGE+1 devices; recomputing identical assessments must emit none.
     let cancellation = tokio_util::sync::CancellationToken::new();
-    let mut relay = tokio::spawn(fixture.webhooks.clone().work(cancellation.clone()));
+    let mut relay = tokio::spawn(webhooks.clone().work(cancellation.clone()));
     let derived = async {
         tokio::time::timeout(Duration::from_secs(30),async {
             loop {

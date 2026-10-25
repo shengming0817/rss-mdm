@@ -124,7 +124,7 @@ async fn once_per_entry_tracks_membership_epochs() -> Result<()> {
     resources.finish(async {
     fixture.register().await?;
     let (resource, _bytes, _definition) = fixture.resource().await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let base = &fixture.base;
     let router = &fixture.router;
     let author = &mut fixture.author;
@@ -214,7 +214,7 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let base = &fixture.base;
     let router = &fixture.router;
     let author = &mut fixture.author;
@@ -230,7 +230,9 @@ async fn registration_and_checkin_survive_router_restart() -> Result<()> {
     let task = claim(router).await?;
     belongs_to(&task, registration)?;
     complete(router, &task).await?;
-    let (restarted, _, app_resources) = app_with_access(base, database(base).await?).await?;
+    let mut rebuilt = crate::test_support::agent_execution::Fixture::from_config(base.clone()).await?;
+    let restarted = rebuilt.router.clone();
+    let app_resources = std::mem::take(&mut rebuilt.resources);
     app_resources.finish(async {
     no_repeat(&restarted, registration, 1).await?;
     disable(author, router, registration).await?;
@@ -274,7 +276,7 @@ async fn interval_misfire_skip_and_coalesce() -> Result<()> {
             json!([{"kind":"device","id":case_device_id()}]),
         )
         .await?;
-    let stack = worker(&fixture.base).await?;
+    let stack = crate::test_support::software_execution::worker(&fixture.base, fixture.execution.clone()).await?;
     let router = &fixture.router;
     let author = &mut fixture.author;
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;

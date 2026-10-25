@@ -12,7 +12,7 @@ import time
 import uuid
 from t2_environment import Environment, private, run
 from t2_model import ROOT
-from verification_result import require
+from verification_result import require, DependencyBlocked, publish
 
 
 def identifier(value):
@@ -57,7 +57,11 @@ def measure(events, phase, **coordinates):
 
 
 class DatabasePool:
-    def __init__(self, builds, group, costs, connections):
+    def __init__(self, builds, group, costs, connections, output):
+        self.output = output / group
+        self.start_error = None
+        self.cleanup_error = None
+        self.template_errors = {}
         self.builds = builds
         self.owner = Environment(group=group)
         self.costs = costs
@@ -79,16 +83,30 @@ class DatabasePool:
                     self.owner.reset()
                 self.ready = False
                 self.templates.clear()
+                self.template_errors.clear()
+                self.start_error = None
                 self.shared.clear()
                 self.seeded_tenants.clear()
                 self.dirty = False
+                self.cleanup_error = None
                 self.costs.increment('faultReplacements')
+            if self.cleanup_error is not None:
+                raise DependencyBlocked('database cleanup left the pool unisolated', self.cleanup_error) from self.cleanup_error
+            if self.start_error is not None:
+                raise DependencyBlocked('PostgreSQL preparation previously failed', self.start_error) from self.start_error
             if not self.ready:
-                with measure(self.costs, 'postgres-start', pg=self.owner.project, pgGeneration=self.generation + 1, maxConnections=self.connections):
-                    self.owner.up()
-                    self.owner.roles()
-                    require(self.owner.sql('SHOW max_connections') == str(self.connections),
-                            'PG connection capacity differs from the run budget')
+                try:
+                    with measure(self.costs, 'postgres-start', pg=self.owner.project, pgGeneration=self.generation + 1, maxConnections=self.connections):
+                        self.owner.up()
+                        self.owner.roles()
+                        require(self.owner.sql('SHOW max_connections') == str(self.connections),
+                                'PG connection capacity differs from the run budget')
+                except BaseException as error:
+                    error.root_cause = str(self.output / f'postgres-{self.generation + 1}-failure.json')
+                    publish(Path(error.root_cause), dict(status='failed', phase='postgres-start',
+                            pg=self.owner.project, pgGeneration=self.generation + 1, errorClass=type(error).__name__))
+                    self.start_error = error
+                    raise
                 self.ready = True
                 self.generation += 1
                 self.costs.increment('postgresStarts')
@@ -238,53 +256,82 @@ class DatabasePool:
         with self.lock:
             if profile in self.templates:
                 return self.templates[profile]
-            with measure(self.costs, 'baseline', profile=profile, pg=self.owner.project, pgGeneration=self.generation):
-                owner = self.postgres()
-                name = 't2_template_' + uuid.uuid4().hex
-                owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
-                self.database_grants(name)
-                with tempfile.TemporaryDirectory(prefix='mdm-template-') as directory:
-                    root = Path(directory)
-                    private(root / 'ca.crt', (owner.root / 'ca.crt').read_text())
-                    if profile == 'product':
-                        config = self.installation_config(root, name)
-                        run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
-                            cwd=ROOT, capture_output=True, timeout=90)
-                    else:
-                        executable = 'migrations' if profile == 'group' else 'policy_migrations'
-                        sql = run([self.builds.executables[executable]], cwd=ROOT, capture_output=True).stdout
-                        if profile == 'backend':
-                            sql += '\n' + '\n'.join((ROOT / f'crates/{kind}-postgres/migrations/{unit}').read_text()
-                                                     for kind in ('resource', 'software-release')
-                                                     for unit in ('install.sql', 'outbox.sql'))
-                        role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
-                        owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
-                        owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex'));", name)
-                properties = self.properties(name)
-                coordinates = self.coordinates(name, profile)
-                owner.sql(f'ALTER DATABASE {identifier(name)} ALLOW_CONNECTIONS false;')
-                require(owner.sql(f'SELECT count(*) FROM pg_stat_activity WHERE datname={literal(name)}') == '0',
-                        'migration baseline still has live connections')
-                require(owner.sql(f'SELECT count(*) FROM pg_prepared_xacts WHERE database={literal(name)}') == '0',
-                        'migration baseline has prepared transactions')
-                self.templates[profile] = (name, properties, coordinates)
-                self.costs.increment('baseline:' + profile)
-                return self.templates[profile]
+            self.postgres()
+            if profile in self.template_errors:
+                cause = self.template_errors[profile]
+                raise DependencyBlocked('profile baseline preparation previously failed', cause) from cause
+            try:
+                with measure(self.costs, 'baseline', profile=profile, pg=self.owner.project, pgGeneration=self.generation):
+                    owner = self.postgres()
+                    name = 't2_template_' + uuid.uuid4().hex
+                    owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
+                    self.database_grants(name)
+                    with tempfile.TemporaryDirectory(prefix='mdm-template-') as directory:
+                        root = Path(directory)
+                        private(root / 'ca.crt', (owner.root / 'ca.crt').read_text())
+                        if profile == 'product':
+                            config = self.installation_config(root, name)
+                            run([self.builds.executables['rss-mdm'], 'migrate', '--config', config],
+                                cwd=ROOT, capture_output=True, timeout=90)
+                        else:
+                            executable = 'migrations' if profile == 'group' else 'policy_migrations'
+                            sql = run([self.builds.executables[executable]], cwd=ROOT, capture_output=True).stdout
+                            if profile == 'backend':
+                                sql += '\n' + '\n'.join((ROOT / f'crates/{kind}-postgres/migrations/{unit}').read_text()
+                                                         for kind in ('resource', 'software-release')
+                                                         for unit in ('install.sql', 'outbox.sql'))
+                            role = 'mdm_group_owner' if profile == 'group' else 'mdm_owner'
+                            owner.sql(f'BEGIN; SET ROLE {role}; {sql} COMMIT;', name)
+                            owner.sql("INSERT INTO rss_transactional_messaging.storage_lineage(target,lineage) VALUES(decode(repeat('01',16),'hex'),decode(repeat('02',16),'hex'));", name)
+                    properties = self.properties(name)
+                    coordinates = self.coordinates(name, profile)
+                    owner.sql(f'ALTER DATABASE {identifier(name)} ALLOW_CONNECTIONS false;')
+                    require(owner.sql(f'SELECT count(*) FROM pg_stat_activity WHERE datname={literal(name)}') == '0',
+                            'migration baseline still has live connections')
+                    require(owner.sql(f'SELECT count(*) FROM pg_prepared_xacts WHERE database={literal(name)}') == '0',
+                            'migration baseline has prepared transactions')
+                    self.templates[profile] = (name, properties, coordinates)
+                    self.costs.increment('baseline:' + profile)
+                    return self.templates[profile]
+
+            except BaseException as error:
+                error.root_cause = str(self.output / f'baseline-{self.generation}-{profile}-failure.json')
+                publish(Path(error.root_cause), dict(status='failed', phase='baseline', profile=profile,
+                        pg=self.owner.project, pgGeneration=self.generation, errorClass=type(error).__name__))
+                self.template_errors[profile] = error
+                raise
 
     @contextmanager
     def disposable(self, profile):
         self.postgres()
         if profile == 'empty':
-            with self.owner.database() as name:
-                self.costs.increment('emptyDatabases')
-                yield name
-            return
-        name = self.clone(profile, 't2_case_')
+            name = 't2_empty_' + uuid.uuid4().hex
+            self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
+            self.costs.increment('emptyDatabases')
+        else:
+            name = self.clone(profile, 't2_case_')
+        primary = None
         try:
+            if profile == 'empty':
+                self.owner.sql(f'GRANT CREATE ON DATABASE {identifier(name)} TO mdm_audit_owner,mdm_ledger_owner,mdm_group_owner; GRANT CREATE ON SCHEMA public TO mdm_owner,mdm_group_owner;', name)
             yield name
+        except BaseException as error:
+            primary = error
+            raise
         finally:
             self.sample_connections([name])
-            with measure(self.costs, 'database-drop', database=name, pg=self.owner.project, pgGeneration=self.generation):
-                self.owner.sql(f'DROP DATABASE {identifier(name)} WITH (FORCE)')
-            self.seeded_tenants.pop(name, None)
+            try:
+                with measure(self.costs, 'database-drop', database=name, pg=self.owner.project, pgGeneration=self.generation):
+                    self.owner.sql(f'DROP DATABASE {identifier(name)} WITH (FORCE)')
+                self.seeded_tenants.pop(name, None)
+            except BaseException as error:
+                # Do not reset an instance while other consumers can still be using it.
+                error.root_cause = str(self.output / f'cleanup-{name}-failure.json')
+                publish(Path(error.root_cause), dict(status='failed', phase='database-drop',
+                        database=name, pg=self.owner.project, pgGeneration=self.generation,
+                        errorClass=type(error).__name__))
+                self.cleanup_error = error
+                if primary is None:
+                    raise
+                primary.add_note(f'database cleanup failed: {self.owner.project}/{name}: {error}')
 

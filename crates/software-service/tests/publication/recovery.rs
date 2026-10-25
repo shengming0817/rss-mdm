@@ -6,8 +6,17 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     let server = Server::new().await;
     let proxy = ack::AckProxy::start().await;
     let runtime = runtime_at(Some(proxy.port), "mdm_software_driver").await;
-    let service = server.service(runtime.clone(), server.winget()).await;
-    let input = seed(runtime.clone(), &server, server.winget_document()).await;
+    let content = stored_content().await;
+    let (audit_store, audit_pool) = publication_support::pg::audit_store(runtime.clone()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
+    let input = seed(runtime.clone(), &content, &server, server.winget_document()).await;
     let p = submit_publication(&service, &input).await;
     let gate = ack::CommitGate::start(input.record.value()).await;
     let cutoff =
@@ -26,7 +35,14 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
     runtime.close().await;
     drop(proxy);
     let runtime = publication_support::pg::runtime().await;
-    let service = server.service(runtime.clone(), server.winget()).await;
+    let service = server
+        .service(
+            runtime.clone(),
+            audit_store.clone(),
+            content.clone(),
+            server.winget(),
+        )
+        .await;
     let publication = p
         .id()
         .digest()
@@ -113,4 +129,6 @@ async fn publication_result_commit_unknown_recovers_one_projection_and_audit() {
         "reconcile changed committed publication facts"
     );
     runtime.close().await;
+    content.close().await;
+    audit_pool.close().await;
 }

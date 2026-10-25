@@ -21,13 +21,13 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                             == StatusCode::UNAUTHORIZED
                     );
                     let mut member = fixture.browser("other")?;
-                    let subject = browser_subject(&member, &router).await?;
-                    set_management_grants(&subject, json!(["authorization_read"])).await?;
+                    let subject = prepared_subject(&member)?;
+                    seed_management_grants(&subject, json!(["authorization_read"])).await?;
                     ensure!(
                         member.call(&router, Method::GET, PATH, None).await?.0
                             == StatusCode::FORBIDDEN
                     );
-                    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+                    change_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
                     let before = audit_count(|r| {
                         r.action() == "runtime_diagnostics_read"
                             && r.status() == 200
@@ -56,7 +56,7 @@ async fn runtime_diagnostics_requires_explicit_permission() -> Result<()> {
                         .await?
                             == before + 1
                     );
-                    set_management_grants(&subject, json!([])).await?;
+                    change_management_grants(&subject, json!([])).await?;
                     ensure!(
                         member.call(&router, Method::GET, PATH, None).await?.0
                             == StatusCode::FORBIDDEN
@@ -79,7 +79,7 @@ impl Fixture {
     async fn open() -> Result<Self> {
         let authority = authority::Authority::open().await?;
         let config: Config = serde_json::from_value(authority.base.clone())?;
-        let inventory = agent_runtime(&authority.base).await?;
+        let inventory = agent_runtime(&authority).await?;
         let mut resources = Vec::new();
         let flow = config
             .flow
@@ -369,8 +369,8 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         ),
     )?;
     let mut browser = fixture.authority.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+    let subject = prepared_subject(&browser)?;
+    seed_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let result = async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -469,8 +469,8 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
         ),
     )?;
     let mut browser = fixture.authority.browser("other")?;
-    let subject = browser_subject(&browser, &router).await?;
-    set_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
+    let subject = prepared_subject(&browser)?;
+    seed_management_grants(&subject, json!(["runtime_diagnostics_read"])).await?;
     let healthy = fixture.query().await?;
     ensure!(component(&healthy, "automation")["dependencies"][0]["state"] == "available");
     fixture.flow.runtime.close().await;

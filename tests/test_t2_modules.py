@@ -289,6 +289,19 @@ class ModuleImpactTests(unittest.TestCase):
         self.assertTrue(module.includes('a_new_behavior'))
         self.assertTrue(module.includes('admission::renamed_behavior'))
 
+    def test_http_contract_proofs_name_existing_modules(self):
+        import re
+        root = Path(__file__).resolve().parents[1]
+        source = (root / 'crates/http-contract/src/catalog.rs').read_text()
+        proofs = re.findall(r'\bproof:\s*"([^"]+)"', source)
+        self.assertTrue(proofs)
+        self.assertEqual(set(proofs) - MODULES.keys(), set())
+        collections = (root / 'crates/http-contract/src/collections.rs').read_text()
+        owners = re.findall(r'describe!\(\s*\w+,\s*"([^"]+)"', collections)
+        self.assertTrue(owners)
+        for owner in owners:
+            self.assertTrue((root / owner).is_file(), owner)
+
     def test_every_production_pattern_matches_a_real_owner_input(self):
         root = Path(__file__).resolve().parents[1]
         for module in MODULES.values():
@@ -356,7 +369,7 @@ class DirectProofs(unittest.TestCase):
         for path in ('crates/http-contract/src/catalog.rs', 'crates/http-contract/src/collections.rs',
                      'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs',
                      'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs',
-                     'crates/query/src/lib.rs'):
+                     'crates/query/src/lib.rs', 'crates/compliance/src/lib.rs'):
             with self.subTest(path=path):
                 self.assertEqual(select_inputs([path]).modules, ())
 
@@ -386,6 +399,8 @@ class DirectProofs(unittest.TestCase):
             'crates/management-http/src/recovery_credentials.rs': {'recovery-credentials.http'},
             'crates/authorization-service/src/api_key.rs': {'authorization.programmatic'},
             'crates/resource-postgres/src/lib.rs': {'resource.persistence', 'resource.recovery'},
+            'crates/compliance-postgres/src/lib.rs': {'compliance.storage'},
+            'crates/group-postgres/src/lib.rs': {'group.persistence', 'group.generations'},
             'crates/query-postgres/src/lib.rs': {'planning.http'},
             'crates/software-service/src/preparation/mod.rs': {'software.catalog'},
             'crates/software-service/src/preparation/execution.rs': {'software.catalog'},

@@ -311,7 +311,7 @@ pub async fn serve(
                         let telemetry = match &compiled.config.telemetry {
                             Some(config) => {
                                 let service = config
-                                    .open(&planning, execution.service.clone())
+                                    .open(planning.planning.clone(), execution.service.clone())
                                     .await
                                     .map_err(|e| ProcessError::at("startup.telemetry", e))?;
                                 startup.stage_resource(DynManagedResource::new_box(

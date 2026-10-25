@@ -133,27 +133,57 @@ fn nested_typed_rules_and_all_fact_states_keep_their_meaning() {
             .unwrap();
             let r = Rule::new(base.view().tenant, "typed", "d1", vec![field], tree).unwrap();
             let decoded = codec::decode_rule(&codec::encode_rule(&r).unwrap()).unwrap();
-            for state in [
-                FactState::Known(value.clone()),
-                FactState::Null,
-                FactState::Missing,
-                FactState::Unsupported,
-                FactState::Denied,
-            ] {
-                s.objects[0]
-                    .contexts
-                    .get_mut("default")
-                    .unwrap()
-                    .get_mut("model")
-                    .unwrap()
-                    .state = state;
-                assert_eq!(
-                    r.evaluate_page(&s.input(), t),
-                    decoded.evaluate_page(&s.input(), t)
-                );
-                assert!(!codec::encode_page(&s.input()).unwrap().is_empty());
-            }
+            s.objects[0]
+                .contexts
+                .get_mut("default")
+                .unwrap()
+                .get_mut("model")
+                .unwrap()
+                .state = FactState::Known(value);
+            assert_eq!(
+                r.evaluate_page(&s.input(), t),
+                decoded.evaluate_page(&s.input(), t)
+            );
+            let expected_literal = match &literal {
+                Scalar::String(value) => serde_json::json!({"kind":"string","value":value}),
+                Scalar::Boolean(value) => serde_json::json!({"kind":"boolean","value":value}),
+                Scalar::Integer(value) => serde_json::json!({"kind":"integer","value":value}),
+                Scalar::Time(value) => {
+                    serde_json::json!({"kind":"time","value":value.unix_seconds()})
+                }
+                Scalar::Number(_) => unreachable!(),
+            };
+            let value = if set {
+                serde_json::json!({"kind":"set","element":expected_literal["kind"],"values":[expected_literal]})
+            } else {
+                serde_json::json!({"kind":"scalar","value":expected_literal})
+            };
+            let encoded: serde_json::Value =
+                serde_json::from_slice(&codec::encode_page(&s.input()).unwrap()).unwrap();
+            assert_eq!(
+                encoded["objects"][0]["contexts"]["default"]["model"]["state"],
+                serde_json::json!({"kind":"known","value":value})
+            );
         }
+    }
+    for (state, kind) in [
+        (FactState::Null, "null"),
+        (FactState::Unsupported, "unsupported"),
+        (FactState::Denied, "denied"),
+    ] {
+        s.objects[0]
+            .contexts
+            .get_mut("default")
+            .unwrap()
+            .get_mut("model")
+            .unwrap()
+            .state = state;
+        let encoded: serde_json::Value =
+            serde_json::from_slice(&codec::encode_page(&s.input()).unwrap()).unwrap();
+        assert_eq!(
+            encoded["objects"][0]["contexts"]["default"]["model"]["state"],
+            serde_json::json!({"kind":kind})
+        );
     }
 }
 

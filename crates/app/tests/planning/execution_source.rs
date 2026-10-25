@@ -22,7 +22,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     agent_execution::seed_scope(&planning, included, json!([{"kind":"device","id":device}]))
         .await?;
     let subject = crate::test_support::case::admin();
-    identity::set_grants(
+    identity::seed_grants(
         &tenant.to_string(),
         subject,
         identity::device_grants(None, &["inventory_read", "configuration_write"])?,
@@ -31,9 +31,10 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
     let (identity, resources) = identity::identity(&tenant.to_string()).await?;
     resources.finish(async {
         let config = identity::config(&tenant.to_string())?;
-        let access = crate::Database::connect(config.access_options()?).await?;
+        let pool = sqlx::postgres::PgPoolOptions::new().max_connections(1).connect_with(config.access_options()?).await?;
+        let access = rss_mdm_authorization_service::Store::from_pool(pool.clone(), Arc::new(crate::lifecycle::RuntimeTimer));
         let proof = crate::authorization::context::AuthorizedPrincipal::new(identity.authority.inspect_session(tenant, identity::credential_for(&tenant.to_string(), "admin")?, crate::identity::deadline()).await?)?
-            .load_authorization(access.authorization()).await?;
+            .load_authorization(&access).await?;
         let snapshot = proof.authorization()?;
         let read = crate::authorization::OperationAuthority::all_devices(snapshot, &proof, crate::authorization::Permission::InventoryRead)?;
         let write = crate::authorization::OperationAuthority::all_devices(snapshot, &proof, crate::authorization::Permission::ConfigurationWrite)?;
@@ -54,12 +55,11 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
             let frozen = Frozen::Configuration { native: Protected::seal(&key, tenant, Owner::Policy { policy: id, version: policy.version }, &native)?, grants: std::collections::BTreeMap::from([("*".into(), vec![write.clone()])]), platform: rss_mdm_execution_service::action_contract::Platform::Windows, exit: rss_mdm_policy::Exit::Retain, resource_digest: version.digest().bytes() };
             publications.push(rss_mdm_policy_postgres::Publication { change: rss_mdm_policy::Change::Put { definition: Box::new(policy.definition.clone()), enabled: policy.state.is_enabled() }, policy, frozen: Some(serde_json::to_value(frozen)?), author: serde_json::to_value(proof.actor())?, at: 1 });
         }
-        let store = planning.policy_store.clone();
         let read = serde_json::to_value(read)?;
         planning.runtime.local_tx(tenant, crate::identity::deadline(), move |tx| Box::pin(async move {
             rss_mdm_resource_postgres::fixture::active_version_in(tx, version, rss_contract::Timepoint::try_from(1_i64).expect("fixture time")).await?;
             for publication in publications {
-                store.publish_in(tx, &publication).await?.map_err(|e| sqlx::Error::Protocol(format!("candidate seed: {e:?}")))?;
+                rss_mdm_policy_postgres::fixture::published_in(tx, &publication).await?;
                 let read = read.clone(); let version = publication.policy.version;
                 tx.with_connection(move |c| Box::pin(async move {
                     sqlx::query("INSERT INTO mdm_planning.policy_source_grants(tenant_id,version,read_grant) VALUES($1::uuid,$2,$3)").bind(tenant.to_string()).bind(version).bind(read).execute(c).await?;
@@ -78,7 +78,7 @@ async fn empty_candidate_page_preserves_progress_to_the_next_matching_policy() -
         ensure!(next.items.len() == 1 && next.items[0].policy == Uuid::from_u128(17) && next.items[0].scope == included && matches!(next.items[0].admission, ScopeAdmission::Eligible { .. }) && !next.has_more && next.scanned_after == Uuid::from_u128(17));
         tx.rollback().await?;
         connection.close().await?;
-        access.close().await;
+        pool.close().await;
         Ok(())
     }).await?;
     planning.runtime.close().await;

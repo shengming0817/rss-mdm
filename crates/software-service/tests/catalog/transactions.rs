@@ -44,17 +44,26 @@ where
 struct Fixture {
     runtime: Arc<PgRuntime>,
     catalog: Catalog,
+    audit_pool: sqlx::PgPool,
 }
 impl Fixture {
+    async fn close(&self) {
+        self.audit_pool.close().await;
+        self.runtime.close().await;
+    }
     async fn open() -> Self {
         let runtime = pg::runtime_at(None, "mdm_flow_runtime").await;
-        let audit = pg::audit_store_for("mdm_flow_runtime").await;
+        let (audit, audit_pool) = pg::audit_store_for(runtime.clone(), "mdm_flow_runtime").await;
         let catalog = Catalog::new(
             runtime.clone(),
             pg::tenant(),
-            materials::host(runtime.clone(), audit).await.audit,
+            Arc::new(materials::TestAudit(audit)),
         );
-        Self { runtime, catalog }
+        Self {
+            runtime,
+            catalog,
+            audit_pool,
+        }
     }
     async fn source(&self, operation: &Operation<SourceChange>, rollback: bool) -> Result<Value> {
         let audit = RequestAudit::new(pg::tenant().to_string(), "software_source_write");
@@ -186,26 +195,13 @@ impl Fixture {
                 },
             )],
         )?;
-        let store =
-            resource::ResourceStore::new(self.runtime.clone(), pg::tenant(), pg::deadline())
-                .await?;
-        for (revision, command) in [
-            (0, resource::Command::Create(r::Kind::Software)),
-            (1, resource::Command::Insert(version.clone())),
-        ] {
-            store
-                .execute(
-                    &resource::Request {
-                        id: r::Id::new(Uuid::new_v4().to_string())?,
-                        resource: id.clone(),
-                        expected_storage_revision: revision,
-                        as_of: pg::at(1),
-                        command,
-                    },
-                    pg::deadline(),
-                )
-                .await?;
-        }
+        transaction(&self.runtime, &version, |version, tx| {
+            Box::pin(async move {
+                resource::fixture::draft_version_in(tx, (*version).clone(), pg::at(1)).await?;
+                Ok(())
+            })
+        })
+        .await?;
         Ok(version)
     }
 }
@@ -231,8 +227,14 @@ fn enable(revision: u64) -> Operation<VersionChange> {
     }
 }
 async fn enabled_source(fixture: &Fixture) -> Result<Value> {
-    let registered = fixture.source(&register(), false).await?;
-    Ok(registered["snapshot"].clone())
+    let SourceChange::Register { definition } = register().input else {
+        unreachable!()
+    };
+    let snapshot = transaction(&fixture.runtime, definition, |definition, tx| {
+        Box::pin(async move { catalog::fixture::source_in(tx, definition.clone()).await })
+    })
+    .await?;
+    Ok(serde_json::to_value(snapshot)?)
 }
 
 #[tokio::test]
@@ -346,7 +348,7 @@ async fn source_receipts_follow_the_borrowed_transaction() -> Result<()> {
         .await?;
     ensure!(fixture.source(&enablement, false).await? == enabled);
     ensure!(fixture.source_allowed(snapshot).await.is_err());
-    fixture.runtime.close().await;
+    fixture.close().await;
     Ok(())
 }
 
@@ -567,7 +569,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
         },
     )
     .await?;
-    fixture.runtime.close().await;
+    fixture.close().await;
     Ok(())
 }
 
@@ -578,18 +580,10 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
     let fixture = Fixture::open().await;
     let mut source = crate::imported_fixture::source();
     source.id = pg::case::name("private-fixture").to_owned();
-    fixture
-        .source(
-            &Operation {
-                operation_id: Uuid::new_v4(),
-                expected_revision: 0,
-                input: SourceChange::Register {
-                    definition: source.clone(),
-                },
-            },
-            false,
-        )
-        .await?;
+    transaction(&fixture.runtime, &source, |source, tx| {
+        Box::pin(async move { catalog::fixture::source_in(tx, (*source).clone()).await })
+    })
+    .await?;
     let mut input = crate::imported_fixture::input();
     input["source"] = json!(source.snapshot()?);
     input["resource"] = json!(Uuid::new_v4().to_string());
@@ -745,6 +739,6 @@ async fn import_receipt_survives_unknown_commit_and_source_withdrawal() -> Resul
         .is_err()
     );
     audit.finalize(None);
-    fixture.runtime.close().await;
+    fixture.close().await;
     Ok(())
 }

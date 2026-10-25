@@ -205,7 +205,7 @@ class Environment:
         return ident
 
     def sql(self, statement, database='postgres'):
-        return run(['docker','exec','-i',self.container(),'psql','-X','-At','-v','ON_ERROR_STOP=1',
+        return run(['docker','exec','-i',self.container(),'psql','-X','-qAt','-v','ON_ERROR_STOP=1',
                     '-U','postgres','-d',database], input=statement, capture_output=True, timeout=60).stdout.strip()
 
     def port(self):
@@ -276,17 +276,6 @@ class Environment:
         sql += 'CREATE ROLE mdm_group_owner NOLOGIN NOSUPERUSER NOBYPASSRLS; GRANT rss_tmsg_relay TO mdm_group_owner;'
         self.sql('BEGIN;'+sql+' COMMIT;')
         private(marker,fingerprint)
-
-    @contextlib.contextmanager
-    def database(self, *, name=None):
-        name = name or 't2_' + uuid.uuid4().hex
-        if not re.fullmatch(r'[a-z][a-z0-9_]*', name): raise ValueError('invalid database name')
-        self.sql(f'CREATE DATABASE "{name}" OWNER mdm_owner')
-        try:
-            self.sql(f'GRANT CREATE ON DATABASE "{name}" TO mdm_audit_owner,mdm_ledger_owner,mdm_group_owner; GRANT CREATE ON SCHEMA public TO mdm_owner,mdm_group_owner;', name)
-            yield name
-        finally:
-            self.sql(f'DROP DATABASE "{name}" WITH (FORCE)')
 
     def stop(self):
         self.postgres_endpoint = None
