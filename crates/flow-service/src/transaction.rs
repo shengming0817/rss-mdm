@@ -126,16 +126,6 @@ where
                     if let Err(error) = audit_store.bind_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure, owner));
                     }
-                    if let Err(error) = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                            })
-                        })
-                        .await
-                    {
-                        return Err(rejection(Fault::Storage(error), failure, owner));
-                    }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
                         Ok(v) => {
@@ -193,10 +183,15 @@ impl TransactionOwner {
 }
 pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
+    let directory_tenant = tenant.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
                 .bind(tenant)
+                .execute(&mut *c)
+                .await?;
+            sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                .bind(directory_tenant)
                 .execute(c)
                 .await?;
             Ok(())

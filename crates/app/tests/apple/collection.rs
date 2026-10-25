@@ -302,27 +302,22 @@ async fn published_native_template_uses_policy_and_direct_collection_progress() 
 }
 
 #[tokio::test]
-#[ignore = "MODULE=apple.collection: current grant before native dispatch"]
-async fn template_revocation_prevents_dispatch() -> Result<()> {
-    withdrawn_template(false, "grant").await
-}
-#[tokio::test]
 #[ignore = "MODULE=apple.collection: current grant before native receipt"]
 async fn template_revocation_rejects_first_report() -> Result<()> {
-    withdrawn_template(true, "grant").await
+    withdrawn_template("grant").await
 }
 #[tokio::test]
 #[ignore = "MODULE=apple.collection: current Policy before native receipt"]
 async fn disabled_template_policy_rejects_first_report() -> Result<()> {
-    withdrawn_template(true, "policy").await
+    withdrawn_template("policy").await
 }
 #[tokio::test]
 #[ignore = "MODULE=apple.collection: current applicability before native receipt"]
 async fn template_access_rights_change_rejects_first_report() -> Result<()> {
-    withdrawn_template(true, "rights").await
+    withdrawn_template("rights").await
 }
 
-async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
+async fn withdrawn_template(withdrawal: &str) -> Result<()> {
     let mut f = Fixture::start().await?;
     let (peer, device) = f.ready_local_peer().await?;
     crate::test_support::identity::seed_grants(
@@ -336,9 +331,7 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
     let queued = f.queue_collection(&definition, &peer).await;
     crate::test_support::runtime::stop_worker(Some(owner)).await?;
     let (policy, run) = queued?;
-    if dispatched {
-        ensure!(peer.next_collection().await?.0 == run);
-    }
+    ensure!(peer.next_collection().await?.0 == run);
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
@@ -371,26 +364,28 @@ async fn withdrawn_template(dispatched: bool, withdrawal: &str) -> Result<()> {
         }
         _ => unreachable!(),
     }
-    let response = if dispatched {
-        peer.manage(
+    let response = peer
+        .manage(
             "Acknowledged",
             Some(run),
             Some((
                 "QueryResponses",
                 plist::Value::Dictionary(protocol::dictionary([
-                    ("Model", "unauthorized-model".into()),
-                    ("OSVersion", "99.0".into()),
+                    ("Model", "accepted-model".into()),
+                    ("OSVersion", "14.0".into()),
                 ])),
             )),
         )
-        .await?
-    } else {
-        peer.manage("Idle", None, None).await?
-    };
+        .await?;
     ensure!(response.is_empty(), "withdrawn collection dispatched work");
     let terminal: (bool, bool, String) = sqlx::query_as("SELECT sealed_at IS NOT NULL,batch IS NULL,reason FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut pg).await?;
     ensure!(
-        terminal == (true, true, "revoked".into()),
+        terminal
+            == if withdrawal == "rights" || withdrawal == "policy" {
+                (true, true, "revoked".into())
+            } else {
+                (true, false, "complete".into())
+            },
         "withdrawn receipt reached Inventory: {terminal:?}"
     );
     let facts = crate::audit_test_support::read(&mut pg).await?;

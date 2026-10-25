@@ -116,3 +116,44 @@ impl crate::ExecutionService {
         signer.sign_telemetry(configuration)
     }
 }
+
+impl crate::ExecutionService {
+    /// Authenticate original periodic material using the existing active/verify-only trust set.
+    pub async fn verify_telemetry_on(
+        &self,
+        c: &mut sqlx::PgConnection,
+        p: &crate::device::DevicePrincipal,
+        signed: &rss_mdm_agent_wire::runtime::SignedTelemetryConfiguration,
+    ) -> Result<(), Error> {
+        use rss_mdm_agent_wire::task_trust::KeyState;
+        let configuration = &signed.configuration;
+        if p.tenant() != self.tenant
+            || configuration.tenant_id.to_string() != p.tenant().to_string()
+            || configuration.device_id != p.device()
+            || configuration.registration_id != p.registration()
+            || configuration.generation != p.generation() as u64
+        {
+            return Err(Error::Forbidden);
+        }
+        let trust = trust::current(c, self.tenant).await?;
+        let key = trust
+            .keys
+            .iter()
+            .find(|k| {
+                k.id == signed.key_id && matches!(k.state, KeyState::Active | KeyState::VerifyOnly)
+            })
+            .ok_or(Error::Forbidden)?;
+        let public = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&key.public_key)
+            .map_err(|_| Error::Malformed)?;
+        let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&signed.signature)
+            .map_err(|_| Error::Forbidden)?;
+        let bytes = configuration
+            .signing_bytes(&signed.key_id)
+            .map_err(|_| Error::Malformed)?;
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public)
+            .verify(&bytes, &signature)
+            .map_err(|_| Error::Forbidden)
+    }
+}

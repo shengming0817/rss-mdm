@@ -48,7 +48,7 @@ async fn expiry_dependency_paths_and_withdrawal_fence() -> Result<()> {
             crate::test_support::agent::evidence(case_credential()).expect("registered TLS peer"),
         )
         .body(Body::empty())?;
-    ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::FORBIDDEN);
+    ensure!(router.clone().oneshot(expired).await?.status() == StatusCode::OK);
     sqlx::query("UPDATE mdm_commands.action_attempts SET offer=jsonb_set(offer,'{payload,task,expiresAt}',to_jsonb($2::bigint)) WHERE id=$1::uuid")
         .bind(task["payload"]["task"]["attemptId"].as_str().unwrap())
         .bind(task["payload"]["task"]["expiresAt"].as_i64().unwrap()).execute(&mut owner).await?;
@@ -140,8 +140,7 @@ async fn uninstall_content_selection() -> Result<()> {
             .await?;
             let removal_task = claim(&router).await?;
             ensure!(
-                removal_task["payload"]["task"]["intent"] == "uninstall"
-                    && removal_task["payload"]["task"]["startMode"] == "automatic",
+                removal_task["payload"]["task"]["intent"] == "uninstall",
                 "uninstall: {removal_task}"
             );
             let content = Request::builder()

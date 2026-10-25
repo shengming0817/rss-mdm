@@ -13,17 +13,9 @@ impl planning::SnapshotReader {
         watermark: i64,
         ids: &[String],
         catalog: &Catalog,
-        sensitive: bool,
     ) -> Result<Vec<DeviceSummary>> {
-        self.scoped_summary_devices_on(
-            c,
-            watermark,
-            ids,
-            catalog,
-            sensitive,
-            &CollectionScope::Device,
-        )
-        .await
+        self.scoped_summary_devices_on(c, watermark, ids, catalog, &CollectionScope::Device)
+            .await
     }
     pub async fn scoped_summary_devices_on(
         &self,
@@ -31,12 +23,12 @@ impl planning::SnapshotReader {
         watermark: i64,
         ids: &[String],
         catalog: &Catalog,
-        sensitive: bool,
+
         scope: &CollectionScope,
     ) -> Result<Vec<DeviceSummary>> {
         let visible = catalog
             .fields()
-            .filter(|f| fields::visible(f, sensitive))
+            .filter(|f| fields::visible(f))
             .collect::<Vec<_>>();
         let scalar_catalog = stored(Catalog::new(
             visible
@@ -52,7 +44,7 @@ impl planning::SnapshotReader {
             .map(|f| f.key)
             .collect::<Vec<_>>();
         let mut devices = self
-            .scoped_devices_on(c, watermark, ids, &scalar_catalog, sensitive, scope)
+            .scoped_devices_on(c, watermark, ids, &scalar_catalog, scope)
             .await?;
         let mut facts: BTreeMap<(String, FieldKey), Vec<ArrayFact>> = BTreeMap::new();
         if !array_fields.is_empty() {

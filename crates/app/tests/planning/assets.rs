@@ -62,7 +62,7 @@ async fn asset_history_rollback_replay_and_frozen_watermark() {
                         &assets::ReadScope {
                             authority: "internal".into(),
                             collection_scope: rss_mdm_inventory::CollectionScope::Device,
-                            sensitive: true,
+
                             subject: "history".into(),
                             devices: Some([scope_device.clone()].into()),
                         },
@@ -240,6 +240,42 @@ async fn frozen_fields_manual_and_quality_survive_updates_deletes_and_rollback()
     assert_eq!(changed["quality"][0]["fields"][0]["quality"], "failed");
     assert_eq!(changed["quality"][0]["fields"][0]["status"], 500);
     assert_eq!(frozen_device(&service, device, old_watermark).await, before);
+    // A Group snapshot must omit Secret before resolving stored values, even with internal scope.
+    let mut secret = rss_mdm_inventory::builtin::fields()
+        .into_iter()
+        .find(|f| f.key == rss_mdm_inventory::builtin::MODEL)
+        .unwrap();
+    secret.sensitivity = rss_mdm_inventory::Sensitivity::Secret;
+    secret.searchable = false;
+    secret.manual = false;
+    secret.sources.remove(&rss_mdm_inventory::Source::Manual);
+    let catalog = rss_mdm_inventory::Catalog::new(vec![secret]).unwrap();
+    let snapshot = service
+        .runtime
+        .local_tx(t, deadline(), move |tx| {
+            Box::pin(async move {
+                tx.with_connection(move |c| {
+                    Box::pin(async move {
+                        assets::planning::SnapshotReader { tenant: t }
+                            .devices_on(c, new_watermark, &[device.into()], &catalog)
+                            .await
+                            .map_err(|e| sqlx::Error::Protocol(format!("secret input: {e:?}")))
+                    })
+                })
+                .await
+            })
+        })
+        .await
+        .fold(
+            |v| v,
+            |e| panic!("{e:?}"),
+            |e| panic!("{e:?}"),
+            |_| panic!("commit unknown"),
+            |_| panic!("rollback unknown"),
+            |e| panic!("{e:?}"),
+        );
+    assert_eq!(snapshot.len(), 1);
+    assert!(snapshot[0].fields.is_empty());
     execute_asset(&service, &manual(2, assets::ManualChange::Delete {}))
         .await
         .unwrap();

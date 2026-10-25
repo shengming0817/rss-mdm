@@ -64,10 +64,7 @@ impl AssetService {
                 definition
                     .field_scope(**key)
                     .is_ok_and(|s| s == &scope.collection_scope)
-                    && (scope.sensitive
-                        || definition.field(**key).is_ok_and(|f| {
-                            f.sensitivity == rss_mdm_inventory::Sensitivity::Standard
-                        }))
+                    && definition.field(**key).is_ok_and(fields::visible)
             })
             .map(|(key, attempt)| QualityField {
                 reason: attempt.reason.clone(),

@@ -11,11 +11,13 @@ pub async fn accept(
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenAction,
     run: &Run,
-    output: &Value,
+    result: &rss_mdm_agent_wire::runtime::TaskResult,
     trusted: bool,
     now: i64,
-    collected_at: i64,
+    project: bool,
 ) -> Result<()> {
+    let output = result.output();
+    let collected_at = result.collected_at();
     let ScriptPurpose::Collection { mappings, .. } = &frozen.definition.spec().purpose else {
         return Ok(());
     };
@@ -43,6 +45,9 @@ pub async fn accept(
         attempt: run.state.attempt().ok_or(crate::Error::Conflict)?,
         progress,
         now,
+        observed_at: collected_at,
+        trusted,
+        project,
     };
     tx.with_connection(move |c| {
         Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
@@ -121,19 +126,23 @@ pub async fn finish(
         result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
     let trusted = success
-        && allowed
         && result.collected_at() <= now
-        && run
-            .state
-            .trusts_result(now, frozen.definition.spec().timeout_seconds);
-    if !effect_allowed {
-        run.state
-            .uncertain_result(run.state.attempt().ok_or(crate::Error::Conflict)?)?;
-    } else {
-        run.state
-            .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
-    }
-    accept(tx, frozen, run, output, trusted, now, result.collected_at()).await?;
+        && run.state.trusts_result(
+            result.collected_at(),
+            frozen.definition.spec().timeout_seconds,
+        );
+    run.state
+        .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
+    accept(
+        tx,
+        frozen,
+        run,
+        result,
+        trusted,
+        now,
+        allowed && effect_allowed,
+    )
+    .await?;
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,

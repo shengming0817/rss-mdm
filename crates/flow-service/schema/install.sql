@@ -23,66 +23,17 @@ CREATE FUNCTION mdm_planning.group_current(p_group uuid) RETURNS boolean
     LANGUAGE sql SECURITY DEFINER
     SET search_path TO 'pg_catalog'
     AS $$
-WITH RECURSIVE reach(id,depth) AS (
- SELECT p_group,1
- UNION
- SELECT ref,r.depth+1 FROM reach r
- JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
- JOIN mdm_assets.group_selections s ON(s.tenant_id,s.group_id,s.rule_version)=(g.tenant_id,g.id,g.rule_version)
- CROSS JOIN LATERAL unnest(s.group_ids) ref WHERE r.depth<16
-), bounded AS (SELECT * FROM reach LIMIT 4097)
-SELECT count(*)<=4096 AND coalesce(bool_and(coalesce(
- g.id IS NOT NULL AND NOT g.deleted
- AND NOT (r.depth=16 AND cardinality(coalesce(selection.group_ids,ARRAY[]::uuid[]))>0)
- AND (g.kind='static' OR (b.phase='published' AND b.rule_version IS NOT DISTINCT FROM g.rule_version))
- AND (b.id IS NULL OR jsonb_typeof(convert_from(b.input,'UTF8')::jsonb->'sources')='array')
- AND NOT EXISTS(
-  SELECT 1 FROM jsonb_array_elements(convert_from(b.input,'UTF8')::jsonb->'sources') src
-  LEFT JOIN mdm_group.groups target ON target.tenant_id=g.tenant_id AND target.id=(src->>'group')::uuid
-  LEFT JOIN mdm_planning.source_heads def ON def.tenant_id=g.tenant_id AND def.id='group-definition.'||(src->>'group')
-  LEFT JOIN mdm_planning.source_heads auth ON auth.tenant_id=g.tenant_id AND auth.id='group-authority.'||(src->>'group')
-  WHERE target.id IS NULL OR target.deleted OR target.member_set IS DISTINCT FROM (src->'coordinates'->>'memberSet')::uuid
-   OR target.member_version IS DISTINCT FROM (src->'coordinates'->>'memberVersion')::bigint
-   OR def.revision IS DISTINCT FROM (src->'coordinates'->>'definitionVersion')::bigint
-   OR auth.revision IS DISTINCT FROM (src->'coordinates'->>'authorityVersion')::bigint
- )
- AND (g.kind='static' AND b.id IS NULL OR (
-  head.id IS NOT NULL AND head.observed_input>=head.required_input
-  AND NOT EXISTS(SELECT 1 FROM mdm.asset_changes c WHERE c.tenant_id=g.tenant_id AND c.revision>head.observed_input
-   AND ((c.kind IN('device','registration','source','credential') AND (g.kind IN('dynamic','system') OR coalesce((
-    SELECT m.added FROM mdm_group.member_changes m JOIN mdm_group.member_runs history ON(history.tenant_id,history.id)=(m.tenant_id,m.run_id)
-    WHERE m.tenant_id=g.tenant_id AND m.group_id=g.id AND history.phase='published'
-      AND m.object_id=coalesce(c.identity->>'device',(SELECT h.device FROM mdm_access.asset_authority_history h WHERE h.tenant_id=c.tenant_id AND h.kind='registration' AND h.identity=c.identity->>'registration' ORDER BY h.revision DESC LIMIT 1))
-    ORDER BY m.revision DESC LIMIT 1),false))) OR EXISTS(
-    SELECT 1 FROM mdm_assets.group_fields f WHERE f.tenant_id=g.tenant_id AND f.group_id=g.id AND f.field=ANY(c.fields))))
- )),false)),false)
-FROM bounded r
-LEFT JOIN mdm_group.groups g ON g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=r.id
-LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
-LEFT JOIN mdm_assets.group_selections selection ON(selection.tenant_id,selection.group_id,selection.rule_version)=(g.tenant_id,g.id,g.rule_version)
-LEFT JOIN mdm_planning.source_heads head ON head.tenant_id=g.tenant_id AND head.id='group-members.'||g.id::text;
+SELECT coalesce((SELECT NOT g.deleted AND
+ (g.kind='static' AND g.member_set IS NULL OR b.phase='published' AND b.rule_version IS NOT DISTINCT FROM g.rule_version)
+ FROM mdm_group.groups g LEFT JOIN mdm_group.member_runs b ON(b.tenant_id,b.id)=(g.tenant_id,g.member_set)
+ WHERE g.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND g.id=p_group),false);
 $$;
 
 CREATE FUNCTION mdm_planning.scope_admission(p_scope uuid, p_device text) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 DECLARE tenant uuid:=nullif(current_setting('rss.tenant_id',true),'')::uuid; s record; token record;
 BEGIN
- -- The caller still takes the watermark fence before this Scope/head lock boundary.
- SELECT x.deleted,x.revision,r.phase,r.definition_revision,r.input INTO s
- FROM mdm_planning.scopes x LEFT JOIN mdm_planning.scope_runs r ON(r.tenant_id,r.id)=(x.tenant_id,x.resolution)
- WHERE x.tenant_id=tenant AND x.id=p_scope FOR SHARE OF x;
- IF NOT FOUND OR s.deleted OR s.phase IS DISTINCT FROM 'published'
-  OR s.definition_revision IS DISTINCT FROM s.revision THEN
-  RETURN mdm_planning.scope_state(p_scope,p_device);
- END IF;
- FOR token IN
-  SELECT 'group-'||v.kind||'.'||(src->'reference'->>'id') AS id
-  FROM jsonb_array_elements(s.input->'sources') src
-  CROSS JOIN (VALUES('definition'),('members'),('authority')) v(kind)
-  WHERE src->'reference'->>'kind'='group' ORDER BY id
- LOOP
-  PERFORM FROM mdm_planning.source_heads h WHERE h.tenant_id=tenant AND h.id=token.id FOR SHARE;
- END LOOP;
+ PERFORM FROM mdm_planning.scopes WHERE tenant_id=tenant AND id=p_scope FOR SHARE;
  RETURN mdm_planning.scope_state(p_scope,p_device);
 END $$;
 
@@ -100,9 +51,9 @@ CREATE TABLE mdm_automation.automation_jobs (
     failure text,
     failure_detail jsonb,
     CONSTRAINT automation_jobs_authority_revision_check CHECK ((authority_revision >= 0)),
-    CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text]))),
+    CONSTRAINT automation_jobs_failure_check CHECK ((failure = ANY (ARRAY['superseded'::text, 'capacity_exceeded'::text, 'source_unavailable'::text, 'invalid_input'::text, 'storage_invariant'::text, 'automation_suspended'::text, 'configuration_target_limit'::text, 'capability_unknown'::text, 'platform_unsupported'::text, 'stale_plan'::text, 'owner_conflict'::text, 'permission_denied'::text]))),
     CONSTRAINT automation_jobs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'scope'::text, 'policy_reconcile'::text, 'asset_query'::text, 'compliance'::text]))),
+    CONSTRAINT automation_jobs_kind_check CHECK ((kind = ANY (ARRAY['group'::text, 'group_preview'::text, 'group_definition'::text, 'scope'::text, 'policy_reconcile'::text, 'asset_query'::text, 'compliance'::text]))),
     CONSTRAINT automation_jobs_target_check CHECK (((octet_length(target) >= 1) AND (octet_length(target) <= 256)))
 );
 
@@ -171,7 +122,7 @@ CREATE TABLE mdm_planning.scope_runs (
     CONSTRAINT scope_runs_fingerprint_check CHECK ((octet_length(fingerprint) = 32)),
     CONSTRAINT scope_runs_identity_revision_check CHECK ((identity_revision >= 0)),
     CONSTRAINT scope_runs_input_check CHECK ((octet_length((input)::text) <= 1048576)),
-    CONSTRAINT scope_runs_object_count_check CHECK (((object_count >= 0) AND (object_count <= 1000000))),
+    CONSTRAINT scope_runs_object_count_check CHECK ((object_count >= 0)),
     CONSTRAINT scope_runs_phase_check CHECK ((phase = ANY (ARRAY['sources'::text, 'evaluate'::text, 'project'::text, 'ready'::text, 'published'::text, 'superseded'::text]))),
     CONSTRAINT scope_runs_result_fingerprint_check CHECK (((result_fingerprint IS NULL) OR (octet_length(result_fingerprint) = 32))),
     CONSTRAINT scope_runs_source_index_check CHECK (((source_index >= 0) AND (source_index <= 1000)))
@@ -390,3 +341,18 @@ BEGIN
 END;$$;
 REVOKE ALL ON FUNCTION mdm_planning.guard_scope_channel_result() FROM PUBLIC;
 CREATE TRIGGER scope_channel_result_guard BEFORE INSERT OR UPDATE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_planning.guard_scope_channel_result();
+
+-- Only traversal state is additional; job input/cursor/terminal state remain in Automation.
+CREATE TABLE mdm_planning.group_definition_walk (
+ tenant_id uuid NOT NULL, task_id uuid NOT NULL, node_id uuid NOT NULL,
+ graph_revision bigint NOT NULL CHECK(graph_revision>=0), visited boolean NOT NULL DEFAULT false,
+ PRIMARY KEY(tenant_id,task_id,node_id)
+);
+CREATE INDEX group_definition_walk_pending ON mdm_planning.group_definition_walk(tenant_id,task_id,graph_revision,node_id) WHERE NOT visited;
+ALTER TABLE mdm_planning.group_definition_walk ENABLE ROW LEVEL SECURITY;
+ALTER TABLE mdm_planning.group_definition_walk FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant ON mdm_planning.group_definition_walk
+ USING(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid)
+ WITH CHECK(tenant_id=NULLIF(current_setting('rss.tenant_id',true),'')::uuid);
+GRANT SELECT,INSERT,DELETE ON mdm_planning.group_definition_walk TO mdm_flow_runtime;
+GRANT UPDATE(graph_revision,visited) ON mdm_planning.group_definition_walk TO mdm_flow_runtime;

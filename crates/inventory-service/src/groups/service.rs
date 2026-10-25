@@ -6,7 +6,6 @@ pub enum Command {
     Group {
         id: Uuid,
         change: Box<Operation<GroupChange>>,
-        sensitive: bool,
     },
     GroupRead {
         id: Uuid,
@@ -97,13 +96,6 @@ impl Groups {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, authorize, flow, initialization) = *ctx;
-                    let tenant = tx.tenant_id();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                        })
-                    })
-                    .await?;
                     if let Some(proof) = initialization {
                         let Command::Group { id, .. } = command else {
                             return Err(Error::Forbidden.into());
@@ -116,7 +108,23 @@ impl Groups {
                         )
                         .await?;
                     }
-                    crate::transaction::lock(tx).await?;
+                    if matches!(
+                        command,
+                        Command::Group { .. } | Command::GroupPreview { .. }
+                    ) {
+                        crate::transaction::lock(tx).await?;
+                        let tenant = tx.tenant_id().to_string();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                                    .bind(tenant)
+                                    .execute(c)
+                                    .await?;
+                                Ok(())
+                            })
+                        })
+                        .await?;
+                    }
                     authorize()?;
                     let partitions = match command {
                         Command::Group { id, .. } => vec![
@@ -167,13 +175,8 @@ impl Groups {
                             .ok_or(Error::Unavailable(Failure::Clock))?,
                     ))?;
                     let result = match command {
-                        Command::Group {
-                            id,
-                            change,
-                            sensitive,
-                        } => {
-                            s.group_change(tx, *id, change, (at, *sensitive), flow)
-                                .await?
+                        Command::Group { id, change } => {
+                            s.group_change(tx, *id, change, at, flow).await?
                         }
                         Command::GroupRead { id } => s.group_read(tx, *id, flow).await?,
                         Command::GroupPreview {

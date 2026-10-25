@@ -159,7 +159,6 @@ pub struct FrozenSoftware {
     pub(super) platform: rss_mdm_resource::Platform,
     pub(super) architecture: rss_mdm_resource::Architecture,
     pub(super) lifecycle: Lifecycle,
-    pub(super) binding: [u8; 32],
 }
 impl FrozenSoftware {
     pub fn source(&self) -> &SourceDefinition {
@@ -177,9 +176,7 @@ impl FrozenSoftware {
     pub fn architecture(&self) -> rss_mdm_resource::Architecture {
         self.architecture
     }
-    pub fn binding(&self) -> [u8; 32] {
-        self.binding
-    }
+
     pub fn lifecycle(&self) -> &Lifecycle {
         &self.lifecycle
     }

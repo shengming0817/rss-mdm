@@ -11,6 +11,9 @@ pub enum TaskKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobInput {
+    GroupDefinition {
+        edit: Box<rss_mdm_inventory_service::groups::DefinitionEdit>,
+    },
     PolicyReconcile {
         policy: Uuid,
     },
@@ -43,7 +46,7 @@ impl JobInput {
         rss_mdm_audit_integration::Error,
     > {
         let kind = match self {
-            Self::Group { .. } => "group",
+            Self::Group { .. } | Self::GroupDefinition { .. } => "group",
             Self::Scope { .. } => "scope",
             Self::PolicyReconcile { .. } => "policy",
             _ => "mdm",
@@ -52,6 +55,7 @@ impl JobInput {
     }
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::GroupDefinition { .. } => "group_definition",
             Self::Compliance { .. } => "compliance",
             Self::AssetQuery { .. } => "asset_query",
             Self::Group { publish: true, .. } => "group",
@@ -65,6 +69,7 @@ impl JobInput {
             Self::Compliance { input } => input.rule.to_string(),
             Self::AssetQuery { scope, .. } => scope.subject.clone(),
             Self::Group { group, .. } => group.to_string(),
+            Self::GroupDefinition { edit } => edit.group.to_string(),
             Self::Scope { scope } => scope.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
         }

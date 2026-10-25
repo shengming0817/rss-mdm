@@ -80,16 +80,17 @@ impl Compliance {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, proof) = *ctx;
+                    if command.operation().is_some() {
+                        let tenant = tx.tenant_id();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                            })
+                        })
+                        .await?;
+                    }
                     let current = query_authority(tx, proof).await?;
                     authorize(&current, proof, command)?;
-                    let sensitive =
-                        match current.require(proof, Permission::InventorySensitiveRead, None) {
-                            Ok(()) => true,
-                            Err(crate::authorization::error::AuthorizationError::Forbidden) => {
-                                false
-                            }
-                            Err(e) => return Err(e.into()),
-                        };
                     crate::transaction::lock(tx).await?;
                     s.audit_store.prepare_in(tx, audit, &[]).await?;
                     let actor = audit.snapshot();
@@ -120,7 +121,7 @@ impl Compliance {
                             return Ok(response);
                         }
                     }
-                    let response = s.handle(tx, command, sensitive).await?;
+                    let response = s.handle(tx, command).await?;
                     if let Some(id) = operation {
                         let h = hash.clone();
                         let v = response.clone();
@@ -161,12 +162,7 @@ impl Compliance {
         }
         Ok(())
     }
-    async fn handle(
-        &self,
-        tx: &mut PgTransaction<'_>,
-        command: &Command,
-        sensitive: bool,
-    ) -> Result<Value> {
+    async fn handle(&self, tx: &mut PgTransaction<'_>, command: &Command) -> Result<Value> {
         let t = self.tenant();
         match command {
             Command::Read { id } => json(&RuleView::from(self.rule(tx, *id).await?)),
@@ -187,7 +183,7 @@ impl Compliance {
                     .ok_or(Error::NotFound)?;
                 Ok(json!({"id":id,"revision":revision,"definition":row}))
             }
-            Command::Put { id, request } => self.put(tx, *id, request, sensitive).await,
+            Command::Put { id, request } => self.put(tx, *id, request).await,
             Command::Delete { id, request } => {
                 let mut rule = self.rule(tx, *id).await?;
                 if rule.revision as u64 != request.expected_revision {
@@ -234,7 +230,6 @@ impl Compliance {
         tx: &mut PgTransaction<'_>,
         id: Uuid,
         request: &crate::operation::Operation<Definition>,
-        sensitive: bool,
     ) -> Result<Value> {
         let t = self.tenant();
         if id.is_nil() {
@@ -243,7 +238,6 @@ impl Compliance {
         crate::assets::filter::require_visible(
             &crate::assets::catalog_in(tx, t, i64::MAX).await?,
             &request.input.criteria.criteria,
-            sensitive,
         )?;
         let fields = validate_definition(
             &request.input,

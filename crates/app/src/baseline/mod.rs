@@ -204,7 +204,6 @@ async fn execute_owned(
                         ]),
                     },
                 }),
-                sensitive: false,
             };
             state
                 .flow

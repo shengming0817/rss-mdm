@@ -216,11 +216,16 @@ async fn targeted_invocation_binds_parameters_identity_frequency_and_result() ->
             );
             ensure!(
                 status.1["result"]["evidence"]["quality"] == "complete"
-                    && status.1["result"]["evidence"]["collectedAt"] == 2
-                    && status.1["result"]["evidence"]["receivedAt"]
+                    && status.1["result"]["evidence"]["collectedAt"]
                         .as_i64()
                         .unwrap()
                         > 2
+                    && status.1["result"]["evidence"]["receivedAt"]
+                        .as_i64()
+                        .unwrap()
+                        >= status.1["result"]["evidence"]["collectedAt"]
+                            .as_i64()
+                            .unwrap()
             );
             ensure!(
                 call(
@@ -265,49 +270,15 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
         call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]),
         "missing profile facts are Unknown"
     );
-    ensure!(
-        call(
-            &f,
-            Method::POST,
-            INVOKE,
-            Some(request(id, &policy, json!({}))),
-            true,
-            true
-        )
-        .await?
-        .0 == StatusCode::FORBIDDEN
-    );
-    ensure!(run_count(id)?.trim() == "0");
+    let mut queued=request(id,&policy,json!({}));queued["source"]=json!("human");
+    let accepted=call(&f,Method::POST,INVOKE,Some(queued),true,true).await?;
+    ensure!(accepted.0==StatusCode::ACCEPTED,"pending capability: {accepted:?}");
+    ensure!(run_count(id)?.trim()=="1");
     claim_request(&f.router, Uuid::new_v4()).await?;
     value["selfService"]["allowAi"] = json!(false);
     let updated=post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":true,"definition":value.clone()}})).await?;
     ensure!(updated["version"] == policy["version"] && updated["revision"] == 2);
     ensure!(call(&f, Method::GET, DIRECTORY, None, true, true).await?.1["items"] == json!([]));
-    ensure!(
-        call(
-            &f,
-            Method::GET,
-            &DIRECTORY.replace("source=ai", "source=human"),
-            None,
-            true,
-            true
-        )
-        .await?
-        .1["items"]
-            .as_array()
-            .unwrap()
-            .len()
-            == 1
-    );
-    let mut human = request(id, &updated, json!({}));
-    human["source"] = json!("human");
-    human["confirmed"] = json!(false);
-    ensure!(
-        call(&f, Method::POST, INVOKE, Some(human), true, true)
-            .await?
-            .0
-            == StatusCode::ACCEPTED
-    );
     let stack = crate::test_support::software_execution::worker(&f.base, f.execution.clone()).await?;
     let task = claim(&f.router).await?;
     let registration = pg(&format!("SELECT id FROM mdm_access.registrations WHERE tenant_id='{}' AND device='{}' AND channel='agent' AND state='active'", case_tenant(), case_device_id()))?;
@@ -320,14 +291,10 @@ async fn self_service_rechecks_config_and_capability_before_start() -> Result<()
     ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
     value["selfService"]["published"] = json!(false);
     post(&mut f.author,&f.router,&format!("/api/v1/policies/{id}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"input":{"action":"put","enabled":true,"definition":value}})).await?;
-    let mut start = json!({"kind":"start"});
-    ensure!(
-        task_event_request(&f.router, &task, Uuid::new_v4(), &mut start)
-            .await?
-            .0
-            == StatusCode::FORBIDDEN
-    );
-    ensure!(pg(&format!("SELECT count(*) FROM mdm_commands.action_attempts WHERE run='{}' AND permit IS NOT NULL",task["payload"]["task"]["taskId"].as_str().unwrap()))?.trim()=="0");
+    task_event(&f.router,&task,json!({"kind":"received"})).await?;
+    task_event(&f.router,&task,json!({"kind":"start"})).await?;
+    ensure!(task["payload"]["task"]["taskId"]==accepted.1["runId"]);
+    ensure!(call(&f,Method::POST,INVOKE,Some(request(id,&updated,json!({}))),true,true).await?.0==StatusCode::FORBIDDEN);
     crate::test_support::runtime::stop_worker(stack).await?;
     Ok(())
     }).await
@@ -404,6 +371,7 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         .0 == StatusCode::ACCEPTED
     );
     let second_task = claim(&f.router).await?;
+    task_event(&f.router,&second_task,json!({"kind":"received"})).await?;
     let result=post(&mut f.author,&f.router,&format!("/api/v1/scopes/{}",case_task_scope()),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","definition":{"targets":[],"limitations":null,"exclusions":[]}}})).await?;
     let automation = start_automation(&f.base).await?;
     await_task(
@@ -420,8 +388,8 @@ async fn grants_and_scope_are_rechecked_and_ai_switch_does_not_change_automation
         task_event_request(&f.router, &second_task, Uuid::new_v4(), &mut start)
             .await?
             .0
-            == StatusCode::FORBIDDEN,
-        "Scope exit must withdraw execution"
+            == StatusCode::OK,
+        "original task survives Scope edits"
     );
     let restored=post(&mut f.author,&f.router,&format!("/api/v1/scopes/{}",case_task_scope()),json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device_id()}],"limitations":null,"exclusions":[]}}})).await?;
     await_task(
@@ -523,18 +491,6 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
         for enterprise_user in [false, true] {
             let directory = call(&f, Method::GET, DIRECTORY, None, true, enterprise_user).await?;
             ensure!(directory.0 == StatusCode::OK && directory.1["items"] == json!([]));
-            ensure!(
-                call(
-                    &f,
-                    Method::POST,
-                    INVOKE,
-                    Some(request(id, &policy, json!({}))),
-                    true,
-                    enterprise_user
-                )
-                .await?
-                .0 == StatusCode::FORBIDDEN
-            );
         }
     }
     ensure!(run_count(id)?.trim() == "0");
@@ -560,17 +516,12 @@ async fn device_access_logged_in_user_requires_exact_os_session_and_helper_witho
     let mut changed = local.clone();
     changed["revision"] = json!(5);
     changed["interactiveUser"]["identity"] = json!("502");
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let poll = claim_with_context(&f.router, &changed).await?;
-            ensure!(poll.0 == StatusCode::OK && poll.1["task"].is_null(), "changed OS identity must never receive a replacement System offer: {poll:?}");
-            if pg(&format!("SELECT state->>'cancellation' FROM mdm_commands.action_runs WHERE tenant_id='{}' AND id='{}'", case_tenant(), accepted.1["runId"].as_str().unwrap()))?.trim() == "confirmed" { break; }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    }).await??;
-    local["revision"] = json!(6);
-    ensure!(claim_with_context(&f.router, &local).await?.0 == StatusCode::OK);
+    let blocked=claim_with_context(&f.router,&changed).await?;
+    ensure!(blocked.0==StatusCode::OK && blocked.1["task"].is_null());
+    local["revision"]=json!(6);
+    let original=tokio::time::timeout(Duration::from_secs(30),async {loop {let response=claim_with_context(&f.router,&local).await?;ensure!(response.0==StatusCode::OK);if response.1["task"]["payload"]["task"]["taskId"]==accepted.1["runId"] {break Ok::<_,anyhow::Error>(response.1["task"].clone());}tokio::time::sleep(Duration::from_millis(50)).await;}}).await??;
+    let original=&original;
+    for event in [json!({"kind":"received"}),json!({"kind":"start"}),json!({"kind":"result","exitCode":0,"quality":"complete","collectedAt":crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,"output":{"version":"1.2","healthy":true},"diagnostics":{"stdout":"","stderr":"","durationMs":1,"executedAt":crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,"failure":null}})] {ensure!(event_with_context(&f.router,original,&local,event).await?.0==StatusCode::OK);}
     // Each Start checks the exact effect target bound at request and Offer, while the broker remains available.
     for failure in ["identity", "session", "helper", "user"] {
         let (id, policy) = publish_definition(&mut f, value.clone()).await?;
@@ -796,8 +747,8 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
         .filter(|g| g.operation != Permission::InventoryRead)
         .cloned()
         .collect();
-    for grants in [no_read, f.grants.clone()] {
-        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
+    {
+        crate::test_support::identity::change_grants(case_tenant(), &f.author_id, no_read).await?;
         let denied = call(&f, Method::GET, &path, None, true, true).await?;
         ensure!(
             denied.0 == StatusCode::OK
@@ -807,7 +758,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             "read denied without leakage: {denied:?}"
         );
     }
-    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, full).await?;
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
     let permitted = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
         permitted.0 == StatusCode::OK
@@ -815,7 +766,7 @@ async fn sensitive_status_rechecks_read_permissions_without_leaking_diagnostics(
             && permitted.1["result"]["evidence"]["diagnostics"]["stdout"] == canary
             && permitted.1["result"]["evidence"]["diagnostics"]["stderr"] == canary
     );
-    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.clone())
+    crate::test_support::identity::change_grants(case_tenant(), &f.author_id, f.grants.iter().filter(|g|g.operation != Permission::InventoryRead).cloned().collect())
         .await?;
     let denied = call(&f, Method::GET, &path, None, true, true).await?;
     ensure!(
@@ -1121,16 +1072,10 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             .0
             == StatusCode::OK
     );
-    ensure!(
-        task_event_request(
-            &f.router,
-            &grouped,
-            Uuid::new_v4(),
-            &mut json!({"kind":"start"})
-        )
-        .await?
-        .0 == StatusCode::FORBIDDEN
-    );
+    task_event(&f.router,&grouped,json!({"kind":"received"})).await?;
+    task_event(&f.router,&grouped,json!({"kind":"start"})).await?;
+    task_event(&f.router,&grouped,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true}})).await?;
+    ensure!(call(&f,Method::POST,INVOKE,Some(request(*group_policy,policy,json!({}))),true,true).await?.0==StatusCode::FORBIDDEN);
     for index in [2, 3] {
         let (id, policy) = &published[index];
         ensure!(
@@ -1146,7 +1091,7 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
             .0 == StatusCode::ACCEPTED
         );
     }
-    // Hold both offers first; revocation must forbid the unstarted one and permit safe result intake on the started one.
+    // Accepted work survives browser logout; device/Attempt authority remains required.
     let one = claim(&f.router).await?;
     task_event(&f.router, &one, json!({"kind":"received"})).await?;
     task_event(&f.router, &one, json!({"kind":"start"})).await?;
@@ -1168,16 +1113,9 @@ async fn explicit_access_uses_live_identity_membership_and_device_subjects_witho
         .authority
         .revoke_current_session(proof, crate::identity::deadline())
         .await?;
-    ensure!(
-        task_event_request(
-            &f.router,
-            &two,
-            Uuid::new_v4(),
-            &mut json!({"kind":"start"})
-        )
-        .await?
-        .0 == StatusCode::FORBIDDEN
-    );
+    task_event(&f.router,&two,json!({"kind":"received"})).await?;
+    task_event(&f.router,&two,json!({"kind":"start"})).await?;
+    task_event(&f.router,&two,json!({"kind":"result","exitCode":0,"quality":"complete","output":{"ok":true}})).await?;
     task_event(
         &f.router,
         &one,
@@ -1634,7 +1572,8 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
             ),
         )
     };
-    ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
+    let mut unavailable=local.clone();unavailable["revision"]=json!(2);unavailable["userHelper"]=json!(false);
+    ensure!(poll(unavailable.clone()).await?.0 == StatusCode::OK);
     let accepted = software_self_service_call(
         &f.router,
         &f.credential,
@@ -1645,6 +1584,9 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     )
     .await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
+    ensure!(poll(unavailable).await?.1["task"].is_null());
+    local["revision"]=json!(3);
+
     let stack = software::worker(&f.base, f.execution.clone()).await?;
     let task = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -1660,6 +1602,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
         }
     })
     .await??;
+    ensure!(task["payload"]["task"]["taskId"]==accepted.1["runId"]);
     ensure!(
         task["payload"]["task"]["steps"][0]["target"]
             == json!({"kind":"user","identity":sid,"sessionId":session})
@@ -1676,7 +1619,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
                 == StatusCode::OK
         );
     }
-    local["revision"] = json!(2);
+    local["revision"] = json!(local["revision"].as_u64().unwrap()+1);
     local["interactiveUser"]["sessionId"] = json!(Uuid::new_v4());
     ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
     let hidden = software_self_service_call(
@@ -1714,7 +1657,7 @@ async fn software_unknown_survives_same_account_relogin_and_keeps_other_accounts
     )
     .await?;
     ensure!(old_state.0 == StatusCode::OK && old_state.1["state"]["execution"] == "unknown");
-    local["revision"] = json!(3);
+    local["revision"] = json!(local["revision"].as_u64().unwrap()+1);
     local["interactiveUser"]["identity"] = json!("S-1-5-21-1-2-3-1002");
     ensure!(poll(local.clone()).await?.0 == StatusCode::OK);
     ensure!(

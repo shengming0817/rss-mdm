@@ -23,6 +23,7 @@ fn to_wire_sensitivity(value: d::Sensitivity) -> w::Sensitivity {
     match value {
         d::Sensitivity::Standard => w::Sensitivity::Standard,
         d::Sensitivity::Sensitive => w::Sensitivity::Sensitive,
+        d::Sensitivity::Secret => w::Sensitivity::Secret,
     }
 }
 fn to_wire_type(value: &d::ValueType) -> Result<w::ValueType, Error> {
@@ -135,6 +136,7 @@ fn to_domain_sensitivity(value: w::Sensitivity) -> d::Sensitivity {
     match value {
         w::Sensitivity::Standard => d::Sensitivity::Standard,
         w::Sensitivity::Sensitive => d::Sensitivity::Sensitive,
+        w::Sensitivity::Secret => d::Sensitivity::Secret,
     }
 }
 fn to_domain_type(value: &w::ValueType) -> d::ValueType {

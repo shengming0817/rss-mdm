@@ -221,7 +221,6 @@ async fn expired_guard_after_lock_rejects_mutation_and_replay() {
     for replay in [false, true] {
         let id = Uuid::new_v4();
         let command = GroupCommand::Group {
-            sensitive: true,
             id,
             change: Box::new(group_operation(
                 0,
@@ -315,7 +314,6 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     execute(
         &first,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 0,
@@ -335,7 +333,6 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     let accepted = execute(
         &first,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(
                 1,
@@ -390,7 +387,6 @@ async fn result_cursors_survive_instances_restart_and_group_deletion() {
     execute(
         &restarted,
         &GroupCommand::Group {
-            sensitive: true,
             id: group,
             change: Box::new(group_operation(2, GroupChange::Delete)),
         },

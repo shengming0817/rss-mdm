@@ -51,7 +51,7 @@ impl ExecutionService {
         audit: &RequestAudit,
     ) -> Result<Value> {
         require_tenant(self.tenant, proof)?;
-        crate::transaction::lock_authority(self, tx).await?;
+
         let action = input.action.kind();
         let auth = storage::authorized_native(tx, proof, device, &[action.permission()]).await?;
         storage::lock(tx, &format!("request:{}", input.operation_id)).await?;
@@ -461,7 +461,7 @@ impl ExecutionService {
         }
         crate::transaction::run(&self.audit_store,&self.runtime,self.tenant,audit,(self,proof,device,id,change,reauthorization,audit),|ctx,tx|Box::pin(async move {
             let (service,proof,device,id,change,reauthorization,audit) = *ctx;
-            crate::transaction::lock_authority(service,tx).await?;
+
             let reauthorize = reauthorization.is_some();
             let op=storage::load(tx,&service.protection,id).await?;
             if op.device != device { return Err(Error::Forbidden.into()); }

@@ -255,7 +255,6 @@ async fn group_write(
                 expected_revision: change.expected_revision,
                 input: change.input,
             }),
-            sensitive: assets::ReadScope::from_proof(&auth.proof)?.sensitive,
         },
     )
     .await

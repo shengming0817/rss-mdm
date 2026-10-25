@@ -1,6 +1,5 @@
 //! Frozen Agent installation contracts and checked native package inputs.
 use crate::Error;
-use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::Platform;
 use rss_mdm_policy::{SoftwareTarget, schedule::Schedule};
 use rss_mdm_resource as resource;
@@ -164,8 +163,7 @@ pub struct FrozenInstall {
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
     pub packages: BTreeMap<SoftwareTarget, Package>,
-    pub deploy: OperationAuthority,
-    pub enrollment: OperationAuthority,
+    pub actor: rss_mdm_authorization_service::Actor,
 }
 #[cfg(test)]
 #[path = "../tests/agent_install_unit.rs"]
@@ -194,7 +192,6 @@ fn apple_install(
 }
 
 use crate::frozen::Frozen;
-use rss_mdm_authorization_service::Permission;
 use rss_mdm_policy::Architecture;
 use sqlx::Row;
 pub fn resource_target(target: SoftwareTarget) -> (resource::Platform, resource::Architecture) {
@@ -213,17 +210,13 @@ pub fn resource_target(target: SoftwareTarget) -> (resource::Platform, resource:
 
 /// Durable Policy authority survives administrator logout and rechecks every actual grant.
 pub(crate) async fn authorized_on(
-    source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
     authority: &crate::authority::ExecutionAuthority,
-    now: i64,
 ) -> std::result::Result<bool, Error> {
     let crate::authority::ExecutionAuthority::AgentInstall {
         tenant,
         policy,
         version,
-        device,
-        operation,
         package,
         ..
     } = authority
@@ -231,7 +224,7 @@ pub(crate) async fn authorized_on(
         return Err(Error::Malformed);
     };
     use crate::database::db;
-    let row=sqlx::query("SELECT v.frozen,(p.state='enabled') AND p.current_version=v.id AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
+    let row=sqlx::query("SELECT v.frozen,(p.state='enabled') AS live,(p.definition->>'scope')::uuid AS scope FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.policy)=(p.tenant_id,p.id) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND v.id=$3")
         .bind(tenant).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
     let Some(row) = row else {
         return Ok(false);
@@ -239,51 +232,11 @@ pub(crate) async fn authorized_on(
     if !row.try_get::<bool, _>("live").map_err(db)? {
         return Ok(false);
     }
-    let Frozen::AgentInstall { action } =
+    let Frozen::AgentInstall { .. } =
         serde_json::from_value(row.try_get("frozen").map_err(db)?).map_err(|_| Error::Malformed)?
     else {
         return Ok(false);
     };
-    if !action
-        .deploy
-        .valid(c, Permission::SoftwareDeploy, now)
-        .await?
-        || !action
-            .enrollment
-            .valid(c, Permission::Enrollment, now)
-            .await?
-    {
-        return Ok(false);
-    }
-    if !source
-        .policy_readable_on(
-            c,
-            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-            *version,
-        )
-        .await?
-    {
-        return Ok(false);
-    }
-    // Original installation authority survives Scope exit after dispatch, until its deadline.
-    if !dispatched_on(c, tenant, *operation).await? {
-        let admission = source
-            .admission_on(
-                c,
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-                row.try_get("scope").map_err(db)?,
-                rss_mdm_inventory::Channel::Mdm,
-                device,
-            )
-            .await?;
-        if !matches!(
-            admission,
-            crate::source_authority::ScopeAdmission::Eligible { .. }
-                | crate::source_authority::ScopeAdmission::Pending
-        ) {
-            return Ok(false);
-        }
-    }
     package
         .admitted_on(
             c,
@@ -375,7 +328,6 @@ pub async fn absent_on(
 
 /// Applicability gates a new side effect. Receipt settlement only rechecks its durable authority.
 pub async fn dispatch_ready_on(
-    source: &dyn crate::source_authority::SourceAuthority,
     c: &mut sqlx::PgConnection,
     tenant: &str,
     version: Uuid,
@@ -386,23 +338,8 @@ pub async fn dispatch_ready_on(
     if dispatched_on(c, tenant, operation).await? {
         return Ok(true);
     }
-    let scope: Option<Uuid> = sqlx::query_scalar("SELECT (p.definition->>'scope')::uuid FROM mdm_policy.policies p WHERE p.tenant_id=$1::uuid AND p.current_version=$2 AND (p.state='enabled')")
-        .bind(tenant).bind(version).fetch_optional(&mut *c).await.map_err(db)?;
-    let Some(scope) = scope else {
-        return Ok(false);
-    };
-    if !matches!(
-        source
-            .admission_on(
-                c,
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-                scope,
-                rss_mdm_inventory::Channel::Mdm,
-                device
-            )
-            .await?,
-        crate::source_authority::ScopeAdmission::Eligible { .. }
-    ) {
+    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.versions v JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) WHERE v.tenant_id=$1::uuid AND v.id=$2 AND p.state='enabled')").bind(tenant).bind(version).fetch_one(&mut *c).await.map_err(db)?;
+    if !enabled {
         return Ok(false);
     }
     let frozen: serde_json::Value = sqlx::query_scalar(
@@ -427,41 +364,6 @@ pub async fn dispatch_ready_on(
     let identity = package.detection_identity();
     if !evidence.matches(&identity) {
         return Ok(false);
-    }
-    let expected = serde_json::to_vec(package).map_err(|_| Error::Malformed)?;
-    let mut after = Uuid::nil();
-    loop {
-        let rows = source
-            .candidates_on(
-                c,
-                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?,
-                device,
-                crate::source_authority::CandidateKind::AgentInstall,
-                after,
-            )
-            .await?;
-        let more = rows.has_more;
-        after = rows.scanned_after;
-
-        for row in rows.items {
-            let Frozen::AgentInstall { action: other } =
-                serde_json::from_value(sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *c).await.map_err(db)?)
-                    .map_err(|_| Error::Malformed)?
-            else {
-                return Err(Error::Malformed);
-            };
-            if let Some(package) = other.packages.get(&target)
-                && (!matches!(
-                    row.admission,
-                    crate::source_authority::ScopeAdmission::Eligible { .. }
-                ) || serde_json::to_vec(package).map_err(|_| Error::Malformed)? != expected)
-            {
-                return Ok(false);
-            }
-        }
-        if !more {
-            break;
-        }
     }
     Ok(true)
 }

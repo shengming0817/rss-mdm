@@ -27,8 +27,7 @@ impl Planning {
         }
         self.runtime.local_tx_with_context(self.tenant,deadline(),(self,window),|(service,window),tx|Box::pin(async move {
             service.audit_store.bind_in(tx).await.map_err(PgError::from)?;
-            let owner_tenant=tx.tenant_id();
-            tx.with_connection(move|c|Box::pin(async move {rss_mdm_inventory_postgres::lock_watermark_in(c,owner_tenant).await})).await?;
+
             let tenant=tx.tenant_id().to_string();
             let expected=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar::<_,bool>("SELECT relation_after=$2 AND relation_cursor IS NOT DISTINCT FROM $3 AND relation_through IS NOT DISTINCT FROM $4 AND relation_page_after IS NOT DISTINCT FROM $5 AND relation_page_through IS NOT DISTINCT FROM $6 FROM mdm_planning.asset_dispatch WHERE tenant_id=$1::uuid FOR UPDATE").bind(tenant).bind(after).bind(cursor).bind(through).bind(page_after).bind(page_through).fetch_one(c).await})).await?;
             if !expected {return Ok(0);}

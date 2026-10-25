@@ -1,4 +1,4 @@
-//! Device owner freezes relation identities under the original asset/Audit fence.
+//! Device owner freezes relation identities and validates actual endpoint authority.
 //! ref: kube-rs kube-runtime/src/reflector/store.rs@1be7f0d96c3b211680b173c1fc83aa6ad4adba34
 use rss_mdm_inventory_service::objects::ObjectRef;
 use rss_mdm_inventory_service::objects::*;
@@ -14,13 +14,12 @@ impl PlanningObjects {
     }
 
     /// Current verified paired object for a device-bound authentication ceremony. The input
-    /// projection is read under the same watermark fence and revalidated by this owner.
+    /// projection is read from a complete snapshot and revalidated by this owner.
     pub async fn paired_in(
         c: &mut PgConnection,
         tenant: TenantId,
         device: &str,
     ) -> Result<DeviceObject, sqlx::Error> {
-        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
         let rows: Vec<serde_json::Value> = sqlx::query_scalar("WITH current AS (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=$1::uuid AND s.watermark>=k.identity_watermark AND s.relation_revision=k.relation_revision AND s.phase='sealed' ORDER BY s.watermark DESC LIMIT 1) SELECT o.input FROM mdm_devices.input_objects o JOIN current s ON s.id=o.snapshot WHERE o.tenant_id=$1::uuid AND o.devices @> ARRAY[$2::text] AND o.object LIKE 'association:%' LIMIT 2")
             .bind(tenant.to_string()).bind(device).fetch_all(&mut *c).await?;
         if rows.len() != 1 {
@@ -57,7 +56,6 @@ impl ObjectReader for PlanningObjects {
         device: &'a str,
     ) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
             let mut devices:Vec<String>=sqlx::query_scalar("SELECT peer.device FROM mdm_devices.members anchor JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(anchor.tenant_id,anchor.association_id) JOIN mdm_devices.members peer ON(peer.tenant_id,peer.association_id)=(a.tenant_id,a.id) WHERE anchor.tenant_id=$1::uuid AND anchor.device=$2 AND NOT anchor.released AND NOT peer.released AND a.state<>'revoked' ORDER BY peer.device LIMIT 3").bind(tenant.to_string()).bind(device).fetch_all(c).await?;
             if devices.len() > 2 {
                 return Err(storage("association effect boundary"));

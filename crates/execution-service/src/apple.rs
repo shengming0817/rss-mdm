@@ -182,15 +182,7 @@ impl ExecutionService {
                     let (service, apple, p, exchange, audit, partitions) = ctx;
                     let service = *service;
                     let p = *p;
-                    let tenant = service.tenant.to_string();
-                    let instance = service.instance.clone();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
-                        })
-                    })
-                    .await??;
-                    crate::transaction::lock(tx).await?;
+
                     actions::native_recovery::lock_device(tx, p.device()).await?;
                     crate::transaction::prepare_audit_in(
                         &service.audit_store,
@@ -582,15 +574,7 @@ impl ExecutionService {
                     let (service, p, exchange, audit, partitions) = ctx;
                     let service = *service;
                     let p = *p;
-                    let tenant = service.tenant.to_string();
-                    let instance = service.instance.clone();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
-                        })
-                    })
-                    .await??;
-                    crate::transaction::lock(tx).await?;
+
                     actions::native_recovery::lock_device(tx, p.device()).await?;
                     crate::transaction::prepare_audit_in(
                         &service.audit_store,

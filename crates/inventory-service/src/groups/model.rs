@@ -42,3 +42,12 @@ pub struct GroupStart {
     pub automatic: bool,
     pub at: Timepoint,
 }
+
+/// Accepted definition edit; the existing automation job owns its durable lifetime.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DefinitionEdit {
+    pub group: Uuid,
+    pub change: Operation<GroupChange>,
+
+    pub at: i64,
+}

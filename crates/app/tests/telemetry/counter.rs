@@ -247,8 +247,8 @@ pub(super) async fn quality_and_sensitive_reads(f: &mut Fixture) -> Result<()> {
                 .call(&f.router, Method::POST, path, Some(body))
                 .await?
                 .0
-                == StatusCode::FORBIDDEN,
-            "sensitive read permitted: {path}"
+                == StatusCode::OK,
+            "Sensitive classification added a read permission: {path}"
         );
     }
     Ok(())
@@ -296,12 +296,23 @@ async fn extension_replay(f: &Fixture, body: &Value) -> Result<()> {
 
 async fn upload_counter_readings(
     f: &mut Fixture,
-    policy: &Value,
+    _policy: &Value,
     config: &wire::SignedTelemetryConfiguration,
     field: &rss_mdm_inventory::FieldDefinition,
     start: i64,
 ) -> Result<()> {
-    let make = |reading: Value, offset: i64| json!({"batchId":Uuid::new_v4(),"policy":policy["id"],"policyVersion":policy["versionId"],"binding":config.configuration.binding,"observations":[{"id":Uuid::new_v4(),"sequence":offset,"observedAt":start+offset*1_000_000,"values":{"custom.telemetry_counter":reading}}]});
+    // Valid original material with a fixture-issued lease covering the historical samples.
+    use base64::Engine;
+    let mut config = config.clone();
+
+    config.configuration.issued_at = start.div_euclid(1_000_000);
+    config.configuration.expires_at = config.configuration.issued_at + 300;
+    config.signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        f.key
+            .sign(&config.configuration.signing_bytes(&config.key_id)?)
+            .as_ref(),
+    );
+    let make = |reading: Value, offset: i64| json!({"batchId":Uuid::new_v4(),"configuration":config,"observations":[{"id":Uuid::new_v4(),"sequence":offset,"observedAt":start+offset*1_000_000,"values":{"custom.telemetry_counter":reading}}]});
     for (offset, reading) in [
         (
             1,

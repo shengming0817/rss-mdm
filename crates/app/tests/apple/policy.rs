@@ -365,14 +365,14 @@ impl Fixture {
             )
             .await?;
         ensure!(refused.0 == StatusCode::FORBIDDEN);
-        ensure!(self.operation(op).await?["authorization"] == "blocked");
+        ensure!(self.operation(op).await?["authorization"] == "authorized");
         ensure!(
             self.commands
                 .service
                 .apple_wake(&self.apple.as_ref().channel.push_fixture().configuration)
                 .await?
-                .is_none(),
-            "revoked authorization triggered APNs"
+                .is_some(),
+            "accepted work lost its wake after author permission change"
         );
         let cancelled = self
             .browser

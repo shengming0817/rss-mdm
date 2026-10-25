@@ -148,12 +148,6 @@ pub trait SourceAuthority: Send + Sync {
         device: &'a str,
         evidence: &'a [DeviceObject],
     ) -> Pending<'a, bool>;
-    fn policy_readable_on<'a>(
-        &'a self,
-        connection: &'a mut PgConnection,
-        tenant: TenantId,
-        version: Uuid,
-    ) -> Pending<'a, bool>;
     fn native_interest_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,

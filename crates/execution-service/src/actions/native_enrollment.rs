@@ -29,7 +29,7 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, p, task, input, audit) = *ctx;
-                    crate::transaction::lock_authority(s, tx).await?;
+
                     super::native_recovery::lock_device(tx, p.device()).await?;
                     agent::principal(s, tx, p).await?;
                     let run = db::load_run(tx, task).await?;
@@ -68,7 +68,7 @@ impl ExecutionService {
                     let principal = p.clone();
                     let operation = input.operation_id;
                     let attempt = input.attempt_id;
-                    let authority = policy.frozen.grant;
+                    let actor = policy.frozen.actor;
                     let deadline = run.deadline;
                     crate::transaction::prepare_audit_in(&s.audit_store,tx, audit, &[]).await?;
                     let (receipt, replay) = tx
@@ -82,7 +82,7 @@ impl ExecutionService {
                                         attempt,
                                         operation,
                                         password: &password,
-                                        authority: &authority,
+                                        actor: &actor,
                                         source,
                                         deadline,
                                     },
@@ -181,57 +181,6 @@ impl AgentPolicyAuthority for ExecutionService {
             enrollment::agent_policy::current_source_in(c, self.tenant, d.id).await?;
             let row=sqlx::query("SELECT l.authority,r.invocation,r.device,r.policy_version,p.id AS policy,p.definition,r.state AS task_state,r.deadline,(p.state='enabled') AS live FROM mdm_access.agent_native_enrollments l JOIN mdm_commands.action_runs r ON(r.tenant_id,r.id,r.registration,r.generation)=(l.tenant_id,l.task,l.source_registration,l.source_generation) JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(v.tenant_id,v.policy) JOIN mdm_access.registrations g ON(g.tenant_id,g.id,g.generation)=(l.tenant_id,l.source_registration,l.source_generation) WHERE l.tenant_id=$1::uuid AND l.request=$2 AND g.state='active' AND g.channel='agent' AND EXISTS(SELECT 1 FROM mdm_access.credentials k WHERE k.tenant_id=g.tenant_id AND k.registration=g.id AND k.state='active')")
                 .bind(&d.tenant).bind(d.id).fetch_optional(&mut *c).await.map_err(|_|E::Storage)?.ok_or(E::Forbidden)?;
-            let policy = row.try_get::<Uuid, _>("policy").map_err(|_| E::Storage)?;
-            let definition: rss_mdm_policy::Definition =
-                serde_json::from_value(row.try_get("definition").map_err(|_| E::Storage)?)
-                    .map_err(|_| E::Corrupt)?;
-            if let Some(value) = row
-                .try_get::<Option<serde_json::Value>, _>("invocation")
-                .map_err(|_| E::Storage)?
-            {
-                let invocation: crate::self_service::Invocation =
-                    serde_json::from_value(value).map_err(|_| E::Corrupt)?;
-                if invocation
-                    .qualified_on(c, policy, self.tenant, &self.instance, &self.sessions)
-                    .await
-                    .map_err(|e| match e {
-                        crate::transaction::Fault::Request(
-                            Error::Unauthorized | Error::Forbidden,
-                        ) => E::Forbidden,
-                        _ => E::Storage,
-                    })?
-                    .is_none()
-                {
-                    return Err(E::Forbidden);
-                }
-            }
-            let version = row
-                .try_get::<Uuid, _>("policy_version")
-                .map_err(|_| E::Storage)?;
-            if !self
-                .source
-                .policy_readable_on(c, self.tenant, version)
-                .await
-                .map_err(|_| E::Storage)?
-            {
-                return Err(E::Forbidden);
-            }
-            let device = row.try_get::<String, _>("device").map_err(|_| E::Storage)?;
-            if !matches!(
-                self.source
-                    .admission_on(
-                        c,
-                        self.tenant,
-                        definition.scope,
-                        rss_mdm_inventory::Channel::Agent,
-                        &device
-                    )
-                    .await
-                    .map_err(|_| E::Storage)?,
-                crate::source_authority::ScopeAdmission::Eligible { .. }
-            ) {
-                return Err(E::Forbidden);
-            }
             let state: serde_json::Value = row.try_get("task_state").map_err(|_| E::Storage)?;
             let now: i64 =
                 sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
@@ -243,15 +192,6 @@ impl AgentPolicyAuthority for ExecutionService {
                 || state["cancellation"] != "none"
                 || state["startedAt"].is_null()
                 || state["execution"] == "failed"
-            {
-                return Err(E::Forbidden);
-            }
-            let grant: rss_mdm_authorization_service::OperationAuthority =
-                serde_json::from_value(row.try_get("authority").map_err(|_| E::Storage)?)
-                    .map_err(|_| E::Corrupt)?;
-            if !grant
-                .valid(c, crate::authorization::Permission::Enrollment, now)
-                .await?
             {
                 return Err(E::Forbidden);
             }

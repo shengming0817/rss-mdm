@@ -526,11 +526,6 @@ GRANT SELECT ON TABLE mdm_policy.policies, mdm_policy.versions, mdm_resource.agg
 GRANT EXECUTE ON FUNCTION mdm_planning.scope_admission(uuid,text) TO mdm_access;
 
 
-CREATE TABLE mdm_planning.policy_source_grants (
- tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), version uuid NOT NULL,
- read_grant jsonb NOT NULL, PRIMARY KEY(tenant_id,version),
- FOREIGN KEY(tenant_id,version) REFERENCES mdm_policy.versions(tenant_id,id)
-);
 CREATE TABLE mdm_planning.policy_assignments (
  tenant_id uuid NOT NULL REFERENCES public.mdm_tenants(tenant_id), policy uuid NOT NULL, version uuid NOT NULL,
  entry_revision bigint NOT NULL CHECK(entry_revision>=0),
@@ -542,21 +537,17 @@ CREATE TABLE mdm_planning.policy_assignments (
  FOREIGN KEY(tenant_id,scope_result) REFERENCES mdm_planning.scope_runs(tenant_id,id),
  CHECK((availability='ready')=(reason IS NULL)), CHECK(availability<>'ready' OR target IS NOT NULL)
 );
-ALTER TABLE mdm_planning.policy_source_grants ENABLE ROW LEVEL SECURITY;
-ALTER TABLE mdm_planning.policy_source_grants FORCE ROW LEVEL SECURITY;
 ALTER TABLE mdm_planning.policy_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_planning.policy_assignments FORCE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON mdm_planning.policy_source_grants USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_planning.policy_assignments USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-REVOKE ALL ON mdm_planning.policy_source_grants,mdm_planning.policy_assignments FROM PUBLIC;
-GRANT SELECT,INSERT ON mdm_planning.policy_source_grants,mdm_planning.policy_assignments TO mdm_flow_runtime;
+REVOKE ALL ON mdm_planning.policy_assignments FROM PUBLIC;
+GRANT SELECT,INSERT ON mdm_planning.policy_assignments TO mdm_flow_runtime;
 GRANT UPDATE(input,availability,reason,target,scope_result,entry_revision) ON mdm_planning.policy_assignments TO mdm_flow_runtime;
-GRANT SELECT ON mdm_planning.policy_source_grants,mdm_planning.policy_assignments TO mdm_command_runtime;
+GRANT SELECT ON mdm_planning.policy_assignments TO mdm_command_runtime;
 
 COMMIT;
 
 -- Native Agent registration rechecks only the frozen source read authority.
-GRANT SELECT ON mdm_planning.policy_source_grants TO mdm_access;
 
 ALTER TABLE mdm_planning.scope_channel_results ADD FOREIGN KEY(tenant_id,run) REFERENCES mdm_planning.scope_runs(tenant_id,id);
 GRANT SELECT,INSERT ON mdm_planning.scope_channel_results TO mdm_flow_runtime;

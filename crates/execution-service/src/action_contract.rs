@@ -40,13 +40,11 @@ impl FrozenAction {
 pub struct FrozenSoftwareAction {
     pub native_packages: BTreeMap<rss_mdm_policy::SoftwareTarget, crate::native_software::Package>,
     pub channel: rss_mdm_policy::SoftwareChannel,
-    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub delivery: rss_mdm_policy::SoftwareDelivery,
     pub resource: String,
     pub version: String,
     pub variants: BTreeMap<rss_mdm_policy::SoftwareTarget, String>,
     pub resource_digest: [u8; 32],
-    pub lifecycle_binding: [u8; 32],
     pub intent: rss_mdm_policy::SoftwareIntent,
     pub schedule: Schedule,
     pub run_lifetime_seconds: u32,
@@ -57,7 +55,6 @@ pub struct FrozenNativeCollection {
     pub input: ExecutionInput,
     pub definition: r::NativeCollectionDefinition,
     pub windows_plan: Option<rss_mdm_windows_mdm::native::collection::Plan>,
-    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub collection: rss_mdm_inventory::CollectionDefinition,
     pub resource_digest: [u8; 32],
 }
@@ -102,7 +99,6 @@ impl FrozenNativeCollection {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct FrozenAgentCollection {
     pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
-    pub grants: BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
     pub input: ExecutionInput,
     pub resource: wire::TaskResource,
     pub definition: r::AgentCollectionDefinition,
@@ -125,43 +121,14 @@ impl FrozenAgentCollection {
         &self,
         tx: &mut rss_transactional_messaging_postgres::PgTransaction<'_>,
         target: &crate::Target,
-        now: i64,
+        _now: i64,
     ) -> crate::transaction::Result<bool> {
-        let Some(grants) = self
-            .grants
-            .get(&target.device)
-            .or_else(|| self.grants.get("*"))
-        else {
-            return Ok(false);
-        };
         let tenant = tx.tenant_id().to_string();
         let registration = target.registration;
         let enabled:bool=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND source='agent.native' AND enabled)").bind(tenant).bind(registration).fetch_one(c).await})).await?;
         if !enabled {
             return Ok(false);
         }
-        let grants = grants.clone();
-        let permissions = self.permissions();
-        tx.with_connection(move |c| {
-            Box::pin(async move {
-                for permission in permissions {
-                    let mut allowed = false;
-                    for grant in &grants {
-                        if grant.valid(c, permission, now).await.map_err(|_| {
-                            sqlx::Error::Protocol("native collection authority".into())
-                        })? {
-                            allowed = true;
-                            break;
-                        }
-                    }
-                    if !allowed {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            })
-        })
-        .await
-        .map_err(Into::into)
+        Ok(true)
     }
 }

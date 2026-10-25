@@ -5,7 +5,7 @@ WITH RECURSIVE walk(id,path) AS (
  (SELECT DISTINCT ON(g.id) g.id,w.path||g.id FROM walk w
  JOIN mdm_assets.group_selections s ON s.tenant_id=$1::uuid AND s.group_ids @> ARRAY[w.id]
  JOIN mdm_group.groups g ON (g.tenant_id,g.id,g.rule_version)=(s.tenant_id,s.group_id,s.rule_version)
- WHERE NOT g.deleted AND NOT g.id=ANY(w.path) AND cardinality(w.path)<=16
+ WHERE NOT g.deleted AND NOT g.id=ANY(w.path)
  ORDER BY g.id,w.path||g.id)
 ), paths AS MATERIALIZED (
  SELECT DISTINCT ON(id,cardinality(path)=2) id,path
@@ -53,13 +53,7 @@ WITH RECURSIVE walk(id,path) AS (
    (b.input_version IS NULL OR b.input_version NOT LIKE 'objects:%' OR b.input_version ~ '^objects:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}:[0-9]+:[0-9a-fA-F]{64}$')
    AND EXISTS(SELECT FROM mdm_planning.source_heads WHERE tenant_id=g.tenant_id AND id='group-definition.'||g.id::text)
    AND EXISTS(SELECT FROM mdm_planning.source_heads WHERE tenant_id=g.tenant_id AND id='group-authority.'||g.id::text) AS valid,
-   mdm_planning.group_current(g.id) AND CASE WHEN b.input_version LIKE 'objects:%' THEN
-   EXISTS(SELECT FROM mdm_devices.input_snapshots s WHERE s.tenant_id=g.tenant_id
-    AND s.id=split_part(b.input_version,':',2)::uuid AND s.phase='sealed'
-    AND s.watermark=split_part(b.input_version,':',3)::bigint AND s.version=split_part(b.input_version,':',4)
-    AND s.watermark=coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=g.tenant_id),0)
-    AND s.version=encode(sha256(convert_to(s.watermark::text||':'||coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=g.tenant_id),0)::text,'UTF8')),'hex'))
-   ELSE true END AS current
+   mdm_planning.group_current(g.id) AS current
  FROM needed_groups n JOIN mdm_group.groups g ON g.tenant_id=$1::uuid AND g.id=n.id
  LEFT JOIN mdm_group.member_runs b ON (b.tenant_id,b.id)=(g.tenant_id,g.member_set)
 ), details AS (

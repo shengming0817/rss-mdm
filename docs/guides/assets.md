@@ -316,9 +316,9 @@ Agent 在现有 mTLS runtime 边界读取
 每次调用重新授权；`more` 需要以相同请求继续，`blocked` 表示依赖尚未满足，不能当作成功。
 删除恢复使用原 selection、窗口和 fence；后台存储继续保护恢复期、汇总边界与幂等承诺。
 
-Agent 从 runtime 的 `GET /telemetry/configurations` 发现当前授权分配，再获取精确 Policy/version 配置。目录是有界完整集合，超出容量明确失败，不把部分结果当作撤销清单；当前最多扫描 256 个启用的遥测 Policy。目录中的 `supported=false` 表示现有能力或环境不满足，不能降级执行。配置含原生计划或脚本字面量输入、显式映射、字段定义与配置绑定；上传必须原样回传绑定。脚本内容从该精确配置的 `/content` 路径获取，重新检查注册、Scope 和发布者权限并验证字节摘要。
+Agent 从 runtime 的 `GET /telemetry/configurations` 发现当前授权分配，再获取精确 Policy/version 配置。目录是有界完整集合，超出容量明确失败，不把部分结果当作撤销清单；当前最多扫描 256 个启用的遥测 Policy。目录中的 `supported=false` 表示现有能力或环境不满足，不能降级执行。配置含原生计划或脚本字面量输入、显式映射、字段定义与配置绑定；上传为 `{batchId, configuration: SignedTelemetryConfiguration, observations}`，原样保存并携带签名配置，不再重复提交 policy/policyVersion/binding。脚本内容从该精确配置的 `/content` 路径获取，检查当前注册、配置取得资格和字节摘要。
 
-Profile 参数经精确模板校验，不做文本插值；当前设备遥测仅接受 Device/System 模板。临时提频到达 UTC 到期时间后恢复正常周期，不因重新拉取配置而续期。历史补传同时受 Profile backfill 与字段绑定保留期限约束；旧定义继续按原版本解释。
+Profile 参数经精确模板校验，不做文本插值；当前设备遥测仅接受 Device/System 模板。临时提频到达 UTC 到期时间后恢复正常周期，不因重新拉取配置而续期。历史补传同时受 Profile backfill 与字段绑定保留期限约束；采样时间属于原配置有效期，上传可晚于该期限。相同批次先恢复原回执，首次补传按原签名配置及冻结定义解释，旧版本不投成当前配置。普通签名轮换保留 VerifyOnly；显式移出可信集合后不再首次接收该密钥签名的批次，已提交回执与后台投递不受影响。
 
 周期原生性能模板可使用 `windows_performance` / `macos_performance` query，声明对应
 `windows.performance` / `macos.performance` V1 engine；section 为 `cpu`、`memory`、`file_systems` 或 `network`。

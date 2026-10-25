@@ -16,47 +16,34 @@ use uuid::Uuid;
 #[tokio::test]
 #[ignore = "MODULE=windows.management: native template over real SyncML mTLS"]
 async fn native_template_policy_uses_correlated_get_and_collection_run() -> anyhow::Result<()> {
-    template_flow(None, Completion::Snapshot).await
+    template_flow(Completion::Snapshot).await
 }
-#[tokio::test]
-#[ignore = "MODULE=windows.management: template authority before first fragment"]
-async fn template_revocation_before_first_fragment_aborts() -> anyhow::Result<()> {
-    template_flow(Some(false), Completion::Snapshot).await
-}
-#[tokio::test]
-#[ignore = "MODULE=windows.management: template authority between fragments"]
-async fn template_revocation_between_fragments_aborts() -> anyhow::Result<()> {
-    template_flow(Some(true), Completion::Snapshot).await
-}
+
 #[tokio::test]
 #[ignore = "MODULE=windows.management: client abort of a real template run"]
 async fn template_client_abort_cannot_publish_a_snapshot() -> anyhow::Result<()> {
-    template_flow(None, Completion::SessionAbort).await
+    template_flow(Completion::SessionAbort).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: dynamic inventory through SyncML and projection"]
 async fn dynamic_inventory_reenumerates_and_projects() -> anyhow::Result<()> {
-    template_flow(None, Completion::Inventory).await
+    template_flow(Completion::Inventory).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: a missing dynamic child cannot publish an empty list"]
 async fn dynamic_inventory_missing_child_is_partial() -> anyhow::Result<()> {
-    template_flow(None, Completion::MissingChild).await
+    template_flow(Completion::MissingChild).await
 }
 #[tokio::test]
 #[ignore = "MODULE=windows.management: confirmed empty replaces only native inventory"]
 async fn dynamic_empty_preserves_agent_software() -> anyhow::Result<()> {
-    template_flow(None, Completion::EmptyInventory).await
+    template_flow(Completion::EmptyInventory).await
 }
-#[tokio::test]
-#[ignore = "MODULE=windows.management: dynamic leaf replay and continuation recheck grants"]
-async fn dynamic_leaf_replay_and_continuation_revalidate_grants() -> anyhow::Result<()> {
-    template_flow(None, Completion::RevokedInventory).await
-}
+
 #[tokio::test]
 #[ignore = "MODULE=windows.management: expired template cannot continue a large object"]
 async fn expired_template_rejects_more_data() -> anyhow::Result<()> {
-    template_flow(None, Completion::Expired).await
+    template_flow(Completion::Expired).await
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Completion {
@@ -65,17 +52,13 @@ enum Completion {
     Inventory,
     MissingChild,
     EmptyInventory,
-    RevokedInventory,
     SessionAbort,
 }
 #[allow(
     clippy::cognitive_complexity,
     reason = "sequential real protocol and durable recovery assertions shared by T2 scenarios"
 )]
-async fn template_flow(
-    revoke_after_first: Option<bool>,
-    completion: Completion,
-) -> anyhow::Result<()> {
+async fn template_flow(completion: Completion) -> anyhow::Result<()> {
     let request_message = 4;
     let mut host = Host::open().await?;
     host.listen().await?;
@@ -93,10 +76,7 @@ async fn template_flow(
     );
     let agent_source = if matches!(
         completion,
-        Completion::Inventory
-            | Completion::MissingChild
-            | Completion::EmptyInventory
-            | Completion::RevokedInventory
+        Completion::Inventory | Completion::MissingChild | Completion::EmptyInventory
     ) {
         Some(crate::test_support::inventory::seed_source(
             case_device(),
@@ -212,10 +192,7 @@ async fn template_flow(
     })?;
     let template = if matches!(
         completion,
-        Completion::Inventory
-            | Completion::MissingChild
-            | Completion::EmptyInventory
-            | Completion::RevokedInventory
+        Completion::Inventory | Completion::MissingChild | Completion::EmptyInventory
     ) {
         let mut spec = template.spec().clone();
         let builtin = rss_mdm_resource::blueprints::get("windows.software.win32", "1").unwrap();
@@ -233,7 +210,7 @@ async fn template_flow(
     let id = Uuid::new_v4();
     let digest = rss_mdm_resource::Digest::of(&bytes).bytes();
     let scope = Uuid::new_v4();
-    if completion == Completion::Snapshot && revoke_after_first.is_none() {
+    if completion == Completion::Snapshot {
         resource(
             &mut f.browser,
             &f.router,
@@ -289,7 +266,7 @@ async fn template_flow(
     }
     let policy = Uuid::new_v4();
     let now = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
-    let period = if completion == Completion::Snapshot && revoke_after_first.is_none() {
+    let period = if completion == Completion::Snapshot {
         60
     } else {
         3600
@@ -417,10 +394,7 @@ async fn template_flow(
     );
     if matches!(
         completion,
-        Completion::Inventory
-            | Completion::MissingChild
-            | Completion::EmptyInventory
-            | Completion::RevokedInventory
+        Completion::Inventory | Completion::MissingChild | Completion::EmptyInventory
     ) {
         // The request must settle its own result without assistance from recovery.
         crate::test_support::runtime::stop_worker(owner.take()).await?;
@@ -460,7 +434,7 @@ async fn template_flow(
         host.close().await?;
         return Ok(());
     }
-    if revoke_after_first.is_some() || completion == Completion::Expired {
+    if completion == Completion::Expired {
         let run:Uuid=sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND v.policy=$2").bind(case_tenant()).bind(policy).fetch_one(&mut pg).await?;
         if completion == Completion::Expired {
             sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
@@ -471,7 +445,7 @@ async fn template_flow(
             .bind(case_tenant()).bind(run).execute(&mut pg).await?;
             ensure!(changed.rows_affected() == 1);
         }
-        denied_template_result(&peer, &mut pg, packet, run, revoke_after_first).await?;
+        denied_template_result(&peer, &mut pg, packet, run).await?;
         crate::test_support::runtime::stop_worker(owner.take()).await?;
         host.close().await?;
         return Ok(());
@@ -784,7 +758,6 @@ async fn denied_template_result(
     pg: &mut sqlx::PgConnection,
     mut packet: s::Message,
     run: Uuid,
-    after_first: Option<bool>,
 ) -> anyhow::Result<()> {
     for command in &mut packet.commands {
         if let s::Command::Results(result) = command {
@@ -797,38 +770,8 @@ async fn denied_template_result(
             });
         }
     }
-    let revoke = || {
-        crate::test_support::identity::change_grants(
-            case_tenant(),
-            crate::test_support::case::admin(),
-            vec![],
-        )
-    };
-    if after_first == Some(false) {
-        revoke().await?;
-    }
-    let mut response = native::post(&peer.mutual, &peer.url, &packet).await?;
+    let response = native::post(&peer.mutual, &peer.url, &packet).await?;
     ensure!(response.status() == StatusCode::OK);
-    if after_first == Some(true) {
-        let ack = s::decode(&response.bytes().await?, &CodecLimits::default())?;
-        ensure!(
-            ack.commands
-                .iter()
-                .any(|c| matches!(c,s::Command::Status(status) if status.code==213))
-        );
-        revoke().await?;
-        packet.header.message_id += 1;
-        for command in &mut packet.commands {
-            if let s::Command::Results(result) = command {
-                result.items[0].data = Some(rss_mdm_windows_mdm::Secret("-workstation".into()));
-                result.items[0].more_data = false;
-                result.items[0].meta = None;
-            }
-        }
-        packet.final_message = true;
-        response = native::post(&peer.mutual, &peer.url, &packet).await?;
-        ensure!(response.status() == StatusCode::OK);
-    }
     let aborted = s::decode(&response.bytes().await?, &CodecLimits::default())?;
     ensure!(aborted.commands.iter().any(|c| matches!(
         c,
@@ -842,7 +785,7 @@ async fn denied_template_result(
             || matches!(c, s::Command::Get { .. })
     ));
     let failed:bool=sqlx::query_scalar("SELECT result='failed' AND reason='aborted' AND batch IS NULL AND NOT delivery_pending FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await?;
-    ensure!(failed, "revoked template published a result");
+    ensure!(failed, "expired template published a result");
     Ok(())
 }
 
@@ -1038,69 +981,6 @@ async fn dynamic_result(
         );
         let bytes = response.bytes().await?;
         let next = s::decode(&bytes, &CodecLimits::default())?;
-        let leaf_gets: Vec<_> = next
-            .commands
-            .iter()
-            .filter_map(|c| match c {
-                s::Command::Get { id, items, .. } => Some((*id, items[0].target.clone().unwrap())),
-                _ => None,
-            })
-            .collect();
-        if completion == Completion::RevokedInventory
-            && leaf_gets.iter().any(|(_, u)| u.ends_with("/Name"))
-        {
-            crate::test_support::identity::change_grants(
-                case_tenant(),
-                crate::test_support::case::admin(),
-                vec![],
-            )
-            .await?;
-            let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
-            ensure!(
-                !replay.status().is_success(),
-                "revoked dynamic cached leaf was redelivered"
-            );
-            let mut denied = native::report(&peer.message, &leaf_gets, "Exam", 200);
-            denied.header.message_id = next.header.message_id + 1;
-            denied.final_message = false;
-            for c in &mut denied.commands {
-                match c {
-                    s::Command::Status(v) => v.message_ref = next.header.message_id,
-                    s::Command::Results(v) => {
-                        v.message_ref = Some(next.header.message_id);
-                        if v.items[0]
-                            .source
-                            .as_deref()
-                            .is_some_and(|u| u.ends_with("/Name"))
-                        {
-                            v.items[0].more_data = true;
-                            v.items[0].meta = Some(s::Meta {
-                                format: Some("chr".into()),
-                                size: Some(7),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                    _ => (),
-                }
-            }
-            denied.commands.sort_by_key(
-                |c| matches!(c, s::Command::Results(v) if v.items.iter().any(|i| i.more_data)),
-            );
-            let response = native::post(&peer.mutual, &peer.url, &denied).await?;
-            ensure!(response.status() == StatusCode::OK);
-            let response = s::decode(&response.bytes().await?, &CodecLimits::default())?;
-            ensure!(response.commands.iter().any(|c| matches!(
-                c,
-                s::Command::Alert {
-                    alert: s::Alert::SessionAbort,
-                    ..
-                }
-            )));
-            let failed:bool=sqlx::query_scalar("SELECT result='failed' AND sealed_at IS NOT NULL AND NOT delivery_pending AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=$2").bind(case_tenant()).bind(run).fetch_one(&mut *pg).await.context("dynamic sealed result")?;
-            ensure!(failed);
-            return Ok(());
-        }
         let replay = native::post(&peer.mutual, &peer.url, &packet).await?;
         ensure!(replay.status() == StatusCode::OK);
         ensure!(replay.bytes().await? == bytes);

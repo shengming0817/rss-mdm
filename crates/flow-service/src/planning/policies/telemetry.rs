@@ -71,14 +71,9 @@ pub async fn prepare_in(
     ) {
         permissions.push(Permission::ScriptExecute);
     }
-    let grants = permissions
-        .into_iter()
-        .map(|permission| {
-            rss_mdm_authorization_service::OperationAuthority::all_devices(
-                snapshot, proof, permission,
-            )
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for permission in permissions {
+        snapshot.require_all_devices(proof, permission)?;
+    }
     Ok(FrozenProfile {
         resource_digest: template.digest().bytes(),
         profile: definition.clone(),
@@ -99,7 +94,6 @@ pub async fn prepare_in(
             _ => return Err(Error::Malformed.into()),
         },
         source,
-        grants,
     })
 }
 
@@ -112,7 +106,6 @@ pub struct FrozenProfile {
     pub fields: Vec<rss_mdm_inventory::FieldDefinition>,
     pub collector: FrozenCollector,
     pub source: rss_mdm_inventory::Source,
-    pub grants: Vec<rss_mdm_authorization_service::OperationAuthority>,
 }
 /// Resolve the current assignment and recheck live Scope and author authority on each use.
 pub async fn resolve_on(
@@ -125,10 +118,6 @@ pub async fn resolve_on(
     use rss_mdm_execution_service::source_authority::{Channel, ScopeAdmission, SourceAuthority};
     use sqlx::Row;
     let tenant = planning.tenant;
-    // Inventory publication takes this owner fence before author, Policy and source locks.
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?;
     let row = sqlx::query("SELECT p.definition,v.frozen FROM mdm_policy.policies p JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(p.tenant_id,p.current_version) WHERE p.tenant_id=$1::uuid AND p.id=$2 AND p.current_version=$3 AND p.state='enabled' AND v.action_kind='telemetry_profile'")
         .bind(tenant.to_string()).bind(policy).bind(version).fetch_optional(&mut *c).await.map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?.ok_or(Error::Forbidden)?;
     let definition: rss_mdm_policy::Definition =
@@ -137,29 +126,6 @@ pub async fn resolve_on(
     let frozen: FrozenProfile =
         serde_json::from_value(row.try_get("frozen").map_err(|_| Error::Malformed)?)
             .map_err(|_| Error::Malformed)?;
-    let now: i64 = sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
-        .fetch_one(&mut *c)
-        .await
-        .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?;
-    let mut permissions = vec![Permission::InventoryCollect, Permission::InventoryRead];
-    if matches!(
-        frozen.source,
-        rss_mdm_inventory::Source::AgentScript | rss_mdm_inventory::Source::AgentOsquery
-    ) {
-        permissions.push(Permission::ScriptExecute);
-    }
-    if permissions.len() != frozen.grants.len() {
-        return Err(Error::Forbidden);
-    }
-    for (permission, grant) in permissions.into_iter().zip(&frozen.grants) {
-        if !grant
-            .valid(c, permission, now)
-            .await
-            .map_err(authority_error)?
-        {
-            return Err(Error::Forbidden);
-        }
-    }
     let current: Option<Uuid> = sqlx::query_scalar("SELECT current_version FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled' FOR SHARE")
         .bind(tenant.to_string()).bind(policy).fetch_optional(&mut *c).await.map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?;
     if current != Some(version) {
@@ -269,10 +235,16 @@ pub async fn preview_targets_on(
     Ok((targets, result))
 }
 
-fn authority_error(error: rss_mdm_authorization_service::Error) -> Error {
-    match error {
-        rss_mdm_authorization_service::Error::Unauthorized => Error::Unauthorized,
-        rss_mdm_authorization_service::Error::Forbidden => Error::Forbidden,
-        _ => Error::Unavailable(crate::Failure::FlowStorage),
-    }
+/// Interpret previously issued material; current publication only governs new configurations.
+pub async fn frozen_on(
+    planning: &crate::planning::Planning,
+    c: &mut sqlx::PgConnection,
+    policy: Uuid,
+    version: Uuid,
+) -> std::result::Result<FrozenProfile, Error> {
+    let value: Option<Value> = sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND policy=$2 AND id=$3 AND action_kind='telemetry_profile'")
+        .bind(planning.tenant.to_string()).bind(policy).bind(version).fetch_optional(c).await
+        .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))?;
+    serde_json::from_value(value.ok_or(Error::Forbidden)?)
+        .map_err(|_| Error::Unavailable(crate::Failure::FlowStorage))
 }

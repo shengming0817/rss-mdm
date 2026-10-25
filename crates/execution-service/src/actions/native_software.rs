@@ -232,7 +232,7 @@ pub async fn advance_run(
                     }
                     run.state.result(run.id, true)?;
                     run.result = Some(
-                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now}),
+                        serde_json::json!({"operation":run.id,"effect":"verified","effectObservedAt":now.checked_mul(1_000_000).ok_or(Error::Malformed)?,"effectReceivedAt":super::software::effect_received_at(tx).await?}),
                     );
                     return Ok(());
                 }
@@ -293,6 +293,7 @@ pub async fn advance_run(
         deadline: run.deadline,
     };
     let authority = crate::authority::ExecutionAuthority::Software {
+        target: rss_mdm_policy::SoftwareTarget::new(p, a),
         tenant: tx.tenant_id().to_string(),
         version: policy.id,
         device: run.target.device.clone(),

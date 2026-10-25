@@ -226,7 +226,7 @@ async fn rollout_time_success_gates_and_stage_evidence() -> Result<()> {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=planning.software"]
-async fn new_approval_changes_execution_version() -> Result<()> {
+async fn reenabling_same_material_preserves_execution_version() -> Result<()> {
     let mut fixture = authority::Authority::open().await?;
     let resources = std::mem::take(&mut fixture.resources);
     resources.finish(async {
@@ -364,15 +364,15 @@ async fn new_approval_changes_execution_version() -> Result<()> {
             )
             .await?;
             ensure!(
-                rebound["versionId"] != published["versionId"],
-                "reapproval must create a new execution version: {rebound}"
+                rebound["versionId"] == published["versionId"],
+                "reenabling unchanged material must preserve the execution version: {rebound}"
             );
             ensure!(
                 pg(&format!(
                     "SELECT frozen FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",
                     case_tenant(),
                     rebound["versionId"].as_str().unwrap()
-                ))? != frozen
+                ))? == frozen
             );
             Ok(())
         })

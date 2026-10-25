@@ -166,7 +166,7 @@ impl ExecutionService {
             source,
             installation,
             request.deadline,
-            &action.enrollment,
+            &action.actor,
         )
         .await?;
         Ok(grant)

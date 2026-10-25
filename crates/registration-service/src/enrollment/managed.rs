@@ -1,6 +1,6 @@
 //! A native install authorizes one independent Agent enrollment in the caller's transaction.
 use crate::{Error, database::db, device::DevicePrincipal};
-use rss_mdm_authorization_service::{OperationAuthority, Permission};
+use rss_mdm_authorization_service::Actor;
 use rss_mdm_inventory::ReportSource;
 use sqlx::PgConnection;
 use uuid::Uuid;
@@ -31,7 +31,7 @@ pub async fn authorize_on(
     source: ReportSource,
     installation: Uuid,
     deadline: i64,
-    grant: &OperationAuthority,
+    actor: &Actor,
 ) -> Result<Authority, Error> {
     if source == ReportSource::AgentBuiltin || installation.is_nil() {
         return Err(Error::Forbidden);
@@ -42,13 +42,13 @@ pub async fn authorize_on(
             .fetch_one(&mut *c)
             .await
             .map_err(db)?;
-    if now >= deadline || !grant.valid(c, Permission::Enrollment, now).await? {
+    if now >= deadline || actor.tenant_id() != p.tenant().to_string() {
         return Err(Error::Forbidden);
     }
     Ok(Authority {
         principal: p.clone(),
         installation,
         deadline,
-        actor: grant.actor().clone(),
+        actor: actor.clone(),
     })
 }

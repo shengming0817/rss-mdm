@@ -34,6 +34,16 @@ CREATE FUNCTION mdm_access.immutable_collection() RETURNS trigger
     AS $$
 BEGIN
  IF OLD.sealed_at IS NOT NULL AND (to_jsonb(OLD)-'delivery_pending') IS DISTINCT FROM (to_jsonb(NEW)-'delivery_pending') THEN
+  -- A transport timeout with no device evidence is not a published collection result.
+  -- Only its original Agent attempt may acquire its first immutable batch.
+  IF OLD.reason='timeout' AND OLD.batch IS NULL AND OLD.digest IS NULL
+   AND OLD.source IN('agent.script','agent.osquery','agent.native')
+   AND NEW.reason='complete' AND NEW.batch IS NOT NULL AND NEW.digest IS NOT NULL
+   AND NEW.sealed_at>=OLD.sealed_at
+   AND OLD.attempts::jsonb->'definition'=NEW.attempts::jsonb->'definition'
+   AND (to_jsonb(OLD)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])
+       =(to_jsonb(NEW)-ARRAY['attempts','progress_version','result','reason','batch','digest','sealed_at','delivery_pending'])
+  THEN RETURN NEW; END IF;
   RAISE EXCEPTION 'sealed collection is immutable' USING ERRCODE='23514';
  END IF;
  RETURN NEW;

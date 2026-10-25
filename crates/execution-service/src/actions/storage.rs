@@ -42,8 +42,14 @@ pub struct Run {
     pub source_objects: Vec<crate::source_authority::DeviceObject>,
 }
 pub async fn load_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
+    run_in(tx, id, true).await
+}
+pub async fn read_run(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<Run> {
+    run_in(tx, id, false).await
+}
+async fn run_in(tx: &mut PgTransaction<'_>, id: Uuid, locked: bool) -> Result<Run> {
     let tenant = tx.tenant_id().to_string();
-    let row=tx.with_connection(move|c|Box::pin(async move{sqlx::query("SELECT (SELECT w.operation FROM mdm_devices.retirement_work w JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE w.tenant_id=mdm_commands.action_runs.tenant_id AND w.execution=mdm_commands.action_runs.id AND o.version<>mdm_commands.action_runs.policy_version) AS retirement,source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid FOR UPDATE").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
+    let row=tx.with_connection(move|c|Box::pin(async move{if locked {sqlx::query("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE").bind(&tenant).bind(id).fetch_optional(&mut *c).await?;}sqlx::query("SELECT (SELECT w.operation FROM mdm_devices.retirement_work w JOIN mdm_devices.retirements o ON(o.tenant_id,o.id)=(w.tenant_id,w.operation) WHERE w.tenant_id=mdm_commands.action_runs.tenant_id AND w.execution=mdm_commands.action_runs.id AND o.version<>mdm_commands.action_runs.policy_version) AS retirement,source_kind,policy_version,device,registration::text,generation,available_at,deadline,state,result,invocation,source_objects FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2::uuid ").bind(tenant).bind(id.to_string()).fetch_optional(c).await})).await?.ok_or(Error::Execution(crate::missing::ExecutionError::MissingTask))?;
     Ok(Run {
         id,
         source: match row.try_get::<&str, _>("source_kind")? {
@@ -393,7 +399,41 @@ impl ScheduledPolicy {
                 )
                 .await;
         }
-        self.authorized_in(service, tx, target, now).await
+        match self {
+            Self::Script(v) => Ok(v.active
+                && crate::script_eligibility::require_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target,
+                    &v.frozen,
+                )
+                .await?),
+            Self::Native(v) => Ok(v.active),
+            Self::AgentCollection(v) => Ok(v.active
+                && v.frozen.authorized_in(tx, target, now).await?
+                && crate::agent_collection_eligibility::check_in(
+                    tx,
+                    service.agent_store.clone(),
+                    target,
+                    v.frozen.input.platform,
+                    v.frozen.input.architecture,
+                    &v.frozen.definition,
+                )
+                .await?),
+            Self::Credential(v) => Ok(v.active
+                && v.frozen.authorized_in(service, tx, target, now).await?
+                && crate::credential_tasks::eligible(
+                    service,
+                    tx,
+                    target,
+                    v.frozen.input.architecture,
+                )
+                .await?),
+            Self::Enrollment(v) => v.accepted_in(service, tx, target).await,
+            Self::DeviceAccess(v) => v.allowed_in(service, tx, target).await,
+            Self::Retirement(v) => v.allowed_in(tx, target, None).await,
+            Self::Software(_) => unreachable!(),
+        }
     }
     pub async fn authorized_run_in(
         &self,
@@ -470,20 +510,17 @@ impl ScheduledPolicy {
         target: &Target,
         now: i64,
     ) -> Result<bool> {
-        if let Self::Credential(v) = self {
-            return Ok(v.frozen.authorized_in(service, tx, target, now).await?
-                && v.authorized_in(&service.source, tx, &target.device, now)
-                    .await?);
-        }
-        if let Self::AgentCollection(v) = self {
-            return Ok(v.frozen.authorized_in(tx, target, now).await?
-                && v.authorized_in(&service.source, tx, &target.device, now)
-                    .await?);
-        }
-        if let Self::Script(v) = self {
-            return v
-                .authorized_in(&service.source, tx, &target.device, now)
-                .await;
+        match self {
+            Self::Credential(v) => {
+                return Ok(v.active && v.frozen.authorized_in(service, tx, target, now).await?);
+            }
+            Self::AgentCollection(v) => {
+                return Ok(v.active && v.frozen.authorized_in(tx, target, now).await?);
+            }
+            Self::Script(v) => return Ok(v.active),
+            Self::Native(v) => return Ok(v.active),
+            Self::Enrollment(v) => return Ok(v.policy.state.is_enabled()),
+            _ => (),
         }
         if let Self::Software(v) = self {
             if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
@@ -713,14 +750,6 @@ impl ScheduledPolicy {
                         rss_mdm_policy::SoftwareIntent::ExplicitUninstall => {
                             wire::SoftwareTaskIntent::Uninstall
                         }
-                    },
-                    start_mode: if matches!(
-                        v.assignment.intent(),
-                        rss_mdm_policy::SoftwareIntent::AvailableInstall
-                    ) {
-                        wire::SoftwareStartMode::UserInitiated
-                    } else {
-                        wire::SoftwareStartMode::Automatic
                     },
                 };
                 checked_input(spec.try_into())

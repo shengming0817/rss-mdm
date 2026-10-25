@@ -14,6 +14,20 @@ pub(crate) async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     .await?;
     Ok(())
 }
+pub(crate) async fn read_lock(tx: &mut PgTransaction<'_>) -> Result<()> {
+    let tenant = tx.tenant_id().to_string();
+    tx.with_connection(move |c| {
+        Box::pin(async move {
+            sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))")
+                .bind(format!("mdm-software:{tenant}"))
+                .execute(c)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
+    Ok(())
+}
 pub(super) async fn now(tx: &mut PgTransaction<'_>) -> Result<i64> {
     Ok(tx
         .with_connection(|c| {

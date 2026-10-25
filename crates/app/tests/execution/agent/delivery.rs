@@ -290,8 +290,13 @@ async fn offer_start_result_replay_and_inventory_projection() -> Result<()> {
             ..context
         },
     )?;
+    let task_id = signed.payload.task_id();
+    let sampled_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? - 60;
+    pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({sampled_at}::bigint-1)) WHERE tenant_id='{}' AND id='{task_id}'", case_tenant()))?;
+    execution.recover_action_fixture(policy_id).await?;
+    ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{attempt}'",case_tenant()))?.trim()=="t", "real recovery did not seal the original attempt without evidence");
     let result_operation = Uuid::new_v4();
-    let mut result = json!({"kind":"result","exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
+    let mut result = json!({"kind":"result","collectedAt":sampled_at,"exitCode":0,"quality":"complete","output":{"version":"1.2","healthy":true}});
     execution.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
@@ -401,8 +406,8 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
         Some(0),
         wire::OutputQuality::Complete,
         json!({"version":"1.2","healthy":true,"padding":"x".repeat(400000)}),
-        wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
-        2,
+        wire::TaskDiagnostics::new("".into(), "".into(), 1, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?, None)?,
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
     )?;
     let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
     ensure!(chunks.len() == 2);
@@ -490,8 +495,8 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             Some(0),
             quality,
             output,
-            wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, failure)?,
-            2,
+            wire::TaskDiagnostics::new("".into(), "".into(), 1, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?, failure)?,
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
         )?;
         let event = if mode == "chunked" {
             let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
@@ -883,8 +888,8 @@ async fn native_inventory_case(
             )
             .await?;
             ensure!(
-                denied.0 == StatusCode::FORBIDDEN,
-                "revoked native Start: {denied:?}"
+                denied.0 == if macos {StatusCode::FORBIDDEN} else {StatusCode::OK},
+                "native Start must distinguish changed execution context from author grant edits: {denied:?}"
             );
             break;
         }
@@ -1017,11 +1022,19 @@ async fn native_inventory_case(
                 },
             );
         }
-        let result = w::NativeCollectionResult {
+        let mut result = w::NativeCollectionResult {
             plan_digest: spec.plan_digest,
             collected_at: now,
             queries,
         };
+        if stage == 0 && !all_failed {
+            let started = now - i64::from(spec.plan.spec().budget.timeout_seconds) - 1;
+            pg(&format!("UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb({started}::bigint)) WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.task_id))?;
+            result.collected_at=now-1;
+            for query in result.queries.values_mut() { query.collected_at=now-1; }
+            f.execution.recover_action_fixture(policy).await?;
+            ensure!(pg(&format!("SELECT reason='timeout' AND batch IS NULL FROM mdm_access.collection_runs WHERE tenant_id='{}' AND id='{}'",case_tenant(),spec.attempt_id))?.trim()=="t");
+        }
         let body = serde_json::to_vec(&result)?;
         let manifest = w::OutputManifest::new(body.len() as u32, Sha256::digest(&body).into())?;
         let terminal = serde_json::to_value(w::TaskEvent::ChunkedCollectionResult {
@@ -1201,7 +1214,7 @@ async fn native_inventory_case(
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, ordinary).await?;
         for (path,secret) in sensitive_paths {
             let hidden=f.author.call(&f.router,Method::GET,&path,None).await?;
-            ensure!(hidden.0==StatusCode::FORBIDDEN && !hidden.1.to_string().contains(secret),"sensitive field read leaked or failed unexpectedly: {hidden:?}");
+            ensure!(hidden.0==StatusCode::OK && hidden.1.to_string().contains(secret),"Sensitive classification unexpectedly required an extra permission: {hidden:?}");
         }
         let denied = f
             .author

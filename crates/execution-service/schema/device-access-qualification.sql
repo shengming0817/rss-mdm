@@ -9,10 +9,7 @@ BEGIN
  IF NOT FOUND OR policy.frozen->>'kind' IS DISTINCT FROM 'device_access' THEN
   RETURN jsonb_build_object('state','excluded');
  END IF;
- valid_until=mdm_access.operation_authority_valid_until(policy.frozen->'grant','account_write',p_as_of);
- IF valid_until IS NULL THEN
-  RETURN jsonb_build_object('state','excluded');
- END IF;
+ valid_until=9223372036854775807;
  admission=mdm_planning.channel_admission((policy.definition->>'scope')::uuid,'agent',p_device);
  IF admission->>'state' IS DISTINCT FROM 'eligible' THEN RETURN admission; END IF;
  RETURN jsonb_build_object('state','eligible','version',policy.current_version,
@@ -36,13 +33,11 @@ BEGIN
  IF binding->>'tenant' IS DISTINCT FROM tenant::text OR binding->>'id' IS DISTINCT FROM p_binding::text THEN
   RAISE EXCEPTION 'invalid access binding identity' USING ERRCODE='23514';
  END IF;
- selection=mdm_commands.access_policy((binding->>'policy')::uuid,binding->>'device',p_as_of);
- IF selection->>'state' IS DISTINCT FROM 'eligible' THEN RETURN selection; END IF;
- IF selection->>'version' IS DISTINCT FROM binding->>'policyVersion'
-  OR selection#>>'{configuration,enabled}' IS DISTINCT FROM 'true' THEN
+ IF binding#>>'{configuration,enabled}' IS DISTINCT FROM 'true'
+  OR NOT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=tenant AND id=(binding->>'policy')::uuid AND state='enabled') THEN
   RETURN jsonb_build_object('state','excluded');
  END IF;
- RETURN jsonb_build_object('state','eligible','binding',binding,'validUntil',selection->'validUntil');
+ RETURN jsonb_build_object('state','eligible','binding',binding,'validUntil',9223372036854775807::bigint);
 END $$;
 REVOKE ALL ON FUNCTION mdm_commands.active_access_binding(uuid,bigint,bigint) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION mdm_commands.active_access_binding(uuid,bigint,bigint) TO mdm_access,mdm_flow_runtime,mdm_command_runtime;

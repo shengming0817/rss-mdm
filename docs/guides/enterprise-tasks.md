@@ -74,8 +74,8 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 ## Agent 状态与结果
 
 1. `POST /api/v1/agent/runtime/tasks/claim`：wireVersion=1、operationId、当前 profiles 和 executionContext，返回至多一个签名 offer 及有界取消页。领取候选与取消页独立选择，每个 registration 的取消游标持久化并循环遍历。task=null 的轮询不写永久执行回执，重试可看到新状态；实际 offer 在有效且仍获授权期间精确重放。
-2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次都检查当前凭据、软件生命周期及任务权限。客户端最终核对长度/hash。
-3. 向 `/tasks/{taskId}/events` 提交 received，再提交 start。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
+2. 验签后按 task/attempt 下载脚本 `/tasks/{taskId}/content?attempt={attemptId}`；软件按签名产物 key 下载 `/tasks/{taskId}/content?attempt={attemptId}&artifact={urlEncodedKey}`。支持单段 Range、ETag 和 If-Range；每次检查当前凭据、原任务/attempt、明确材料撤回和取消。客户端最终核对长度/hash。
+3. 验签后向 `/tasks/{taskId}/events` 提交 received，再完成材料下载和准备，最后提交 start。Received 保留原 attempt 至任务 deadline；Offer 短领取窗口不再限制下载。事件包含 wireVersion=1、operationId、attemptId、event、executionContext。只有独立签名的短期 Start permit 可以授权启动，offer 本身不能启动。
 4. 返回 result（exitCode、quality、output、diagnostics、collectedAt）或 cancelled。diagnostics 的完整字段、闭合分类和预算见 [wire schema](../../crates/agent-wire/schema)。每次重试保留相同 operationId 与内容。已开始而结果未知的任务不自动重新领取；迟到的同 attempt 证据可以解释 Unknown。
 
 交付、执行和取消分别保存；脚本运行退出成功只记录执行证据，脚本 effect 始终 unverified，不产生设备状态命令的 Applied 或虚构 StateDigest。脚本持久结果包含 exitCode、quality、schemaValid、output、diagnostics、trusted、Agent 原生 collectedAt 与服务端 receivedAt；单 run 详情检查设备 OperationRead；采集结果另查 InventoryRead，含敏感字段再查 InventorySensitiveRead，随后才返回原始 output 与 stdout/stderr。列表摘要删除 output 以及 diagnostics.stdout/stderr，只保留受限状态和时间/失败分类。结构化 output 同时遵守 wire 与资源版本预算。
@@ -89,9 +89,9 @@ Script definition 包含 `profile`（power_shell7、posix_sh、bash、osquery）
 
 ## 软件分配与灰度
 
-同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。Policy 不接受 `admissionOperation`；后台冻结当前来源、版本和依赖的生命周期绑定。撤回后重新启用，需要管理员重新提交 Policy，生成新的执行版本，旧版本不会自动复活。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 暂停新任务，`enable` 恢复；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
+同一软件 Policy 用 `resource:{kind:"software",id,version,variants}` 将每个支持的平台/架构映射到精确变体。`action.kind:"software"` 的 `intent` 为 `required_install`、`available_install` 或 `explicit_uninstall`；后者要求软件定义声明卸载。Policy 不接受 `admissionOperation`；后台消费精确不可变版本、所选变体与实际依赖；无关平台来源和普通 lifecycle revision 变化不否决原任务。明确撤回仍阻止新副作用。管理员在 `rollout.stages` 中按顺序指定 Scope 与 UTC Unix `opensAt`，可选 `minimumVerifiedPercent` 仅约束前一阶段；未设置时到时间自动开放。`disable` 明确停止策略执行，`enable` 恢复后续准入；仅编辑范围和时间不产生新的软件执行版本。动态 Scope 决定后续准入，既有 Run 与核实证据保持原身份。
 
-Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 定义、Scope、灰度或企业批准模型。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。`startMode:user_initiated` 表示可选任务须经可信本地用户操作后才能请求 Start；显式自助请求的交互可提供该确认，不要求重复点击。`automatic` 表示后台任务可自动开始。Offer 仅用于准备和下载，过期后不能继续取内容；Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
+Agent 只收到单次可执行任务与服务端授权坐标，不消费 Policy 定义、Scope、灰度或企业批准模型。后端在发布分配时验证固定依赖可在目标平台解析，并在签发时按依赖优先顺序生成 `steps`；每一步是闭合的本机动作、检测规则、任务产物与必要的包管理器 export identity。任务不携带依赖图或来源准入模型。`definitionDigest` 绑定完整步骤序列；内容键为 `{步骤下标}/{该步骤产物键}`，下载时作为 URL 编码的 `artifact` 查询参数。已受理的软件任务不再携带第二套 startMode 许可。确认由调用入口按 riskLevel 完成一次；Received 后材料准备不受 Offer 短期限约束，Start permit 才能执行。软件分配使用执行版本下稳定的期望身份；核实成功后不因签入重复安装，明确失败总共至多三次尝试并逐次退避，未启动的自选 Offer 到期后可以重新领取。Agent 软件计划决定本机安装动作并做独立检测；服务端分别保存 installer exit、检测状态、版本与证据摘要。核实成功、明确失败、等待重启、未知效果分开记录；未知或等待重启不盲目重试，设备重新注册也不解除未知阻断。来源 Published、下载成功、exit 0 和任务回执均不能替代核实成功。
 
 `GET /api/v1/policies/{id}/software/rollout` 返回每阶段当前总目标、已回报、等待用户、未知、等待重启、明确失败、核实成功和无可用软件能力设备数，以及暂停、时间与可选门槛。自选任务被领取且尚未启动、Offer 仍有效时，逐 Run 的 `userAction` 与灰度统计显示 `waiting_user`。阶段历史按稳定 Scope 身份归属，重排阶段不会复用其他 Scope 的结果。Policy 预览和设备页另外返回服务端计算的闭合 `taskAdmission` 原因，不把单纯 Scope 命中称为可执行。读取要求 PolicyRead 与全设备 OperationRead；这些是当前动态目标的统计，历史任务证据不被重算。真实设备身份、可信用户交互和软件执行适配由 #2564 消费本协议，平台 T3 由 #2480/#2481 验收。
 
@@ -138,7 +138,7 @@ Apple 新注册 profile 在启用该能力时申请已安装应用查询与企�
 
 管理员继续使用既有 Policy/Resource/Software 管理权限；普通员工无需 ScriptExecute 或 SoftwareDeploy。系统服务的执行权限不由员工管理员身份决定。Resource 的 System/LoggedInUser 保持原意；后者必须绑定确切 SID/UID、OS 登录世代和该会话的 helper，缺失或换人时阻止新 Start。
 
-自助描述位于 selfService.presentation，AI 开关仍由 selfService.allowAi 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本 riskLevel 仅允许 1、2；软件 riskLevel 只接受 2（省略时归一化为 2），AI 安装必须确认。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 独立判断。
+自助描述位于 selfService.presentation，AI 开关仍由 selfService.allowAi 持有。首次省略 allowAi/riskLevel 归一化为 true/2，编辑省略保留原值。脚本和软件 riskLevel 均接受 1、2；1 直接执行，2 要求 AI 调用确认，确认绑定原请求，不在领取时重复取得。关闭 allowAi 或撤回 published 只阻止自助调用，普通自动 Policy 独立判断。
 
 Resource.Script 持有参数 schema，Policy 使用 Fixed/Input 选择来源。调用必须提交全部且仅提交 Input 键，不能覆盖 Fixed；后端合并后完整校验并冻结到 Run。存在 Input 时 trigger 必须为 manual。参数来源或固定值变化产生执行版本；访问和描述变化只推进配置 revision。软件和 MDM 注册调用 parameters 必须为空。
 

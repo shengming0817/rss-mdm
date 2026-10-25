@@ -622,7 +622,7 @@
       "groups",
       "groups_member_count_check",
       "c",
-      "CHECK (((member_count >= 0) AND (member_count <= 1000000)))",
+      "CHECK ((member_count >= 0))",
       true
     ],
     [
@@ -832,14 +832,14 @@
       "member_runs",
       "member_runs_member_count_check",
       "c",
-      "CHECK (((member_count >= 0) AND (member_count <= 1000000)))",
+      "CHECK ((member_count >= 0))",
       true
     ],
     [
       "member_runs",
       "member_runs_object_count_check",
       "c",
-      "CHECK (((object_count >= 0) AND (object_count <= 1000000)))",
+      "CHECK ((object_count >= 0))",
       true
     ],
     [
@@ -860,7 +860,7 @@
       "member_runs",
       "member_runs_processed_count_check",
       "c",
-      "CHECK (((processed_count >= 0) AND (processed_count <= 1000000)))",
+      "CHECK ((processed_count >= 0))",
       true
     ],
     [

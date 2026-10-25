@@ -51,7 +51,7 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, audit) = *ctx;
-                    crate::transaction::lock_authority(service, tx).await?;
+
                     let tenant = service.tenant.to_string();
                     let participant = service.apple_push.clone();
                     let rows = tx

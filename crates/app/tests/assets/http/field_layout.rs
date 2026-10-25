@@ -129,8 +129,8 @@ async fn shared_layout_round_trip_permissions_and_retired_fields() -> Result<()>
         let reader_id = prepared_subject(&reader)?;
         crate::test_support::identity::seed_grants(case_tenant(), &reader_id, grants(&[Permission::InventoryRead])).await?;
         let projected = reader.call(&fixture.router, Method::GET, PATH, None).await?;
-        ensure!(projected.0 == StatusCode::OK && projected.1["asset"]["groups"] == json!([{ "id":first,"name":"采购","fields":["custom.layout_public"] }]));
-        ensure!(projected.1["asset"]["editable"] == false && !projected.1.to_string().contains("custom.layout_secret"));
+        ensure!(projected.0 == StatusCode::OK && projected.1["asset"]["groups"] == managed.1["asset"]["groups"]);
+        ensure!(projected.1["asset"]["editable"] == false && projected.1.to_string().contains("custom.layout_secret"));
         ensure!(reader.call(&fixture.router, Method::PUT, PATH, Some(operation(1, json!([])))).await?.0 == StatusCode::FORBIDDEN);
         crate::test_support::identity::change_grants(case_tenant(), &reader_id, grants(&[Permission::InventoryRead, Permission::InventorySensitiveRead])).await?;
         let shared = reader.call(&fixture.router, Method::GET, PATH, None).await?;

@@ -1,7 +1,7 @@
 //! Credential policies share the existing schedule and durable Agent task lifecycle.
 use crate::{
     action_contract::{ExecutionInput, ScheduledInput},
-    authorization::{OperationAuthority, Permission},
+    authorization::Permission,
     *,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -9,13 +9,11 @@ use rss_mdm_agent_wire::runtime as wire;
 use rss_mdm_policy::{Architecture, CredentialOperation as Operation};
 use rss_mdm_recovery_credentials::{self as vault, storage as materials};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrozenCredential {
     pub input: ExecutionInput,
     pub operation: Operation,
-    pub grants: BTreeMap<String, Vec<OperationAuthority>>,
 }
 impl ScheduledInput for FrozenCredential {
     fn execution_input(&self) -> &ExecutionInput {
@@ -40,21 +38,11 @@ impl FrozenCredential {
         service: &ExecutionService,
         tx: &mut PgTransaction<'_>,
         target: &Target,
-        now: i64,
+        _now: i64,
     ) -> Result<bool> {
-        let Some(grants) = self
-            .grants
-            .get(&target.device)
-            .or_else(|| self.grants.get("*"))
-        else {
-            return Ok(false);
-        };
-        let grants = grants.clone();
-        let permission = self.permission();
         let operation = self.operation.clone();
         let target = target.clone();
         let agent_store = service.agent_store.clone();
-        let source = service.source.clone();
         let scope = service.tenant;
         let tenant = checked_input(Uuid::parse_str(&scope.to_string()))?;
 
@@ -117,35 +105,11 @@ impl FrozenCredential {
                     {
                         return Ok(false);
                     }
-                    match crate::device_access::policy_on(
-                        source,
-                        scope,
-                        c,
-                        tenant,
-                        &target.device,
-                        b.policy,
-                    )
-                    .await
-                    {
-                        Ok(p) if p.version == b.policy_version => {}
-                        Ok(_) | Err(rss_mdm_registration_service::Error::Forbidden) => {
-                            return Ok(false);
-                        }
-                        Err(_) => {
-                            return Err(sqlx::Error::Protocol(
-                                "RSS recovery policy unavailable".into(),
-                            ));
-                        }
-                    }
+                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1 AND id=$2 AND state='enabled')")
+                        .bind(tenant).bind(b.policy).fetch_one(c).await?;
+                    if !enabled { return Ok(false); }
                 }
-                for grant in grants {
-                    if grant.valid(c, permission, now).await.map_err(|_| {
-                        sqlx::Error::Protocol("credential authority unavailable".into())
-                    })? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+                Ok(true)
             })
         })
         .await

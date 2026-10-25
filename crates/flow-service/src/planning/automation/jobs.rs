@@ -25,8 +25,10 @@ impl Planning {
         if target.is_some_and(|t| t != job.target())
             || !matches!(
                 (kind, &job),
-                (TaskKind::Group, JobInput::Group { .. })
-                    | (TaskKind::Scope, JobInput::Scope { .. })
+                (
+                    TaskKind::Group,
+                    JobInput::Group { .. } | JobInput::GroupDefinition { .. }
+                ) | (TaskKind::Scope, JobInput::Scope { .. })
             )
         {
             return Err(missing().into());
@@ -40,6 +42,7 @@ impl Planning {
                 | JobInput::Compliance { .. } => {
                     return Err(Error::NotFound.into());
                 }
+                JobInput::GroupDefinition { .. } => {}
                 JobInput::Group { .. } => {
                     let build = checked(
                         self.groups

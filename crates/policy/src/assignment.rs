@@ -370,13 +370,6 @@ impl Definition {
                 return Err(Error::Malformed);
             }
             config.validate()?;
-            if matches!(self.action, Action::Software { .. })
-                && config
-                    .risk_level
-                    .is_some_and(|risk| risk != crate::ScriptRisk::CONFIRM)
-            {
-                return Err(Error::Malformed);
-            }
         }
         Ok(())
     }

@@ -64,35 +64,22 @@ impl Planning {
                 checked_input(Uuid::parse_str(&source.group.to_string()))?,
             )
             .await?;
-        if &current != source {
+        if current.coordinates.definition_version != source.coordinates.definition_version
+            || current.coordinates.asset_context != source.coordinates.asset_context
+        {
             return Ok(false);
         }
+        // A captured complete batch remains usable while ordinary inputs advance.
+        // Definitions and deletion are checked here; actual device identity at admission.
         if let Some(run) = source.coordinates.member_set {
             let build = checked(self.groups.build_in(tx, run).await?)?;
-            if let Some(snapshot) = super::groups::object_snapshot(&build.request.input_version)? {
-                let reader = self.objects.clone();
-                let tenant = self.tenant;
-                if !tx
-                    .with_connection(move |c| {
-                        Box::pin(async move { reader.current(c, tenant, &snapshot).await })
-                    })
-                    .await?
-                {
-                    return Ok(false);
-                }
-            }
+            return Ok(build.receipt.is_some());
         }
         let id = source.group.to_string();
-        Ok(tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    sqlx::query_scalar("SELECT mdm_planning.group_current($1::uuid)")
-                        .bind(id)
-                        .fetch_one(c)
-                        .await
-                })
-            })
-            .await?)
+        Ok(tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT kind='static' FROM mdm_group.groups WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND id=$1::uuid AND NOT deleted")
+                .bind(id).fetch_one(c).await
+        })).await?)
     }
     // Waiting is progress on the same durable task. Only a ready replacement
     // source invalidates the frozen input and requires a new calculation.

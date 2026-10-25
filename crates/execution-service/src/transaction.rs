@@ -115,16 +115,6 @@ where
                     if let Err(error) = audit_store.bind_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure));
                     }
-                    if let Err(error) = tx
-                        .with_connection(move |c| {
-                            Box::pin(async move {
-                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                            })
-                        })
-                        .await
-                    {
-                        return Err(rejection(Fault::Storage(error), failure));
-                    }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
                         Ok(v) => {
@@ -169,20 +159,6 @@ impl From<crate::device::DeviceError> for Fault {
         Error::from(error).into()
     }
 }
-pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-                .bind(tenant)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
 
 /// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
 /// It deliberately does not advance the outer request's single mutation settlement state.
@@ -209,15 +185,6 @@ where
             |state, tx| {
                 Box::pin(async move {
                     let (context, operation, failure) = state;
-                    // Preflight authorization reads the same owner facts as dispatch.
-                    // Fence them before taking device or Scope locks.
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
-                        })
-                    })
-                    .await
-                    .map_err(|e| rejection(Fault::Storage(e), failure))?;
                     operation.take().expect("one preflight")(context, tx)
                         .await
                         .map_err(|e| rejection(e, failure))
@@ -348,20 +315,6 @@ impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
             Receipt::Invariant => Error::Unavailable(Failure::CommandStorage).into(),
         }
     }
-}
-
-/// Existing authorization and planning fences precede device and callback-owned locks.
-pub(crate) async fn lock_authority(
-    service: &crate::ExecutionService,
-    tx: &mut PgTransaction<'_>,
-) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    let instance = service.instance.clone();
-    tx.with_connection(move |c| {
-        Box::pin(async move { Ok(crate::authorization::lock_on(c, &tenant, &instance).await) })
-    })
-    .await??;
-    lock(tx).await
 }
 
 /// Source writes reach the directory trigger before their late audit flush. Native

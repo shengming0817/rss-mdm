@@ -113,7 +113,7 @@ impl Client {
         let scope = recovery_scope(self.tenant);
         let mut fence = pg.begin().await?;
         crate::Database::configure_transaction(&mut fence,case_tenant()).await?;
-        rss_mdm_inventory_postgres::lock_watermark_in(&mut fence,self.tenant).await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2465))").bind(format!("{}:{}",self.tenant,case_device())).execute(&mut *fence).await?;
         let release = async {
             tokio::time::timeout(Duration::from_secs(1),async {
                 loop {
@@ -124,7 +124,7 @@ impl Client {
                     tokio::task::yield_now().await;
                 }
                 // Exercise the real producer wake while the worker is waiting for its
-                // earlier business fence. The old protect-before-watermark path times out.
+                // device command fence before the claim protection lock.
                 sqlx::query("SET LOCAL lock_timeout='250ms'").execute(&mut *fence).await?;
                 let target = rss_mdm_execution_service::target(self.tenant,case_device());
                 sqlx::query("SELECT rss_reconcile.wake($1::uuid,$2,$3)")

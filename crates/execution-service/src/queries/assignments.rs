@@ -42,13 +42,10 @@ pub async fn assignments(
         for value in retired {let row:crate::source_authority::AssignmentObject=serde_json::from_value(value).map_err(|_|Error::Malformed)?;if !objects.iter().any(|o|o.object==row.object){objects.push(row);}}
         objects.sort_by_key(|o|o.object.key());
         let more=objects.len()>64;objects.truncate(64);let next=if more {objects.last().map(|o|o.object.key())}else{None};
-        let source=s.source.clone();let version=p.version;
-        let readable=tx.with_connection(move|c|Box::pin(async move {Ok(source.policy_readable_on(c,tenant,version).await)})).await??;
         let mut items=Vec::new();
         for mut object in objects {
             let mut operations=Vec::new();let mut task_admission=None;
-            if !readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("source_forbidden".into());}
-            if !p.state.is_enabled() && readable {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
+            if !p.state.is_enabled() {object.availability=crate::source_authority::Availability::Unavailable;object.reason=Some("policy_disabled".into());}
             if let Some(target)=&object.target {
                 let device=&target.device;
                 let eligible=crate::sources::storage::eligible_in(&s.source,tx,&p,device).await?.is_some();

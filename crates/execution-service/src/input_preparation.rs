@@ -60,6 +60,9 @@ impl Inputs {
                 if !self.signing_enabled {
                     return Err(Error::Unsupported.into());
                 }
+                authority
+                    .snapshot
+                    .require_all_devices(authority.proof, Permission::AccountWrite)?;
                 let frozen = Frozen::DeviceAccess {
                     configuration: rss_mdm_agent_wire::runtime::AccessConfiguration {
                         mac: (*mac).clone(),
@@ -75,26 +78,22 @@ impl Inputs {
                             }
                         }),
                     },
-                    grant: crate::authorization::OperationAuthority::all_devices(
-                        authority.snapshot,
-                        authority.proof,
-                        Permission::AccountWrite,
-                    )?,
                 };
                 if let Frozen::DeviceAccess { configuration, .. } = &frozen {
                     configuration.validate().map_err(|_| Error::Malformed)?;
                 }
                 frozen
             }
-            PublicationInput::Unmanage { schedule, lifetime } => Frozen::UnmanageDevice {
-                schedule: (*schedule).clone(),
-                run_lifetime_seconds: *lifetime,
-                grant: crate::authorization::OperationAuthority::all_devices(
-                    authority.snapshot,
-                    authority.proof,
-                    Permission::DeviceUnmanage,
-                )?,
-            },
+            PublicationInput::Unmanage { schedule, lifetime } => {
+                authority
+                    .snapshot
+                    .require_all_devices(authority.proof, Permission::DeviceUnmanage)?;
+                Frozen::UnmanageDevice {
+                    schedule: (*schedule).clone(),
+                    run_lifetime_seconds: *lifetime,
+                    actor: authority.proof.actor(),
+                }
+            }
             PublicationInput::Credential {
                 operation,
                 architecture,
@@ -115,7 +114,6 @@ impl Inputs {
                             schedule: (*schedule).clone(),
                             run_lifetime_seconds: *lifetime,
                         },
-                        grants: Default::default(),
                     }),
                 }
             }
@@ -372,14 +370,6 @@ impl Inputs {
                     .map_err(|_| Error::Malformed)?,
             ));
         }
-        let binding = match action {
-            rss_mdm_policy::Action::Software { resource, .. } => resource,
-            _ => return Ok(None),
-        };
-        self.software.lock_in(tx).await?;
-        let version = self
-            .active_version_in(tx, binding.id.as_str(), binding.version.as_str())
-            .await?;
-        Ok(Some(self.software.binding_in(tx, &version).await?))
+        Ok(None)
     }
 }

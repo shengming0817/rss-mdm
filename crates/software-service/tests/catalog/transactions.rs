@@ -434,11 +434,10 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
         platform: r::Platform::Windows,
         architecture: r::Architecture::X86_64,
     };
-    let mut binding = Selection {
+    let binding = Selection {
         resource: dependent.resource().as_str(),
         version: "v1",
         digest: dependent.digest().bytes(),
-        lifecycle: [0; 32],
         variant: "default",
         uninstall: false,
     };
@@ -453,7 +452,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
         interactive_user: None,
         source_credentials: vec![],
     };
-    binding.lifecycle = transaction(
+    transaction(
         &fixture.runtime,
         (&preparation, &binding, &targets, &context, &dependency),
         |ctx, tx| {
@@ -466,15 +465,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                     uninstall,
                     targets,
                 };
-                let lifecycle = preparation.freeze_in(tx, request(false)).await?;
-                ensure_catalog(matches!(
-                    preparation.resolve_in(tx, binding, target).await,
-                    Err(catalog::Error::Conflict)
-                ))?;
-                let binding = &Selection {
-                    lifecycle,
-                    ..*binding
-                };
+                preparation.freeze_in(tx, request(false)).await?;
                 ensure_catalog(matches!(
                     preparation.freeze_in(tx, request(true)).await,
                     Err(catalog::Error::Unsupported)
@@ -494,7 +485,7 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
                     .await?
                     .ok_or(catalog::Error::Missing)?;
                 ensure_catalog(artifact.length() == 3)?;
-                Ok(lifecycle)
+                Ok(())
             })
         },
     )
@@ -522,17 +513,12 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
     fixture
         .change(&dependency, &withdrawal, dependency.digest().bytes(), None)
         .await?;
-    ensure!(fixture.resolve(&dependent).await.is_err());
     transaction(
         &fixture.runtime,
         (&preparation, &binding, &context),
         |ctx, tx| {
             Box::pin(async move {
                 let (preparation, binding, context) = *ctx;
-                ensure_catalog(matches!(
-                    preparation.resolve_in(tx, binding, target).await,
-                    Err(catalog::Error::NotAdmitted)
-                ))?;
                 ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_none())?;
                 ensure_catalog(
                     preparation
@@ -567,15 +553,11 @@ async fn dependency_admission_uses_exact_current_enablement() -> Result<()> {
         (&preparation, &binding, &dependent),
         |ctx, tx| {
             Box::pin(async move {
-                let (preparation, binding, dependent) = *ctx;
-                let current = preparation.binding_in(tx, dependent).await?;
-                ensure_catalog(current != binding.lifecycle)?;
-                ensure_catalog(preparation.recheck_in(tx, binding, target).await?.is_none())?;
-                let fresh = Selection {
-                    lifecycle: current,
-                    ..*binding
-                };
-                preparation.resolve_in(tx, &fresh, target).await?;
+                let (preparation, binding, _dependent) = *ctx;
+                preparation
+                    .recheck_in(tx, binding, target)
+                    .await?
+                    .ok_or(catalog::Error::NotAdmitted)?;
                 Ok(())
             })
         },
