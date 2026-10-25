@@ -5,7 +5,7 @@ use crate::{
     audit_health::{AuditPhase, Readiness},
     config::Config,
 };
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 use rss_mdm_audit_integration::{AuditProjection, AuditProjectionError};
 use rss_request_context::Clock;
 use rss_runtime::{
@@ -28,6 +28,10 @@ pub(crate) struct Worker {
     wake: Arc<Notify>,
     #[cfg(feature = "integration")]
     recovery_fault: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "integration")]
+    recovery_started: Notify,
+    #[cfg(feature = "integration")]
+    recovery_release: Notify,
 }
 fn unavailable() -> Error {
     Error::Unavailable(Failure::Audit)
@@ -123,6 +127,10 @@ impl Worker {
             wake,
             #[cfg(feature = "integration")]
             recovery_fault: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "integration")]
+            recovery_started: Notify::new(),
+            #[cfg(feature = "integration")]
+            recovery_release: Notify::new(),
         }))
     }
     pub(crate) fn registration(self: Arc<Self>) -> ManagedTaskRegistration {
@@ -146,158 +154,285 @@ impl Worker {
             .recovery_fault
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
+            self.recovery_started.notify_one();
+            self.recovery_release.notified().await;
             return Err(AuditProjectionError::Unavailable);
         }
         self.delivery.resolve(identity, operation()).await
     }
-    async fn idle_delay(&self, delay: Duration) -> Result<Duration, AuditProjectionError> {
-        let wakeup = self.delivery.next_wakeup(operation()).await?;
-        Ok(wakeup
-            .next_deadline()
-            .and_then(|d| d.remaining(crate::lifecycle::RuntimeTimer.now()))
-            .filter(|d| !d.is_zero())
-            .map_or(delay, |remaining| delay.min(remaining)))
-    }
-    async fn wait_delay(
-        &self,
-        schedule: &mut Schedule,
-        pending: &[Pending],
-        immediate: bool,
-        stopping: bool,
-        observation: (usize, bool),
-    ) -> Result<Duration, AuditProjectionError> {
-        let now = crate::lifecycle::RuntimeTimer.now();
-        let mut delay = schedule.after.checked_duration_since(now).unwrap_or(RESCAN);
-        if !immediate && !stopping && schedule.after <= now && pending.len() < self.capacity.get() {
-            match self.idle_delay(delay).await {
-                Ok(next) => {
-                    delay = next;
-                    schedule.error = None;
-                    if !observation.1 {
-                        self.health.progress(0, observation.0 + pending.len());
-                    }
-                }
-                Err(error) => {
-                    if !error.is_retryable() {
-                        return Err(error);
-                    }
-                    schedule.failures = schedule.failures.saturating_add(1);
-                    delay = retry_delay(schedule.failures);
-                    schedule.after = crate::lifecycle::RuntimeTimer.now() + delay;
-                    schedule.error = Some(error);
-                    self.health.transient_failure();
-                }
-            }
+    async fn recover(&self, mut item: Pending) -> (Pending, Result<bool, AuditProjectionError>) {
+        let result = self.resolve_pending(&item.identity).await;
+        if result.as_ref().is_err_and(|error| error.is_retryable()) {
+            item.failures = item.failures.saturating_add(1);
+            item.error = result.as_ref().err().copied();
+            item.after = crate::lifecycle::RuntimeTimer.now() + retry_delay(item.failures);
         }
-        if let Some(at) = pending.iter().map(|p| p.after).min() {
-            delay = delay.min(at.saturating_duration_since(crate::lifecycle::RuntimeTimer.now()));
-        }
-        Ok(delay)
+        (item, result)
     }
     async fn work(&self, stop: &CancellationToken) -> Result<(), AuditProjectionError> {
-        let mut pending: Vec<Pending> = Vec::new();
-        let mut schedule = Schedule {
-            after: crate::lifecycle::RuntimeTimer.now(),
-            failures: 0,
-            error: None,
-        };
-        let mut diagnostics = Diagnostics::new();
-        while !stop.is_cancelled() {
-            let started = crate::lifecycle::RuntimeTimer.now();
-            let free = self.capacity.get().saturating_sub(pending.len());
-            let (ready, waiting): (Vec<_>, Vec<_>) =
-                pending.into_iter().partition(|p| p.after <= started);
-            pending = waiting;
-            let recover = ready
-                .into_iter()
-                .map(|mut item| async move {
-                    let result = self.resolve_pending(&item.identity).await;
-                    if result.as_ref().is_err_and(|error| error.is_retryable()) {
-                        item.failures = item.failures.saturating_add(1);
-                        item.error = result.as_ref().err().copied();
-                        item.after =
-                            crate::lifecycle::RuntimeTimer.now() + retry_delay(item.failures);
-                    }
-                    (item, result)
-                })
-                .collect::<FuturesUnordered<_>>()
-                .collect::<Vec<_>>();
-            let claim = async {
-                if started < schedule.after {
-                    return None;
-                }
-                let limit = NonZeroUsize::new(free)?;
-                Some(
-                    self.delivery
-                        .project_batch(limit, operation(), ACTION_BUDGET)
-                        .await,
-                )
-            };
-            // Both branches retain their original settlement owners. Cancellation only ends
-            // the next iteration; no select! drops an in-flight COMMIT or sibling identity.
-            let (resolved, batch) = tokio::join!(recover, claim);
-            let mut progressed = 0;
-            let mut deferred = 0;
-            let mut claim_failed = false;
-            let recovery = collect_recoveries(resolved, &mut pending);
-            progressed += recovery.0;
-            diagnostics.resolved_total += recovery.0 as u64;
-            deferred += recovery.1;
-            let mut failure = recovery.2;
-            if let Some(batch) = batch {
-                let report = collect_batch(batch, &mut pending);
-                schedule.error = report.failure;
-                progressed += report.projected;
-                diagnostics.projected_total += report.projected as u64;
-                diagnostics.uncertain_total += report.uncertain as u64;
-                deferred += report.deferred;
-                if let Some(error) = report.failure {
-                    claim_failed = error.is_retryable() && report.projected == 0;
-                    retain_failure(&mut failure, error);
-                }
-            }
-            schedule.advance(
-                started,
-                (progressed, deferred + pending.len()),
-                claim_failed,
-                failure,
-                &self.health,
-            )?;
-            let immediate = progressed > 0 && !claim_failed && pending.len() < self.capacity.get();
-            let delay = self
-                .wait_delay(
-                    &mut schedule,
-                    &pending,
-                    immediate,
-                    stop.is_cancelled(),
-                    (deferred, failure.is_some()),
-                )
-                .await?;
-            diagnostics.observe(
-                self,
-                started,
-                (progressed, deferred),
-                &pending,
-                &schedule,
-                failure,
-            );
-            if stop.is_cancelled() {
-                break;
-            }
-            if immediate {
-                continue;
-            }
-            // A notification cannot bypass infrastructure backoff. Recovery deadlines remain
-            // independent, and a stored Notify permit survives the scan/wait race.
-            tokio::select! { biased;
-                () = stop.cancelled() => {},
-                () = self.wake.notified(), if schedule.after <= crate::lifecycle::RuntimeTimer.now() => {},
-                () = tokio::time::sleep(delay) => {},
-            }
-        }
-        Ok(())
+        Work::new(self).run(stop).await
     }
 }
+// All identities and original futures are owned by this one local worker state.
+// A batch reserves its free capacity until its complete report returns; no second batch
+// starts meanwhile. Recovery ownership is counted both while waiting and while running.
+type BatchResult = Result<rss_mdm_audit_integration::AuditProjectionReport, AuditProjectionError>;
+type RecoveryResult = (Pending, Result<bool, AuditProjectionError>);
+type HintResult = Result<rss_transactional_messaging_postgres::OutboxWakeup, AuditProjectionError>;
+struct Timed<T> {
+    started: Instant,
+    value: T,
+}
+type Flight<'a, T> = futures::future::BoxFuture<'a, Timed<T>>;
+async fn timed<T>(future: impl std::future::Future<Output = T>) -> Timed<T> {
+    let started = crate::lifecycle::RuntimeTimer.now();
+    Timed {
+        started,
+        value: future.await,
+    }
+}
+struct Work<'a> {
+    worker: &'a Worker,
+    pending: Vec<Pending>,
+    recovering: FuturesUnordered<Flight<'a, RecoveryResult>>,
+    batch: Option<Flight<'a, BatchResult>>,
+    hint: Option<Flight<'a, HintResult>>,
+    schedule: Schedule,
+    diagnostics: Diagnostics,
+    scan_after: Instant,
+    draining: bool,
+    fatal: Option<AuditProjectionError>,
+}
+enum Event {
+    Batch(Timed<BatchResult>),
+    Recovery(Timed<RecoveryResult>),
+    Hint(Timed<HintResult>),
+    Wake,
+    Stop,
+}
+#[derive(Default)]
+struct Tick {
+    started: Option<Instant>,
+    phase: &'static str,
+    progressed: usize,
+    deferred: usize,
+    failure: Option<AuditProjectionError>,
+    claim_failed: bool,
+}
+impl<'a> Work<'a> {
+    fn new(worker: &'a Worker) -> Self {
+        let now = crate::lifecycle::RuntimeTimer.now();
+        Self {
+            worker,
+            pending: Vec::new(),
+            recovering: FuturesUnordered::new(),
+            batch: None,
+            hint: None,
+            schedule: Schedule {
+                after: now,
+                failures: 0,
+                error: None,
+            },
+            diagnostics: Diagnostics::new(),
+            scan_after: now,
+            draining: false,
+            fatal: None,
+        }
+    }
+    fn recovery_count(&self) -> usize {
+        self.pending.len() + self.recovering.len()
+    }
+    fn idle(&self) -> bool {
+        self.batch.is_none() && self.hint.is_none() && self.recovering.is_empty()
+    }
+    fn launch(&mut self) {
+        if self.draining {
+            return;
+        }
+        let now = crate::lifecycle::RuntimeTimer.now();
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|p| p.after <= now);
+        self.pending = waiting;
+        for item in ready {
+            self.recovering
+                .push(timed(self.worker.recover(item)).boxed());
+        }
+        if self.batch.is_some() || now < self.scan_after.max(self.schedule.after) {
+            return;
+        }
+        if let Some(free) = NonZeroUsize::new(
+            self.worker
+                .capacity
+                .get()
+                .saturating_sub(self.recovery_count()),
+        ) {
+            self.batch = Some(
+                timed(
+                    self.worker
+                        .delivery
+                        .project_batch(free, operation(), ACTION_BUDGET),
+                )
+                .boxed(),
+            );
+            self.scan_after = now + RESCAN;
+        }
+    }
+    fn next_deadline(&self) -> Instant {
+        let mut at = crate::lifecycle::RuntimeTimer.now() + RESCAN;
+        if self.batch.is_none() && self.recovery_count() < self.worker.capacity.get() {
+            at = at.min(self.scan_after.max(self.schedule.after));
+        }
+        self.pending
+            .iter()
+            .map(|p| p.after)
+            .min()
+            .map_or(at, |retry| at.min(retry))
+    }
+    async fn next(&mut self, stop: &CancellationToken) -> Event {
+        let at = self.next_deadline();
+        // Only borrow stored futures here. A losing branch remains owned and is polled again.
+        tokio::select! { biased;
+            () = stop.cancelled(), if !self.draining => Event::Stop,
+            result = async { self.batch.as_mut().expect("active batch").await }, if self.batch.is_some() => Event::Batch(result),
+            Some(result) = self.recovering.next(), if !self.recovering.is_empty() => Event::Recovery(result),
+            result = async { self.hint.as_mut().expect("active hint").await }, if self.hint.is_some() => Event::Hint(result),
+            () = self.worker.wake.notified(), if !self.draining && self.schedule.after <= crate::lifecycle::RuntimeTimer.now() => Event::Wake,
+            () = tokio::time::sleep_until(at.into()), if !self.draining => Event::Wake,
+        }
+    }
+    fn batch_finished(&mut self, completed: Timed<BatchResult>) -> Tick {
+        let started = completed.started;
+        let result = completed.value;
+        self.batch = None;
+        let report = collect_batch(result, &mut self.pending);
+        self.schedule.error = report.failure;
+        self.diagnostics.projected_total += report.projected as u64;
+        self.diagnostics.uncertain_total += report.uncertain as u64;
+        if report.failure.is_none() {
+            self.schedule.failures = 0;
+        }
+        if report.projected > 0 || report.failure.is_some() {
+            self.scan_after = crate::lifecycle::RuntimeTimer.now();
+        } else if self.hint.is_none() && !self.draining {
+            self.hint = Some(timed(self.worker.delivery.next_wakeup(operation())).boxed());
+        }
+        Tick {
+            started: Some(started),
+            phase: "batch",
+            progressed: report.projected,
+            deferred: report.deferred,
+            claim_failed: report.failure.is_some_and(|error| error.is_retryable())
+                && report.projected == 0,
+            failure: report.failure,
+        }
+    }
+    fn recovery_finished(&mut self, completed: Timed<RecoveryResult>) -> Tick {
+        let started = completed.started;
+        let result = completed.value;
+        if result.1.is_ok() {
+            self.scan_after = crate::lifecycle::RuntimeTimer.now();
+        }
+        let (progressed, deferred, failure) = collect_recoveries(vec![result], &mut self.pending);
+        self.diagnostics.resolved_total += progressed as u64;
+        Tick {
+            started: Some(started),
+            phase: "recovery",
+            progressed,
+            deferred,
+            failure,
+            claim_failed: false,
+        }
+    }
+    fn hint_finished(&mut self, completed: Timed<HintResult>) -> Tick {
+        let started = completed.started;
+        let result = completed.value;
+        self.hint = None;
+        match result {
+            Ok(hint) => {
+                let now = crate::lifecycle::RuntimeTimer.now();
+                let delay = hint
+                    .next_deadline()
+                    .and_then(|d| d.remaining(now))
+                    .filter(|d| !d.is_zero())
+                    .unwrap_or(RESCAN);
+                self.scan_after = self.scan_after.min(now + delay.min(RESCAN));
+                Tick {
+                    started: Some(started),
+                    phase: "wakeup",
+                    ..Tick::default()
+                }
+            }
+            Err(error) => {
+                self.schedule.failures = self.schedule.failures.saturating_add(1);
+                self.schedule.after =
+                    crate::lifecycle::RuntimeTimer.now() + retry_delay(self.schedule.failures);
+                self.schedule.error = Some(error);
+                self.scan_after = crate::lifecycle::RuntimeTimer.now();
+                Tick {
+                    started: Some(started),
+                    phase: "wakeup",
+                    failure: Some(error),
+                    ..Tick::default()
+                }
+            }
+        }
+    }
+    fn observe(&mut self, tick: Tick) {
+        let started = crate::lifecycle::RuntimeTimer.now();
+        let recovery_count = self.recovery_count();
+        if let Err(error) = self.schedule.advance(
+            started,
+            (tick.progressed, tick.deferred + recovery_count),
+            tick.claim_failed,
+            tick.failure,
+            &self.worker.health,
+        ) {
+            self.fatal = Some(error);
+            self.draining = true;
+        }
+        if tick.progressed > 0 {
+            self.scan_after = crate::lifecycle::RuntimeTimer.now();
+        }
+        if tick.failure.is_none() && self.schedule.error.is_none() {
+            self.worker
+                .health
+                .progress(tick.progressed, tick.deferred + recovery_count);
+        }
+        self.diagnostics.observe(
+            self.worker,
+            &tick,
+            &self.pending,
+            &self.schedule,
+            self.recovering.len(),
+        );
+    }
+    async fn run(mut self, stop: &CancellationToken) -> Result<(), AuditProjectionError> {
+        loop {
+            self.draining |= stop.is_cancelled();
+            if self.draining && self.idle() {
+                break;
+            }
+            self.launch();
+            let tick = match self.next(stop).await {
+                Event::Batch(result) => self.batch_finished(result),
+                Event::Recovery(result) => self.recovery_finished(result),
+                Event::Hint(result) => self.hint_finished(result),
+                Event::Wake => {
+                    self.scan_after = crate::lifecycle::RuntimeTimer.now();
+                    continue;
+                }
+                Event::Stop => {
+                    self.draining = true;
+                    continue;
+                }
+            };
+            self.observe(tick);
+        }
+        self.fatal.map_or(Ok(()), Err)
+    }
+}
+
 const ACTION_BUDGET: Duration = Duration::from_secs(6);
 const RESCAN: Duration = Duration::from_secs(30);
 fn operation() -> OperationDeadline {
@@ -363,13 +498,14 @@ impl Diagnostics {
     fn observe(
         &mut self,
         worker: &Worker,
-        started: Instant,
-        counts: (usize, usize),
+        tick: &Tick,
         pending: &[Pending],
         schedule: &Schedule,
-        failure: Option<AuditProjectionError>,
+        recovering: usize,
     ) {
-        let (progressed, deferred) = counts;
+        let (progressed, deferred, failure) = (tick.progressed, tick.deferred, tick.failure);
+        let started = tick.started.expect("completed operation timing");
+        let pending_count = pending.len() + recovering;
         if progressed > 0 {
             self.last_progress = Some(crate::lifecycle::RuntimeTimer.now());
         }
@@ -380,7 +516,7 @@ impl Diagnostics {
         if active_failure.is_some() {
             worker.health.transient_failure();
         }
-        if progressed > 0 || (pending.is_empty() && deferred == 0 && active_failure.is_none()) {
+        if progressed > 0 || (pending_count == 0 && deferred == 0 && active_failure.is_none()) {
             self.waiting_since = None;
         } else {
             self.waiting_since.get_or_insert(started);
@@ -393,10 +529,10 @@ impl Diagnostics {
                 > Duration::from_secs(300)
         });
         let observation = serde_json::json!({
-            "event":"mdm_audit_projection_progress", "phase":"batch_and_recovery",
+            "event":"mdm_audit_projection_progress", "phase":tick.phase,
             "elapsed_ms":crate::lifecycle::RuntimeTimer.now().saturating_duration_since(started).as_millis(), "projected":progressed,
             "deferred":deferred, "capacity":worker.capacity.get(),
-            "pending_recovery":pending.len(), "stalled":stalled, "claim_failures":schedule.failures,
+            "pending_recovery":pending_count, "running_recovery":recovering, "stalled":stalled, "claim_failures":schedule.failures,
             "recovery_failures":recovery_failures, "projected_total":self.projected_total,
             "uncertain_total":self.uncertain_total, "resolved_total":self.resolved_total,
             "retry_ms":schedule.after.saturating_duration_since(crate::lifecycle::RuntimeTimer.now()).as_millis(),

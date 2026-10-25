@@ -98,6 +98,7 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
         launch.stage_task_with_token(listener.clone().registration().critical());
         launch.stage_deferred_task_with_token(worker.clone().registration().critical());
         launch.finish();
+        let mut closing = None;
         let result = async {
             // The first actual effect cannot acquire its connection until released. A serial
             // implementation cannot deliver either sibling during this barrier, even by reordering.
@@ -125,10 +126,15 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             }).await?;
-            // Only the failed recovery occupies capacity. A new event can finish before it retries.
+            tokio::time::timeout(ACTION_BUDGET, worker.recovery_started.notified()).await?;
+            // Keep one actual recovery future blocked while two successive batches finish.
             let new_id = enqueue(&fixture.audit, tenant, "worker-after-recovery-failure").await?;
             wait_delivered(&mut observer, tenant, &new_id).await?;
-            ensure!(worker.health.projection.lock().expect("projection health").as_ref().is_some_and(|v| v["pending_recovery"] == 1), "new delivery waited for the unrelated recovery retry");
+            ensure!(worker.health.projection.lock().expect("projection health").as_ref().is_some_and(|v| v["pending_recovery"] == 1), "new delivery waited for the unrelated recovery");
+            let next_id = enqueue(&fixture.audit, tenant, "worker-next-batch-while-recovering").await?;
+            wait_delivered(&mut observer, tenant, &next_id).await?;
+            ensure!(worker.health.projection.lock().expect("projection health").as_ref().is_some_and(|v| v["pending_recovery"] == 1), "second batch waited for the unrelated recovery");
+            worker.recovery_release.notify_one();
             tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
                     let observed = worker.health.projection.lock().expect("projection health").clone();
@@ -141,10 +147,27 @@ async fn worker_progresses_siblings_before_a_blocked_effect_and_resolves_uncerta
             ensure!(count == 1, "unknown outcome must not duplicate the effect");
             let management_id = enqueue(&management_store, management, "worker-next-tenant").await?;
             wait_delivered(&mut observer, management, &management_id).await?;
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let (release, released) = tokio::sync::oneshot::channel();
+            worker.delivery.inject_next_projection_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
+                async move { let _ = entered.send(()); let _ = released.await; },
+            )?;
+            let closing_id = enqueue(&fixture.audit, tenant, "worker-original-settlement-during-shutdown").await?;
+            closing = Some((closing_id, release));
+            tokio::time::timeout(ACTION_BUDGET, started).await??;
             Ok::<_, anyhow::Error>(())
         }.await;
-        let shutdown = owner.shutdown().join().await?;
+        worker.recovery_release.notify_one();
+        // Dispatch shutdown while the original effect is still active, then let that owner settle.
+        let shutdown = owner.shutdown().join();
+        let (closing_id, release) = closing.map_or((None, None), |(id, release)| (Some(id), Some(release)));
+        let (shutdown, ()) = tokio::join!(shutdown, async { if let Some(release) = release { let _ = release.send(()); } });
+        let shutdown = shutdown?;
         ensure!(shutdown.is_clean(), "worker must release original owners: {shutdown:?}");
+        if result.is_ok() && let Some(id) = closing_id {
+            ensure!(delivered(&mut observer, tenant, &id).await?, "shutdown discarded original settlement");
+        }
         observer.close().await?;
         result
     }).await
