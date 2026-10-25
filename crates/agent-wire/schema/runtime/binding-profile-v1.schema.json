@@ -883,7 +883,7 @@
       "items": {
         "$ref": "#/$defs/Capability"
       },
-      "maxItems": 22,
+      "maxItems": 27,
       "minItems": 1,
       "type": "array",
       "uniqueItems": true

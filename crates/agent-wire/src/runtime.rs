@@ -51,7 +51,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "2910119fa6e7a7bce6d33725c360ef020b27df3fe548d661358080b7c95b9ea8";
+    "b86d77ee661fa68c783e2a8fbdc6eb149ab9a4627be4a11a0b7edc94c65b4a63";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,7 +311,7 @@ pub struct BindingProfile {
     #[schemars(schema_with = "crate::runtime::uuid_schema")]
     pub epoch: Uuid,
     /// Exact accepted capability set.
-    #[schemars(extend("minItems" = 1, "maxItems" = 22, "uniqueItems" = true))]
+    #[schemars(extend("minItems" = 1, "maxItems" = 27, "uniqueItems" = true))]
     #[serde(deserialize_with = "profile_capabilities")]
     pub capabilities: Vec<Capability>,
     /// Server-selected built-in collector versions for this registration.

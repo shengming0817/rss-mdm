@@ -177,8 +177,8 @@ impl AccessTaskSpec {
                 }
                 _ => (),
             }
-            if let AccessWindowsPlan::Whfb { retire, .. } = plan {
-                if *retire != matches!(self.action, AccessAction::Unbind { .. })
+            if let AccessWindowsPlan::Whfb { retire, .. } = plan
+                && (*retire != matches!(self.action, AccessAction::Unbind { .. })
                     || !matches!(
                         &self.action,
                         AccessAction::Apply {
@@ -194,10 +194,9 @@ impl AccessTaskSpec {
                             },
                             ..
                         }
-                    )
-                {
-                    return Err(WireError::InvalidValue);
-                }
+                    ))
+            {
+                return Err(WireError::InvalidValue);
             }
             if let AccessWindowsPlan::Preserve { facts } = plan {
                 let super::CredentialSubject::RssLogin {
@@ -942,17 +941,16 @@ impl AccessWindowsConfiguration {
     }
     /// Reject empty and duplicate RSS account selections.
     pub fn validate(&self) -> Result<(), WireError> {
-        if let Self::RssFactor { accounts } = self {
-            if accounts.is_empty()
+        if let Self::RssFactor { accounts } = self
+            && (accounts.is_empty()
                 || accounts.len() > 3
                 || accounts
                     .iter()
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
-                    != accounts.len()
-            {
-                return Err(WireError::InvalidValue);
-            }
+                    != accounts.len())
+        {
+            return Err(WireError::InvalidValue);
         }
         Ok(())
     }
