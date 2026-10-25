@@ -14,11 +14,11 @@ import tempfile
 import time
 import urllib.request
 
-from build_run import lease_fds, lock_file, require_lease
+from build_run import lock_file, require_lease
 from t2_processes import check_cancelled
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCK = {**json.loads((ROOT/'fixtures/apple-tools.lock.json').read_text()), **json.loads((ROOT/'fixtures/pki-tools.lock.json').read_text())}
+LOCK = json.loads((ROOT/'fixtures/pki-tools.lock.json').read_text())
 
 
 @contextmanager
@@ -94,46 +94,3 @@ def binary(name):
 if __name__ == '__main__':
     require_lease(ROOT)
     print('step', binary('step'), flush=True)
-
-
-def nano_identity():
-    from t2_processes import subprocess
-    effective = json.loads(subprocess.check_output(
-        ['go','env','-json','GOOS','GOARCH','GOAMD64','GOARM','GOARM64','GOVERSION','GOROOT','GOTOOLCHAIN','CGO_ENABLED','CC','CXX','CGO_CFLAGS','CGO_CPPFLAGS','CGO_CXXFLAGS','CGO_LDFLAGS','GOFLAGS','GOEXPERIMENT'],text=True,env={**os.environ,'GOWORK':'off'}))
-    return dict(source=LOCK['nanomdm']['sourceArchiveSha256'], toolchain=effective,
-                flags=['-mod=readonly','-trimpath','./cmd/nanomdm'])
-
-
-def nano_binary():
-    """Verify source and built artifact; reuse only the exact effective build identity."""
-    from t2_processes import subprocess
-    item = LOCK['nanomdm']
-    cache = Path(os.environ.get('CARGO_TARGET_DIR', ROOT/'target'))/'apple-tools'/item['sourceArchiveSha256']
-    identity = nano_identity()
-    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    output = cache/key
-    with publication(output):
-        # Different effective builds share only an atomically published, verified archive.
-        data = verified_archive(cache/'archive.tar.gz',
-            'https://codeload.github.com/micromdm/nanomdm/tar.gz/'+item['revision'],
-            item['sourceArchiveSha256'], timeout=60, limit=16*1024*1024)
-        destination, manifest = output/'nanomdm', output/'manifest.json'
-        try:
-            proof = json.loads(manifest.read_text())
-            if proof['identity'] == identity and proof['sha256'] == hashlib.sha256(destination.read_bytes()).hexdigest() and os.access(destination, os.X_OK):
-                return destination
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-        with tempfile.TemporaryDirectory(prefix='build-', dir=cache) as temporary:
-            with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as tar:
-                tar.extractall(temporary, filter='data')
-            source, built = Path(temporary)/('nanomdm-'+item['revision']), Path(temporary)/'nanomdm'
-            env = {**os.environ, 'GOWORK':'off', 'GOCACHE':str(cache/'go-build'), 'GOMODCACHE':str(cache/'go-mod')}
-            subprocess.run(['go','build','-mod=readonly','-trimpath','-o',str(built),'./cmd/nanomdm'],
-                           pass_fds=lease_fds(), cwd=source, env=env, check=True, timeout=180)
-            check_cancelled()
-            content = built.read_bytes()
-            proof = dict(identity=identity, sha256=hashlib.sha256(content).hexdigest())
-            publish(destination, content, 0o700)
-            publish(manifest, json.dumps(proof).encode())
-        return destination

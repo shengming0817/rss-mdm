@@ -9,7 +9,6 @@ mod commands;
 mod ddm;
 mod lifecycle;
 mod onboarding;
-mod oracle;
 mod platform_sso;
 mod policy;
 mod scep;
@@ -795,7 +794,6 @@ impl Fixture {
                 .build()?,
             pending_replies: Default::default(),
             installed_trust: Default::default(),
-            oracle: oracle::Oracle::new(der)?,
             origin: apple.config.management.origin.clone(),
             topic: apple.channel.apns_topic().to_owned(),
         };

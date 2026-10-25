@@ -431,7 +431,7 @@ for name in ('enrollment.recovery','windows.issuance','windows.enrollment','wind
     MODULES[name] = replace(MODULES[name], support_inputs=MODULES[name].support_inputs + ('crates/app/tests/enrollment/support.rs',))
 for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboarding', 'renewal', 'identity', 'push', 'fairness', 'host', 'commands', 'users', 'ddm'):
     no_pg = part in ('cms', 'apns')
-    fixtures = ('apple',) + (() if no_pg else ('identity', 'oracle'))
+    fixtures = ('apple',) + (() if no_pg else ('identity',))
     if part in ('profile', 'policy', 'ddm', 'onboarding', 'collection', 'identity'):
         fixtures += ('content',)
     if part in ('scep', 'renewal', 'identity', 'host'):
@@ -456,7 +456,7 @@ for part in ('cms', 'apns', 'scep', 'collection', 'profile', 'policy', 'onboardi
                ('crates/app/tests/apple/cms.rs',) if part == 'cms' else (f'crates/app/tests/apple/{part}.rs',)))
 MODULES['apple.cms'] = replace(MODULES['apple.cms'], production_inputs=(*MODULES['apple.cms'].production_inputs, 'crates/certificate/src/apple/account.rs'))
 add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
-    fixtures=('apple','identity','oracle','scep'),
+    fixtures=('apple','identity','scep'),
     sources=('crates/apple-channel/src/ade/*','crates/apple-channel/schema/ade.sql','crates/apple-channel/schema/account-enrollment.sql','crates/apple-channel/src/organizations.rs',
              'crates/certificate/src/apple/ade.rs','crates/certificate/fixtures/*',
              'crates/registration-service/src/enrollment/native.rs','crates/registration-service/src/enrollment/read.rs',
@@ -467,7 +467,7 @@ add('apple.ade', selectors=('apple::tests::ade::',), profile='product',
     tests=('crates/app/tests/apple/ade.rs',))
 MODULES['apple.ade'] = replace(MODULES['apple.ade'], scope='tenant')
 add('apple.platform_sso', selectors=('apple::tests::platform_sso::',), profile='product',
-    fixtures=('apple','identity','oracle','scep','agent_pki','task_signing'),
+    fixtures=('apple','identity','scep','agent_pki','task_signing'),
     sources=('crates/agent-wire/src/platform_sso.rs','crates/agent-wire/schema/platform_sso/*','crates/apple-channel/src/platform_sso/*','crates/apple-channel/schema/platform-sso.sql','crates/apple-mdm/src/platform_sso.rs',
              'crates/apple-channel/src/flow_store.rs','crates/apple-channel/src/lib.rs','crates/apple-channel/src/access-admission.sql',
              'crates/app/src/assembly/apple/*','crates/app/src/identity.rs','crates/app/schema/platform-sso-identity.sql',
@@ -482,7 +482,7 @@ MODULES['apple.platform_sso']=replace(MODULES['apple.platform_sso'],scope='tenan
     CasePolicy('apple::tests::platform_sso::third_party_profile_dispatch_without_rss_runtime', 'reuse', 'tenant', (*MODULES['apple.platform_sso'].fixtures, 'content')),
 ))
 add('apple.account_enrollment', selectors=('apple::tests::account_enrollment::',), profile='product',
-    fixtures=('apple','identity','oracle','scep'),
+    fixtures=('apple','identity','scep'),
     sources=('crates/apple-channel/src/account_enrollment/*', 'crates/apple-channel/schema/account-enrollment.sql',
              'crates/registration-service/src/enrollment/native.rs',
              'crates/certificate/src/apple/account.rs', 'crates/app/src/enrollment_progress.rs',
@@ -1010,7 +1010,7 @@ TOOL_INPUTS = {
     'hack/t2_registry.py': ('test_app_test_layout', 'test_t2_policy', 'test_t2_modules', 'test_t2_runner', 'test_ci_selection', 'test_ci_impact'),
     'hack/t2.py': ('test_t2_modules', 'test_t2_runner', 'test_t2_guards'),
     'hack/t2_execution.py': ('test_t2_execution', 'test_t2_runner'),
-    'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner', 'test_apple_tools', 'test_apple_ca'),
+    'hack/t2_processes.py': ('test_t2_execution', 'test_t2_fixtures', 'test_t2_runner', 'test_fixture_tools', 'test_apple_ca'),
     'hack/source_fixtures.py': ('test_source_t2',),
     'hack/s3_fixtures.py': ('test_s3_fixtures',),
     'fixtures/s3-provider.lock.json': ('test_s3_fixtures',),
@@ -1022,12 +1022,11 @@ TOOL_INPUTS = {
     'hack/build_run.py': ('test_build_run', 'test_build_environment'),
     'hack/ci.py': ('test_ci', 'test_ci_selection'),
     'hack/agent_wire_artifact.py': ('test_agent_wire_artifact',),
-    'hack/fixture_tools.py': ('test_apple_tools',),
+    'hack/fixture_tools.py': ('test_fixture_tools',),
     'hack/apple_ca.py': ('test_apple_ca',),
     'hack/pki_ca.py': ('test_apple_ca',),
     'hack/agent_pki_fixtures.py': ('test_t2_fixtures',),
     'hack/pki_recovery.py': ('test_pki_recovery',),
-    'fixtures/apple-tools.lock.json': ('test_apple_tools', 'test_apple_ca', 'test_t2_environment'),
     'hack/auth_t3.py': ('test_auth_t3',),
     'hack/auth_t3_browser.mjs': ('test_auth_t3',),
     'hack/release.py': ('test_release',),
@@ -1954,7 +1953,7 @@ consume(('deployment/providers.lock.json', 'fixtures/pki-tools.lock.json'), 'ins
 
 consume(('tests/support/context.rs',), 'group.persistence')
 consume(('hack/windows_fixtures.py', 'deployment/windows-leaf.tpl'), 'windows.issuance')
-consume(('hack/apple_fixtures.py', 'hack/apple_oracle.py'), 'apple.scep')
+consume(('hack/apple_fixtures.py',), 'apple.scep')
 consume(('hack/pki_fixtures.py',), 'agent.pki')
 consume(('hack/enterprise_idp.py',), 'identity.sso')
 consume(('crates/app/schema/flow-roles.sql', 'crates/app/schema/software-publication-roles.sql'),
@@ -1965,9 +1964,6 @@ consume(('crates/execution-service/src/dispatch-v1.json',), 'execution.commands.
 consume(('crates/execution-service/src/queries/records.rs',), 'execution.agent.history execution.commands.windows')
 consume(('crates/flow-service/src/automation/jobs.rs',), 'planning.recovery')
 
-# Protocol comparison and fixture error projection keep their direct proof owners.
-consume(('crates/app/tests/apple/oracle.rs',),
-        'apple.scep apple.identity apple.renewal apple.host apple.account_enrollment apple.ade apple.platform_sso')
 consume(('crates/app/tests/fixtures/error.rs',), 'api.diagnostics')
 
 MODULES['certificate-archive.http'] = replace(MODULES['certificate-archive.http'], policies=(*MODULES['certificate-archive.http'].policies,

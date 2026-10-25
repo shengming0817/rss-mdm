@@ -8,7 +8,7 @@
 2. `rss-mdm` 拥有产品服务端、管理 API、MDM 网关、业务模型、协议契约、产品迁移与部署；`rss-mdm-agent` 拥有自有 Rust Agent、平台适配、安装与可信升级。两个独立 Cargo workspace 和发布生命周期，不以相邻目录 path 耦合。
 3. Windows Agent 最终迁移到 Rust；macOS 自有 Agent 同样按 Rust 平台适配路线建设。现有前端先保留，通过明确 API/会话兼容接入；“保留前端”不表示已取得或验证其源码。
 4. Windows 与 macOS、统一执行、Agent/MDM 两通道、osquery/脚本/MDM 采集、WinGet/Brew 私有源仍是 PRD 正式目标。Windows 优先验证路径不把 macOS 或软件源退回三级候选。
-5. RSS 提供持久化机制；产品定义采集、资产、策略、身份与协议语义。Rust 要求约束自有实现，不要求将已选择的 NanoMDM、osquery、包管理器等第三方依赖重写为 Rust。
+5. RSS 提供持久化机制；产品定义采集、资产、策略、身份与协议语义。Rust 要求约束自有实现，不要求将已选择的 osquery、包管理器等第三方依赖重写为 Rust。
 6. 迁移默认保留可验证的既有设备身份，按设备群单一控制 owner 逐步切换。不存在存量部署时不虚构迁移负担；存在时先盘点证书、管理 URL、数据与旧任务。
 
 ## 什么算成功
