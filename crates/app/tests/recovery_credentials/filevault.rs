@@ -4,6 +4,9 @@ use rss_mdm_agent_wire::filevault as w;
 use rss_mdm_recovery_credentials::{Protection, Recipient, filevault as owner};
 use sha2::{Digest, Sha256};
 fn protection() -> Result<Protection> {
+    protection_with_expiry(false)
+}
+fn protection_with_expiry(expired: bool) -> Result<Protection> {
     use openssl::{
         asn1::Asn1Time,
         bn::BigNum,
@@ -23,9 +26,17 @@ fn protection() -> Result<Protection> {
     cert.set_subject_name(&name)?;
     cert.set_issuer_name(&name)?;
     cert.set_pubkey(&key)?;
-    let not_before = Asn1Time::days_from_now(0)?;
+    let not_before = if expired {
+        Asn1Time::from_unix(0)?
+    } else {
+        Asn1Time::days_from_now(0)?
+    };
     cert.set_not_before(&not_before)?;
-    let not_after = Asn1Time::days_from_now(1)?;
+    let not_after = if expired {
+        Asn1Time::from_unix(1)?
+    } else {
+        Asn1Time::days_from_now(1)?
+    };
     cert.set_not_after(&not_after)?;
     cert.sign(&key, MessageDigest::sha256())?;
     let cert = cert.build();
@@ -170,5 +181,41 @@ async fn reserved_native_prk_remains_receivable_at_capacity() -> Result<()> {
         ensure!(storage::reserve_in(&mut tx,tenant,&binding,operation,4095).await?.version==4096);
         ensure!(storage::reserve_in(&mut tx,tenant,&binding,Uuid::new_v4(),4096).await.is_err());
         tx.commit().await?;Ok(())
+    }).await
+}
+
+#[tokio::test]
+#[ignore = "MODULE=recovery-credentials.http: expired recipient cannot block revoking CMS collection authority"]
+async fn expired_recipient_can_be_disabled_without_reviving_upload_authority() -> Result<()> {
+    let mut authority = authority::Authority::open().await?;
+    let resources = std::mem::take(&mut authority.resources);
+    resources.finish(async {
+        let tenant=Uuid::parse_str(case_tenant())?;
+        let protection=protection_with_expiry(true)?;
+        let device=case::name("filevault-expired");
+        let (registration,_)=inventory::seed_source(device,"agent","agent.builtin","fixture")?;
+        let source=owner::Source{tenant,device:device.into(),registration,generation:1};
+        let mut tx=begin(&authority.pool).await?;
+        // Minimal legal precondition: an existing authorization whose recipient has expired.
+        let binding=owner::source_binding(&mut tx,&source,true).await?.context("custody")?;
+        let Subject::Filevault{custody,..}=binding.subject else {anyhow::bail!("FileVault custody")};
+        sqlx::query("UPDATE mdm_recovery.filevault_custodies SET enabled=true,revision=1,recipient=$3 WHERE tenant_id=$1 AND id=$2")
+            .bind(tenant).bind(custody).bind(protection.active_recipient().id()).execute(&mut *tx).await?;
+        let config=owner::configuration(&mut tx,&source,&protection).await?;
+        let input=upload(&protection,&config,"ABCD-EFGH-IJKL-MNOP-QRST-UVWX")?;
+        let accepted=owner::receive(&mut tx,&source,&input,&protection).await?;
+        let mut change=owner::Configure{operation_id:Uuid::new_v4(),registration,generation:1,expected_revision:1,enabled:true,recipient_id:protection.active_recipient().id().into()};
+        ensure!(matches!(owner::configure(&mut tx,&source,&change,&protection).await,Err(rss_mdm_recovery_credentials::Error::Conflict)),"expired certificate cannot authorize new collection");
+        change.operation_id=Uuid::new_v4();change.enabled=false;
+        let disabled=owner::configure(&mut tx,&source,&change,&protection).await?;
+        ensure!(!disabled.enabled && disabled.recipient_certificate.is_none() && disabled.revision==2);
+        tx.commit().await?;
+        let mut tx=begin(&authority.pool).await?;
+        ensure!(owner::configure(&mut tx,&source,&change,&protection).await?==disabled);
+        let mut fresh=input.clone();fresh.operation_id=Uuid::new_v4();
+        ensure!(matches!(owner::receive(&mut tx,&source,&fresh,&protection).await,Err(rss_mdm_recovery_credentials::Error::Forbidden)),"new writes must be revoked");
+        ensure!(owner::receive(&mut tx,&source,&input,&protection).await?==accepted,"historical receipt does not restore write authority");
+        tx.rollback().await?;
+        Ok(())
     }).await
 }

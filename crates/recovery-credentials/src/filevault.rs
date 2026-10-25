@@ -169,19 +169,25 @@ pub async fn configure(
         if row.try_get::<String,_>("purpose")? != "configure" || row.try_get::<Vec<u8>,_>("digest")? != digest {return Err(Error::Conflict);}
         return serde_json::from_value(row.try_get("receipt")?).map_err(|_|Error::Integrity);
     }
-    let now: i64 =
-        sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
-            .fetch_one(&mut *c)
-            .await?;
-    protection
-        .recipient(&input.recipient_id)?
-        .require_current(now)?;
+    // Revoking collection must not depend on the recipient still being usable.
+    let recipient = if input.enabled {
+        let now: i64 =
+            sqlx::query_scalar("SELECT floor(extract(epoch FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *c)
+                .await?;
+        protection
+            .recipient(&input.recipient_id)?
+            .require_current(now)?;
+        Some(input.recipient_id.as_str())
+    } else {
+        None
+    };
     let binding = source_binding(c, source, true)
         .await?
         .ok_or(Error::NotFound)?;
     let (id, _) = coordinates(&binding)?;
     let changed=sqlx::query("UPDATE mdm_recovery.filevault_custodies SET enabled=$3,recipient=$4,revision=revision+1 WHERE tenant_id=$1 AND id=$2 AND revision=$5")
-        .bind(source.tenant).bind(id).bind(input.enabled).bind(&input.recipient_id).bind(input.expected_revision).execute(&mut *c).await?;
+        .bind(source.tenant).bind(id).bind(input.enabled).bind(recipient).bind(input.expected_revision).execute(&mut *c).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);
     }
