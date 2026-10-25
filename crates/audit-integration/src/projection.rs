@@ -270,8 +270,10 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
     fn terminal(&self, disposition: TerminalDisposition) -> Result<(), AuditProjectionError> {
         if disposition != TerminalDisposition::Succeeded {
             let _ = self.fatal.set(AuditProjectionError::Quarantined);
+            return Err(AuditProjectionError::Quarantined);
         }
-        self.check()
+        // A sibling's fatal error stops future claims, but cannot erase this event's commit.
+        Ok(())
     }
     fn consume(
         &self,
@@ -286,7 +288,6 @@ impl<K: Aead + Send + Sync> AuditProjection<K> {
         ) {
             report.recoveries.push(identity);
         }
-        self.check()?;
         let projected = outcome.fold(
             |value| {
                 self.terminal(value.into_parts().1.disposition())?;
