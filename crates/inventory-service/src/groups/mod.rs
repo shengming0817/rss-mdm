@@ -12,7 +12,7 @@ mod model;
 mod mutation;
 pub mod pages;
 pub mod references;
-pub use model::{GroupChange, GroupStart};
+pub use model::{DefinitionEdit, GroupChange, GroupStart};
 pub struct Groups {
     pub objects: Arc<dyn crate::objects::ObjectReader>,
     pub tenant: TenantId,
@@ -24,6 +24,16 @@ pub struct Groups {
     pub clock: Arc<dyn crate::clock::Clock>,
 }
 pub trait Flow: Send + Sync {
+    fn define<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+        edit: DefinitionEdit,
+    ) -> crate::tasks::Pending<'a, Value>;
+    fn graph_changed<'a, 'tx>(
+        &'a self,
+        tx: &'a mut PgTransaction<'tx>,
+    ) -> crate::tasks::Pending<'a, ()>;
+
     fn current<'a, 'tx>(
         &'a self,
         tx: &'a mut PgTransaction<'tx>,

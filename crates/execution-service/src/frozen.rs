@@ -7,12 +7,11 @@ use serde::{Deserialize, Serialize};
 pub enum Frozen {
     DeviceAccess {
         configuration: rss_mdm_agent_wire::runtime::AccessConfiguration,
-        grant: crate::authorization::OperationAuthority,
     },
     UnmanageDevice {
         schedule: rss_mdm_policy::schedule::Schedule,
         run_lifetime_seconds: u32,
-        grant: crate::authorization::OperationAuthority,
+        actor: crate::authorization::Actor,
     },
     Credential {
         action: Box<crate::credential_tasks::FrozenCredential>,
@@ -33,7 +32,6 @@ pub enum Frozen {
     Configuration {
         #[serde(rename = "native_sealed")]
         native: configuration::Protected,
-        grants: std::collections::BTreeMap<String, Vec<crate::authorization::OperationAuthority>>,
         platform: Platform,
         exit: Exit,
         resource_digest: [u8; 32],
@@ -60,46 +58,33 @@ impl Frozen {
         tenant: rss_request_context::TenantId,
         owner: configuration::Owner,
     ) -> std::result::Result<(), Error> {
-        let (mut permissions, grants) = match self {
-            Self::Software { action } => (
-                vec![crate::authorization::Permission::SoftwareDeploy],
-                &mut action.grants,
-            ),
-            Self::Credential { action, .. } => (vec![action.permission()], &mut action.grants),
-            Self::Configuration { native, grants, .. } => {
+        let mut permissions = match self {
+            Self::Software { .. } => vec![crate::authorization::Permission::SoftwareDeploy],
+            Self::Credential { action, .. } => vec![action.permission()],
+            Self::Configuration { native, .. } => {
                 let native = native.open(key, tenant, owner)?;
                 let mut permissions = native.apply.permissions()?;
                 if let Some(remove) = &native.remove {
                     permissions.extend(remove.permissions()?);
                 }
-                (permissions, grants)
+                permissions
             }
-            Self::NativeCollection { action, .. } => (action.permissions()?, &mut action.grants),
-            Self::AgentCollection { action, .. } => (action.permissions(), &mut action.grants),
+            Self::NativeCollection { action, .. } => action.permissions()?,
+            Self::AgentCollection { action, .. } => action.permissions(),
             _ => return Ok(()),
         };
         permissions.sort();
         permissions.dedup();
         if let Some(devices) = devices {
             for device in devices {
-                grants.insert(
-                    device.clone(),
-                    permissions
-                        .iter()
-                        .map(|&permission| {
-                            crate::permissions::grant(snapshot, proof, Some(device), permission)
-                        })
-                        .collect::<std::result::Result<_, _>>()?,
-                );
+                for &permission in &permissions {
+                    crate::permissions::authorize(snapshot, proof, Some(device), permission)?;
+                }
             }
         } else {
-            grants.insert(
-                "*".into(),
-                permissions
-                    .iter()
-                    .map(|&permission| crate::permissions::grant(snapshot, proof, None, permission))
-                    .collect::<std::result::Result<_, _>>()?,
-            );
+            for permission in permissions {
+                crate::permissions::authorize(snapshot, proof, None, permission)?;
+            }
         }
         Ok(())
     }

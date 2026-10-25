@@ -35,6 +35,17 @@ impl EnrollmentPolicy {
         {
             return Ok(false);
         }
+        self.accepted_in(service, tx, target).await
+    }
+    pub async fn accepted_in(
+        &self,
+        service: &crate::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+    ) -> Result<bool> {
+        if !self.policy.state.is_enabled() {
+            return Ok(false);
+        }
         let Some(binding) =
             crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
                 .await?
@@ -53,15 +64,8 @@ impl EnrollmentPolicy {
         let tenant = tx.tenant_id();
         let registration = target.registration;
         let generation = target.generation;
-        let grant = self.frozen.grant.clone();
         tx.with_connection(move |c| {
             Box::pin(async move {
-                let granted = grant.valid(c, Permission::Enrollment, now).await;
-                match granted {
-                    Ok(false) => return Ok(Ok(false)),
-                    Err(e) => return Ok(Err(Error::from(e))),
-                    _ => {}
-                }
                 let state = crate::assets::channel::current_in(
                     c,
                     tenant,

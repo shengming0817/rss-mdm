@@ -117,15 +117,7 @@ impl ExecutionService {
                     let (service, p, operation, audit, reader) = ctx;
                     let service = *service;
                     let p = *p;
-                    let tenant = service.tenant.to_string();
-                    let instance = service.instance.clone();
-                    tx.with_connection(move |c| {
-                        Box::pin(async move {
-                            Ok(crate::authorization::lock_on(c, &tenant, &instance).await)
-                        })
-                    })
-                    .await??;
-                    crate::transaction::lock(tx).await?;
+
                     storage::lock(tx, p.device()).await?;
                     let op = storage::load(tx, &service.protection, *operation).await?;
                     if op.registration != p.registration()

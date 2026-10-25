@@ -192,11 +192,11 @@ impl Associations {
                 let ids=group.ids()?;
                 for id in &ids {snapshot.require(proof,Permission::InventoryRead,Some(id))?;}
                 let catalog=rss_mdm_inventory_postgres::catalog_at_in(c,service.tenant,world.watermark).await.map_err(|_|Error::Storage)?;
-                let raw=rss_mdm_inventory_service::assets::planning::SnapshotReader{tenant:service.tenant}.summary_devices_on(c,world.watermark,&ids,&catalog,sensitive).await.map_err(|_|Error::Storage)?;
+                let raw=rss_mdm_inventory_service::assets::planning::SnapshotReader{tenant:service.tenant}.summary_devices_on(c,world.watermark,&ids,&catalog).await.map_err(|_|Error::Storage)?;
                 let observed=crate::directory::read_generation(c,proof.tenant_id()).await?;
                 let context=rss_mdm_query::cursor::fingerprint(&json!({"generation":observed,"kind":"device-inventory-list","tenant":proof.tenant_id(),"instance":proof.instance_id(),"principal":proof.principal_id(),"scope":grants,"watermark":world.watermark,"view":group.reference})).map_err(|_|Error::Storage)?;
                 let mut fields=BTreeMap::new();let mut lists=BTreeMap::new();
-                for definition in catalog.fields().filter(|d|sensitive||d.sensitivity==Sensitivity::Standard) {
+                for definition in catalog.fields().filter(|d|d.sensitivity!=Sensitivity::Secret) {
                     if matches!(definition.value_type,ValueType::Array{..}) {
                         let sources=raw.iter().flat_map(|e|e.arrays.get(&definition.key).into_iter().flat_map(|f|f.sources.iter().cloned().map(|fact|EndpointArrayFact{endpoint:e.scalars.device.clone(),fact}))).collect();
                         let resolved=rss_mdm_inventory::resolve_device_array(definition,sources).map_err(|_|Error::Storage)?;

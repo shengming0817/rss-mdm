@@ -35,7 +35,6 @@ impl AssetService {
         if owner.subject != scope.subject
             || owner.collection_scope != scope.collection_scope
             || owner.devices != scope.devices
-            || owner.sensitive != scope.sensitive
         {
             return Err(Error::Forbidden.into());
         }

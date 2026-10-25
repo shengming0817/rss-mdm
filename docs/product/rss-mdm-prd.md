@@ -847,6 +847,9 @@ AC-06-21-02　验证脚本失败、权限不足、空结果、显式删除、部
 
 AC-06-21-03　大结果、慢查询、敏感字段、错误 schema、未批准自定义扩展都不能绕过预算与访问控制。
 
+字段分级为 Standard（普通）、Sensitive（隐私分类）与 Secret（秘密材料）。Sensitive 不触发额外的字段权限校验，遵循原有租户、设备与操作授权，可用于 Group。Secret 包括密码、私钥、访问密钥、Token 原文和恢复密钥；定义仅保留分类元数据，不允许普通采集、手工赋值、搜索或时序绑定。Group 与普通资产读取在查询值之前排除 Secret；秘密原文继续由专用托管能力持有。公钥、证书元数据、密钥存在状态和含 key 的普通标识不因名称自动归为 Secret。
+
+
 AC-06-21-04　Windows 原生标准模板须经 Resource 发布、任务执行、结果接收与 Inventory 查询验证 edition/architecture、占位身份拒绝、软件 installed/registered/provisioned 区分及同包多用户实例保留。完整空清单与非法/截断/用户覆盖不足的结果分别验收，后者不得清空旧值。字段解释见[资产指南](../guides/assets.md#windows-标准资产语义)；服务端合成输入不代替 Windows x64/ARM64 真机采集与 CPU/电池聚合证据。
 
 

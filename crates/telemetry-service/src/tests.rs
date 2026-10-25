@@ -67,10 +67,15 @@ pub(super) fn profile(projection: TelemetryProjection) -> TelemetryProfile {
 }
 pub(super) fn input() -> w::TelemetryUpload {
     w::TelemetryUpload {
-        binding: "a".repeat(64),
+        configuration: serde_json::from_value(
+            serde_json::from_str::<serde_json::Value>(include_str!(
+                "../../agent-wire/tests/fixtures/telemetry-v1-vectors.json"
+            ))
+            .unwrap()["signed"]
+                .clone(),
+        )
+        .unwrap(),
         batch_id: uuid::Uuid::new_v4(),
-        policy: uuid::Uuid::new_v4(),
-        policy_version: uuid::Uuid::new_v4(),
         observations: vec![w::TelemetryObservation {
             id: uuid::Uuid::new_v4(),
             sequence: 3,

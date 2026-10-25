@@ -25,15 +25,6 @@ pub fn checked<T>(r: std::result::Result<T, impl std::fmt::Debug>) -> Result<T> 
 pub fn json(v: &impl serde::Serialize) -> Result<Value> {
     checked_input(serde_json::to_value(v))
 }
-// Publication precedes authorization and owner/source locks for every Inventory transaction.
-async fn lock_publication(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id();
-    tx.with_connection(move |c| {
-        Box::pin(async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await })
-    })
-    .await?;
-    Ok(())
-}
 pub fn deadline() -> rss_transactional_messaging::policy::OperationDeadline {
     rss_transactional_messaging::policy::OperationDeadline::from_remaining(Duration::from_secs(6))
 }
@@ -134,9 +125,6 @@ where
                     let (audit_store, context, operation, audit, failure) = state;
                     if let Err(error) = audit_store.bind_in(tx).await {
                         return Err(rejection(Error::from(error).into(), failure, owner));
-                    }
-                    if let Err(error) = lock_publication(tx).await {
-                        return Err(rejection(error, failure, owner));
                     }
                     let f = operation.take().expect("one callback");
                     match f(context, tx).await {
@@ -239,9 +227,6 @@ where
             |state, tx| {
                 Box::pin(async move {
                     let (context, operation, failure) = state;
-                    if let Err(error) = lock_publication(tx).await {
-                        return Err(rejection(error, failure, owner));
-                    }
                     operation.take().expect("one preflight")(context, tx)
                         .await
                         .map_err(|e| rejection(e, failure, owner))

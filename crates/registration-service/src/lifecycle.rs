@@ -65,22 +65,42 @@ pub async fn lock_devices_in(
     tenant: &str,
     devices: &[String],
 ) -> Result<(), Error> {
+    let keys = device_lock_keys(tenant, devices)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2790)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(crate::database::db)?;
+    Ok(())
+}
+
+/// Try an endpoint page without waiting behind device writers while a caller holds directory locks.
+/// A false result requires the caller to roll back the entire transaction before retrying.
+pub async fn try_lock_devices_in(
+    c: &mut sqlx::PgConnection,
+    tenant: &str,
+    devices: &[String],
+) -> Result<bool, Error> {
+    for key in device_lock_keys(tenant, devices)? {
+        let locked: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,2790))")
+                .bind(key)
+                .fetch_one(&mut *c)
+                .await
+                .map_err(crate::database::db)?;
+        if !locked {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+fn device_lock_keys(tenant: &str, devices: &[String]) -> Result<Vec<String>, Error> {
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
-        .execute(&mut *c)
-        .await
-        .map_err(crate::database::db)?;
     let keys = devices
         .iter()
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .map(|device| serde_json::to_string(&(tenant, device)).map_err(|_| Error::Malformed))
         .collect::<Result<Vec<_>, _>>()?;
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(key,2790)) FROM unnest($1::text[]) WITH ORDINALITY locks(key,n) ORDER BY n").bind(keys).execute(c).await.map_err(crate::database::db)?;
-    Ok(())
+    Ok(keys)
 }
 
 /// Normal work and enrollment cannot cross an accepted retirement. Authentication

@@ -308,11 +308,14 @@ pub(super) async fn withdrawn(
     policy: &Value,
 ) -> Result<()> {
     identity::change_grants(case_tenant(), &f.author_id, f.grants.clone()).await?;
+    let path = format!("/api/v1/policies/{}", policy.as_str().unwrap());
+    let (status, current) = f.author.call(router, Method::GET, &path, None).await?;
+    ensure!(status == StatusCode::OK);
     post(
         &mut f.author,
         router,
         &format!("/api/v1/policies/{}", policy.as_str().unwrap()),
-        json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"disable"}}),
+        json!({"operationId":Uuid::new_v4(),"expectedRevision":current["revision"],"input":{"action":"disable"}}),
     )
     .await?;
     let mut body = evidence.body.clone();

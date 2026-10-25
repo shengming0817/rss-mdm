@@ -55,12 +55,11 @@ impl AssetService {
         let q = &input.compile(&catalog)?;
         self.validate_query(q, &catalog)?;
         if let Some(criteria) = &q.criteria {
-            filter::require_visible(&catalog, &criteria.criteria, scope.sensitive)?;
+            filter::require_visible(&catalog, &criteria.criteria)?;
         }
         for key in q.fields.iter().chain(q.sort.iter().map(|s| &s.field)) {
-            if !scope.sensitive
-                && checked_input(catalog.definition(*key))?.sensitivity
-                    == rss_mdm_inventory::Sensitivity::Sensitive
+            if checked_input(catalog.definition(*key))?.sensitivity
+                == rss_mdm_inventory::Sensitivity::Secret
             {
                 return Err(Error::Forbidden.into());
             }

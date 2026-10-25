@@ -249,7 +249,6 @@ fn authorization_targets_do_not_inherit_single_message_budget() {
         },
         definition,
         windows_plan: Some(plan),
-        grants: Default::default(),
         resource_digest: [0; 32],
         collection: rss_mdm_inventory::CollectionDefinition::new(
             "inventory",

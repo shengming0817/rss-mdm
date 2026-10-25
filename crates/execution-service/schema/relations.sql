@@ -85,7 +85,7 @@ GRANT UPDATE(gateway_accepted) ON TABLE mdm_commands.action_runs TO mdm_command_
 
 GRANT UPDATE(result) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 
-GRANT UPDATE(invocation) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
+GRANT UPDATE(invocation,source_objects) ON TABLE mdm_commands.action_runs TO mdm_command_runtime;
 
 GRANT SELECT,INSERT ON TABLE mdm_commands.attempts TO mdm_command_runtime;
 
@@ -249,3 +249,5 @@ CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_
 GRANT EXECUTE ON FUNCTION mdm_commands.lock_query_revision(uuid),mdm_commands.observe_query_commands(uuid,text[],bigint[]) TO mdm_command_runtime;
 
 CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+
+GRANT SELECT ON mdm.asset_clock TO mdm_command_runtime;

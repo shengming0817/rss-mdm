@@ -64,9 +64,7 @@ impl FieldLayout {
                     .definition(*field)
                     .is_ok_and(|definition| match access {
                         FieldLayoutAccess::Edit => true,
-                        FieldLayoutAccess::Read { scope } => {
-                            fields::visible(definition, scope.sensitive)
-                        }
+                        FieldLayoutAccess::Read { .. } => fields::visible(definition),
                     })
             });
         }
@@ -216,15 +214,11 @@ mod tests {
             .sensitivity = rss_mdm_inventory::Sensitivity::Sensitive;
         let catalog = rss_mdm_inventory::Catalog::new(definitions).unwrap();
         let input = layout();
-        let mut scope = ReadScope::all();
-        scope.sensitive = false;
+        let scope = ReadScope::all();
         let reader = input
             .clone()
             .project(&catalog, &FieldLayoutAccess::Read { scope });
-        assert_eq!(
-            reader.groups[0].fields,
-            vec![FieldKey::parse("custom.asset_tag").unwrap()]
-        );
+        assert_eq!(reader.groups[0].fields, input.groups[0].fields);
         assert_eq!(
             input
                 .clone()

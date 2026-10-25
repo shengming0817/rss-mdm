@@ -70,9 +70,7 @@ impl AssetService {
         let catalog = catalog_in(tx, self.tenant, current).await?;
         let visible = catalog
             .fields()
-            .filter(|f| {
-                access.sensitive || f.sensitivity == rss_mdm_inventory::Sensitivity::Standard
-            })
+            .filter(|f| f.sensitivity != rss_mdm_inventory::Sensitivity::Secret)
             .map(|f| f.key.as_str().to_owned())
             .collect::<Vec<_>>();
         let authority = digest(&(access, &sources, &visible))?;

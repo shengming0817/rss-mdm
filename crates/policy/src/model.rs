@@ -147,7 +147,7 @@ impl Policy {
         };
         if matches!(
             definition.action,
-            crate::Action::Software { .. } | crate::Action::EnsureAgentInstalled { .. }
+            crate::Action::EnsureAgentInstalled { .. }
         ) != execution_binding.is_some()
         {
             return Err(Error::Malformed);

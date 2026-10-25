@@ -61,7 +61,7 @@ fn coordinate(command: &dc::Command) -> (String, i64) {
 }
 pub(crate) async fn read(tx: &mut PgTransaction<'_>) -> Result<(i64, i64), PgError> {
     let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=$1::uuid),0),mdm.lock_asset_watermark($1::uuid)").bind(tenant).fetch_one(c).await})).await
+    tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT coalesce((SELECT revision FROM mdm_commands.query_revisions WHERE tenant_id=$1::uuid),0),coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=$1::uuid),0)").bind(tenant).fetch_one(c).await})).await
 }
 impl CommandStore {
     pub(crate) async fn now(&self, tx: &mut PgTransaction<'_>) -> Result<i64, PgError> {

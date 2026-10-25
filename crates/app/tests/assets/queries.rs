@@ -586,8 +586,8 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
             )
             .await?
             .0
-            == StatusCode::FORBIDDEN,
-        "field metadata does not grant sensitive value access"
+            == StatusCode::ACCEPTED,
+        "Sensitive classification must not require an additional permission"
     );
     grants.push(Grant {
         operation: Permission::InventorySensitiveRead,
@@ -719,7 +719,7 @@ async fn native_record_properties_preserve_unknown_booleans_in_queries_and_pages
         grants,
     )
     .await?;
-    ensure!(browser.call(router, Method::GET, &list, None).await?.0 == StatusCode::FORBIDDEN);
+    ensure!(browser.call(router, Method::GET, &list, None).await?.0 == StatusCode::OK);
     ensure!(
         browser
             .call(

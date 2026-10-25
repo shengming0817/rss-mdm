@@ -18,19 +18,20 @@ fn expired_delivery_can_retry_but_unknown_side_effect_cannot() {
     assert_eq!(run.execution, Execution::Succeeded);
 }
 #[test]
-fn late_or_cancelled_evidence_cannot_become_trusted_facts() {
+fn execution_time_is_independent_of_receipt_and_cancellation() {
     let mut run = RunState::new(100, 0).unwrap();
     let attempt = Uuid::new_v4();
     run.claim(attempt, 0).unwrap();
     run.received(attempt, 1).unwrap();
     run.start(attempt, 2).unwrap();
     assert!(run.trusts_result(61, 60));
-    assert!(!run.trusts_result(62, 60));
+    assert!(run.trusts_result(62, 60));
+    assert!(!run.trusts_result(63, 60));
     assert!(!run.trusts_result(100, 3600));
     run.cancel();
-    assert!(!run.trusts_result(3, 60));
+    assert!(run.trusts_result(3, 60));
     run.cancelled(attempt).unwrap();
-    assert!(!run.trusts_result(4, 60));
+    assert!(run.trusts_result(4, 60));
     run.result(attempt, true).unwrap();
     assert_eq!(run.execution, Execution::Succeeded);
     assert!(!run.trusts_result(5, 60));

@@ -193,14 +193,17 @@ async fn deliver_on(
             Outcome::Unknown => return Err(Error::Unknown),
         }
     }
-    if input.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
-        crate::current::deliver_on(c, service.tenant, input).await?;
-    }
+    let current_assets =
+        if input.profile.spec().projection != rss_mdm_resource::TelemetryProjection::History {
+            crate::current::deliver_on(c, service.tenant, input).await?
+        } else {
+            false
+        };
     sqlx::query(
-        "UPDATE mdm_telemetry.batches SET delivery='published' WHERE tenant_id=$1::uuid AND id=$2",
+        "UPDATE mdm_telemetry.batches SET delivery='published',current_assets=$3 WHERE tenant_id=$1::uuid AND id=$2",
     )
     .bind(service.tenant.to_string())
-    .bind(input.input.batch_id)
+    .bind(input.input.batch_id).bind(current_assets)
     .execute(c)
     .await?;
     Ok(())

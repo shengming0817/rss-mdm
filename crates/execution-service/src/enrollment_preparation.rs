@@ -3,7 +3,6 @@ use crate::{
     Error, Inputs,
     authorization::{Permission, context::AuthorizedPrincipal},
 };
-use rss_mdm_authorization_service::OperationAuthority;
 use rss_mdm_policy::schedule::Schedule;
 use uuid::Uuid;
 
@@ -27,12 +26,13 @@ impl Inputs {
             return Err(Error::Unsupported);
         }
         entries.validate()?;
+        snapshot.require_all_devices(proof, Permission::Enrollment)?;
         Ok(FrozenEnrollment {
             organization,
             schedule: schedule.clone(),
             run_lifetime_seconds: lifetime,
             entries: entries.clone(),
-            grant: OperationAuthority::all_devices(snapshot, proof, Permission::Enrollment)?,
+            actor: proof.actor(),
         })
     }
 }

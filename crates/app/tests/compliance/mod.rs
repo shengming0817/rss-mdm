@@ -10,7 +10,10 @@ fn definition(target: Value) -> Value {
 
 async fn ok(b: &mut Browser, r: &Router, m: Method, p: &str, v: Option<Value>) -> Result<Value> {
     let (s, v) = b.call(r, m, p, v).await?;
-    ensure!(s == StatusCode::OK, "{p}: {s} {v}");
+    ensure!(
+        s == StatusCode::OK || s == StatusCode::ACCEPTED,
+        "{p}: {s} {v}"
+    );
     Ok(v)
 }
 

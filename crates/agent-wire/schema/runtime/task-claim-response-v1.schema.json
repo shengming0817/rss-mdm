@@ -3399,7 +3399,12 @@
         },
         {
           "const": "sensitive",
-          "description": "Requires the sensitive inventory permission.",
+          "description": "Privacy classification; ordinary resource authorization still applies.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "Secret material belongs to dedicated custody, never ordinary inventory or Group input.",
           "type": "string"
         }
       ]
@@ -4092,21 +4097,6 @@
         "reference"
       ],
       "type": "object"
-    },
-    "SoftwareStartMode": {
-      "description": "Whether a signed task can start automatically or awaits trusted local user action.",
-      "oneOf": [
-        {
-          "const": "automatic",
-          "description": "Policy-required task may start when offered and locally admitted.",
-          "type": "string"
-        },
-        {
-          "const": "user_initiated",
-          "description": "Agent must wait for a local user choice before requesting Start.",
-          "type": "string"
-        }
-      ]
     },
     "SoftwareStepDefinition": {
       "additionalProperties": false,
@@ -5800,10 +5790,6 @@
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
           "type": "string"
         },
-        "startMode": {
-          "$ref": "#/$defs/SoftwareStartMode",
-          "description": "Local start behavior; no Policy or rollout details are exposed."
-        },
         "steps": {
           "description": "Ordered prerequisites followed by the requested action.",
           "items": {
@@ -5852,8 +5838,7 @@
         "authorization",
         "steps",
         "definitionDigest",
-        "intent",
-        "startMode"
+        "intent"
       ],
       "type": "object"
     },

@@ -43,7 +43,7 @@ pub async fn finish(
     let registration = run.target.registration;
     let (definition, execution) = tx.with_connection(move |c| Box::pin(async move {
         use sqlx::Row;
-        let row = sqlx::query("SELECT c.attempts,a.offer FROM mdm_access.collection_runs c JOIN mdm_commands.action_attempts a ON(a.tenant_id,a.id)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND c.registration=$3 FOR SHARE OF c,a")
+        let row = sqlx::query("SELECT c.attempts,a.offer FROM mdm_access.collection_runs c JOIN mdm_commands.action_attempts a ON(a.tenant_id,a.id)=(c.tenant_id,c.id) WHERE c.tenant_id=$1::uuid AND c.id=$2 AND c.registration=$3")
             .bind(tenant).bind(attempt).bind(registration).fetch_one(c).await?;
         let progress: CollectionProgress = serde_json::from_str(row.try_get("attempts")?).map_err(|_|sqlx::Error::Protocol("collection reservation".into()))?;
         let offer: wire::SignedTask = serde_json::from_value(row.try_get("offer")?).map_err(|_|sqlx::Error::Protocol("collection offer".into()))?;
@@ -67,10 +67,15 @@ pub async fn finish(
         return Err(Error::Malformed.into());
     }
 
-    let trusted = allowed
-        && run
-            .state
-            .trusts_result(now, spec.plan.spec().budget.timeout_seconds)
+    let observed_at = result
+        .queries
+        .values()
+        .map(|q| q.collected_at)
+        .max()
+        .ok_or(Error::Malformed)?;
+    let trusted = run
+        .state
+        .trusts_result(observed_at, spec.plan.spec().budget.timeout_seconds)
         && run
             .state
             .started_at
@@ -168,6 +173,9 @@ pub async fn finish(
         attempt,
         progress,
         now,
+        observed_at,
+        trusted,
+        project: allowed && trusted,
     };
     tx.with_connection(move |c| {
         Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
@@ -175,11 +183,7 @@ pub async fn finish(
     .await?;
     // Both inline and chunked input retain the same recoverable canonical evidence.
     super::output::retain_native(tx, run, result).await?;
-    if allowed {
-        run.state.result(attempt, true)?;
-    } else {
-        run.state.uncertain_result(attempt)?;
-    }
+    run.state.result(attempt, true)?;
     use sha2::{Digest, Sha256};
     let bytes = stored(serde_json::to_vec(result))?;
     let queries:std::collections::BTreeMap<_,_>=result.queries.iter().map(|(id,q)|(id,serde_json::json!({"queryDigest":q.query_digest,"collectedAt":q.collected_at,"status":q.status,"enumerationComplete":q.enumeration_complete,"rowCount":q.row_count}))).collect();

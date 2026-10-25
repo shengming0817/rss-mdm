@@ -69,7 +69,6 @@ fn task() -> SoftwareTaskSpec {
         definition_digest: [0; 32],
         steps: vec![step],
         intent: SoftwareTaskIntent::Install,
-        start_mode: SoftwareStartMode::Automatic,
     };
     task.definition_digest = sha2::Sha256::digest(serde_json::to_vec(&task.steps).unwrap()).into();
     task.validate().unwrap();

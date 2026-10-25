@@ -52,23 +52,13 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
     }
     pub async fn withdrawn_in(
         &self,
-        source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
-        tx: &mut PgTransaction<'_>,
-        device: &str,
+        _source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+        _tx: &mut PgTransaction<'_>,
+        _device: &str,
     ) -> Result<bool> {
-        if !self.active {
-            return Ok(true);
-        }
-        Ok(storage::admission_in(
-            source,
-            tx,
-            self.policy.definition.scope,
-            self.channel,
-            device,
-        )
-        .await?
-            == crate::source_authority::ScopeAdmission::Excluded)
+        Ok(!self.active)
     }
+
     pub async fn authorized_in(
         &self,
         source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,

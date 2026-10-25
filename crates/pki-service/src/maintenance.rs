@@ -204,11 +204,12 @@ impl Registry {
                     .bind(next.tenant).bind(purpose(next.purpose)).fetch_one(&mut *c).await.map_err(|_|Error::Storage)?;
                 let current:Trust=serde_json::from_slice(&bytes).map_err(|_|Error::Storage)?;
                 if current.installation_digest()!=next.installation_digest(){return Err(Error::Conflict);}
-                let checked=DeviceTrust::restore(current.clone(),current.purpose,*now).map_err(|_|Error::Storage)?;
-                checked.update(next.clone(),*now).map_err(|_|Error::Conflict)?;
                 let actor=p.map(|p|p.principal_id()).unwrap_or("service:device-pki");
                 let instance=p.map(|p|p.instance_id()).unwrap_or("");
                 let replay=crate::mutation::replay(c,&next.tenant.to_string(),actor,instance,*operation,"crl_publish",fingerprint).await?.is_some();
+                if replay { return Ok(Change{value:false,replay:true,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()}); }
+                let checked=DeviceTrust::restore(current.clone(),current.purpose,*now).map_err(|_|Error::Storage)?;
+                checked.update(next.clone(),*now).map_err(|_|Error::Conflict)?;
                 for (issuer,published) in publications {
                     let number=i64::try_from(published.number).map_err(|_|Error::Request)?;
                     sqlx::query("UPDATE mdm_pki.revocations SET state='published',crl_number=$4 WHERE tenant_id=$1 AND purpose=$2 AND issuer=$3 AND serial=ANY($5) AND state<>'published'")
@@ -216,14 +217,14 @@ impl Registry {
                 }
                 crate::registry::persist(c,next).await?;
                 if !replay {crate::mutation::save(c,(&next.tenant.to_string(),actor,instance),*operation,"crl_publish",fingerprint,b"null").await?;}
-                Ok(Change{value:(),replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
+                Ok(Change{value:true,replay,key:format!("pki:{operation}:crl_publish"),fingerprint:fingerprint.clone()})
             })).await;
-        if result.is_ok() {
+        if matches!(result, Ok(true)) {
             self.binding(requested_purpose)?
                 .update(next, now)
                 .map_err(|_| Error::Storage)?;
         }
-        result
+        result.map(|_| ())
     }
     /// Refresh all generations of a purpose together, so a CA outage can recover without restart.
     pub async fn sweep(

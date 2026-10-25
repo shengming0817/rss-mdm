@@ -379,8 +379,10 @@ pub enum Platform {
 pub enum Sensitivity {
     /// Ordinary inventory.
     Standard,
-    /// Requires the sensitive inventory permission.
+    /// Privacy classification; ordinary resource authorization still applies.
     Sensitive,
+    /// Secret material belongs to dedicated custody, never ordinary inventory or Group input.
+    Secret,
 }
 /// A published field version. No time-based expiry and no execution permission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,6 +418,11 @@ impl FieldDefinition {
     pub fn validate(&self) -> Result<()> {
         self.value_type.validate()?;
         self.validate_time_series()?;
+        if self.sensitivity == Sensitivity::Secret
+            && (self.manual || self.searchable || self.time_series.is_some())
+        {
+            return Err(Invalid::Value);
+        }
         if self.version == 0
             || self.version > i64::MAX as u64
             || self.sources.is_empty()
@@ -453,6 +460,9 @@ impl FieldDefinition {
     }
     /// Validate a value and unique, stable item identities for a declared list.
     pub fn validate_scalar(&self, value: &Scalar) -> Result<()> {
+        if self.sensitivity == Sensitivity::Secret {
+            return Err(Invalid::Value);
+        }
         self.value_type.validate_value(value)?;
         self.hardware_value(value)?;
         if let Scalar::Array(items) = value {
@@ -475,6 +485,9 @@ impl FieldDefinition {
     }
     /// Validate one list item, including standard asset semantics, before recording row quality.
     pub fn validate_item(&self, value: &Scalar) -> Result<()> {
+        if self.sensitivity == Sensitivity::Secret {
+            return Err(Invalid::Value);
+        }
         let ValueType::Array { items, .. } = &self.value_type else {
             return Err(Invalid::TypeMismatch);
         };

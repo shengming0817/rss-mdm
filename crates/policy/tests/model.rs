@@ -318,48 +318,14 @@ fn self_service_requires_explicit_bounded_access_and_supports_only_available_sof
             intent == "available_install"
         );
         software["selfService"]["riskLevel"] = json!(1);
-        assert!(
+        assert_eq!(
             serde_json::from_value::<Definition>(software)
                 .unwrap()
                 .validate()
-                .is_err()
+                .is_ok(),
+            intent == "available_install"
         );
     }
-}
-
-#[test]
-fn software_lifecycle_generation_requires_a_new_execution_version() {
-    let fixtures: Value =
-        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
-    let definition: Definition = serde_json::from_value(fixtures[3]["definition"].clone()).unwrap();
-    let change = Change::Put {
-        definition: Box::new(definition.clone()),
-        enabled: true,
-    };
-    let id = Uuid::new_v4();
-    assert!(Policy::apply(id, None, 0, &change, Uuid::new_v4(), None).is_err());
-    let initial = Policy::apply(id, None, 0, &change, Uuid::new_v4(), Some([1; 32])).unwrap();
-    let unchanged = Policy::apply(
-        id,
-        Some(&initial.policy),
-        1,
-        &change,
-        Uuid::new_v4(),
-        Some([1; 32]),
-    )
-    .unwrap();
-    assert_eq!(initial.policy.version, unchanged.policy.version);
-    let renewed = Policy::apply(
-        id,
-        Some(&unchanged.policy),
-        2,
-        &change,
-        Uuid::new_v4(),
-        Some([2; 32]),
-    )
-    .unwrap();
-    assert_ne!(initial.policy.version, renewed.policy.version);
-    assert_eq!(renewed.policy.number, 2);
 }
 
 #[test]

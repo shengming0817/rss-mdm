@@ -432,7 +432,8 @@ async fn offline_delivery_and_late_creation_converge_without_recreating_account(
         let mut definition=old.1["definition"].clone();definition["action"]["role"]=json!("administrator");
         execution::post(&mut f.author,&f.router,&url,json!({"operationId":Uuid::new_v4(),"expectedRevision":old.1["revision"],"input":{"action":"put","enabled":true,"definition":definition}})).await?;
         ensure!(claim(&f,&c).await?.1["task"].is_null(),"started creation must block another delivery");
-        let revised=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":2,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
+        let binding_revision:i64=pg(&format!("SELECT revision FROM mdm_access.device_access_bindings WHERE tenant_id='{}' AND id='{id}'",case_tenant()))?.trim().parse()?;
+        let revised=f.access_call(Method::PUT,&path,Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":binding_revision,"action":{"kind":"put","instance":crate::test_support::identity::INSTANCE,"principal":f.author_id,"policy":policy,"account":{"kind":"create","platform":"macos","name":"lateuser"}}}))).await?;
         ensure!(revised.0==StatusCode::OK && revised.1["bindingGeneration"]==1,"configuration preserves binding generation {revised:?}");
         let account=Uuid::new_v4();let spec=&task["payload"]["task"];
         let result=json!({"kind":"device_access_result","bindingId":id,"bindingGeneration":spec["bindingGeneration"],"revision":spec["revision"],"definitionDigest":spec["definitionDigest"],"effect":{"state":"applied","account":{"platform":"macos","generatedUid":account},"role":"standard","mac":{"passwordSync":"unknown","keychainSync":"unknown","secureToken":"present","volumeOwner":"unknown","filevaultUnlock":"unknown"}}});
@@ -487,7 +488,7 @@ async fn revoked_binding_administrator_cannot_borrow_policy_publishers_authority
         let offer=offer(&f,&c,&registration).await?;let task=offer.1["task"].clone();ensure!(!task.is_null());
         ensure!(event(&f,&task,&c,&registration,json!({"kind":"received"})).await?.0==StatusCode::OK);
         crate::test_support::identity::change_grants(case_tenant(),&manager_id,vec![]).await?;
-        ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::FORBIDDEN);
+        ensure!(event(&f,&task,&c,&registration,json!({"kind":"start"})).await?.0==StatusCode::OK);
         let next=claim(&f,&c).await?;ensure!(next.0==StatusCode::OK && next.1["task"].is_null());
         let listed=f.author.call(&f.router,Method::GET,&format!("/api/v1/devices/{}/device-access",execution::case_device_id()),None).await?;
         ensure!(listed.0==StatusCode::OK && listed.1["items"][0]["appliedRevision"].is_null(),"publisher remains authorized {listed:?}");

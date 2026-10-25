@@ -1,7 +1,7 @@
 //! Device retirement is accepted once; command delivery remains execution-owned.
 //! ref: sqlx sqlx-core/src/transaction.rs (borrowed atomic acceptance).
 use crate::{Error, Result};
-use rss_mdm_authorization_service::{OperationAuthority, Permission};
+use rss_mdm_authorization_service::Actor;
 use rss_mdm_inventory_service::objects::{DeviceObject, ObjectReader};
 use rss_mdm_registration_service::lifecycle;
 use rss_request_context::TenantId;
@@ -14,7 +14,7 @@ pub struct Acceptance<'a> {
     pub version: Uuid,
     pub occurrence: &'a str,
     pub target: &'a DeviceObject,
-    pub authority: &'a OperationAuthority,
+    pub actor: &'a Actor,
     pub delivery_seconds: u32,
     pub now: i64,
 }
@@ -72,7 +72,7 @@ pub async fn accept_in(
         || input.occurrence.is_empty()
         || input.occurrence.len() > 256
         || !(60..=604800).contains(&input.delivery_seconds)
-        || input.authority.actor().tenant_id() != tenant.to_string()
+        || input.actor.tenant_id() != tenant.to_string()
         || !input.target.verified
         || input.target.members.is_empty()
         || input.target.members.len() > 2
@@ -85,13 +85,6 @@ pub async fn accept_in(
     // Owner identity fence precedes all endpoint locks, as in ObjectReader::validate.
     let tenant_id = TenantId::parse(&tenant).map_err(|_| Error::Malformed)?;
     rss_mdm_inventory_postgres::lock_watermark_in(c, tenant_id).await?;
-    if !input
-        .authority
-        .valid(c, Permission::DeviceUnmanage, input.now)
-        .await?
-    {
-        return Err(Error::Forbidden);
-    }
     for member in &members {
         lifecycle::lock_device_in(c, &tenant, &member.device).await?;
     }
@@ -141,7 +134,7 @@ pub async fn accept_in(
     sqlx::query("INSERT INTO mdm_devices.retirements(tenant_id,id,policy,version,object,occurrence,target,authority,delivery_seconds,created_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)")
         .bind(&tenant).bind(id).bind(input.policy).bind(input.version).bind(input.target.object.key()).bind(input.occurrence)
         .bind(serde_json::to_value(input.target).map_err(|_|Error::Malformed)?)
-        .bind(serde_json::to_value(input.authority).map_err(|_|Error::Malformed)?)
+        .bind(serde_json::to_value(input.actor).map_err(|_|Error::Malformed)?)
         .bind(input.delivery_seconds as i32).bind(input.now).execute(&mut *c).await?;
     for member in members {
         lifecycle::begin_retirement_in(c, &tenant, &member.device, id).await?;
@@ -222,7 +215,6 @@ pub async fn complete_target_in(
     let ObjectRef::Endpoint(device) = &input.object else {
         return Ok(input.clone());
     };
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let row=sqlx::query("SELECT a.id,a.version,a.state FROM mdm_devices.members m JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(m.tenant_id,m.association_id) WHERE m.tenant_id=$1::uuid AND m.device=$2 AND NOT m.released AND a.state<>'revoked'")
         .bind(tenant.to_string()).bind(device).fetch_optional(&mut *c).await?;
     let Some(row) = row else {

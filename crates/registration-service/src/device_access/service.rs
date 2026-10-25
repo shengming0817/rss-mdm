@@ -458,9 +458,7 @@ impl Service {
                                 registration: registration.registration_id,
                                 registration_generation: registration.generation,
                                 person: person.clone(),
-                                origin: Origin::Administrator { authority: rss_mdm_authorization_service::OperationAuthority::from_proof(
-                                    &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,
-                                    actor,device,Permission::AccountWrite)? },
+                                origin: Origin::Administrator { actor: actor.actor() },
                                 generation,
                                 factor_generation,
                                 revision,
@@ -488,8 +486,7 @@ impl Service {
                             b.revision = b.revision.checked_add(1).ok_or(Error::Capacity)?;
                             b.policy_version = selected.version;
                             b.configuration = selected.configuration;
-                            b.origin = Origin::Administrator { authority: rss_mdm_authorization_service::OperationAuthority::from_proof(
-                                &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,actor,device,Permission::AccountWrite)? };
+                            b.origin = Origin::Administrator { actor: actor.actor() };
                             b.state = State::Pending;
                             b
                         }
@@ -500,8 +497,7 @@ impl Service {
                             b.state = State::Revoked;
                             b.configuration.enabled = false;
                             b.account_disposition = *disposition;
-                            b.origin=Origin::Administrator{authority:rss_mdm_authorization_service::OperationAuthority::from_proof(
-                                &rss_mdm_authorization_service::snapshot_on(c,actor.tenant_id(),actor.instance_id()).await?,actor,device,Permission::AccountWrite)?};
+                            b.origin=Origin::Administrator{actor: actor.actor()};
                             b
                         }
                     };

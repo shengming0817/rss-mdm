@@ -9,7 +9,9 @@ const PAGE: usize = 64;
 const OBJECTS: i64 = 1_000_000;
 const BYTES: i64 = 1_073_741_824;
 async fn coordinates(c: &mut PgConnection, tenant: TenantId) -> Result<(i64, i64), sqlx::Error> {
-    let watermark = rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
+    let watermark = rss_mdm_inventory_postgres::watermark_in(c, tenant)
+        .await
+        .map_err(storage)?;
     let relation=sqlx::query_scalar("SELECT coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0)").bind(tenant.to_string()).fetch_one(c).await?;
     Ok((watermark, relation))
 }
@@ -309,9 +311,6 @@ pub(super) async fn endpoint(
 ) -> Result<DeviceObject, sqlx::Error> {
     let mut members = Vec::new();
     for channel in [Channel::Mdm, Channel::Agent] {
-        endpoints::lock_in(c, &tenant.to_string(), device, channel)
-            .await
-            .map_err(storage)?;
         if let Some(member) = endpoints::current_in(c, &tenant.to_string(), device, channel)
             .await
             .map_err(storage)?
@@ -337,23 +336,12 @@ pub(super) async fn lookup(
 }
 pub(super) async fn validate(
     c: &mut PgConnection,
-    tenant: TenantId,
+    _tenant: TenantId,
     input: &DeviceObject,
     channel: Channel,
 ) -> Result<Option<PrimaryRegistration>, sqlx::Error> {
     if !input.verified {
         return Ok(None);
-    }
-    if matches!(input.object, ObjectRef::Association(_)) {
-        rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
-    }
-    // Keep the existing lifecycle/channel lock order outside the shared read kernel.
-    let mut members: Vec<_> = input.members.iter().collect();
-    members.sort_by(|a, b| (&a.device, a.channel.as_str()).cmp(&(&b.device, b.channel.as_str())));
-    for member in members {
-        endpoints::lock_in(c, &tenant.to_string(), &member.device, member.channel)
-            .await
-            .map_err(storage)?;
     }
     let value: Option<serde_json::Value> =
         sqlx::query_scalar("SELECT mdm_devices.object_current($1,$2)")

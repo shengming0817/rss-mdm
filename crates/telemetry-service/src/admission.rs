@@ -68,32 +68,6 @@ pub(crate) async fn receive_on(
     {
         return Err(Error::Capacity);
     }
-    let frozen = rss_mdm_flow_service::planning::policies::telemetry::resolve_on(
-        &service.planning,
-        c,
-        principal.device(),
-        input.policy,
-        input.policy_version,
-    )
-    .await
-    .map_err(|_| Error::Denied)?;
-    capable_on(c, service.tenant, principal.registration(), &frozen).await?;
-    let scope = revalidate_collection_source(c, principal, frozen.source)
-        .await
-        .map_err(|_| Error::Denied)?;
-    let epoch = Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Storage)?;
-    if input.binding
-        != binding(
-            principal,
-            input.policy,
-            input.policy_version,
-            frozen.source,
-            epoch,
-            &frozen.profile,
-        )?
-    {
-        return Err(Error::Denied);
-    }
     let bytes = serde_json::to_vec(input)?;
     let digest = Sha256::digest(&bytes).to_vec();
     let accounted = wire_bytes.max(bytes.len());
@@ -101,20 +75,81 @@ pub(crate) async fn receive_on(
         > service
             .limits
             .request_bytes
-            .min(service.storage_budget.bytes.get())
-            .min(frozen.profile.spec().budget.bytes) as usize
+            .min(service.storage_budget.bytes.get()) as usize
     {
         return Err(Error::Capacity);
     }
+    rss_mdm_registration_service::device::store::revalidate_management(c, principal)
+        .await
+        .map_err(|_| Error::Denied)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2815))")
         .bind(format!("{}:{}", service.tenant, input.batch_id))
         .execute(&mut *c)
         .await?;
-    if let Some(row) = sqlx::query("SELECT registration,credential,epoch,input_digest,received_at,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")
+    if let Some(row) = sqlx::query("SELECT registration,generation,device,input_digest,received_at,delivery FROM mdm_telemetry.batches WHERE tenant_id=$1::uuid AND id=$2")
         .bind(service.tenant.to_string()).bind(input.batch_id).fetch_optional(&mut *c).await? {
-        if row.try_get::<Uuid,_>("registration")? != principal.registration() || row.try_get::<Uuid,_>("epoch")? != epoch
+        if row.try_get::<Uuid,_>("registration")? != principal.registration()
+            || row.try_get::<i64,_>("generation")? != principal.generation()
+            || row.try_get::<String,_>("device")? != principal.device()
             || row.try_get::<Vec<u8>,_>("input_digest")? != digest { return Err(Error::Conflict); }
         return Ok(TelemetryReceipt { batch_id: input.batch_id, received_at: row.try_get("received_at")?, replayed: true, delivery: delivery(row.try_get("delivery")?)? });
+    }
+    service
+        .execution
+        .verify_telemetry_on(c, principal, &input.configuration)
+        .await
+        .map_err(|e| match e {
+            rss_mdm_execution_service::Error::Forbidden
+            | rss_mdm_execution_service::Error::Malformed => Error::Denied,
+            _ => Error::Storage,
+        })?;
+    let configuration = input.configuration();
+    let frozen = rss_mdm_flow_service::planning::policies::telemetry::frozen_on(
+        &service.planning,
+        c,
+        configuration.policy,
+        configuration.policy_version,
+    )
+    .await
+    .map_err(|e| match e {
+        rss_mdm_flow_service::Error::Forbidden => Error::Denied,
+        _ => Error::Storage,
+    })?;
+    let scope = revalidate_collection_source(c, principal, frozen.source)
+        .await
+        .map_err(|_| Error::Denied)?;
+    let epoch = Uuid::parse_str(scope.epoch().as_str()).map_err(|_| Error::Storage)?;
+    if configuration.source_epoch != epoch
+        || configuration.resource_digest != frozen.resource_digest
+        || configuration.binding
+            != binding(
+                principal,
+                configuration.policy,
+                configuration.policy_version,
+                frozen.source,
+                epoch,
+                &frozen.profile,
+            )?
+    {
+        return Err(Error::Denied);
+    }
+    if accounted > frozen.profile.spec().budget.bytes as usize {
+        return Err(Error::Capacity);
+    }
+    let from = configuration
+        .issued_at
+        .checked_mul(1_000_000)
+        .ok_or(Error::Invalid)?;
+    let until = configuration
+        .expires_at
+        .checked_mul(1_000_000)
+        .ok_or(Error::Invalid)?;
+    if input
+        .observations
+        .iter()
+        .any(|p| p.observed_at < from || p.observed_at >= until)
+    {
+        return Err(Error::Invalid);
     }
     let keys = frozen
         .fields
@@ -228,7 +263,7 @@ pub(crate) async fn receive_on(
     }
     sqlx::query("INSERT INTO mdm_telemetry.batches VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15,$16,$17,$18,$19)")
         .bind(service.tenant.to_string()).bind(input.batch_id).bind(principal.device()).bind(principal.registration()).bind(principal.credential()).bind(principal.generation())
-        .bind(accepted.source.as_str()).bind(epoch).bind(input.policy).bind(input.policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).execute(&mut *c).await?;
+        .bind(accepted.source.as_str()).bind(epoch).bind(input.configuration().policy).bind(input.configuration().policy_version).bind(digest).bind(Sha256::digest(serde_json::to_vec(&accepted)?).to_vec()).bind(fields).bind(now).bind(first).bind(last).bind(serde_json::to_value(quality)?).bind(input.observations.iter().map(|v|v.id).collect::<Vec<_>>()).bind(accepted.profile.spec().projection!=rss_mdm_resource::TelemetryProjection::History).execute(&mut *c).await?;
     crate::delivery::append_on(c, &accepted).await?;
     Ok(TelemetryReceipt {
         batch_id: input.batch_id,
@@ -488,7 +523,7 @@ async fn admit_observations_on(
         // Credential renewal does not change a source incarnation; batch regrouping does not change a sampling fact.
         let mut digest = Sha256::new();
         digest.update(b"mdm.telemetry.observation.v1\0");
-        digest.update(accepted.input.binding.as_bytes());
+        digest.update(accepted.input.configuration().binding.as_bytes());
         digest.update(serde_json::to_vec(point)?);
         let digest = digest.finalize().to_vec();
         receipts.insert(point.id, digest);

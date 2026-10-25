@@ -89,7 +89,7 @@ pub async fn execution_eligible_in(
     source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
     tx: &mut PgTransaction<'_>,
     policy: &Policy,
-    version: Uuid,
+    _version: Uuid,
     channel: rss_mdm_inventory::Channel,
     device: &str,
 ) -> Result<Option<i64>> {
@@ -110,14 +110,7 @@ pub async fn execution_eligible_in(
     if !allowed {
         return Ok(None);
     }
-    let reader = source.clone();
-    let tenant = tx.tenant_id();
-    let readable = tx
-        .with_connection(move |c| {
-            Box::pin(async move { Ok(reader.policy_readable_on(c, tenant, version).await) })
-        })
-        .await??;
-    if !policy.state.is_enabled() || !readable {
+    if !policy.state.is_enabled() {
         return Ok(None);
     }
     Ok(
@@ -143,18 +136,4 @@ pub async fn withdrawn_in(
         )
         .await?
             == crate::source_authority::ScopeAdmission::Excluded)
-}
-
-pub async fn readable_in(
-    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
-    tx: &mut PgTransaction<'_>,
-    version: Uuid,
-) -> Result<bool> {
-    let source = source.clone();
-    let tenant = tx.tenant_id();
-    Ok(tx
-        .with_connection(move |c| {
-            Box::pin(async move { Ok(source.policy_readable_on(c, tenant, version).await) })
-        })
-        .await??)
 }

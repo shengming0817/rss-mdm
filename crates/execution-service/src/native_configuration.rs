@@ -134,13 +134,6 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
-        let tenant = tx.tenant_id().to_string();
-        let instance = self.instance.clone();
-        tx.with_connection(move |c| {
-            Box::pin(async move { Ok(crate::authorization::lock_on(c, &tenant, &instance).await) })
-        })
-        .await??;
-        crate::transaction::lock(tx).await?;
         storage::lock(tx, device).await?;
         let t = tx.tenant_id().to_string();
         let d = device.to_owned();

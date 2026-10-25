@@ -79,7 +79,7 @@ fn next(path: &str, token: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "MODULE=assets.http: authorized device scope discovery, stable history and source fencing"]
-async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Result<()> {
+async fn inventory_scopes_preserve_history_without_classification_permissions() -> Result<()> {
     let mut f = AssetHttp::open().await?;
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
@@ -134,7 +134,7 @@ async fn inventory_scopes_preserve_history_and_hide_sensitive_namespaces() -> Re
         ensure!(f.author.call(&f.router, Method::PUT, "/api/v1/asset-fields/custom.scope_secret", Some(publish)).await?.0 == StatusCode::OK);
         seed(registration, epoch, 900, secret, None)?;
         let hidden = f.author.call(&f.router, Method::GET, &path, None).await?;
-        ensure!(hidden.0 == StatusCode::OK && hidden.1["asset"]["items"].as_array().unwrap().len() == 3 && !hidden.1.to_string().contains("900"));
+        ensure!(hidden.0 == StatusCode::OK && hidden.1["asset"]["items"].as_array().unwrap().len() == 4 && hidden.1.to_string().contains("900"));
         grants.push(crate::authorization::Grant { operation: crate::authorization::Permission::InventorySensitiveRead, scope: crate::authorization::Scope::Tenant });
         crate::test_support::identity::change_grants(case_tenant(), &f.author_id, grants).await?;
         let visible = f.author.call(&f.router, Method::GET, &path, None).await?;

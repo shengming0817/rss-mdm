@@ -699,7 +699,7 @@ async fn retirement_fences_complete_target_and_rolls_back_with_acceptance() -> a
         version: Uuid::new_v4(),
         occurrence: "explicit:test",
         target: &target,
-        authority: &grant,
+        actor: grant.actor(),
         delivery_seconds: 300,
         now,
     };

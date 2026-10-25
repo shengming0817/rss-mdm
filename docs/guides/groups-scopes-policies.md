@@ -46,14 +46,14 @@ Policy 响应使用 `state: enabled | disabled | archived`，不返回 enabled �
 
 动态 Group 条件还支持 `{ "kind":"group", "groupId":"<uuid>", "op":"member_of" }` 与
 `not_member_of`，可单独使用或嵌入现有 AND/OR。只能引用同租户、同 assetContext、已获授权的组；
-静态组仍只支持 endpoint。创建与保存拒绝自引用、循环、超过 16 层的依赖和超预算图遍历。
+静态组仍只支持 endpoint。动态创建与规则保存返回 202 和既有 task/statusUrl，后台分页验证禁环及引用权限。闭包总量和深度没有固定业务上限；每轮仍有工作和事务预算。验证期间旧定义有效，成功后原子发布；管理写 CAS 冲突形成任务失败，不覆盖后续编辑。完成后通过 Group 详情读取新定义。
 组引用按对象身份求值，Unknown/Conflict 或来源全集外的对象不能因否定而成为成员。
-每次计算固定来源定义、成员语义、权限坐标及不可变结果；来源尚未完成时等待，变化后重算。
+每次计算固定不可变输入；来源尚未完成时等待。普通资产更新不废弃完整计算，发布后自动追赶；无语义变化不重复传播。
 详情返回 freshness，结果页返回 sources 来源坐标；过期结果的 current 为 false，历史证据仍可读取。
-字段、注册、关联或来源权限失效也会使嵌套组及其 Scope/Policy/Compliance 消费失效。
+实际注册世代和来源撤销仍由身份 owner 验证，不依赖全租户计算追平。
 
 引用选择复用 `GET /api/v1/groups?filter=assetContext==endpoint`；编辑时传
-`referenceableFor=<group-id>`，会排除本组、会产生循环和上下文不匹配的候选。保存仍执行事务内复核。
+`referenceableFor=<group-id>`，会排除本组和上下文不匹配的候选。完整禁环校验由异步保存任务完成。
 
 `GET /api/v1/groups/{id}/references?kind&relation&limit&cursor` 查询当前依赖。
 kind 为 `group|scope|policy|compliance_rule`，省略时查询获授权类别；relation 为
@@ -133,7 +133,7 @@ items 经过当前权限过滤，空列表不能作为删除许可；deletionBlo
 
 编辑 revision、计算发布版本、成员语义 memberVersion 各自独立。无差分重算不改变编辑 CAS 或成员语义版本。Scope 也分别记录定义、计算与目标语义版本；持续匹配设备保留入组坐标，退出后重入取得新坐标。历史结果不会被新事实改写。
 
-Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。来源尚未发布、规则不一致或水位落后时，所有执行消费者通过同一个准入合同阻止新执行。
+Scope 结果页必须指定 `channel=agent|mdm`，游标绑定该通道。每个来源先归一到选定的原始通道，再进行并集、限制与排除；显式终端排除也阻断关联组映射出的同一终端，直接终端来源不会扩展到关联端。Scope 的 `limitations:null` 表示不限制，空数组表示没有匹配限制。Unknown 目标、限制或排除依据会留下逐设备阻断原因；Unknown 排除不能当作“不属于排除组”。确定排除优先于其它 Unknown；首次尚无完整结果或明确定义变化尚未发布时，由原队列等待。普通水位落后不阻止消费最新完整结果。
 
 脚本和软件 Policy 在 Agent 签入时按当前 Scope 与执行条件受理；软件灰度还受管理员配置的阶段范围、时间与可选门槛约束。配置型 Policy 自动核对变化设备并通过 MDM 交付。没有预览→保存 Plan→人工执行链路。配置型不接受脚本频率、触发器或参数。定义和示例见 [企业任务](enterprise-tasks.md)。
 
@@ -141,9 +141,9 @@ AgentCollection Policy 可在任务签名配置前保存并冻结已验证的内
 
 后台任务返回稳定 task 身份；冲突导致替代任务时，状态返回 replacement_task。结果页的 nextCursor 原样续读，不能用固定前 N 台设备代替分页。Group/Scope 任务与派生结果除管理权限外还要求全设备 inventory_read，每页重验。
 
-已发布策略归组织持有，浏览器会话退出或过期不删除分配。来源读授权和动作所需授权撤回会阻止新副作用；既有任务与结果保留原始归属。停用或修改分配需要当前管理员授权。命令失败、命令到期与持续分配状态分别保存；缺少注册或能力不会删除配置分配。脚本 Unknown 不自动重试，退出不虚构副作用撤销。
+已发布策略归组织持有，浏览器会话退出或过期不删除分配。新写入、新自助调用和读取检查当前请求者权限；已受理任务不重新取得原发布人的授权，保留原参数、材料和结果归属。明确 Policy 停用、取消和注册撤销继续有效。停用或修改分配需要当前管理员授权。命令失败、命令到期与持续分配状态分别保存；缺少注册或能力不会删除配置分配。脚本 Unknown 不自动重试，退出不虚构副作用撤销。
 
-通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册世代的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布后保留实际 SoftwareDeploy/Enrollment 授权依据并在执行时重验；浏览器会话退出不撤回分配，权限撤回会阻止新副作用。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。
+通道接入使用 `ensure_agent_installed` 与 `request_mdm_enrollment` 两个独立 Action。当前来源注册世代的明确安装/注册观察经动态 Group 和 Scope 触发；Unknown、来源失败和其它组织冲突都不视为缺失，也不用最后连接时间或任意 TTL 推断缺失。发布时检查 SoftwareDeploy/Enrollment 权限；后续组织任务不依赖发布人会话或角色，保留真实注册、通道状态和材料边界。两端拥有独立 DeviceId、注册、数据与策略，详见[企业任务](enterprise-tasks.md)。
 
 策略分配使用 `GET /api/v1/policies/{id}/assignments`，返回 typed object、channel、availability、reason、可选原始 target、来源证据和执行记录身份。缺失通道只形成 unavailable 分配，不创建操作、尝试或 outbox；数据、通道和关联变更通过既有自动任务重算，通道可用后恢复。Agent 动作仅使用 Agent，配置、原生采集及安装 Agent 仅使用 MDM。派发前重新验证冻结来源，派发后的结果仍属于原任务的终端和注册世代。Compliance 只接受 endpoint 组。
 

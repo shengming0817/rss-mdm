@@ -20,8 +20,11 @@ async fn waiting_group_does_not_spin(b: &mut Browser, router: &Router, base: &Va
     .await??;
     crate::test_support::runtime::stop_worker(setup).await?;
     let group = Uuid::new_v4();
-    let gp = format!("/api/v1/groups/{group}");
-    let created=ok(b,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
+    let planning = crate::planning::test_support::planning(rss_request_context::TenantId::parse(
+        case_tenant(),
+    )?)
+    .await;
+    let created=crate::planning::test_support::seed_group(&planning,&rss_mdm_inventory_service::groups::Command::Group {id:group,change:Box::new(crate::planning::test_support::group_operation(0,serde_json::from_value(json!({"action":"create","assetContext":"endpoint","presentation":{"name":"held group","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}}))?))}).await?;
     let group_task = created["task"].as_str().unwrap();
     // Hold only the external group input. No claim was created while the worker was stopped.
     pg(&format!(
@@ -175,7 +178,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     let group = Uuid::new_v4();
     let gp = format!("/api/v1/groups/{group}");
     let group_rule = json!({"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":3}}});
-    crate::test_support::http::ok(&mut browser,router,Method::POST,&gp,Some(request(0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"compliance target","description":""},"criteria":group_rule})))).await?;
+    crate::test_support::planning_http::call(&mut browser,router,&gp,0,json!({"action":"create","assetContext":"endpoint","presentation":{"name":"compliance target","description":""},"criteria":group_rule})).await?;
     let def = definition(json!({"kind":"groups","ids":[group]}));
     ok(
         &mut browser,
@@ -245,7 +248,7 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
     .await?;
     let g = crate::test_support::http::ok(&mut browser, router, Method::GET, &gp, None).await?;
     let (accepted, _) = browser.call(router,Method::POST,&gp,Some(request(g["group"]["revision"].as_u64().unwrap(),json!({"action":"rule","criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.office_floor","op":"ge","value":{"kind":"integer","value":0}}}})))).await?;
-    ensure!(accepted == StatusCode::OK);
+    ensure!(accepted == StatusCode::ACCEPTED);
     let restarted = start_automation(base)
         .await
         .map_err(|e| anyhow::anyhow!("compliance worker restart: {e:?}"))?;
@@ -266,7 +269,10 @@ async fn group_applicability_membership_versions_and_stale_input() -> Result<()>
         None,
     )
     .await?;
-    ensure!(old["phase"] == "superseded");
+    ensure!(
+        old["phase"] == "published" || old["phase"] == "superseded",
+        "old definition remains valid until async publication: {old}"
+    );
     tokio::time::timeout(Duration::from_secs(10),async {
         loop {
             if pg(&format!("SELECT d.consumed=c.revision FROM mdm_planning.asset_dispatch d JOIN mdm.asset_clock c USING(tenant_id) WHERE d.tenant_id='{TENANT}'", TENANT = case_tenant()))?.trim()=="t" {return Ok::<_,anyhow::Error>(())}

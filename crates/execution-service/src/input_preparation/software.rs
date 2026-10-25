@@ -32,8 +32,7 @@ impl Inputs {
                 )
             })
             .collect::<Vec<_>>();
-        let lifecycle_binding = self
-            .software
+        self.software
             .freeze_in(
                 tx,
                 rss_mdm_software_service::preparation::FreezeRequest {
@@ -71,13 +70,11 @@ impl Inputs {
         let action = FrozenSoftwareAction {
             native_packages,
             channel: *channel,
-            grants: Default::default(),
             delivery: (*delivery).clone(),
             resource_digest: version.digest().bytes(),
             resource: binding.id().to_owned(),
             version: binding.version().to_owned(),
             variants: selection.variants.clone(),
-            lifecycle_binding,
             intent: *intent,
             schedule: (*schedule).clone(),
             run_lifetime_seconds: *run_lifetime_seconds,

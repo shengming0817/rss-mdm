@@ -16,7 +16,10 @@ pub static SCHEMA: Schema = Schema {
         Field::scalar("nullable", Kind::Boolean),
         Field::scalar("manual", Kind::Boolean),
         Field::scalar("searchable", Kind::Boolean),
-        Field::scalar("sensitivity", Kind::Enum(&["standard", "sensitive"])),
+        Field::scalar(
+            "sensitivity",
+            Kind::Enum(&["standard", "sensitive", "secret"]),
+        ),
         Field::output("valueType"),
         Field::output("sources"),
         Field::output("platforms"),

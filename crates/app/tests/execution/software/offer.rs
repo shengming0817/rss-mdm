@@ -37,8 +37,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
         task["payload"]["task"]["steps"][0]["action"]["package"] == "Private.Dependency"
             && task["payload"]["task"]["steps"][1]["action"]["package"] == "Private.Controlled"
             && task["payload"]["task"]["softwareResource"].is_null()
-            && task["payload"]["task"]["admissionOperation"].is_null()
-            && task["payload"]["task"]["startMode"] == "automatic",
+            && task["payload"]["task"]["admissionOperation"].is_null(),
         "offer: {task}"
     );
     ensure!(task["payload"]["task"]["steps"][1]["artifacts"][0]["length"] == bytes.len());
@@ -159,8 +158,7 @@ async fn required_available_and_uninstall_delivery() -> Result<()> {
     .await?;
     let removal_task = claim(&router).await?;
     ensure!(
-        removal_task["payload"]["task"]["intent"] == "uninstall"
-            && removal_task["payload"]["task"]["startMode"] == "automatic",
+        removal_task["payload"]["task"]["intent"] == "uninstall",
         "uninstall: {removal_task}"
     );
     ensure!(

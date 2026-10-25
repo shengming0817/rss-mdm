@@ -19,24 +19,6 @@ pub async fn state_in(
     if now < schedule.not_before || now >= schedule.ends_at() {
         return status(State::OutsideWindow);
     }
-    let grants = match frozen {
-        Frozen::AgentInstall { action } => vec![
-            (action.deploy.clone(), Permission::SoftwareDeploy),
-            (action.enrollment.clone(), Permission::Enrollment),
-        ],
-        Frozen::MdmEnrollment { action } => vec![(action.grant.clone(), Permission::Enrollment)],
-        _ => unreachable!(),
-    };
-    for (grant, permission) in grants {
-        if !tx
-            .with_connection(move |c| {
-                Box::pin(async move { Ok(grant.valid(c, permission, now).await) })
-            })
-            .await??
-        {
-            return status(State::PermissionWithdrawn);
-        }
-    }
     let tenant = tx.tenant_id();
     let name = device.to_owned();
     let rows=tx.with_connection(move|c|Box::pin(async move {

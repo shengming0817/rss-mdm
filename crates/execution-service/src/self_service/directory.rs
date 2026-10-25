@@ -234,7 +234,7 @@ async fn describe_in(
         policy_version: policy.version,
         subject,
         self_service: metadata,
-        task: prepared.task,
+        task: prepared.task.ok_or(Error::Conflict)?,
     }))
 }
 

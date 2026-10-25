@@ -20,7 +20,7 @@ pub async fn accept_for_device(
     if policy.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall {
         return Ok(());
     }
-    let Some(slot) = slot_in(service, tx, policy, target, None, now).await? else {
+    let Some(slot) = slot_in(service, tx, policy, target, None, now, None).await? else {
         return Ok(());
     };
     queue_run_in(
@@ -49,6 +49,7 @@ pub struct Slot {
     pub available: i64,
     pub deadline: i64,
     pub effect: serde_json::Value,
+    pub steps: Vec<rss_mdm_agent_wire::runtime::SoftwareTaskStep>,
 }
 pub async fn slot_in(
     service: &ExecutionService,
@@ -57,14 +58,18 @@ pub async fn slot_in(
     target: &Target,
     request: Option<Uuid>,
     now: i64,
+    existing: Option<Uuid>,
 ) -> Result<Option<Slot>> {
-    let Some((stage, _)) = policy
+    let stage = match policy
         .assignment
         .entry_in(&service.source, tx, &target.device, now)
         .await?
-    else {
-        return Ok(None);
+    {
+        Some((stage, _)) => stage,
+        None if request.is_some() && !policy.assignment.stages().is_empty() => 0,
+        None => return Ok(None),
     };
+    let mut prepared = Vec::new();
     let effect = if policy.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
         if !service.inputs.software_distribution.mdm_enabled {
             return Ok(None);
@@ -97,10 +102,11 @@ pub async fn slot_in(
         else {
             return Ok(None);
         };
-        if !policy
-            .assignment
-            .supported_in(&service.admission(), tx, &binding)
-            .await?
+        if request.is_none()
+            && !policy
+                .assignment
+                .supported_in(&service.admission(), tx, &binding)
+                .await?
         {
             return Ok(None);
         }
@@ -128,19 +134,10 @@ pub async fn slot_in(
             )
             .await?
             .ok_or(Error::Forbidden)?;
-        effect_key(policy, target, &steps)?
+        let effect = effect_key(policy, target, &steps)?;
+        prepared = steps;
+        effect
     };
-    let fence = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
-                .bind(fence)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
     let source = service.source.clone();
     let tenant_id = tx.tenant_id();
     let device = target.device.clone();
@@ -149,6 +146,20 @@ pub async fn slot_in(
             Box::pin(async move { Ok(source.effect_devices_on(c, tenant_id, &device).await) })
         })
         .await??;
+    let ordered: std::collections::BTreeSet<_> = devices.iter().cloned().collect();
+    for endpoint in ordered {
+        let fence = format!("{}:{endpoint}", tx.tenant_id());
+        tx.with_connection(move |c| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2793))")
+                    .bind(fence)
+                    .execute(c)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
     // The transaction admission fence serializes conflicting effects across associated endpoints.
     let tenant = tx.tenant_id().to_string();
     let device = devices;
@@ -164,7 +175,7 @@ pub async fn slot_in(
         sqlx::query_as(r#"
             WITH effects AS (
                 SELECT r.* FROM mdm_commands.action_runs r
-                WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::text[])
+                WHERE r.tenant_id=$1::uuid AND r.device=ANY($3::text[]) AND ($7::uuid IS NULL OR r.id<>$7)
                   AND r.software_effect->'target'=$2::jsonb->'target'
                   AND (r.software_effect->'resource'=$2::jsonb->'resource' OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(r.software_effect->'packages') a JOIN jsonb_array_elements_text($2::jsonb->'packages') b ON a.value=b.value))
             )
@@ -178,12 +189,12 @@ pub async fn slot_in(
                              WHERE software_effect->'generation'=$2::jsonb->'generation'
                                AND result->>'effect' IN ('verified','failed')
                                AND jsonb_typeof(result->'effectObservedAt')='number'
-                             ORDER BY (result->>'effectObservedAt')::bigint DESC LIMIT 1),false),
+                             ORDER BY (result->>'effectObservedAt')::bigint DESC,(result->>'effectReceivedAt')::bigint DESC NULLS LAST LIMIT 1),false),
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND result->>'effect'='failed'),
                    count(*) FILTER(WHERE software_effect=$2 AND policy_version=$4 AND occurrence LIKE $6)
             FROM effects
         "#)
-            .bind(tenant).bind(key).bind(device).bind(version).bind(now).bind(prefix).fetch_one(c).await
+            .bind(tenant).bind(key).bind(device).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
     })).await?;
     if pending || satisfied || failures >= 3 {
         return Ok(None);
@@ -231,8 +242,8 @@ pub async fn slot_in(
     let device = target.device.clone();
     let key = occurrence.clone();
     let (exists, active): (bool, i64) = tx.with_connection(move |c| Box::pin(async move {
-        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5)")
-            .bind(tenant).bind(version).bind(device).bind(key).bind(now).fetch_one(c).await
+        sqlx::query_as("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2::uuid AND device=$3 AND occurrence=$4 AND ($6::uuid IS NULL OR id<>$6)), (SELECT count(*) FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND device=$3 AND state->>'execution' IN ('not_started','running') AND state->>'cancellation'<>'confirmed' AND deadline>$5 AND ($6::uuid IS NULL OR id<>$6))")
+            .bind(tenant).bind(version).bind(device).bind(key).bind(now).bind(existing).fetch_one(c).await
     })).await?;
     if exists || active >= 128 {
         return Ok(None);
@@ -242,6 +253,7 @@ pub async fn slot_in(
         available,
         deadline,
         effect,
+        steps: prepared,
     }))
 }
 pub(crate) fn effect_key(
@@ -307,4 +319,19 @@ pub async fn persist_effect_in(
         Ok(())
     })).await?;
     Ok(())
+}
+
+/// Receipt ordering disambiguates observations whose device clock has only second precision.
+pub(crate) async fn effect_received_at(tx: &mut PgTransaction<'_>) -> Result<i64> {
+    Ok(tx
+        .with_connection(|c| {
+            Box::pin(async move {
+                sqlx::query_scalar(
+                    "SELECT floor(extract(epoch FROM clock_timestamp())*1000000)::bigint",
+                )
+                .fetch_one(c)
+                .await
+            })
+        })
+        .await?)
 }

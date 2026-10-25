@@ -1,5 +1,5 @@
 //! A task-scoped grant remembers authentic admission evidence, never browser secrets.
-use crate::authorization::{OperationAuthority, Permission, Snapshot};
+use crate::authorization::{Actor, Permission, Snapshot};
 use crate::{Error, authorization::context::AuthorizedPrincipal, database::db};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
@@ -15,6 +15,7 @@ pub enum AgentInstallStage {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionAuthority {
     Software {
+        target: rss_mdm_policy::SoftwareTarget,
         tenant: String,
         version: uuid::Uuid,
         device: String,
@@ -44,7 +45,7 @@ pub enum ExecutionAuthority {
     },
     Credential {
         required: Vec<Permission>,
-        evidence: Vec<OperationAuthority>,
+        actor: Actor,
         registration: uuid::Uuid,
         generation: i64,
         operation: uuid::Uuid,
@@ -53,7 +54,7 @@ pub enum ExecutionAuthority {
         action: crate::device_control::Kind,
         confirmation: Option<crate::device_control::RegistrationConfirmation>,
         required: Vec<Permission>,
-        evidence: Vec<OperationAuthority>,
+        actor: Actor,
     },
     Policy {
         source_objects: Vec<crate::source_authority::DeviceObject>,
@@ -113,10 +114,8 @@ impl ExecutionAuthority {
                 {
                     return Ok(false);
                 }
-                crate::agent_install::dispatch_ready_on(
-                    source, c, tenant, *version, device, *operation,
-                )
-                .await
+                crate::agent_install::dispatch_ready_on(c, tenant, *version, device, *operation)
+                    .await
             }
             Self::DeviceControl { .. } | Self::Credential { .. } => Ok(true),
             Self::Policy {
@@ -124,14 +123,8 @@ impl ExecutionAuthority {
                 device,
                 source_objects,
                 remove,
-                version,
                 ..
             } => {
-                let tenant_id =
-                    rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-                if !source.policy_readable_on(c, tenant_id, *version).await? {
-                    return Ok(false);
-                }
                 if *remove {
                     return Ok(true);
                 }
@@ -156,24 +149,20 @@ impl ExecutionAuthority {
         confirmation: Option<crate::device_control::RegistrationConfirmation>,
     ) -> Result<Self, Error> {
         let permissions = [action.permission()];
+        for &permission in &permissions {
+            crate::permissions::authorize(snapshot, proof, Some(device), permission)?;
+        }
         Ok(Self::DeviceControl {
             action,
             confirmation,
             required: permissions.to_vec(),
-            evidence: permissions
-                .iter()
-                .map(|&p| crate::permissions::grant(snapshot, proof, Some(device), p))
-                .collect::<Result<_, _>>()?,
+            actor: proof.actor(),
         })
     }
     pub fn apple_owner(&self, operation: uuid::Uuid) -> Result<String, Error> {
         Ok(match self {
             Self::Retirement { retirement, .. } => format!("retirement:{retirement}"),
-            Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
-                let actor = evidence.first().ok_or(Error::Forbidden)?.actor();
-                if evidence.iter().any(|g| g.actor() != actor) {
-                    return Err(Error::Forbidden);
-                }
+            Self::DeviceControl { actor, .. } | Self::Credential { actor, .. } => {
                 format!("actor:{}:{}", actor.instance_id(), actor.subject())
             }
             Self::Policy { unit, .. } => format!("configuration:{unit}"),
@@ -261,21 +250,22 @@ impl ExecutionAuthority {
     /// A correlated receipt settles the original task, independently of later Scope membership.
     pub(crate) async fn receipt_valid(
         &self,
-        source: &dyn crate::source_authority::SourceAuthority,
+        _source: &dyn crate::source_authority::SourceAuthority,
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         permissions: &[Permission],
-        now: i64,
+        _now: i64,
     ) -> Result<bool, Error> {
         let Self::Policy {
             tenant,
             policy,
             version,
-            device,
             ..
         } = self
         else {
-            return self.valid(source, conn, key, permissions, now).await;
+            return Ok(
+                !permissions.is_empty() && permissions.iter().all(|p| self.required().contains(p))
+            );
         };
         if permissions.is_empty() {
             return Ok(false);
@@ -284,14 +274,31 @@ impl ExecutionAuthority {
         let Some(frozen) = frozen else {
             return Ok(false);
         };
-        let mut permissions = permissions.to_vec();
-        permissions.extend_from_slice(self.required());
-        permissions.sort();
-        permissions.dedup();
-        for permission in permissions {
-            if !native_grant(conn, frozen.clone(), device, permission, now).await? {
-                return Ok(false);
-            }
+        let frozen: crate::frozen::Frozen =
+            serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
+        let crate::frozen::Frozen::Configuration { native, .. } = frozen else {
+            return Ok(false);
+        };
+        let tenant_id =
+            rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+        let native = native.open(
+            key,
+            tenant_id,
+            crate::configuration::Owner::Policy {
+                policy: *policy,
+                version: *version,
+            },
+        )?;
+        let mut accepted = native.apply.permissions()?;
+        if let Some(remove) = native.remove {
+            accepted.extend(remove.permissions()?);
+        }
+        if permissions
+            .iter()
+            .chain(self.required())
+            .any(|p| !accepted.contains(p))
+        {
+            return Ok(false);
         }
         Ok(true)
     }
@@ -301,7 +308,7 @@ impl ExecutionAuthority {
         conn: &mut PgConnection,
         key: &rss_mdm_native_protection::Protector,
         permission: Permission,
-        now: i64,
+        _now: i64,
     ) -> Result<bool, Error> {
         match self {
             Self::Software { .. } => {
@@ -349,16 +356,11 @@ impl ExecutionAuthority {
                 if matches!(stage, AgentInstallStage::Cleanup { .. }) {
                     crate::agent_install::cleanup_authorized_on(conn, self).await
                 } else {
-                    crate::agent_install::authorized_on(source, conn, self, now).await
+                    crate::agent_install::authorized_on(conn, self).await
                 }
             }
-            Self::DeviceControl { evidence, .. } | Self::Credential { evidence, .. } => {
-                for grant in evidence {
-                    if grant.valid(conn, permission, now).await? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+            Self::DeviceControl { required, .. } | Self::Credential { required, .. } => {
+                Ok(required.contains(&permission))
             }
             Self::Policy {
                 tenant,
@@ -373,10 +375,6 @@ impl ExecutionAuthority {
                 let Some(frozen) = frozen else {
                     return Ok(false);
                 };
-                if *remove && !native_grant(conn, frozen.clone(), device, permission, now).await? {
-                    return Ok(false);
-                }
-                let retained_frozen = frozen.clone();
                 let expected: crate::frozen::Frozen =
                     serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
                 let crate::frozen::Frozen::Configuration { native, exit, .. } = expected else {
@@ -407,16 +405,13 @@ impl ExecutionAuthority {
                             request: rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
                         }
                     );
-                let retained_grant = if retain_ddm {
-                    native_grant(conn, retained_frozen.clone(), device, permission, now).await?
-                } else {
-                    false
-                };
+                if !*remove {
+                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled') OR EXISTS(SELECT 1 FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(c.tenant_id,c.policy) WHERE c.tenant_id=$1::uuid AND c.device=$3 AND o.authority->>'unit'=$4 AND p.state='enabled')")
+                        .bind(tenant).bind(policy).bind(device).bind(unit).fetch_one(conn).await.map_err(db)?;
+                    return Ok(enabled || retain_ddm);
+                }
                 let expected_objects = native.objects()?;
-                let expected = serde_json::to_vec(&(&native.target, &native.apply))
-                    .map_err(|_| Error::Malformed)?;
                 let mut after = uuid::Uuid::nil();
-                let mut live = false;
                 loop {
                     let rows = source
                         .candidates_on(
@@ -454,53 +449,14 @@ impl ExecutionAuthority {
                         {
                             continue;
                         }
-                        if *remove {
-                            return Ok(false);
-                        }
-                        if serde_json::to_vec(&(&other.target, &other.apply))
-                            .map_err(|_| Error::Malformed)?
-                            != expected
-                        {
-                            return Ok(false);
-                        }
-                        // The operation belongs to its native content. Any live coowner of
-                        // that exact input may authorize it after the original author exits.
-                        if matches!(
-                            row.admission,
-                            crate::source_authority::ScopeAdmission::Eligible { .. }
-                        ) && native_grant(conn, current_frozen, device, permission, now).await?
-                        {
-                            live = true;
-                        }
+                        return Ok(false);
                     }
                     if !more {
                         break;
                     }
                 }
-                Ok(*remove || live || retained_grant)
+                Ok(true)
             }
         }
     }
-}
-async fn native_grant(
-    conn: &mut PgConnection,
-    frozen: serde_json::Value,
-    device: &str,
-    permission: Permission,
-    now: i64,
-) -> Result<bool, Error> {
-    let frozen: crate::frozen::Frozen =
-        serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-    let crate::frozen::Frozen::Configuration { grants, .. } = frozen else {
-        return Ok(false);
-    };
-    let Some(grants) = grants.get(device).or_else(|| grants.get("*")) else {
-        return Ok(false);
-    };
-    for grant in grants {
-        if grant.valid(conn, permission, now).await? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }

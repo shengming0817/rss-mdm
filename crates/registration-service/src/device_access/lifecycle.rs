@@ -129,12 +129,7 @@ pub(super) async fn accept_offboarding_on(
         let revision = binding.revision;
         binding.operation_id = current.operation_id;
         binding.origin = super::Origin::Administrator {
-            authority: rss_mdm_authorization_service::OperationAuthority::from_proof(
-                &snapshot,
-                actor,
-                &binding.device,
-                Permission::AccountWrite,
-            )?,
+            actor: actor.actor(),
         };
         binding.generation = binding.generation.checked_add(1).ok_or(Error::Capacity)?;
         binding.factor_generation = binding

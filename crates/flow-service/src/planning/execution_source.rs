@@ -56,7 +56,6 @@ impl SourceAuthority for ExecutionSource {
         channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>> {
         Box::pin(async move {
-            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
             let mut runs = Vec::new();
             for scope in scopes {
                 let status: Value =
@@ -179,34 +178,7 @@ impl SourceAuthority for ExecutionSource {
             evidence,
         ))
     }
-    fn policy_readable_on<'a>(
-        &'a self,
-        c: &'a mut PgConnection,
-        tenant: TenantId,
-        version: Uuid,
-    ) -> Pending<'a, bool> {
-        Box::pin(async move {
-            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
-            let value:Option<Value>=sqlx::query_scalar("SELECT read_grant FROM mdm_planning.policy_source_grants WHERE tenant_id=$1::uuid AND version=$2").bind(tenant.to_string()).bind(version).fetch_optional(&mut *c).await?;
-            let Some(value) = value else {
-                return Ok(false);
-            };
-            let grant: rss_mdm_authorization_service::OperationAuthority =
-                serde_json::from_value(value).map_err(|_| SourceError::Invariant)?;
-            let now: i64 =
-                sqlx::query_scalar("SELECT extract(epoch FROM clock_timestamp())::bigint")
-                    .fetch_one(&mut *c)
-                    .await?;
-            grant
-                .valid(
-                    c,
-                    rss_mdm_authorization_service::Permission::InventoryRead,
-                    now,
-                )
-                .await
-                .map_err(|_| SourceError::Invariant)
-        })
-    }
+
     fn native_interest_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
@@ -253,7 +225,7 @@ impl SourceAuthority for ExecutionSource {
                 scanned_after = row.try_get("id")?;
                 let version = row.try_get("current_version")?;
                 let scope = row.try_get("scope")?;
-                let admission = if self.policy_readable_on(c, tenant, version).await? {
+                let admission = {
                     super::targets::admission_on(
                         self.objects.as_ref(),
                         c,
@@ -263,8 +235,6 @@ impl SourceAuthority for ExecutionSource {
                         device,
                     )
                     .await?
-                } else {
-                    ScopeAdmission::Pending
                 };
                 if admission != ScopeAdmission::Excluded {
                     items.push(PolicyCandidate {

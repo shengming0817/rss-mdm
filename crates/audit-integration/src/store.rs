@@ -203,6 +203,17 @@ impl AuditStore {
             .map_err(rss_audit_postgres::Error::from)?;
         Ok(())
     }
+    /// Declare the existing source transaction's audit partitions before locking business rows.
+    pub async fn prepare_source(
+        &self,
+        tx: &mut SourceTransaction<'_, '_>,
+        request: &RequestAudit,
+        business: &[PartitionIdentity],
+    ) -> Result<(), Error> {
+        self.prepare_in(tx.inner, request, business).await?;
+        tx.partitions_declared = true;
+        Ok(())
+    }
     /// Business SQL, frozen facts and source receipts share the RSS owner's one commit.
     /// Audit-owned reads remain a separate read-only capability.
     pub async fn write<T: ExecutionTimer, C: Send, R: Send, E: Send + From<Error>, F>(
@@ -238,17 +249,19 @@ impl AuditStore {
     }
     async fn flush(&self, tx: &mut SourceTransaction<'_, '_>) -> Result<(), Error> {
         let facts = std::mem::take(&mut tx.facts);
-        let partitions = facts
-            .iter()
-            .map(|fact| fact.frozen.partition())
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        tx.inner
-            .prepare_outbox_partitions(&partitions)
-            .await
-            .map_err(rss_audit_postgres::Error::from)?;
+        if !tx.partitions_declared {
+            let partitions = facts
+                .iter()
+                .map(|fact| fact.frozen.partition())
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            tx.inner
+                .prepare_outbox_partitions(&partitions)
+                .await
+                .map_err(rss_audit_postgres::Error::from)?;
+        }
         for fact in facts {
             crate::queue::append(
                 tx.inner,

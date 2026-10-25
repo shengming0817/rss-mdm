@@ -62,6 +62,7 @@ pub(crate) fn result_event(
 ) -> Result<Value> {
     use rss_mdm_agent_wire::runtime as wire;
     let spec: wire::SoftwareTaskSpec = serde_json::from_value(task["payload"]["task"].clone())?;
+    let observed_at = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?;
     let mut steps = Vec::new();
     for (index, step) in spec.steps.iter().enumerate() {
         let after = match state {
@@ -70,11 +71,11 @@ pub(crate) fn result_event(
                     &step.action,
                 ),
                 evidence_sha256: Sha256::digest(b"controlled present observation").into(),
-                observed_at: 2,
+                observed_at,
             },
             "absent" => wire::SoftwareDetectionObservation::Absent {
                 evidence_sha256: Sha256::digest(b"controlled absent observation").into(),
-                observed_at: 2,
+                observed_at,
             },
             "unknown" => wire::SoftwareDetectionObservation::Unknown {
                 diagnostic: "controlled detector unavailable".into(),
@@ -92,14 +93,14 @@ pub(crate) fn result_event(
             ),
             before: wire::SoftwareDetectionObservation::Absent {
                 evidence_sha256: Sha256::digest(b"controlled prior observation").into(),
-                observed_at: 1,
+                observed_at,
             },
             after,
             process: exit_code.map_or(wire::SoftwareProcessObservation::NotRun, |code| {
                 wire::SoftwareProcessObservation::Exited { code }
             }),
             reboot_required: reboot,
-            diagnostics: wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
+            diagnostics: wire::TaskDiagnostics::new("".into(), "".into(), 1, observed_at, None)?,
         });
     }
     let result = wire::SoftwareTaskResult {

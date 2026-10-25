@@ -16,8 +16,7 @@ pub use decisions::{
 };
 mod model;
 pub use generations::{
-    BuildRequest, DifferenceStep, GroupSource, MAX_MEMBERS, MemberBuild, MemberPatch,
-    SourceCoordinates,
+    BuildRequest, DifferenceStep, GroupSource, MemberBuild, MemberPatch, SourceCoordinates,
 };
 pub mod directory;
 mod storage;

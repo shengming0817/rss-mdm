@@ -1002,15 +1002,6 @@ pub enum SoftwareTaskIntent {
     /// Remove the owned installation using the approved removal definition.
     Uninstall,
 }
-/// Whether a signed task can start automatically or awaits trusted local user action.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SoftwareStartMode {
-    /// Policy-required task may start when offered and locally admitted.
-    Automatic,
-    /// Agent must wait for a local user choice before requesting Start.
-    UserInitiated,
-}
 /// One exact artifact needed by an executable software step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1254,8 +1245,6 @@ pub struct SoftwareTaskSpec {
     pub definition_digest: [u8; 32],
     /// Requested local operation.
     pub intent: SoftwareTaskIntent,
-    /// Local start behavior; no Policy or rollout details are exposed.
-    pub start_mode: SoftwareStartMode,
 }
 impl SoftwareTaskSpec {
     /// Validate all signed coordinates and the bounded, self-contained execution plan.
@@ -1289,14 +1278,7 @@ impl SoftwareTaskSpec {
             self.authorization,
             super::TaskAuthorization::SelfService { .. }
         );
-        if (self.start_mode == SoftwareStartMode::UserInitiated) != self_service
-            || (self_service
-                && (self.intent != SoftwareTaskIntent::Install
-                    || !matches!(
-                        self.authorization,
-                        super::TaskAuthorization::SelfService { risk_level: 2, .. }
-                    )))
-        {
+        if self_service && self.intent != SoftwareTaskIntent::Install {
             return Err(WireError::InvalidValue);
         }
         self.execution_context.validate_for(self.platform)?;

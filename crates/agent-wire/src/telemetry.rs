@@ -197,25 +197,28 @@ pub enum TelemetryReading {
     },
 }
 /// Batch identity fixes ordered observations and the exact Policy version.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TelemetryUpload {
     /// Fixed logical upload identity.
     pub batch_id: uuid::Uuid,
-    /// Server-authored assignment identity, not an authorization assertion.
-    pub policy: uuid::Uuid,
-    /// Exact version previously obtained from the authenticated configuration endpoint.
-    pub policy_version: uuid::Uuid,
-    /// Exact server configuration binding. It fences cached batches across registration changes.
-    pub binding: String,
+    /// Original server-signed configuration; it is retained unchanged with this batch.
+    pub configuration: SignedTelemetryConfiguration,
     /// Fixed observation order.
     pub observations: Vec<TelemetryObservation>,
 }
 impl TelemetryUpload {
+    /// Original immutable configuration carried by this upload.
+    /// Original immutable configuration carried by this upload.
+    pub fn configuration(&self) -> &TelemetryConfiguration {
+        &self.configuration.configuration
+    }
+
     /// Bound structural work before consulting authoritative product configuration.
     pub fn validate(&self) -> Result<(), WireError> {
-        if self.binding.len() != 64
+        if self.configuration().binding.len() != 64
             || !self
+                .configuration()
                 .binding
                 .bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -223,8 +226,8 @@ impl TelemetryUpload {
             return Err(WireError::InvalidValue);
         }
         if self.batch_id.is_nil()
-            || self.policy.is_nil()
-            || self.policy_version.is_nil()
+            || self.configuration().policy.is_nil()
+            || self.configuration().policy_version.is_nil()
             || self.observations.is_empty()
             || self.observations.len() > 4096
         {

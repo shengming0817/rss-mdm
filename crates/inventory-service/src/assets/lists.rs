@@ -186,7 +186,6 @@ impl AssetService {
                                 watermark,
                                 &ids,
                                 &catalog,
-                                read_scope.sensitive,
                                 &read_scope.collection_scope,
                             )
                             .await?;
@@ -283,7 +282,7 @@ impl AssetService {
                             rss_mdm_inventory_postgres::catalog_at_in(c, tenant, watermark).await,
                         )?;
                         let definition = checked_input(catalog.definition(field))?;
-                        if !fields::visible(definition, read_scope.sensitive) {
+                        if !fields::visible(definition) {
                             return Err(Error::Forbidden.into());
                         }
                         if !matches!(definition.value_type, ValueType::Array { .. }) {
@@ -297,7 +296,6 @@ impl AssetService {
                                 watermark,
                                 &[device_id],
                                 &catalog,
-                                read_scope.sensitive,
                                 &read_scope.collection_scope,
                             )
                             .await?;

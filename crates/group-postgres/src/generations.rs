@@ -11,8 +11,6 @@ use rss_transactional_messaging_postgres::PgTransaction;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
-/// Product capacity, independent of per-page evaluator budgets.
-pub const MAX_MEMBERS: usize = 1_000_000;
 /// Frozen group input, shared by Group and its product consumers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,8 +71,7 @@ pub struct MemberPatch {
 }
 fn check_build(group: &Group, request: &BuildRequest) -> CommandOutcome<()> {
     crate::store::active(group)?;
-    if (request.patch.is_some() && group.revision != request.expected)
-        || group.calculation_revision != request.base_calculation
+    if group.calculation_revision != request.base_calculation
         || group.rule_version != request.rule_version
     {
         return Err(Rejection::VersionConflict);
@@ -914,7 +911,9 @@ impl GroupStore {
 }
 
 fn page_fits(current: usize, added: usize) -> bool {
-    current.saturating_add(added) <= MAX_MEMBERS
+    current
+        .checked_add(added)
+        .is_some_and(|n| i64::try_from(n).is_ok())
 }
 
 fn member_count_after_patch(
@@ -925,7 +924,7 @@ fn member_count_after_patch(
     current
         .checked_add(added)
         .and_then(|n| n.checked_sub(removed))
-        .filter(|n| *n <= MAX_MEMBERS)
+        .filter(|n| i64::try_from(*n).is_ok())
         .ok_or(Rejection::CapacityExceeded)
 }
 
@@ -967,13 +966,12 @@ fn difference_page(old: Vec<String>, new: Vec<String>) -> DifferencePage {
 mod capacity_tests {
     use super::*;
     #[test]
-    fn member_limits_reject_overflow_without_allocating_members() {
-        assert!(page_fits(MAX_MEMBERS - 1, 1));
-        assert!(!page_fits(MAX_MEMBERS, 1));
+    fn member_counts_reject_storage_overflow() {
+        assert!(page_fits(1_000_000, 1));
         assert!(!page_fits(usize::MAX, 1));
-        assert_eq!(member_count_after_patch(MAX_MEMBERS, 1, 1), Ok(MAX_MEMBERS));
+        assert_eq!(member_count_after_patch(1_000_000, 1, 0), Ok(1_000_001));
         assert_eq!(
-            member_count_after_patch(MAX_MEMBERS, 1, 0),
+            member_count_after_patch(i64::MAX as usize, 1, 0),
             Err(Rejection::CapacityExceeded)
         );
         assert_eq!(
