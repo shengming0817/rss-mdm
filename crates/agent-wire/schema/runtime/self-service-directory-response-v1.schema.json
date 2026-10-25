@@ -1,5 +1,112 @@
 {
   "$defs": {
+    "CapabilityDescriptor": {
+      "additionalProperties": false,
+      "description": "Cross-endpoint capability identity and interface, never an execution permit.",
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyAlias"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional administrator address."
+        },
+        "id": {
+          "description": "Stable Policy capability ID.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "inputSchema": {
+          "description": "Schema for caller-provided parameters."
+        },
+        "instance": {
+          "description": "Product service instance.",
+          "type": "string"
+        },
+        "objectType": {
+          "$ref": "#/$defs/CapabilityObject",
+          "description": "Object namespace."
+        },
+        "operations": {
+          "description": "Operations supported in this interface.",
+          "items": {
+            "$ref": "#/$defs/CapabilityOperation"
+          },
+          "type": "array"
+        },
+        "outputSchema": {
+          "description": "Schema of the operation result."
+        },
+        "revision": {
+          "description": "Current configuration revision, for information only.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "description": "Actual scope owner; membership is rechecked by execution.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Tenant owning this capability.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "toolName": {
+          "description": "Server-owned stable invocation name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Material version observed while resolving, not a call precondition.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objectType",
+        "toolName",
+        "scope",
+        "instance",
+        "tenant",
+        "revision",
+        "version",
+        "operations",
+        "inputSchema",
+        "outputSchema"
+      ],
+      "type": "object"
+    },
+    "CapabilityObject": {
+      "description": "Enterprise objects currently exposed through this contract.",
+      "oneOf": [
+        {
+          "const": "policy",
+          "description": "A Policy, including its self-service view.",
+          "type": "string"
+        }
+      ]
+    },
+    "CapabilityOperation": {
+      "description": "Operations available through the authenticated interface.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Read the Policy.",
+          "type": "string"
+        },
+        {
+          "const": "invoke",
+          "description": "Invoke its published self-service task.",
+          "type": "string"
+        }
+      ]
+    },
     "EnrollmentEntry": {
       "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
       "oneOf": [
@@ -62,6 +169,10 @@
         }
       ]
     },
+    "PolicyAlias": {
+      "description": "Tenant-local canonical Policy alias.",
+      "type": "string"
+    },
     "ScriptParameterSource": {
       "description": "Public source of one Resource-declared parameter.",
       "oneOf": [
@@ -113,47 +224,80 @@
         }
       ]
     },
-    "SelfServiceDirectoryItem": {
+    "SelfServiceDirectoryProjection": {
       "additionalProperties": false,
-      "description": "One currently authorized script and its Resource-owned parameter schema.",
+      "description": "Selected directory fields; resolve returns the complete required descriptor instead.",
       "properties": {
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CapabilityDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected capability interface."
+        },
         "policyId": {
-          "description": "Logical Policy identity.",
+          "description": "Selected Policy identity.",
           "format": "uuid",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "policyRevision": {
-          "description": "Current configuration CAS revision.",
+          "description": "Selected informational configuration revision.",
           "format": "uint64",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "policyVersion": {
-          "description": "Immutable execution version.",
+          "description": "Selected informational material version.",
           "format": "uuid",
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "selfService": {
-          "$ref": "#/$defs/SelfServiceMetadata",
-          "description": "Normalized presentation and invocation settings."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelfServiceMetadata"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected presentation and invocation settings."
         },
         "subject": {
-          "$ref": "#/$defs/SelfServiceSubject",
-          "description": "Current qualified subject, rechecked when invoking and before execution."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelfServiceSubject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected qualified subject."
         },
         "task": {
-          "$ref": "#/$defs/SelfServiceTask",
-          "description": "Closed task kind and the exact invocation interface."
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SelfServiceTask"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Selected operation-specific interface."
         }
       },
-      "required": [
-        "policyId",
-        "policyRevision",
-        "policyVersion",
-        "subject",
-        "selfService",
-        "task"
-      ],
       "type": "object"
     },
     "SelfServiceMetadata": {
@@ -438,13 +582,12 @@
     "items": {
       "description": "Authorized directory entries.",
       "items": {
-        "$ref": "#/$defs/SelfServiceDirectoryItem"
+        "$ref": "#/$defs/SelfServiceDirectoryProjection"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Last examined Policy when another page may exist.",
-      "format": "uuid",
+      "description": "Opaque continuation after the last examined candidate.",
       "type": [
         "string",
         "null"

@@ -20,12 +20,18 @@ impl EnrollmentPolicy {
         now: i64,
     ) -> Result<bool> {
         if !self.policy.state.is_enabled()
-            || self.policy.version != self.id
             || now < self.frozen.schedule.not_before
             || now >= self.frozen.schedule.ends_at()
-            || storage::eligible_in(&service.source, tx, &self.policy, &target.device)
-                .await?
-                .is_none()
+            || storage::execution_eligible_in(
+                &service.source,
+                tx,
+                &self.policy,
+                self.id,
+                rss_mdm_inventory::Channel::Agent,
+                &target.device,
+            )
+            .await?
+            .is_none()
         {
             return Ok(false);
         }

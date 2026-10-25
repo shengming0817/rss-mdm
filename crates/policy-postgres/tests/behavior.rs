@@ -404,3 +404,81 @@ async fn borrowed_reads_reject_foreign_runtime_and_tenant() {
     other.close().await;
     runtime.close().await;
 }
+
+#[tokio::test]
+#[ignore = "real PostgreSQL: make t2 MODULE=policy.persistence"]
+async fn aliases_are_atomic_unique_and_released_only_by_explicit_changes() {
+    use rss_mdm_agent_wire::runtime::PolicyAlias;
+    let runtime = runtime().await;
+    let store = PolicyStore::new(runtime.clone(), tenant(), deadline())
+        .await
+        .unwrap();
+    let alias = format!("tool-{}", Uuid::new_v4());
+    let mut d = definition();
+    d.alias = Some(PolicyAlias::parse(&alias.to_uppercase()).unwrap());
+    let a = publication(
+        Uuid::new_v4(),
+        None,
+        Change::Put {
+            definition: Box::new(d.clone()),
+            enabled: true,
+        },
+    );
+    let b = publication(
+        Uuid::new_v4(),
+        None,
+        Change::Put {
+            definition: Box::new(d),
+            enabled: true,
+        },
+    );
+    let (ra, rb) = tokio::join!(
+        execute(&runtime, &store, Uuid::new_v4(), &a, deadline()),
+        execute(&runtime, &store, Uuid::new_v4(), &b, deadline())
+    );
+    assert_ne!(ra.is_ok(), rb.is_ok());
+    let (winner, loser, rejected) = if ra.is_ok() {
+        (&a, &b, rb)
+    } else {
+        (&b, &a, ra)
+    };
+    assert!(matches!(
+        rejected,
+        Err(Error::Rejected(Rejection::Conflict))
+    ));
+    assert!(
+        store
+            .get(loser.policy.id, deadline())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let disabled = publication(winner.policy.id, Some(&winner.policy), Change::Disable);
+    execute(&runtime, &store, Uuid::new_v4(), &disabled, deadline())
+        .await
+        .unwrap();
+    assert!(matches!(
+        execute(&runtime, &store, Uuid::new_v4(), loser, deadline()).await,
+        Err(Error::Rejected(Rejection::Conflict))
+    ));
+    let archived = publication(winner.policy.id, Some(&disabled.policy), Change::Archive);
+    execute(&runtime, &store, Uuid::new_v4(), &archived, deadline())
+        .await
+        .unwrap();
+    execute(&runtime, &store, Uuid::new_v4(), loser, deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get(loser.policy.id, deadline())
+            .await
+            .unwrap()
+            .unwrap()
+            .definition
+            .alias
+            .unwrap()
+            .as_str(),
+        alias
+    );
+    runtime.close().await;
+}

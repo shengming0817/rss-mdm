@@ -109,7 +109,13 @@ impl Queries {
             audit.require_request_settlement();
             let effect=run.result.as_ref().and_then(|r|r["effect"].as_str()).unwrap_or("unverified").to_owned();
             let user_action=if matches!(plan,db::ScheduledPolicy::Software(ref software) if matches!(software.assignment.intent(),rss_mdm_policy::SoftwareIntent::AvailableInstall)) && run.state.awaits_user(storage::now(tx).await?) {Some("waiting_user")}else{None};
-            let mut value=json!({"taskId":id,"authorization":run.invocation.as_ref().map(|i|&i.authorization),"attemptId":run.state.attempt(),"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
+            let nodes = if let Some(attempt) = run.state.attempt() {
+                if matches!(&plan, db::ScheduledPolicy::Software(software) if software.assignment.channel() == rss_mdm_inventory::Channel::Agent) {
+                    let super::evidence::Material::Software {steps,..} = super::evidence::load_in(tx,id,attempt).await? else { return Err(Error::Malformed.into()); };
+                    steps.into_iter().map(|step| json!({"stepId":step.step_id,"definition":step.definition})).collect::<Vec<_>>()
+                } else { vec![] }
+            } else { vec![] };
+            let mut value=json!({"nodes":nodes,"taskId":id,"authorization":run.invocation.as_ref().map(|i|&i.authorization),"attemptId":run.state.attempt(),"device":run.target.device,"registrationId":run.target.registration,"generation":run.target.generation,"availableAt":run.available_at,"deadline":run.deadline,"state":run.state,"effect":effect,"userAction":user_action,"result":run.result});
             value["policyId"]=json!(policy);crate::queries::records::decode(value)
         })).await.map_err(Into::into)
     }

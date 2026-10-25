@@ -46,9 +46,9 @@ impl SoftwareAssignment {
         tenant: rss_request_context::TenantId,
         index: usize,
     ) -> std::result::Result<Option<Input>, Error> {
-        let stage = self.rollout.stages.get(index).ok_or(Error::Malformed)?;
+        let stage = self.stages().get(index).ok_or(Error::Malformed)?;
         let mut scopes = vec![self.scope, stage.scope];
-        scopes.extend(self.rollout.stages[..index].iter().map(|s| s.scope));
+        scopes.extend(self.stages()[..index].iter().map(|s| s.scope));
         let Some(resolved) = source
             .rollout_input_on(c, tenant, &scopes, self.channel())
             .await?
@@ -74,7 +74,7 @@ impl SoftwareAssignment {
             return Ok(());
         };
         let now = crate::storage::now(tx).await?;
-        for index in 0..self.rollout.stages.len() {
+        for index in 0..self.stages().len() {
             let Some(current) = self.stats_input_in(&service.source, tx, index).await? else {
                 return Ok(());
             };
@@ -239,7 +239,7 @@ impl SoftwareAssignment {
         let device = target.device.clone();
         let registration = target.registration_id;
         let epoch = target.generation;
-        let prefix = format!("software:stage:{}:%", self.rollout.stages[index].scope);
+        let prefix = format!("software:stage:{}:%", self.stages()[index].scope);
         let result=tx.with_connection(move|c|Box::pin(async move {sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT state,result FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND policy_version=$2 AND device=$3 AND registration=$4 AND generation=$5 AND occurrence LIKE $6 ORDER BY created_at DESC,id DESC LIMIT 1").bind(tenant).bind(version).bind(device).bind(registration).bind(epoch).bind(prefix).fetch_optional(c).await})).await?;
         let mut waiting_until = None;
         if let Some((state, result)) = result {

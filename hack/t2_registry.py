@@ -2045,3 +2045,7 @@ for selector in (
     'planning::t2::self_service::employee_request_ids_are_independent_and_unknown_is_hidden',
 ):
     case_fixtures('planning.self_service', selector, None)
+
+consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_service policy.persistence')
+
+T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',)

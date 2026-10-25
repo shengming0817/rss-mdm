@@ -36,7 +36,8 @@ async fn collection_claim_requires_signer_and_recovers_without_republication() -
                     &config,config.native_protector()?,audit_store,content,
                     std::collections::BTreeMap::new(),rss_device_command_postgres::CommandClock::Postgres,
                     sessions,
-                ).await?;
+                vec![1;32],
+).await?;
                 resources.resource(rss_mdm_execution_service::Resource(unsigned.service.clone()));
                 Ok(unsigned)
             })).await?;

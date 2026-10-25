@@ -1828,12 +1828,61 @@
           },
           "type": "array"
         },
+        "stepId": {
+          "description": "Exact producer node in this task and attempt.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 32,
+          "minItems": 32,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
         "target": {
           "$ref": "#/$defs/SoftwareExecutionTarget",
           "description": "Exact effect target and login generation from the step."
         }
       },
       "required": [
+        "stepId",
         "index",
         "stepDigest",
         "target",

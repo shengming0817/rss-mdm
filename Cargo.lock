@@ -3884,6 +3884,7 @@ dependencies = [
  "rss-runtime",
  "rss-transactional-messaging",
  "rss-transactional-messaging-postgres",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4217,6 +4218,7 @@ name = "rss-mdm-policy-postgres"
 version = "0.1.0"
 dependencies = [
  "rss-contract",
+ "rss-mdm-agent-wire",
  "rss-mdm-backend-postgres-support",
  "rss-mdm-policy",
  "rss-request-context",

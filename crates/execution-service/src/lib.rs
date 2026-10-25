@@ -82,6 +82,7 @@ pub fn recovery_scope(tenant: TenantId) -> rss_reconcile::Scope {
 #[cfg(feature = "integration")]
 type DiagnosticAssociationGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 pub struct ExecutionService {
+    pub(crate) cursor: rss_mdm_query::cursor::CursorCodec,
     pub(crate) recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub(crate) inputs: Arc<Inputs>,
     pub(crate) source: Arc<dyn source_authority::SourceAuthority>,
@@ -114,6 +115,7 @@ pub struct ExecutionService {
     pub(crate) diagnostic_association_gate: Mutex<Option<DiagnosticAssociationGate>>,
 }
 pub struct Dependencies {
+    pub cursor_key: Vec<u8>,
     pub recovery_credentials: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
     pub sessions: Arc<authorization::session::SessionAuthority>,
     pub inputs: Arc<Inputs>,
@@ -140,6 +142,10 @@ pub struct Dependencies {
 impl ExecutionService {
     pub fn new(dependencies: Dependencies) -> Self {
         Self {
+            cursor: rss_mdm_query::cursor::CursorCodec::from_key(ring::hmac::Key::new(
+                ring::hmac::HMAC_SHA256,
+                &dependencies.cursor_key,
+            )),
             readiness: Default::default(),
             recovery_credentials: dependencies.recovery_credentials,
             #[cfg(feature = "integration")]

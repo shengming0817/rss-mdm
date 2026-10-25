@@ -4,6 +4,11 @@
       "description": "Closed Agent HTTP error codes.",
       "oneOf": [
         {
+          "const": "capability_not_found",
+          "description": "The exact capability is absent or not visible to this caller.",
+          "type": "string"
+        },
+        {
           "const": "malformed_request",
           "description": "JSON or field validation failed.",
           "type": "string"

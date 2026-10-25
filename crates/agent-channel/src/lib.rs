@@ -102,7 +102,8 @@ impl IntoResponse for AgentError {
                     Error::Unauthorized | Error::Forbidden => wire::ErrorCode::InvalidIdentity,
                     Error::Missing(Missing::Task) => wire::ErrorCode::TaskNotFound,
                     Error::Missing(_) | Error::NotFound => wire::ErrorCode::ReportNotFound,
-                    Error::Configuration(_) | Error::Unavailable(_) | Error::Unsupported => {
+                    Error::Unsupported => wire::ErrorCode::UnsupportedCapability,
+                    Error::Configuration(_) | Error::Unavailable(_) => {
                         wire::ErrorCode::ServiceUnavailable
                     }
                 };
@@ -126,7 +127,9 @@ fn status_for(code: wire::ErrorCode) -> StatusCode {
         | wire::ErrorCode::CredentialRevoked
         | wire::ErrorCode::CertificateExpired
         | wire::ErrorCode::CredentialRetired => StatusCode::UNAUTHORIZED,
-        wire::ErrorCode::ReportNotFound | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
+        wire::ErrorCode::CapabilityNotFound
+        | wire::ErrorCode::ReportNotFound
+        | wire::ErrorCode::TaskNotFound => StatusCode::NOT_FOUND,
         wire::ErrorCode::PermissionDenied => StatusCode::FORBIDDEN,
         wire::ErrorCode::RangeNotSatisfiable => StatusCode::RANGE_NOT_SATISFIABLE,
         wire::ErrorCode::OperationConflict => StatusCode::CONFLICT,

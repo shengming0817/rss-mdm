@@ -166,8 +166,20 @@ impl Preparation {
             let spec = definition(selected)?;
             let action = wire::software_action(spec).map_err(|_| Error::Unsupported)?;
             let export = self.export_in(tx, delivery, selected, &action).await?;
-            let step = wire::software_step(spec, index, platform, context, export)
-                .map_err(|_| Error::Unsupported)?;
+            let step = wire::software_step(
+                spec,
+                w::SoftwareStepDefinition {
+                    resource: selected.version().resource().as_str().to_owned(),
+                    version: selected.version().label().as_str().to_owned(),
+                    variant: selected.variant().as_str().to_owned(),
+                    digest: selected.version().digest().bytes(),
+                },
+                index,
+                platform,
+                context,
+                export,
+            )
+            .map_err(|_| Error::Unsupported)?;
             step.export
                 .validate_for(&step, tenant)
                 .map_err(|_| Error::Unsupported)?;

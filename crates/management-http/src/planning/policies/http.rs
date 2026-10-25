@@ -29,6 +29,10 @@ pub fn previews(
 
 pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Router<Arc<Policies>> {
     Router::new()
+        .route(
+            "/policies/resolve",
+            post(resolve).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+        )
         .merge(
             Router::new()
                 .route(
@@ -203,4 +207,16 @@ async fn capabilities(
         .await
         .map(Json)
         .map_err(Into::into)
+}
+
+async fn resolve(
+    State(service): State<Arc<Policies>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Json(selector): Json<rss_mdm_agent_wire::runtime::CapabilitySelector>,
+) -> std::result::Result<Json<Value>, Error> {
+    super::read::resolve(&service, &auth.proof, &audit, &selector)
+        .await
+        .map(Json)
+        .map_err(Error::from)
 }

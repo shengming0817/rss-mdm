@@ -115,12 +115,17 @@ impl PolicyStore {
         let at = input.at;
         let hash = checked.semantic.to_vec();
         let definition = STORAGE.json("publish.definition", serde_json::to_value(&p.definition))?;
-        tx.with_connection(move|c|Box::pin(async move {
-   sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at,execution_binding) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,state=excluded.state,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at,execution_binding=excluded.execution_binding").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.state.as_str()).bind(definition).bind(author).bind(at).bind(p.execution_binding.map(|v|v.to_vec())).execute(&mut *c).await?;
+        let written = tx.with_connection(move|c|Box::pin(async move {
+   let write = sqlx::query("INSERT INTO mdm_policy.policies(tenant_id,id,revision,current_version,version_number,state,definition,author,updated_at,execution_binding) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(tenant_id,id) DO UPDATE SET revision=excluded.revision,current_version=excluded.current_version,version_number=excluded.version_number,state=excluded.state,definition=excluded.definition,author=excluded.author,updated_at=excluded.updated_at,execution_binding=excluded.execution_binding").bind(&tenant).bind(p.id).bind(p.revision).bind(p.version).bind(p.number).bind(p.state.as_str()).bind(definition).bind(author).bind(at).bind(p.execution_binding.map(|v|v.to_vec())).execute(&mut *c).await;
+   match write {
+       Err(error) if error.as_database_error().is_some_and(|e| e.constraint() == Some("policy_alias_unique")) => return Ok(Err(Rejection::Conflict)),
+       Err(error) => return Err(error),
+       Ok(_) => (),
+   }
     if let Some(frozen)=frozen {sqlx::query("INSERT INTO mdm_policy.versions(tenant_id,id,policy,number,resource,resource_version,frozen,fingerprint,action_kind) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(p.version).bind(p.id).bind(p.number).bind(p.definition.action.resource().map(|r| r.id())).bind(p.definition.action.resource().map(|r| r.version())).bind(frozen).bind(hash).bind(p.definition.action.kind().as_str()).execute(c).await?;}
-   Ok(())
+   Ok(Ok(()))
   })).await?;
-        Ok(Ok(()))
+        Ok(written)
     }
     /// Recover a fixed request identity. A different body under that identity is rejected.
     pub async fn replay_in(
@@ -271,6 +276,27 @@ pub struct PolicyReader {
     binding: PgOutboxWriter,
 }
 impl PolicyReader {
+    /// Resolve an exact address in this reader's tenant; the host checks current visibility.
+    pub async fn resolve_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        selector: &rss_mdm_agent_wire::runtime::CapabilitySelector,
+    ) -> InTransaction<Option<Uuid>> {
+        input!(self.check(tx)?);
+        if let Some(id) = input!(selector.policy_id().map_err(|_| Rejection::InvalidInput)) {
+            return Ok(Ok(Some(id)));
+        }
+        let rss_mdm_agent_wire::runtime::CapabilitySelector::Alias { alias } = selector else {
+            unreachable!()
+        };
+        let tenant = self.tenant.to_string();
+        let alias = alias.as_str().to_owned();
+        let id = tx.with_connection(move |c| Box::pin(async move {
+            sqlx::query_scalar("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'alias'=$2 AND state<>'archived'")
+                .bind(tenant).bind(alias).fetch_optional(c).await
+        })).await?;
+        Ok(Ok(id))
+    }
     /// Bind a host-admitted runtime. Command readers retain their SELECT-only role.
     pub fn bind(runtime: Arc<PgRuntime>, tenant: TenantId) -> Self {
         Self {

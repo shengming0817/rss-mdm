@@ -23,6 +23,20 @@ fn task() -> SoftwareTaskSpec {
     let invocation = json!({"runAs":"logged_in_user","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
     let action=serde_json::from_value::<SoftwareTaskAction>(json!({"package":"Acme.Editor","version":"2.0.0.0","reboot":"report","downgrade":"deny","signatures":[],"behavior":{"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"Acme.Editor","publisher":"CN=Acme","version":[2,0,0,0],"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"target_user_registration","target":{"kind":"exact","identity":"S-1-5-21-1-2-3-1001"}},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":true,"uninstall":true,"invocation":invocation,"upgrade":"in_place"}})).unwrap();
     let step = SoftwareTaskStep {
+        step_id: SoftwareStepDefinition {
+            resource: "test".into(),
+            version: "1".into(),
+            variant: "default".into(),
+            digest: [1; 32],
+        }
+        .step_id()
+        .unwrap(),
+        definition: SoftwareStepDefinition {
+            resource: "test".into(),
+            version: "1".into(),
+            variant: "default".into(),
+            digest: [1; 32],
+        },
         action,
         target: SoftwareExecutionTarget::User {
             identity: "S-1-5-21-1-2-3-1001".into(),
@@ -67,6 +81,7 @@ fn result(task: &SoftwareTaskSpec) -> SoftwareTaskResult {
         intent: task.intent,
         definition_digest: task.definition_digest,
         steps: vec![SoftwareStepResult {
+            step_id: step.step_id,
             index: 0,
             step_digest: step.digest().unwrap(),
             target: step.target.clone(),
@@ -111,6 +126,9 @@ fn another_user_login_package_or_provisioning_receipt_cannot_satisfy_registratio
         unreachable!()
     };
     wrong.steps[0].identity = SoftwareObservedIdentity::MsixProvisioning { identity };
+    assert!(assess_for(&wrong, &task).is_err());
+    let mut wrong = good.clone();
+    wrong.steps[0].step_id = [9; 32];
     assert!(assess_for(&wrong, &task).is_err());
     let mut wrong = good.clone();
     wrong.steps[0].step_digest = [9; 32];
@@ -176,11 +194,14 @@ fn root_uninstall_requires_absence_while_dependencies_require_exact_installation
     task.intent = SoftwareTaskIntent::Uninstall;
     let mut dependency = task.steps[0].clone();
     dependency.action.package = "Acme.Dependency".into();
+    dependency.definition.resource = "dependency".into();
+    dependency.step_id = dependency.definition.step_id().unwrap();
     task.steps.insert(0, dependency);
     let mut evidence = result(&task);
     evidence.steps.push(evidence.steps[0].clone());
     let step = &task.steps[1];
     evidence.steps[1].index = 1;
+    evidence.steps[1].step_id = step.step_id;
     evidence.steps[1].step_digest = step.digest().unwrap();
     evidence.steps[1].package = step.action.package.clone();
     evidence.steps[1].after = SoftwareDetectionObservation::Absent {

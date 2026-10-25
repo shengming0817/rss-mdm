@@ -196,8 +196,8 @@ Scope 在发布固定结果前按目标通道完成集合运算，并持久化�
 SelfService 的 displayName、description、category、keywords、prerequisites、sideEffects 位于
 `presentation`，access、published、allowAi、riskLevel 仍为控制字段。Group 的 name/description、
 Compliance 的 name 同样位于各自 presentation。展示修订可审计，但不生成 Policy 执行版本、
-Group 成员版本或新的资源制品。SelfService 仍绑定当前 policyRevision 与精确调用输入，
-文案更新后须重新读取并确认；没有独立的确认文案存证服务。
+Group 成员版本或新的资源制品。SelfService 首次受理读取当前配置并保存精确调用输入和执行版本；已受理任务不因文案或版本更新失效。
+执行前仍检查当前启停、发布、Scope、主体与注册资格，重放及结果继续关联原 Run。
 
 Resource 通过现有写入口的 `action: "present"` 和完整 `presentation` 修改对象展示，沿用
 operationId/expectedRevision；详情和目录返回 presentation。软件版本详情同时返回

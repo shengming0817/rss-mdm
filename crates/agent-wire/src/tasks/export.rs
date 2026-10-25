@@ -229,6 +229,12 @@ impl SoftwareTaskExport {
             }
             _ => return Err(WireError::InvalidValue),
         };
+        if binding.resource != step.definition.resource
+            || binding.resource_version != step.definition.version
+            || binding.resource_digest != step.definition.digest
+        {
+            return Err(WireError::InvalidValue);
+        }
         https(uri)?;
         text(&binding.target, 128)?;
         text(&binding.resource, 128)?;

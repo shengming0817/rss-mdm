@@ -82,6 +82,7 @@ pub(crate) fn result_event(
             _ => anyhow::bail!("unsupported test observation"),
         };
         steps.push(wire::SoftwareStepResult {
+            step_id: step.step_id,
             index: index.try_into()?,
             step_digest: step.digest()?,
             target: step.target.clone(),
