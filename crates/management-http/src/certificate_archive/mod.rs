@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::HeaderMap,
 };
 use rss_mdm_audit_integration::RequestAudit;
@@ -15,7 +15,7 @@ use rss_mdm_http_contract::{
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn routes() -> Router<Arc<archive::Archive>> {
+pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive::Archive>> {
     Router::new()
         .route(
             "/certificate-archive/vault",
@@ -39,15 +39,22 @@ pub fn routes() -> Router<Arc<archive::Archive>> {
         )
         .route(
             "/certificate-archive/entries",
-            get(list).owned(&contracts::CERTIFICATES, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::CERTIFICATES, &[RouteOperation::List])
+                .queried(&archive::directory::SCHEMA),
         )
         .route(
             "/certificate-archive/entries/{entry}/versions",
-            get(history).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
+            get(history)
+                .owned(&contracts::CERTIFICATE_VERSIONS, &[RouteOperation::List])
+                .windowed(&archive::directory::HISTORY),
         )
         .route(
             "/certificate-archive/entries/{entry}",
-            put(manage).owned(&contracts::CERTIFICATES, &[RouteOperation::Lifecycle]),
+            get(detail)
+                .owned(&contracts::CERTIFICATES, &[RouteOperation::Get])
+                .put(manage)
+                .owned(&contracts::CERTIFICATES, &[RouteOperation::Lifecycle]),
         )
         .route(
             "/certificate-archive/entries/{entry}/metadata",
@@ -76,6 +83,7 @@ pub fn routes() -> Router<Arc<archive::Archive>> {
             "/certificate-archive/operations/{operation}",
             get(operation).owned(&contracts::CERTIFICATE_OPERATIONS, &[RouteOperation::Get]),
         )
+        .layer(Extension(cursor))
 }
 fn input<T>(value: Result<Json<T>, axum::extract::rejection::JsonRejection>) -> Result<T, Error> {
     value.map(|v| v.0).map_err(Error::from)
@@ -129,35 +137,41 @@ async fn password(
         .map(Json)
         .map_err(Error::from)
 }
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ListQuery {
-    after: Option<Uuid>,
-}
 async fn list(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
-    q: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
+    Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<archive::Page>, Error> {
-    let q = q.map_err(|_| Error::Malformed)?.0;
-    s.list(&a.proof, q.after)
+    let q = archive::directory::SCHEMA
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    s.list(&a.proof, &q, &cursor)
         .await
         .map(Json)
         .map_err(Error::from)
 }
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HistoryQuery {
-    before: Option<i64>,
+async fn detail(
+    State(s): State<Arc<archive::Archive>>,
+    Extension(a): Extension<RequestAuth>,
+    Path(entry): Path<Uuid>,
+) -> Result<Json<archive::Entry>, Error> {
+    s.entry(&a.proof, entry)
+        .await
+        .map(Json)
+        .map_err(Error::from)
 }
 async fn history(
     State(s): State<Arc<archive::Archive>>,
     Extension(a): Extension<RequestAuth>,
     Path(entry): Path<Uuid>,
-    q: Result<Query<HistoryQuery>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<Vec<archive::Version>>, Error> {
-    let q = q.map_err(|_| Error::Malformed)?.0;
-    s.history(&a.proof, entry, q.before)
+    Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<archive::Version>>, Error> {
+    let (q, _) = archive::directory::HISTORY
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    s.history(&a.proof, entry, &q, &cursor)
         .await
         .map(Json)
         .map_err(Error::from)

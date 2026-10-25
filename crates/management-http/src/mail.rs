@@ -2,7 +2,7 @@
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::{HeaderMap, StatusCode},
 };
 use rss_mdm_audit_integration::RequestAudit;
@@ -14,8 +14,14 @@ use rss_mdm_mail_service::{
 };
 use std::sync::Arc;
 use uuid::Uuid;
-pub fn routes(authority: Arc<Authority>) -> Router {
+pub fn routes(authority: Arc<Authority>, cursor: rss_mdm_query::cursor::CursorCodec) -> Router {
     Router::new()
+        .route(
+            "/smtp/versions",
+            get(history)
+                .owned(&contracts::SMTP_VERSIONS, &[RouteOperation::List])
+                .windowed(&rss_mdm_mail_service::authority::HISTORY),
+        )
         .route(
             "/smtp",
             get(read)
@@ -28,6 +34,7 @@ pub fn routes(authority: Arc<Authority>) -> Router {
             get(operation).owned(&contracts::SMTP, &[RouteOperation::Get]),
         )
         .layer(axum::extract::DefaultBodyLimit::max(16384))
+        .layer(Extension(cursor))
         .with_state(authority)
 }
 async fn read(
@@ -60,4 +67,21 @@ async fn create(
         StatusCode::ACCEPTED,
         Json(service.create(&auth.proof, &audit, id, &input).await?),
     ))
+}
+
+async fn history(
+    State(service): State<Arc<Authority>>,
+    Extension(auth): Extension<RequestAuth>,
+    Extension(audit): Extension<RequestAudit>,
+    Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<Receipt>>, Error> {
+    let (q, _) = rss_mdm_mail_service::authority::HISTORY
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    service
+        .history(&auth.proof, &audit, &q, &cursor)
+        .await
+        .map(Json)
+        .map_err(Error::from)
 }

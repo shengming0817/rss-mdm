@@ -6,7 +6,7 @@ mod storage;
 use crate::{Error, Failure, HttpState, database::db};
 use axum::{
     Extension, Json,
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::HeaderMap,
 };
 use rss_mdm_audit_integration::{Fact, RequestAudit, budget::AuditBudget};
@@ -91,6 +91,12 @@ pub struct PublicVersion {
 pub(crate) fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
+            "/api/v1/apple/materials/{purpose}/versions",
+            get(history)
+                .owned(&contracts::APPLE_MATERIAL_VERSIONS, &[RouteOperation::List])
+                .windowed(&HISTORY),
+        )
+        .route(
             "/api/v1/apple/materials/{purpose}",
             get(status).owned(&contracts::APPLE_MATERIALS, &[RouteOperation::Get]),
         )
@@ -174,7 +180,7 @@ async fn status(
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
 ) -> Result<Json<Value>, Error> {
-    directory(&app.access, app.identity.tenant(), &auth, purpose)
+    directory(&app.access, app.identity.tenant(), &auth, purpose, &[])
         .await
         .map(Json)
 }
@@ -183,6 +189,7 @@ pub async fn directory(
     tenant: rss_request_context::TenantId,
     auth: &RequestAuth,
     purpose: Purpose,
+    loaded: &[i64],
 ) -> Result<Value, Error> {
     let p = &auth.proof;
     if p.tenant_id() != tenant.to_string() {
@@ -191,7 +198,7 @@ pub async fn directory(
     p.require(Permission::RegistrationConfigurationRead, None)?;
     let mut tx = store.begin_read(p.tenant_id()).await?;
     let (revision, desired) = storage::head(&mut tx, p.tenant_id(), purpose).await?;
-    let values = storage::versions(&mut tx, p.tenant_id(), purpose).await?;
+
     let accounts: Vec<(String, i64)> = if purpose == Purpose::ManagedAccount {
         sqlx::query_as("SELECT alias,revision FROM mdm_apple_runtime.account_bindings WHERE tenant_id=$1::uuid ORDER BY alias").bind(p.tenant_id()).fetch_all(&mut *tx).await.map_err(db)?
     } else {
@@ -200,10 +207,32 @@ pub async fn directory(
     let accounts = accounts
         .into_iter()
         .collect::<std::collections::BTreeMap<_, _>>();
+    let mut references = loaded.to_vec();
+    references.extend(accounts.values().copied());
+    references.extend(desired);
+    references.push(revision);
+    references.sort_unstable();
+    references.dedup();
+    let rows=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=ANY($3)").bind(p.tenant_id()).bind(purpose.name()).bind(references).fetch_all(&mut *tx).await.map_err(db)?;
+    let values = rows
+        .iter()
+        .map(|r| {
+            let v = storage::decode(r)?;
+            Ok((v.revision, v))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, Error>>()?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2",
+    )
+    .bind(p.tenant_id())
+    .bind(purpose.name())
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(db)?;
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(
-        json!({"revision":revision,"desiredRevision":desired,"versions":values,"runtimeObservation":"separate","accountBindings":accounts}),
+        json!({"revision":revision,"desiredRevision":desired,"versionCount":count,"materials":values,"runtimeObservation":"separate","accountBindings":accounts}),
     )
 }
 
@@ -464,4 +493,73 @@ pub async fn rewrap(
         sqlx::query("UPDATE mdm_apple_runtime.versions SET private_key=$4 WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3").bind(tenant).bind(purpose.name()).bind(revision).bind(next).execute(&mut *c).await.map_err(db)?;
     }
     Ok(rows.len() as u64)
+}
+
+pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "apple_material_versions",
+    default_limit: 64,
+    max_limit: 200,
+    order: "revision DESC",
+    context: &[],
+};
+async fn history(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(purpose): Path<Purpose>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<rss_mdm_query::Page<PublicVersion>>, Error> {
+    let p = proof(&app, &auth, false)?;
+    let (q, _) = HISTORY
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    let current =
+        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    current
+        .require(p, Permission::RegistrationConfigurationRead, None)
+        .map_err(rss_mdm_authorization_service::Error::from)?;
+    let binding = rss_mdm_query::cursor::fingerprint(&(
+        HISTORY.id,
+        p.tenant_id(),
+        p.instance_id(),
+        current.query_binding(p)?,
+        purpose,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    let before: Option<i64> = q
+        .cursor
+        .as_ref()
+        .map(|v| {
+            app.query_cursor
+                .decode(
+                    &rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?,
+                    &binding,
+                )
+                .map_err(|_| Error::Conflict)
+        })
+        .transpose()?;
+    let rows=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND ($3::bigint IS NULL OR revision<$3) ORDER BY revision DESC LIMIT $4").bind(p.tenant_id()).bind(purpose.name()).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
+    let more = rows.len() > q.limit;
+    let items = rows
+        .iter()
+        .take(q.limit)
+        .map(storage::decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if more {
+        items
+            .last()
+            .map(|v| {
+                app.query_cursor
+                    .encode(&binding, &v.revision)
+                    .map(|v| v.as_str().to_owned())
+                    .map_err(|_| Error::Conflict)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    tx.rollback().await.map_err(db)?;
+    p.check_live()?;
+    Ok(Json(rss_mdm_query::Page { items, next_cursor }))
 }

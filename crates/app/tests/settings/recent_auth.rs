@@ -48,6 +48,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
     ));
     let requests = Arc::new(tokio::sync::Semaphore::new(32));
     let apple = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         platform_sso: None,
         platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
             fixture.audit.clone(),
@@ -76,6 +77,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         requests: requests.clone(),
     });
     let windows = Arc::new(rss_mdm_windows_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         protection: protection.clone(),
         mount: crate::device::ChannelMount::new(
             tenant,
@@ -92,15 +94,19 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         requests,
         windows: None,
     });
-    let writes = rss_mdm_management_http::mail::routes(Arc::new(
-        rss_mdm_mail_service::authority::Authority {
+    let writes = rss_mdm_management_http::mail::routes(
+        Arc::new(rss_mdm_mail_service::authority::Authority {
             tenant,
             protection: protection.clone(),
             audit: fixture.audit.clone(),
-        },
-    ))
+        }),
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+    )
     .merge(
-        rss_mdm_management_http::content::connections::routes().with_state(Arc::new(
+        rss_mdm_management_http::content::connections::routes(
+            rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+        )
+        .with_state(Arc::new(
             rss_mdm_content_service::connections::authority::Authority {
                 tenant,
                 protection,
@@ -147,6 +153,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
             let entry = catalog.1["items"].as_array().unwrap().iter().find(|e| e["id"] == id).expect("required settings entry");
             ensure!(entry["actions"].as_array().unwrap().iter().any(|a| a["name"] == "configure"), "fresh configure action missing: {id}");
         }
+        verify_material_history(&router,&mut browser).await?;
         identity::age_prepared_admin_session()?;
         let after=browser.call(&router,Method::GET,&session_path,None).await?;
         ensure!(after.0==StatusCode::OK && after.1["session"]["issuedAt"]==before.1["session"]["issuedAt"]);
@@ -181,4 +188,93 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         }
         Ok(())
     }).await
+}
+
+/// History metadata is seeded directly; only the 65th Apple key exercises creation.
+/// Unselected archived rows are never used as runtime credentials.
+async fn verify_material_history(router: &Router, browser: &mut Browser) -> Result<()> {
+    use crate::test_support::process::pg;
+    let tenant = case_tenant();
+    pg(&format!(
+        r#"
+INSERT INTO mdm_mail.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_mail.heads.revision,65);
+INSERT INTO mdm_mail.versions(tenant_id,revision,operation_id,fingerprint_key,fingerprint,profile,sender,recipient,credentials)
+SELECT '{tenant}',n,gen_random_uuid(),'history',decode(repeat('00',32),'hex'),'history','a@example.test','b@example.test',decode('00','hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
+INSERT INTO mdm_content_connections.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_content_connections.heads.revision,65);
+INSERT INTO mdm_content_connections.versions(tenant_id,revision,operation_id,profile,generated,credentials,fingerprint_key,fingerprint)
+SELECT '{tenant}',n,gen_random_uuid(),'history',true,decode('00','hex'),'history',decode(repeat('00',32),'hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
+INSERT INTO mdm_wns.heads VALUES('{tenant}',65,NULL) ON CONFLICT(tenant_id) DO UPDATE SET revision=greatest(mdm_wns.heads.revision,65);
+INSERT INTO mdm_wns.versions(tenant_id,revision,operation_id,actor,fingerprint_key,fingerprint,pfn,sid_digest,configuration,material)
+SELECT '{tenant}',n,gen_random_uuid(),'history','history',decode(repeat('00',32),'hex'),'history',decode(repeat('00',32),'hex'),decode(repeat('00',32),'hex'),decode('00','hex') FROM generate_series(1,65)n ON CONFLICT DO NOTHING;
+INSERT INTO mdm_apple_runtime.heads(tenant_id,purpose,revision) VALUES('{tenant}','apns',64) ON CONFLICT(tenant_id,purpose) DO UPDATE SET revision=greatest(mdm_apple_runtime.heads.revision,64);
+INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,public_digest,private_key,csr)
+SELECT '{tenant}','apns',n,gen_random_uuid(),repeat('0',64),decode('00','hex'),'history metadata' FROM generate_series(1,64)n ON CONFLICT DO NOTHING;
+"#
+    ))?;
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let created = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/apple/materials/apns/keys",
+            Some(json!({"expectedRevision":64,"source":{"kind":"generate"}})),
+        )
+        .await?;
+    ensure!(
+        created.0.is_success(),
+        "65th Apple key rejected: {} {}",
+        created.0,
+        created.1
+    );
+    for path in [
+        "/api/v1/smtp",
+        "/api/v1/storage/connections",
+        "/api/v1/windows/wns",
+        "/api/v1/apple/materials/apns",
+    ] {
+        let current = browser.call(router, Method::GET, path, None).await?;
+        ensure!(
+            current.0 == StatusCode::OK
+                && current.1["versionCount"] == 65
+                && current.1.get("versions").is_none(),
+            "current state at {path}: {} {}",
+            current.0,
+            current.1
+        );
+        let mut cursor = None;
+        let mut revisions = Vec::new();
+        loop {
+            let url = match &cursor {
+                Some(c) => format!("{path}/versions?limit=17&cursor={c}"),
+                None => format!("{path}/versions?limit=17"),
+            };
+            let page = browser.call(router, Method::GET, &url, None).await?;
+            ensure!(
+                page.0 == StatusCode::OK,
+                "history {url}: {} {}",
+                page.0,
+                page.1
+            );
+            let items = page.1["items"].as_array().unwrap();
+            ensure!(items.len() <= 17);
+            for row in items {
+                ensure!(
+                    row.get("privateKey").is_none()
+                        && row.get("credentials").is_none()
+                        && row.get("secret").is_none()
+                );
+                revisions.push(row["revision"].as_i64().unwrap());
+            }
+            cursor = page.1["nextCursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+            ensure!(revisions.len() <= 65, "history did not terminate");
+        }
+        ensure!(
+            revisions == (1..=65).rev().collect::<Vec<i64>>(),
+            "incomplete history at {path}"
+        );
+    }
+    Ok(())
 }

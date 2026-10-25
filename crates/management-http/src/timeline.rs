@@ -3,18 +3,13 @@
 use crate::{Error, Failure, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
 use rss_mdm_http_contract::{Router, routing::get};
 use rss_mdm_timeline_service::{Page, Timeline};
 use std::sync::Arc;
-fn input(
-    q: Result<Query<rss_mdm_timeline_service::Query>, axum::extract::rejection::QueryRejection>,
-) -> Result<rss_mdm_timeline_service::Query, Error> {
-    q.map(|q| q.0).map_err(|_| Error::Malformed)
-}
 fn error(error: rss_mdm_timeline_service::Error) -> Error {
     use rss_mdm_timeline_service::Error as E;
     match error {
@@ -29,11 +24,15 @@ pub fn routes() -> Router<Arc<Timeline>> {
     Router::new()
         .route(
             "/devices/{device}/timeline",
-            get(device).owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List]),
+            get(device)
+                .owned(&contracts::DEVICE_TIMELINE, &[RouteOperation::List])
+                .windowed(&rss_mdm_timeline_service::DEVICE_TIMELINE),
         )
         .route(
             "/audit-events",
-            get(search).owned(&contracts::AUDIT, &[RouteOperation::List]),
+            get(search)
+                .owned(&contracts::AUDIT, &[RouteOperation::List])
+                .windowed(&rss_mdm_timeline_service::AUDIT),
         )
 }
 async fn device(
@@ -41,13 +40,11 @@ async fn device(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
-    params: Result<
-        Query<rss_mdm_timeline_service::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    RawQuery(params): RawQuery,
 ) -> Result<Json<Page>, Error> {
     audit.target_device(&device);
-    let mut query = input(params)?;
+    let mut query = rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), true)
+        .map_err(error)?;
     if query.device.is_some() {
         return Err(Error::Malformed);
     }
@@ -62,16 +59,18 @@ async fn search(
     State(service): State<Arc<Timeline>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(auth): Extension<RequestAuth>,
-    params: Result<
-        Query<rss_mdm_timeline_service::Query>,
-        axum::extract::rejection::QueryRejection,
-    >,
+    RawQuery(params): RawQuery,
 ) -> Result<Json<Page>, Error> {
     audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
         rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
     ));
     service
-        .query(&auth.proof, "audit", &input(params)?)
+        .query(
+            &auth.proof,
+            "audit",
+            &rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), false)
+                .map_err(error)?,
+        )
         .await
         .map(Json)
         .map_err(error)

@@ -288,8 +288,8 @@ pub struct Entry {
 #[serde(rename_all = "camelCase")]
 pub struct Page {
     pub tenant_id: String,
-    pub items: Vec<Entry>,
-    pub next_after: Option<Uuid>,
+    pub items: Vec<serde_json::Value>,
+    pub next_cursor: Option<String>,
     pub as_of: i64,
     pub reminder_days: u32,
     pub alerts: Alerts,

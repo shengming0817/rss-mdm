@@ -250,22 +250,3 @@ async fn change_on(
     .await?;
     Ok((receipt, false))
 }
-
-pub fn list_keys(
-    proof: &AuthorizedPrincipal,
-    after: Option<Uuid>,
-) -> Result<(Vec<KeyRecord>, Option<Uuid>), Error> {
-    proof.user()?;
-    proof.require(Permission::AuthorizationRead, None)?;
-    let mut selected: Vec<_> = proof
-        .authorization()?
-        .keys
-        .iter()
-        .filter(|key| after.is_none_or(|after| key.id > after))
-        .take(101)
-        .cloned()
-        .collect();
-    let next = (selected.len() > 100).then(|| selected[99].id);
-    selected.truncate(100);
-    Ok((selected, next))
-}

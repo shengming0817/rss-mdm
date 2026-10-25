@@ -374,3 +374,12 @@ journal 必须保留：新布局使用新建实例，不能修改旧安装账本
 `audit_projection.max_inflight` 默认 9，是执行与待核对恢复身份的共同容量；消息 runtime 额外保留一个控制连接。worker 按空闲容量一次批量领取，各事件独立结算。领取、事件执行和恢复各自使用新建的单操作预算，不共享整轮截止。提交后通知只是提示，30 秒持久补查覆盖丢通知和重连；依赖失败复用 RSS 有上限指数退避，通知不能绕过退避。
 
 `mdm_audit_projection_progress` 聚合阶段耗时、推进数、恢复数量、连续失败和最后推进年龄，不含载荷。`resolve` 无终态证明时仍只能由新的持久 claim 决定重执行；关闭或超时不证明回滚。当前候选仅支持全新部署，使用当前 schema 安装；不修改旧部署迁移摘要或导入旧积压。
+
+
+### 配置状态与完整历史
+
+SMTP、存储连接和 WNS 的当前状态入口分别为 `/api/v1/smtp`、`/api/v1/storage/connections`、`/api/v1/windows/wns`。响应提供 head revision、当前选中引用、versionCount、current/latest；内部宿主摘要可额外读取实际 applied 引用，不通过历史第一页推断当前状态。
+
+各入口追加 `/versions` 即为版本历史，接受 `limit/cursor`，返回 `items/nextCursor`，固定 revision 倒序，默认 64、最大 200。当前版本和历史分离，历史不再截断为最近 64 条；新版本通过重新读取首页发现，旧版本资格或撤销状态按读取时事实返回。秘密不在版本响应内，原资格核验、轮换与维护动作保持独立。
+
+租户及 provisioning 管理目录使用 `filter/sort/fields/limit/cursor`；只有安装管理 realm 的权限可读取，不接受业务租户权限替代。

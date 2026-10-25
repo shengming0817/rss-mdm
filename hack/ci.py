@@ -441,7 +441,7 @@ def fast_gates():
         ("t1",["cargo","test","--locked","--workspace","--lib","--bins","--tests"]),
         ("api-boundary",["cargo","test","--locked","--workspace","--doc"]),
         ("agent-wire-artifact",[sys.executable,"hack/agent_wire_artifact.py"]),
-        ("route-contract",["cargo","test","--locked","-p","rss-mdm-http-contract","--test","inventory","--test","migration"]),
+        ("route-contract",["cargo","test","--locked","-p","rss-mdm-http-contract","--test","inventory"]),
         ("native-schema",["cargo","run","--locked","-p","rss-mdm-native-schema","--","--check"]),
         ("advisories",["cargo","deny","--locked","check","advisories","licenses","sources"]),
     ]

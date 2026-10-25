@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 [dependencies]
+rss-mdm-query.workspace = true
+rss-contract.workspace = true
 rss-mdm-execution-service.workspace = true
 rss-mdm-audit-integration.workspace = true
 rss-audit-core.workspace = true
@@ -20,10 +22,7 @@ serde_json.workspace = true
 uuid.workspace = true
 ring.workspace = true
 sha2.workspace = true
-base64.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }
-[dev-dependencies]
-rss-contract.workspace = true
 [lints]
 workspace = true

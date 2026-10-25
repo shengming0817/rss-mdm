@@ -71,9 +71,11 @@ impl Fixture {
             Router::new()
                 .nest(
                     "/api/v1",
-                    rss_mdm_management_http::certificate_archive::routes()
-                        .with_state(archive)
-                        .into_axum(),
+                    rss_mdm_management_http::certificate_archive::routes(
+                        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+                    )
+                    .with_state(archive)
+                    .into_axum(),
                 )
                 .merge(authority.authorization()),
         )
@@ -195,10 +197,16 @@ async fn real_http_preserves_history_rewraps_and_restarts_locked() -> Result<()>
     let history = f
         .ok(Method::GET, &format!("/entries/{entry}/versions"), None)
         .await?;
-    ensure!(history.as_array().unwrap().len() == 3);
-    ensure!(history[0]["metadata"]["vendor"]["padding"] == "x".repeat(5000));
-    ensure!(history[2]["metadata"]["name"] == "historic");
-    ensure!(history[2]["metadata"]["vendor"]["help"] == "retained");
+    ensure!(history["items"].as_array().unwrap().len() == 3);
+    let detail=f.ok(Method::GET,&format!("/entries/{entry}"),None).await?;
+    ensure!(detail["id"]==entry.to_string() && detail["latest"]["version"]==history["items"][0]["version"]);
+    let first=f.ok(Method::GET,&format!("/entries/{entry}/versions?limit=1"),None).await?;
+    let second=f.ok(Method::GET,&format!("/entries/{entry}/versions?limit=1&cursor={}",first["nextCursor"].as_str().unwrap()),None).await?;
+    ensure!(first["items"][0]["version"]!=second["items"][0]["version"]);
+
+    ensure!(history["items"][0]["metadata"]["vendor"]["padding"] == "x".repeat(5000));
+    ensure!(history["items"][2]["metadata"]["name"] == "historic");
+    ensure!(history["items"][2]["metadata"]["vendor"]["help"] == "retained");
     let opaque = pg(&format!(
         "SELECT position(convert_to('first original material','UTF8') in sealed)=0 FROM mdm_certificate_archive.versions WHERE tenant_id='{}' AND entry_id='{entry}' AND version=1",
         case_tenant()
@@ -521,9 +529,9 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     let history = f
         .ok(Method::GET, &format!("/entries/{result}/versions"), None)
         .await?;
-    ensure!(history[2]["requestVersion"] == original_ref);
-    ensure!(history[1]["requestVersion"] == duplicate_ref);
-    ensure!(history[0]["requestVersion"] == duplicate_ref);
+    ensure!(history["items"][2]["requestVersion"] == original_ref);
+    ensure!(history["items"][1]["requestVersion"] == duplicate_ref);
+    ensure!(history["items"][0]["requestVersion"] == duplicate_ref);
     let page = f.ok(Method::GET, "/entries", None).await?;
     let latest = &page["items"]
         .as_array()
@@ -535,7 +543,7 @@ async fn issued_results_keep_exact_request_versions_across_clean_shutdown() -> R
     let history = f
         .ok(Method::GET, &format!("/entries/{request}/versions"), None)
         .await?;
-    let versions = history.as_array().unwrap();
+    let versions = history["items"].as_array().unwrap();
     ensure!(versions.len() == 2);
     ensure!(versions.iter().any(|v| v["version"] == 1) && versions.iter().any(|v| v["version"] == 2));
     ensure!(

@@ -17,7 +17,7 @@ pub(super) async fn head(
     Ok(sqlx::query_as("SELECT revision,desired_revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1::uuid AND purpose=$2")
         .bind(tenant).bind(purpose.name()).fetch_optional(c).await.map_err(db)?.unwrap_or((0,None)))
 }
-fn decode(r: &sqlx::postgres::PgRow) -> Result<PublicVersion, Error> {
+pub(super) fn decode(r: &sqlx::postgres::PgRow) -> Result<PublicVersion, Error> {
     Ok(PublicVersion {
         revision: r.try_get("revision").map_err(db)?,
         key_id: r.try_get("key_id").map_err(db)?,
@@ -39,18 +39,6 @@ pub(super) async fn version(
     let r=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND revision=$3")
         .bind(tenant).bind(purpose.name()).bind(revision).fetch_optional(c).await.map_err(db)?.ok_or(Error::NotFound)?;
     decode(&r)
-}
-pub(super) async fn versions(
-    c: &mut PgConnection,
-    tenant: &str,
-    purpose: Purpose,
-) -> Result<Vec<PublicVersion>, Error> {
-    let rows=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 ORDER BY revision DESC LIMIT 65")
-        .bind(tenant).bind(purpose.name()).fetch_all(c).await.map_err(db)?;
-    if rows.len() > 64 {
-        return Err(Error::Conflict);
-    }
-    rows.iter().map(decode).collect()
 }
 pub(super) async fn material(
     c: &mut PgConnection,
@@ -82,17 +70,6 @@ pub(super) async fn insert(
     key: &crypto::Key,
     certificate: Option<(&str, &crypto::Certificate)>,
 ) -> Result<(), Error> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2",
-    )
-    .bind(tenant)
-    .bind(purpose.name())
-    .fetch_one(&mut *c)
-    .await
-    .map_err(db)?;
-    if count >= 64 {
-        return Err(Error::Conflict);
-    }
     let sealed = protection
         .seal_bytes(&key.private, &aad(tenant, purpose, revision, key_id)?)
         .map_err(|_| Error::Conflict)?;

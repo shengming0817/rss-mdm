@@ -25,6 +25,7 @@ pub(crate) async fn directory(f: &mut authority::Authority) -> Result<crate::set
         clock.clone(),
         protection.clone(),
         binding,
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .await?;
     f.resources
@@ -109,6 +110,7 @@ pub(crate) fn catalog(
             audit_store: f.audit.clone(),
             tenant: f.identity.management_tenant.to_string(),
         },
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .into_axum();
     Ok(f.router(Router::new().nest("/api/v1", catalog))?

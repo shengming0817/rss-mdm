@@ -91,3 +91,12 @@ Key 通过 `X-API-Key` 传递；完整随机密钥仅在创建或轮换成功的
 会话的 issuedAt 只表示签发时间；Apple/WNS/存储/邮件/任务签名/Webhook 和设置的近期认证判断均使用真实认证时间，未知、未来或过旧时拒绝。
 
 MDM 不暴露 Identity 的原始 `/api/v1/identity/tenants/{tenant}/profile` 观察读取；本人及他人资料统一经过 MDM 字段投影。本地资料管理仍使用受账户管理策略保护的 accounts 路径。`profiles[]` 的 `providerConfigVersion/sourceRevision` 是该观察接受时的来源版本（不适用为 null），不会替换为读取时的最新版本。
+
+
+### 管理查询与编辑基线
+
+规则、用户组、成员与 API Key 列表使用 `filter`、`sort`、`fields`、`limit`、`cursor`，返回 `items` 与 `nextCursor`；排序、筛选在数据库完整授权候选上执行。游标与租户、主体和当前授权绑定，改变查询或授权后重新读取第一页。组成员游标还绑定组 revision。
+
+编辑使用 `GET /api/v1/authorization/rules/{id}` 或 `GET /api/v1/authorization/user-groups/{id}` 获取完整 `id/revision/value`，写入继续使用原 `expectedRevision` CAS；墓碑 `value:null` 与不存在的 404 分开表达。列表投影不能作为完整写回值。Key 列表只公开安全元数据，秘密继续由专用创建/轮换流程披露。
+
+本次直接替换旧分页参数，匹配浏览器客户端由 #2907 接续；旧前端与本后端不能作为完成组合发布。可信部门入口读取 Identity 的有界来源快照，保留来源、到期及不可用语义。

@@ -454,6 +454,7 @@ impl Host {
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31;32]).expect("fixture cursor"),
             protection: execution.protection.clone(), mount: crate::device::ChannelMount::new(tenant, rss_mdm_inventory::ReportSource::MdmWindows, rss_mdm_registration_service::Purpose::Primary),
             audit_store: command_audit.clone(), access: Arc::new(rss_mdm_windows_channel::Store::from_pool(pool.clone(), registration.clone(), authorization.clone())),
             clock: Arc::new(crate::clock::InventoryClock(clock.clone())), execution: execution.service.clone(), credentials: credentials.clone(), devices: devices.clone(),

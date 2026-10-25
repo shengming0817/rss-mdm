@@ -581,7 +581,12 @@ async fn durable_wns_rotation_keeps_channel_identity_and_original_operation() ->
         .revision
             == 3
     );
-    ensure!(material::directory(&mut tx, case_tenant()).await?.revision == 3);
+    ensure!(
+        material::directory(&mut tx, case_tenant(), None)
+            .await?
+            .revision
+            == 3
+    );
     ensure!(
         material::load(
             &mut tx,

@@ -51,7 +51,7 @@ T2 使用受控 Apple HTTPS 和制造商根证书，仅证明本地协议、持�
 
 macOS 14 及以上可在系统设置中用 Managed Apple Account 注册组织设备。浏览器控制台另行实施；服务端提供发现、最小认证桥和管理 API。只提供 `mdm-adde`，不提供个人 BYOD User Enrollment。组织域名须将 `/.well-known/com.apple.remotemanagement` 的请求转送到产品浏览器 HTTPS origin；发现请求包含 `user-identifier` 和 `model-family=Mac`。
 
-在 `native_protocols.apple.materials.accounts` 中将组织使用的签名键名绑定到已选择的 `managed_account` 材料版本。RSA 私钥由 Apple 材料 owner 加密保存，对应 Apple 组织登记的公钥，与 Profile/APNs 材料分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过 `GET .../organizations` 查看映射与本地签名密钥可用性；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
+在 `native_protocols.apple.materials.accounts` 中将组织使用的签名键名绑定到已选择的 `managed_account` 材料版本。RSA 私钥由 Apple 材料 owner 加密保存，对应 Apple 组织登记的公钥，与 Profile/APNs 材料分别管理。管理员从 Apple AccountDetail 取得真正的 `server_uuid` 后，用 `registration_configuration_write` 权限配置 `PUT /api/v1/apple/organizations/{id}/account-enrollment`：`expectedRevision`（首次 0）、`domain`、`serverUuid`、`signingKey`、`enabled`。再用同一权限配置 `PUT .../organizations/{id}/account-enrollment/accounts/{managed-account}`，提交 `expectedRevision`、`principalId`、`instanceId`、`enabled`。写入要求非零 UUID `Idempotency-Key`，更新采用预期版本；同一请求可重放。账户及域名规范为 ASCII、小写，账户本地部分支持字母数字与 `._+-`。映射必须属于当前 Identity 实例和组织域名。`registration_configuration_read` 可通过分页 `GET .../organizations` 查看组织摘要；`GET .../organizations/{id}/account-enrollment` 读取配置，`GET .../organizations/{id}/account-enrollment/accounts` 分页读取映射，追加 `/{managed-account}` 读取独立映射详情；`externalOrganizationVerification=not_observed` 表示外部组织配置尚未验收。
 
 Apple 的签名 CMS 请求只证明载荷完整性，不作为设备认证或组织授权。首次请求获得 `401` 与 `apple-as-web` 认证地址；认证桥复用 RSS Identity 登录、联合身份和 CSRF 验证。登录人必须与管理员设置的组织账户映射完全一致。认证成功通过 `308` 返回 Apple 原生登录回调和随机 bearer；同一授权可重放。随后同一签名请求携带 bearer 取得固定签名 Profile，使用 `EnrollmentMode=ADDE`、`AssignedManagedAppleID`、`com.apple.mdm.token` 和设备范围。该 Profile 的 SCEP、证书绑定、首次 Authenticate 和 TokenUpdate 沿用共同注册生命周期；注册归属真实 RSS 用户，占用其 macOS MDM 额度。
 
@@ -217,3 +217,10 @@ Password 用户注册的 signingKey 为 null，proof 由当前共享设备 signi
 Password 原生请求仍使用相同外层 form，但 assertion 是设备签署的 login-request，内部 grant_type 为 password 并携带必要生命周期内的密码，不带 SE 用户内层 assertion。服务端先原子保留 nonce 和无秘密的 attempt，再在 SQL 锁外调用 Keycloak 密码验证，最后复核注册、绑定、配置及主体代际后签发加密响应。密码不进入数据库、事件或审计。状态 passwordExchange 只表示服务端交换结果；中断超时显示 unknown，客户端查询后使用新 nonce 重新认证，不盲目重放原请求。IdP 持有密码权威，正式改密后由 Mac 验证和同步；离线本地修改不会自动回写 IdP。
 
 首个浏览器消费者是当前租户 RSS MDM `/login`。同源 POST `/browser/begin` 携带 `bindingId`，取得 Identity challenge 并设置 Secure/HttpOnly/SameSite=Strict 的浏览器绑定 cookie；POST `/browser/complete` 携带 `challengeId/nonce/proof`。proof 在 Secure Enclave 模式使用用户 signing key，Password 模式使用当前共享设备 signing key，typ 为 `rss-mdm-platform-sso-browser+jwt`，绑定 `iss`（source ID）、`aud`（challenge audience）、`nonce`、`sourceVersion`、尚有效的原生 `accessToken` 与 `iat/exp`。服务端通过 P2 再核验当前人员/绑定/设备/策略状态后创建普通 Identity 会话，不接收任意 ID token，不转换为平台管理员或自助门户会话。密钥、nonce、原始 proof/token 和本地密码不进入审计详情。
+
+
+### 管理目录与材料历史
+
+组织、账户、ADE 设备和 Profile 管理列表使用 `filter/sort/fields/limit/cursor`，返回 `items/nextCursor`；组织不再嵌入全部账户。原生注册、check-in 与 ADE 协议保持各自契约。
+
+`GET /api/v1/apple/materials/{purpose}` 返回当前 revision、desiredRevision、versionCount、accountBindings 及其引用的公开 materials；它不承载历史集合。`GET .../{purpose}/versions?limit=64` 按 revision 倒序返回公开版本及 nextCursor，最大每页 200。可遍历全部历史，累计版本数不再限制为 64；创建、上传证书、apply 和 revoke 的 CAS、近期认证及操作恢复不变。保存或选择材料仍不代表宿主已经加载。

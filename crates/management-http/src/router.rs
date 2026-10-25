@@ -106,6 +106,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         assets: state.assets,
     });
     let authorization = Arc::new(crate::authorization::http::HttpState {
+        cursor: state.query_cursor.clone(),
         audit_store: state.audit_store.clone(),
     });
     let authentication_state = Arc::new(crate::authorization::http::AuthenticationState {
@@ -124,13 +125,17 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     let core = Router::new()
         .merge(crate::user_profiles::routes(state.user_profiles))
         .merge(crate::first_use::routes(state.first_use))
-        .merge(crate::mail::routes(state.mail))
-        .merge(crate::content::connections::routes().with_state(state.storage_connections))
+        .merge(crate::mail::routes(state.mail, state.query_cursor.clone()))
+        .merge(
+            crate::content::connections::routes(state.query_cursor.clone())
+                .with_state(state.storage_connections),
+        )
         .merge(crate::settings::routes(state.settings))
         .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::telemetry::routes(state.telemetry.clone()))
         .merge(crate::api_access::key_routes(Arc::new(
             crate::api_access::Management {
+                cursor: state.query_cursor.clone(),
                 access: state.authorization.clone(),
                 audit: state.audit_store.clone(),
             },
@@ -141,7 +146,10 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
                 clock: state.pki_clock,
             })),
         )
-        .merge(crate::certificate_archive::routes().with_state(state.certificate_archive))
+        .merge(
+            crate::certificate_archive::routes(state.query_cursor.clone())
+                .with_state(state.certificate_archive),
+        )
         .merge(crate::recovery_credentials::routes(
             state.recovery_credentials.clone(),
             state.query_cursor.clone(),

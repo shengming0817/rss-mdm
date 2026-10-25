@@ -6,7 +6,7 @@ mod authority;
 pub use authority::authority;
 mod bridge;
 pub(crate) mod management;
-pub use management::directory;
+
 mod protocol;
 mod store;
 use crate::{Error, Failure, HttpState};
@@ -69,25 +69,42 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
 }
 pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
-    use rss_mdm_http_contract::routing::{get, put};
+    use rss_mdm_http_contract::routing::get;
     Router::new()
         .route(
             "/api/v1/apple/organizations",
-            get(management::list).owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List]),
+            get(management::list)
+                .owned(&contracts::APPLE_ORGANIZATIONS, &[RouteOperation::List])
+                .queried(&crate::management_query::ORGANIZATIONS),
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment",
-            put(management::organization).owned(
-                &contracts::APPLE_ACCOUNT_CONFIGURATION,
-                &[RouteOperation::Update],
-            ),
+            get(management::organization_detail)
+                .owned(
+                    &contracts::APPLE_ACCOUNT_CONFIGURATION,
+                    &[RouteOperation::Get],
+                )
+                .put(management::organization)
+                .owned(
+                    &contracts::APPLE_ACCOUNT_CONFIGURATION,
+                    &[RouteOperation::Update],
+                ),
+        )
+        .route(
+            "/api/v1/apple/organizations/{id}/account-enrollment/accounts",
+            get(management::accounts)
+                .owned(&contracts::APPLE_ACCOUNTS, &[RouteOperation::List])
+                .queried(&crate::management_query::ACCOUNTS),
         )
         .route(
             "/api/v1/apple/organizations/{id}/account-enrollment/accounts/{account}",
-            put(management::account).owned(
-                &contracts::APPLE_ACCOUNT_BINDINGS,
-                &[RouteOperation::Update],
-            ),
+            get(management::account_detail)
+                .owned(&contracts::APPLE_ACCOUNT_BINDINGS, &[RouteOperation::Get])
+                .put(management::account)
+                .owned(
+                    &contracts::APPLE_ACCOUNT_BINDINGS,
+                    &[RouteOperation::Update],
+                ),
         )
 }
 pub(crate) async fn authenticate(

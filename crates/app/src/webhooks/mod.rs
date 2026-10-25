@@ -21,6 +21,7 @@ use webhooks::fanout::Eligibility;
 
 #[derive(Clone)]
 pub(crate) struct Backend {
+    cursor: rss_mdm_query::cursor::CursorCodec,
     runtime: Arc<PgRuntime>,
     tenant: TenantId,
     host: Arc<authority::Host>,
@@ -68,6 +69,7 @@ fn required(c: &Command) -> Permission {
     }
 }
 impl Backend {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         config: Config,
         runtime: Arc<PgRuntime>,
@@ -76,6 +78,7 @@ impl Backend {
         clock: Arc<dyn crate::clock::Clock>,
         protection: Arc<rss_mdm_native_protection::Protector>,
         binding: rss_transactional_messaging::fence::ExecutionBinding,
+        cursor: rss_mdm_query::cursor::CursorCodec,
     ) -> Result<Arc<Self>, crate::Error> {
         use rss_transactional_messaging_postgres::{
             PgConfig, PgPassword, PgPrivateCa, PgRecoveryStore,
@@ -113,6 +116,7 @@ impl Backend {
             }
         };
         let result = Arc::new(Self {
+            cursor,
             runtime,
             tenant,
             host: Arc::new(authority::Host {
@@ -384,30 +388,81 @@ impl Backend {
             .map_err(map_error)?;
         Ok((response, false))
     }
-    async fn deliveries_on(
+    async fn directory_on(
         &self,
         c: &mut PgConnection,
         p: &AuthorizedPrincipal,
-        after: Option<Uuid>,
+        raw: &str,
+        deliveries: bool,
         only: Option<Uuid>,
     ) -> Result<Value, HttpError> {
-        let t = self.host.tenant;
-        let rows = storage::deliveries(c, t, after, only)
-            .await
-            .map_err(map_error)?;
-        let next = rows.last().and_then(|v| v.get("id")).cloned();
-        let mut items = Vec::new();
-        for row in rows {
-            let id = serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?;
-            let event = storage::event(c, t, id).await.map_err(map_error)?;
-            if authority::read(p, &event).is_ok() {
-                items.push(row)
+        use webhooks::directory::{self, DELIVERIES, SUBSCRIPTIONS};
+        let err = |e| map_error(directory::query_error(e));
+        let mut q = if deliveries {
+            &DELIVERIES
+        } else {
+            &SUBSCRIPTIONS
+        }
+        .parse(raw)
+        .map_err(err)?;
+        if !deliveries {
+            q.default_filter("deleted", "false").map_err(err)?;
+        }
+        rss_mdm_authorization_service::lock_on(c, p.tenant_id(), p.instance_id()).await?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(c, p.tenant_id(), p.instance_id()).await?;
+        current.require(p, Permission::WebhookRead, None)?;
+        let binding = q
+            .binding(&(
+                p.tenant_id(),
+                p.instance_id(),
+                current.query_binding(p)?,
+                only,
+            ))
+            .map_err(err)?;
+        let after = q.after(&self.cursor, &binding).map_err(err)?;
+        let rows = if deliveries {
+            let mut allowed = Vec::new();
+            for kind in EventType::BUSINESS.into_iter().chain([EventType::Test]) {
+                match current.devices_for(p, authority::permission(kind)) {
+                    Ok(devices) => allowed.push((kind, devices.map(|v| v.into_iter().collect()))),
+                    Err(rss_mdm_authorization_service::error::AuthorizationError::Forbidden) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            directory::deliveries(c, self.host.tenant, &q, after.as_ref(), &allowed, only)
+                .await
+                .map_err(map_error)?
+        } else {
+            directory::subscriptions(c, self.host.tenant, &q, after.as_ref())
+                .await
+                .map_err(map_error)?
+        };
+        if deliveries {
+            for row in &rows {
+                let event = storage::event(
+                    c,
+                    self.host.tenant,
+                    serde_json::from_value(row["eventId"].clone()).map_err(|_| unavailable())?,
+                )
+                .await
+                .map_err(map_error)?;
+                if event.tenant_id != self.host.tenant {
+                    return Err(HttpError::Forbidden);
+                }
+                current.require(
+                    p,
+                    authority::permission(event.event_type),
+                    Some(&event.device_id),
+                )?;
             }
         }
-        if only.is_some() && items.is_empty() {
+        if only.is_some() && rows.is_empty() {
             return Err(HttpError::NotFound);
         }
-        Ok(serde_json::json!({"items":items,"nextCursor":next}))
+        p.check_live()?;
+        serde_json::to_value(q.page(rows, &self.cursor, &binding).map_err(err)?)
+            .map_err(|_| unavailable())
     }
     async fn change_on(
         &self,
@@ -577,9 +632,7 @@ impl Backend {
                 serde_json::json!({"outbox":counts})
             }
             Command::Types => serde_json::json!({"items":EventType::BUSINESS,"version":1}),
-            Command::Subscriptions(after) => {
-                serde_json::json!({"items":storage::list(c,t,*after).await.map_err(map_error)?})
-            }
+            Command::Subscriptions(raw) => self.directory_on(c, p, raw, false, None).await?,
             Command::Subscription(id) => {
                 serde_json::to_value(storage::get(c, t, *id).await.map_err(map_error)?)
                     .map_err(|_| HttpError::Malformed)?
@@ -594,8 +647,8 @@ impl Backend {
                 return self.test_on(c, p, *subscription, *operation, device).await;
             }
 
-            Command::Deliveries(after) => self.deliveries_on(c, p, *after, None).await?,
-            Command::Delivery(id) => self.deliveries_on(c, p, None, Some(*id)).await?,
+            Command::Deliveries(raw) => self.directory_on(c, p, raw, true, None).await?,
+            Command::Delivery(id) => self.directory_on(c, p, "", true, Some(*id)).await?,
             Command::Replay {
                 delivery,
                 operation,

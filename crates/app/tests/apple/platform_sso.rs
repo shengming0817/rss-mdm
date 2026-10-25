@@ -82,6 +82,7 @@ async fn nonce_is_bounded_and_never_stored_in_plaintext() -> Result<()> {
     resources.resource(rss_mdm_execution_service::Resource(execution.clone()));
     let root = tempfile::tempdir()?;
     let state = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         platform_sso: Some(
             configuration(root.path())?.load(&config.product_origin, authority.identity.tenant)?,
         ),

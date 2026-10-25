@@ -171,3 +171,42 @@ impl Authority {
         settle(result, audit, true)
     }
 }
+
+pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "smtp_versions",
+    default_limit: 64,
+    max_limit: 200,
+    order: "revision DESC",
+    context: &[],
+};
+
+impl Authority {
+    pub async fn history(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        q: &rss_mdm_query::window::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<Receipt>, Error> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Error::Forbidden);
+        }
+        p.require(Permission::RegistrationConfigurationRead, None)?;
+        p.bind_audit(audit)?;
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result=self.audit.read(self.tenant,&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
+   tx.with_connection_context(ctx,|(p,q,codec),c|Box::pin(async move{
+    rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
+    let current=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+    current.require(p,Permission::RegistrationConfigurationRead,None).map_err(rss_mdm_authorization_service::Error::from)?;
+    let binding=rss_mdm_query::cursor::fingerprint(&("smtp_versions",p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(|_|Error::Malformed)?;
+    let before:Option<i64>=q.cursor.as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Error::Malformed)?,&binding).map_err(|_|Error::Conflict)).transpose()?;
+    let rows=sqlx::query("SELECT operation_id,revision,profile,state,attempted_at,accepted_at,failure_reason FROM mdm_mail.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit+1) as i64).fetch_all(c).await.map_err(|_|Error::Storage)?;
+    let more=rows.len()>q.limit;let items=rows.iter().take(q.limit).map(|r|store::receipt(r).map_err(error)).collect::<Result<Vec<_>,_>>()?;
+    let next_cursor=if more{items.last().map(|v|codec.encode(&binding,&v.revision).map(|v|v.as_str().to_owned()).map_err(|_|Error::Conflict)).transpose()?}else{None};
+    p.check_live()?;Ok(rss_mdm_query::Page{items,next_cursor})
+   })).await
+  })).await;
+        settle(result, audit, false)
+    }
+}

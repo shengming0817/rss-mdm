@@ -276,6 +276,7 @@ impl Fixture {
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(identity.authority.clone(), tenant));
         let requests = Arc::new(tokio::sync::Semaphore::new(4));
         let ade = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31;32]).expect("fixture cursor"),
             platform_sso: apple.platform_sso.clone(), platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit.clone())), material_roots: Arc::new(vec![]),
             account_authority: rss_mdm_apple_channel::account_enrollment::authority(), authentication: rss_mdm_apple_channel::account_enrollment::Authentication {authority: identity.authority.clone(), http: identity.browser().http.clone(), origin: "https://mdm.example.test".into()},
             mount: crate::device::ChannelMount::new(tenant, rss_mdm_inventory::ReportSource::MdmApple, rss_mdm_registration_service::Purpose::Primary),

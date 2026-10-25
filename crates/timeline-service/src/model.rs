@@ -51,7 +51,61 @@ pub struct Query {
     pub limit: Option<usize>,
     pub cursor: Option<String>,
 }
+pub static AUDIT: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "audit",
+    default_limit: 50,
+    max_limit: 200,
+    order: "recordedAt DESC, position DESC",
+    context: &[
+        "targetId",
+        "targetType",
+        "device",
+        "operationId",
+        "actor",
+        "action",
+        "outcome",
+        "from",
+        "until",
+    ],
+};
+pub static DEVICE_TIMELINE: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "device_timeline",
+    default_limit: 50,
+    max_limit: 200,
+    order: "recordedAt DESC, position DESC",
+    context: &[
+        "targetId",
+        "targetType",
+        "operationId",
+        "actor",
+        "action",
+        "outcome",
+        "from",
+        "until",
+    ],
+};
 impl Query {
+    pub fn parse(raw: &str, device: bool) -> Result<Self, Error> {
+        let (page, context) = if device { &DEVICE_TIMELINE } else { &AUDIT }
+            .parse(raw)
+            .map_err(|_| Error::Malformed)?;
+        let mut value = serde_json::Map::new();
+        for (key, v) in context {
+            let v = if matches!(key.as_str(), "from" | "until") {
+                serde_json::Value::from(v.parse::<i64>().map_err(|_| Error::Malformed)?)
+            } else {
+                serde_json::Value::String(v)
+            };
+            value.insert(key, v);
+        }
+        value.insert("limit".into(), serde_json::json!(page.limit));
+        value.insert("cursor".into(), serde_json::json!(page.cursor));
+        let q: Self = serde_json::from_value(serde_json::Value::Object(value))
+            .map_err(|_| Error::Malformed)?;
+        q.validate()?;
+        Ok(q)
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         if !(1..=200).contains(&self.limit.unwrap_or(50))
             || self.operation_id.is_some_and(|v| v.is_nil())

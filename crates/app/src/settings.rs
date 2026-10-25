@@ -115,19 +115,16 @@ impl Source for Directory {
                     }
                     "organization" | "host-config" if !business => {
                         if let Some(service) = &self.tenant_administration {
-                            match service.directory(&proof, item.id == "host-config").await {
+                            match service.summary(&proof, item.id == "host-config").await {
                                 Ok(value) => {
-                                    let values =
-                                        value["items"].as_array().ok_or(Error::Malformed)?;
-                                    configured(&mut projection, values.len());
+                                    configured(
+                                        &mut projection,
+                                        value["count"].as_u64().ok_or(Error::Malformed)? as usize,
+                                    );
                                     if item.id == "host-config" {
-                                        if values.iter().any(|v| !v["result"]["blocked"].is_null())
-                                        {
+                                        if value["blocked"] == true {
                                             projection.status = Status::Unavailable;
-                                        } else if values
-                                            .iter()
-                                            .any(|v| v["result"]["phase"] != "enabled")
-                                        {
+                                        } else if value["pending"] == true {
                                             projection.status = Status::Pending;
                                         }
                                         projection.reason = Some(
@@ -283,7 +280,7 @@ impl Source for Directory {
                     "ade-key" | "ade-token" | "apple-account" if business => {
                         if organizations.is_none() {
                             organizations = Some(
-                                match rss_mdm_apple_channel::account_enrollment::directory(
+                                match rss_mdm_apple_channel::management_query::summary(
                                     &self.apple_store,
                                     self.apple.as_deref(),
                                     &crate::clock::InventoryClock(self.clock.clone()),
@@ -309,37 +306,25 @@ impl Source for Directory {
                             result.push(Entry { item, projection });
                             continue;
                         }
-                        let values = organizations
-                            .as_ref()
-                            .and_then(|v| v["items"].as_array())
-                            .ok_or(Error::Malformed)?;
-                        let mut count = 0;
-                        let mut unavailable = 0;
-                        let mut pending = 0;
-                        for value in values {
-                            let value = if item.id == "apple-account" {
-                                &value["accountEnrollment"]
-                            } else {
-                                &value["ade"]
-                            };
-                            if value.is_null() {
-                                continue;
-                            }
-                            count += 1;
-                            if item.id == "ade-token" {
-                                match value["tokenState"].as_str() {
-                                    Some("expired" | "invalid") => unavailable += 1,
-                                    Some("verified") => (),
-                                    _ => pending += 1,
-                                }
-                            } else if item.id == "apple-account"
-                                && value["enabled"] == true
-                                && value["signingKeyConfigured"] != true
-                            {
-                                unavailable += 1;
-                            }
-                        }
+                        let summary = &organizations.as_ref().ok_or(Error::Malformed)?[if item.id
+                            == "apple-account"
+                        {
+                            "account"
+                        } else {
+                            "ade"
+                        }];
+                        let count = summary["count"].as_u64().ok_or(Error::Malformed)? as usize;
                         configured(&mut projection, count);
+                        let unavailable = if item.id == "ade-key" {
+                            0
+                        } else {
+                            summary["unavailable"].as_u64().ok_or(Error::Malformed)?
+                        };
+                        let pending = if item.id == "ade-key" {
+                            0
+                        } else {
+                            summary["pending"].as_u64().ok_or(Error::Malformed)?
+                        };
                         if unavailable > 0 {
                             projection.status = Status::Unavailable;
                         } else if pending > 0 {
@@ -347,16 +332,13 @@ impl Source for Directory {
                         }
                         projection.reason =
                             Some("external_organization_and_device_confirmation_separate");
-                        projection.ready = count > 0 && unavailable == 0 && pending == 0;
-                        if item.id == "ade-token" {
-                            projection.ready &= values.iter().any(ade_enabled_and_verified);
-                        }
-                        if item.id == "apple-account" {
-                            projection.ready = values.iter().any(|v| {
-                                v["accountEnrollment"]["enabled"] == true
-                                    && v["accountEnrollment"]["signingKeyConfigured"] == true
-                            });
-                        }
+                        projection.ready = if item.id == "ade-key" {
+                            count > 0
+                        } else {
+                            summary["ready"] == true
+                                && (item.id == "apple-account"
+                                    || (unavailable == 0 && pending == 0))
+                        };
                         projection
                             .actions
                             .push(rss_mdm_management_http::settings::Action {
@@ -387,16 +369,16 @@ impl Source for Directory {
                                 protection: self.protection.clone(),
                                 audit: self.audit.clone(),
                             };
-                        match authority.read(&proof, &audit).await {
+                        match authority.read(&proof, &audit, self.s3_revision).await {
                             Ok(directory) => {
                                 projection.revision = Some(directory.revision);
                                 projection.desired_revision = directory.desired_revision;
-                                configured(&mut projection, directory.versions.len());
+                                configured(&mut projection, directory.version_count as usize);
                                 let now = self.clock.unix_seconds().ok();
                                 let loaded = self.s3_revision;
                                 projection.applied_revision = loaded;
                                 if let Some(loaded) = loaded {
-                                    let valid = directory.versions.iter().any(|v| {
+                                    let valid = directory.applied.as_ref().is_some_and(|v| {
                                         v.revision == loaded
                                             && v.selected
                                             && !v.revoked
@@ -436,6 +418,15 @@ impl Source for Directory {
                             "profile-key" | "profile-cert" => Purpose::Profile,
                             _ => Purpose::ManagedAccount,
                         };
+                        let loaded_versions: Vec<i64> = self
+                            .apple_materials
+                            .as_ref()
+                            .map(|v| match purpose {
+                                Purpose::Apns => v.apns.into_iter().collect(),
+                                Purpose::Profile => v.profile.into_iter().collect(),
+                                Purpose::ManagedAccount => v.accounts.values().copied().collect(),
+                            })
+                            .unwrap_or_default();
                         match directory(
                             &self.apple_store,
                             self.tenant,
@@ -443,6 +434,7 @@ impl Source for Directory {
                                 proof: proof.clone(),
                             },
                             purpose,
+                            &loaded_versions,
                         )
                         .await
                         {
@@ -451,7 +443,8 @@ impl Source for Directory {
                                 projection.desired_revision = value["desiredRevision"].as_i64();
                                 configured(
                                     &mut projection,
-                                    value["versions"].as_array().map_or(0, Vec::len),
+                                    value["versionCount"].as_u64().ok_or(Error::Malformed)?
+                                        as usize,
                                 );
                                 if purpose == Purpose::ManagedAccount {
                                     let desired: BTreeMap<String, i64> =
@@ -486,12 +479,7 @@ impl Source for Directory {
                                         });
                                     projection.applied_revision = loaded;
                                     if let Some(revision) = loaded {
-                                        let selected =
-                                            value["versions"].as_array().and_then(|versions| {
-                                                versions.iter().find(|v| {
-                                                    v["revision"].as_i64() == Some(revision)
-                                                })
-                                            });
+                                        let selected = value["materials"].get(revision.to_string());
                                         let now = self.clock.unix_seconds().ok();
                                         let usable = selected.is_some_and(|v| {
                                             v["revoked"].as_bool() == Some(false)
@@ -561,21 +549,22 @@ impl Source for Directory {
                         };
                         match service.read(&proof, &audit).await {
                             Ok(value) => {
-                                configured(&mut projection, value.versions.len());
+                                configured(&mut projection, value.version_count as usize);
                                 projection.revision = Some(value.revision);
                                 projection.applied_revision = value.selected_revision;
-                                if value.selected_revision.is_none() && !value.versions.is_empty() {
-                                    projection.status = if value.versions[0].state
-                                        == rss_mdm_mail_service::store::State::Pending
-                                    {
-                                        Status::Pending
-                                    } else {
-                                        Status::Unavailable
-                                    };
+                                if value.selected_revision.is_none() && value.latest.is_some() {
+                                    projection.status =
+                                        if value.latest.as_ref().ok_or(Error::Malformed)?.state
+                                            == rss_mdm_mail_service::store::State::Pending
+                                        {
+                                            Status::Pending
+                                        } else {
+                                            Status::Unavailable
+                                        };
                                 }
                                 projection.ready =
                                     value.selected_revision.is_some_and(|selected| {
-                                        value.versions.iter().any(|v| {
+                                        value.current.as_ref().is_some_and(|v| {
                                             v.revision == selected
                                                 && v.state
                                                     == rss_mdm_mail_service::store::State::Accepted
@@ -591,16 +580,17 @@ impl Source for Directory {
                         match rss_mdm_windows_channel::wns_materials::snapshot(
                             &self.windows,
                             &proof,
+                            self.windows_push_revision,
                         )
                         .await
                         {
                             Ok(values) => {
-                                configured(&mut projection, values.versions.len());
+                                configured(&mut projection, values.version_count as usize);
                                 projection.revision = Some(values.revision);
                                 projection.desired_revision = values.desired_revision;
                                 projection.applied_revision = self.windows_push_revision;
                                 if let Some(applied) = projection.applied_revision {
-                                    let valid = values.versions.iter().any(|v| {
+                                    let valid = values.applied.as_ref().is_some_and(|v| {
                                         v.revision == applied
                                             && v.selected
                                             && !v.revoked
@@ -613,7 +603,7 @@ impl Source for Directory {
                                     } else {
                                         Status::Unavailable
                                     };
-                                } else if !values.versions.is_empty() {
+                                } else if values.version_count > 0 {
                                     projection.status = Status::Pending;
                                 }
                                 projection.reason =
@@ -768,27 +758,20 @@ impl Source for Directory {
     }
 }
 
-fn ade_enabled_and_verified(organization: &serde_json::Value) -> bool {
-    organization["ade"]["enabled"] == true && organization["ade"]["tokenState"] == "verified"
-}
-
 fn account_material_status(
     value: &serde_json::Value,
     desired: &BTreeMap<String, i64>,
     loaded: Option<&BTreeMap<String, i64>>,
     now: Option<i64>,
 ) -> Result<Status, Error> {
-    let versions = value["versions"].as_array().ok_or(Error::Malformed)?;
+    let materials = value["materials"].as_object().ok_or(Error::Malformed)?;
     let usable = |revision: &i64| {
-        versions
-            .iter()
-            .find(|v| v["revision"].as_i64() == Some(*revision))
-            .is_some_and(|v| {
-                v["revoked"] == false
-                    && v["expiresAt"]
-                        .as_i64()
-                        .is_some_and(|expires| now.is_some_and(|now| now < expires))
-            })
+        materials.get(&revision.to_string()).is_some_and(|v| {
+            v["revoked"] == false
+                && v["expiresAt"]
+                    .as_i64()
+                    .is_some_and(|expires| now.is_some_and(|now| now < expires))
+        })
     };
     if desired.values().any(|r| !usable(r))
         || loaded.is_some_and(|m| m.values().any(|r| !usable(r)))
@@ -799,7 +782,7 @@ fn account_material_status(
         Status::Loaded
     } else if !desired.is_empty() || loaded.is_some_and(|m| !m.is_empty()) {
         Status::Pending
-    } else if versions.is_empty() {
+    } else if value["versionCount"] == 0 {
         Status::Unconfigured
     } else {
         Status::Configured
@@ -809,18 +792,8 @@ fn account_material_status(
 mod tests {
     use super::*;
     #[test]
-    fn disabling_ade_preserves_token_but_revokes_readiness() {
-        let mut organization = serde_json::json!({"ade":{"enabled":true,"tokenState":"verified"}});
-        assert!(ade_enabled_and_verified(&organization));
-        organization["ade"]["enabled"] = serde_json::json!(false);
-        assert!(!ade_enabled_and_verified(&organization));
-        organization["ade"]["enabled"] = serde_json::json!(true);
-        organization["ade"]["tokenState"] = serde_json::json!("unknown");
-        assert!(!ade_enabled_and_verified(&organization));
-    }
-    #[test]
     fn account_bindings_require_exact_loaded_set_and_current_materials() {
-        let mut value = serde_json::json!({"versions":[{"revision":1,"expiresAt":100,"revoked":false},{"revision":2,"expiresAt":200,"revoked":false}]});
+        let mut value = serde_json::json!({"versionCount":2,"materials":{"1":{"revision":1,"expiresAt":100,"revoked":false},"2":{"revision":2,"expiresAt":200,"revoked":false}}});
         let selected = BTreeMap::from([("org.example".into(), 1), ("second".into(), 2)]);
         assert!(matches!(
             account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
@@ -834,7 +807,7 @@ mod tests {
             account_material_status(&value, &selected, Some(&selected), Some(100)).unwrap(),
             Status::Unavailable
         ));
-        value["versions"][0]["revoked"] = serde_json::json!(true);
+        value["materials"]["1"]["revoked"] = serde_json::json!(true);
         assert!(matches!(
             account_material_status(&value, &selected, Some(&selected), Some(99)).unwrap(),
             Status::Unavailable

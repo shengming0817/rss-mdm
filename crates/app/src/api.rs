@@ -569,6 +569,8 @@ pub(crate) async fn from_compiled(
         clock.clone(),
         protection.clone(),
         binding,
+        rss_mdm_query::cursor::CursorCodec::new(&planning.cursor_key)
+            .map_err(|_| Error::Malformed)?,
     )
     .await?;
     let platform_configuration = apple
@@ -623,6 +625,8 @@ pub(crate) fn from_state(
     monotonic: Arc<dyn rss_observation::Clock>,
 ) -> crate::native::Routers {
     let apple_state = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&planning.cursor_key)
+            .map_err(|_| Error::Malformed)?,
         platform_sso: state.apple.as_ref().and_then(|a| a.platform_sso.clone()),
         platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
             state.audit_store.clone(),
@@ -666,6 +670,8 @@ pub(crate) fn from_state(
             .expect("single platform composition");
     }
     let windows_state = Arc::new(rss_mdm_windows_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&planning.cursor_key)
+            .map_err(|_| Error::Malformed)?,
         protection: state.protection.clone(),
         mount: crate::device::ChannelMount::new(
             state.identity.tenant,
@@ -836,6 +842,8 @@ pub(crate) fn from_state(
             tenant: state.identity.management_tenant.to_string(),
             ..management_boundary.clone()
         },
+        rss_mdm_query::cursor::CursorCodec::new(&state.flow.cursor_key)
+            .map_err(|_| Error::Configuration(crate::ConfigIssue::IdentityConfiguration))?,
     );
     let apple_management = rss_mdm_management_http::boundary::wrap(
         rss_mdm_apple_channel::management_routes(apple_state.clone())
@@ -1117,8 +1125,7 @@ pub(crate) fn from_state(
         state.agent_enrollment.is_some(),
         state.execution.recovery_credentials().is_some(),
     );
-    let violations =
-        rss_mdm_http_contract::validate(browser.endpoints(), &expected, contracts::GAPS);
+    let violations = rss_mdm_http_contract::validate(browser.endpoints(), &expected);
     assert!(
         violations.is_empty(),
         "invalid product route assembly: {violations:?}"

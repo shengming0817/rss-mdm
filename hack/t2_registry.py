@@ -2054,3 +2054,11 @@ for selector in (
 consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_service policy.persistence')
 
 T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',)
+
+# Remaining management query owners; route declarations alone do not imply business coverage.
+consume(('crates/authorization-service/src/directory.rs',), 'authorization.rules authorization.membership authorization.capacity authorization.programmatic')
+consume(('crates/webhook-service/src/directory.rs',), 'webhooks.product')
+consume(('crates/certificate-archive-service/src/directory.rs',), 'certificate-archive.http')
+consume(('crates/apple-channel/src/management_query.rs',), 'apple.account_enrollment apple.ade settings.recent_auth')
+consume(('crates/app/src/tenant_directory.rs',), 'installation.tenants deployment.management-tenant settings.recent_auth')
+consume(('crates/content-service/src/connections/authority.rs',), 'content.storage settings.recent_auth')

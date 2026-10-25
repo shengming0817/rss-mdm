@@ -49,7 +49,7 @@ impl<S: Clone + Send + Sync + 'static> Router<S> {
     }
     /// Validate an independently declared listener inventory before erasing its descriptors.
     pub fn into_checked_axum(self, expected: &[&crate::Resource]) -> axum::Router<S> {
-        let violations = crate::validate(&self.endpoints, expected, crate::catalog::GAPS);
+        let violations = crate::validate(&self.endpoints, expected);
         assert!(
             violations.is_empty(),
             "invalid listener route assembly: {violations:?}"
