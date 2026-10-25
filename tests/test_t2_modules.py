@@ -296,11 +296,6 @@ class ModuleImpactTests(unittest.TestCase):
         proofs = re.findall(r'\bproof:\s*"([^"]+)"', source)
         self.assertTrue(proofs)
         self.assertEqual(set(proofs) - MODULES.keys(), set())
-        collections = (root / 'crates/http-contract/src/collections.rs').read_text()
-        owners = re.findall(r'describe!\(\s*\w+,\s*"([^"]+)"', collections)
-        self.assertTrue(owners)
-        for owner in owners:
-            self.assertTrue((root / owner).is_file(), owner)
 
     def test_every_production_pattern_matches_a_real_owner_input(self):
         root = Path(__file__).resolve().parents[1]

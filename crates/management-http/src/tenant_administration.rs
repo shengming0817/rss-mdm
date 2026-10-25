@@ -12,16 +12,19 @@ pub fn router(
     settings: Arc<dyn crate::settings::Source>,
     policy: Arc<crate::authorization::identity_management::IdentityManagementPolicy>,
     envelope: crate::boundary::Envelope,
+    cursor: rss_mdm_query::cursor::CursorCodec,
 ) -> Router {
     let routes = Router::new()
         .nest(
             "/api/v1/tenant-administration",
             http::rule_routes()
                 .with_state(Arc::new(HttpState {
+                    cursor: cursor.clone(),
                     audit_store: envelope.audit_store.clone(),
                 }))
                 .merge(crate::api_access::network_routes(Arc::new(
                     crate::api_access::Management {
+                        cursor: cursor.clone(),
                         access: authentication.access.clone(),
                         audit: envelope.audit_store.clone(),
                     },

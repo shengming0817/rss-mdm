@@ -122,7 +122,9 @@ impl<'a> Actor<'a> {
 
 use rss_mdm_audit_integration::RequestAudit;
 
-fn transaction_error(error: rss_mdm_audit_integration::TransactionError<Error>) -> Error {
+pub(crate) fn transaction_error(
+    error: rss_mdm_audit_integration::TransactionError<Error>,
+) -> Error {
     match error {
         rss_mdm_audit_integration::TransactionError::Operation(error) => error,
         rss_mdm_audit_integration::TransactionError::Storage(error) => error.into(),

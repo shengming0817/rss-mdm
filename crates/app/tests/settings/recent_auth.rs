@@ -48,6 +48,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
     ));
     let requests = Arc::new(tokio::sync::Semaphore::new(32));
     let apple = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         platform_sso: None,
         platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
             fixture.audit.clone(),
@@ -76,6 +77,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         requests: requests.clone(),
     });
     let windows = Arc::new(rss_mdm_windows_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         protection: protection.clone(),
         mount: crate::device::ChannelMount::new(
             tenant,
@@ -92,18 +94,22 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         requests,
         windows: None,
     });
-    let writes = rss_mdm_management_http::mail::routes(Arc::new(
-        rss_mdm_mail_service::authority::Authority {
+    let writes = rss_mdm_management_http::mail::routes(
+        Arc::new(rss_mdm_mail_service::authority::Authority {
             tenant,
             protection: protection.clone(),
             audit: fixture.audit.clone(),
-        },
-    ))
+        }),
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+    )
     .merge(
-        rss_mdm_management_http::content::connections::routes().with_state(Arc::new(
+        rss_mdm_management_http::content::connections::routes(
+            rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
+        )
+        .with_state(Arc::new(
             rss_mdm_content_service::connections::authority::Authority {
                 tenant,
-                protection,
+                protection: protection.clone(),
                 audit: fixture.audit.clone(),
             },
         )),
@@ -147,6 +153,7 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
             let entry = catalog.1["items"].as_array().unwrap().iter().find(|e| e["id"] == id).expect("required settings entry");
             ensure!(entry["actions"].as_array().unwrap().iter().any(|a| a["name"] == "configure"), "fresh configure action missing: {id}");
         }
+        verify_material_history(&router,&mut browser,&protection).await?;
         identity::age_prepared_admin_session()?;
         let after=browser.call(&router,Method::GET,&session_path,None).await?;
         ensure!(after.0==StatusCode::OK && after.1["session"]["issuedAt"]==before.1["session"]["issuedAt"]);
@@ -181,4 +188,221 @@ async fn sensitive_operations_use_authentication_time() -> Result<()> {
         }
         Ok(())
     }).await
+}
+
+/// Prepare legal encrypted history through the existing persistence owners, without provider calls.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "four existing material owners prepare legal encrypted fixtures without provider calls"
+)]
+async fn prepare_material_history(
+    router: &Router,
+    browser: &mut Browser,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    use rss_mdm_native_protection::ProtectionContext;
+    use sqlx::{Connection, Row};
+    let tenant = case_tenant();
+    let tenant_id = rss_request_context::TenantId::parse(tenant)?;
+    let mut connection = sqlx::PgConnection::connect_with(
+        &std::env::var("MDM_OWNER_URL")?
+            .parse::<sqlx::postgres::PgConnectOptions>()?
+            .ssl_mode(sqlx::postgres::PgSslMode::VerifyFull)
+            .ssl_root_cert(std::env::var("PG_CA_FILE")?),
+    )
+    .await?;
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let mail: i64 = sqlx::query_scalar(
+        "SELECT coalesce((SELECT revision FROM mdm_mail.heads WHERE tenant_id=$1::uuid),0)",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    for revision in mail..65 {
+        rss_mdm_mail_service::store::prepare(
+            &mut tx,
+            tenant,
+            uuid::Uuid::new_v4(),
+            "history",
+            &rss_mdm_mail_service::store::Request {
+                expected_revision: revision,
+                profile: "history".into(),
+                sender: "a@example.test".into(),
+                recipient: "b@example.test".into(),
+                username: "history".to_owned().into(),
+                password: "history-password".to_owned().into(),
+            },
+            protection,
+        )
+        .await?;
+    }
+    let storage:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_content_connections.heads WHERE tenant_id=$1::uuid),0)").bind(tenant).fetch_one(&mut *tx).await?;
+    for revision in storage..65 {
+        rss_mdm_content_service::connections::prepare(
+            &mut tx,
+            tenant_id,
+            uuid::Uuid::new_v4(),
+            &rss_mdm_content_service::connections::Request {
+                expected_revision: revision,
+                profile: "history".into(),
+                source: rss_mdm_content_service::connections::Source::Generate,
+            },
+            "history",
+            protection,
+        )
+        .await?;
+    }
+    let wns: i64 = sqlx::query_scalar(
+        "SELECT coalesce((SELECT revision FROM mdm_wns.heads WHERE tenant_id=$1::uuid),0)",
+    )
+    .bind(tenant)
+    .fetch_one(&mut *tx)
+    .await?;
+    for revision in wns..65 {
+        rss_mdm_windows_channel::wns_materials::prepare(
+            &mut tx,
+            tenant,
+            uuid::Uuid::new_v4(),
+            "history",
+            &rss_mdm_windows_channel::wns_materials::Request {
+                expected_revision: revision,
+                package_family_name: "history".into(),
+                sid: "history-sid".to_owned().into(),
+                client_secret: "history-secret".to_owned().into(),
+            },
+            protection,
+        )
+        .await?;
+    }
+    let apple:i64=sqlx::query_scalar("SELECT coalesce((SELECT revision FROM mdm_apple_runtime.heads WHERE tenant_id=$1::uuid AND purpose='apns'),0)").bind(tenant).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let seed = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/apple/materials/apns/keys",
+            Some(json!({"expectedRevision":apple,"source":{"kind":"generate"}})),
+        )
+        .await?;
+    ensure!(
+        seed.0.is_success(),
+        "legal Apple seed: {} {}",
+        seed.0,
+        seed.1
+    );
+    let mut tx = connection.begin().await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
+        .bind(tenant)
+        .execute(&mut *tx)
+        .await?;
+    let row=sqlx::query("SELECT revision,key_id,private_key,public_digest,csr FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose='apns' ORDER BY revision DESC LIMIT 1").bind(tenant).fetch_one(&mut *tx).await?;
+    let revision: i64 = row.try_get("revision")?;
+    let key_id: uuid::Uuid = row.try_get("key_id")?;
+    let aad = ProtectionContext::new(
+        tenant_id,
+        &format!("apns:{revision}:{key_id}"),
+        "apple.runtime.private-key",
+        1,
+    )?
+    .derive();
+    let private = protection.open_bytes(&row.try_get::<Vec<u8>, _>("private_key")?, &aad)?;
+    for revision in 1..=64 {
+        let key_id = uuid::Uuid::new_v4();
+        let aad = ProtectionContext::new(
+            tenant_id,
+            &format!("apns:{revision}:{key_id}"),
+            "apple.runtime.private-key",
+            1,
+        )?
+        .derive();
+        let encrypted = protection.seal_bytes(private.expose(), &aad)?;
+        sqlx::query("INSERT INTO mdm_apple_runtime.versions(tenant_id,purpose,revision,key_id,private_key,public_digest,csr) VALUES($1::uuid,'apns',$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING").bind(tenant).bind(revision).bind(key_id).bind(encrypted).bind(row.try_get::<String,_>("public_digest")?).bind(row.try_get::<String,_>("csr")?).execute(&mut *tx).await?;
+    }
+    sqlx::query("UPDATE mdm_apple_runtime.heads SET revision=64 WHERE tenant_id=$1::uuid AND purpose='apns'").bind(tenant).execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn verify_material_history(
+    router: &Router,
+    browser: &mut Browser,
+    protection: &rss_mdm_native_protection::Protector,
+) -> Result<()> {
+    prepare_material_history(router, browser, protection).await?;
+    browser.operation = Some(uuid::Uuid::new_v4());
+    let created = browser
+        .call(
+            router,
+            Method::POST,
+            "/api/v1/apple/materials/apns/keys",
+            Some(json!({"expectedRevision":64,"source":{"kind":"generate"}})),
+        )
+        .await?;
+    ensure!(
+        created.0.is_success(),
+        "65th Apple key rejected: {} {}",
+        created.0,
+        created.1
+    );
+    for path in [
+        "/api/v1/smtp",
+        "/api/v1/storage/connections",
+        "/api/v1/windows/wns",
+        "/api/v1/apple/materials/apns",
+    ] {
+        verify_history_pages(router, browser, path).await?;
+    }
+    Ok(())
+}
+
+async fn verify_history_pages(router: &Router, browser: &mut Browser, path: &str) -> Result<()> {
+    let current = browser.call(router, Method::GET, path, None).await?;
+    ensure!(
+        current.0 == StatusCode::OK
+            && current.1["versionCount"] == 65
+            && current.1.get("versions").is_none(),
+        "current state at {path}: {} {}",
+        current.0,
+        current.1
+    );
+    let mut cursor = None;
+    let mut revisions = Vec::new();
+    loop {
+        let url = match &cursor {
+            Some(c) => format!("{path}/versions?limit=17&cursor={c}"),
+            None => format!("{path}/versions?limit=17"),
+        };
+        let page = browser.call(router, Method::GET, &url, None).await?;
+        ensure!(
+            page.0 == StatusCode::OK,
+            "history {url}: {} {}",
+            page.0,
+            page.1
+        );
+        let items = page.1["items"].as_array().unwrap();
+        ensure!(items.len() <= 17);
+        for row in items {
+            ensure!(
+                row.get("privateKey").is_none()
+                    && row.get("credentials").is_none()
+                    && row.get("secret").is_none()
+            );
+            revisions.push(row["revision"].as_i64().unwrap());
+        }
+        cursor = page.1["nextCursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+        ensure!(revisions.len() <= 65, "history did not terminate");
+    }
+    ensure!(
+        revisions == (1..=65).rev().collect::<Vec<i64>>(),
+        "incomplete history at {path}"
+    );
+    Ok(())
 }

@@ -149,9 +149,16 @@ pub async fn prepare(
 pub struct Directory {
     pub revision: i64,
     pub desired_revision: Option<i64>,
-    pub versions: Vec<Receipt>,
+    pub version_count: i64,
+    pub current: Option<Receipt>,
+    pub latest: Option<Receipt>,
+    pub applied: Option<Receipt>,
 }
-pub async fn directory(c: &mut PgConnection, tenant: &str) -> Result<Directory, Error> {
+pub async fn directory(
+    c: &mut PgConnection,
+    tenant: &str,
+    applied: Option<i64>,
+) -> Result<Directory, Error> {
     let (revision, desired_revision): (i64, Option<i64>) = sqlx::query_as(
         "SELECT revision,desired_revision FROM mdm_wns.heads WHERE tenant_id=$1::uuid",
     )
@@ -160,20 +167,24 @@ pub async fn directory(c: &mut PgConnection, tenant: &str) -> Result<Directory, 
     .await
     .map_err(db)?
     .unwrap_or((0, None));
-    let versions = sqlx::query(
-        "SELECT * FROM mdm_wns.versions WHERE tenant_id=$1::uuid ORDER BY revision DESC LIMIT 64",
-    )
-    .bind(tenant)
-    .fetch_all(c)
-    .await
-    .map_err(db)?
-    .iter()
-    .map(receipt)
-    .collect::<Result<Vec<_>, _>>()?;
+    let version_count =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_wns.versions WHERE tenant_id=$1::uuid")
+            .bind(tenant)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    let rows=sqlx::query("SELECT operation_id,revision,pfn,qualified_at,attempted_at,failure_reason,selected,revoked FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND (revision=$2 OR revision=$3 OR revision=$4)").bind(tenant).bind(revision).bind(desired_revision).bind(applied).fetch_all(c).await.map_err(db)?;
+    let values = rows.iter().map(receipt).collect::<Result<Vec<_>, _>>()?;
     Ok(Directory {
         revision,
         desired_revision,
-        versions,
+        version_count,
+        current: values
+            .iter()
+            .find(|v| Some(v.revision) == desired_revision)
+            .cloned(),
+        latest: values.iter().find(|v| v.revision == revision).cloned(),
+        applied: values.iter().find(|v| Some(v.revision) == applied).cloned(),
     })
 }
 pub async fn load(
@@ -264,6 +275,12 @@ pub fn routes(state: std::sync::Arc<crate::HttpState>) -> rss_mdm_http_contract:
     use rss_mdm_http_contract::routing::get;
     rss_mdm_http_contract::Router::new()
         .route(
+            "/api/v1/windows/wns/versions",
+            get(history)
+                .owned(&contracts::WNS_VERSIONS, &[RouteOperation::List])
+                .windowed(&HISTORY),
+        )
+        .route(
             "/api/v1/windows/wns",
             get(read)
                 .owned(&contracts::WNS, &[RouteOperation::Get])
@@ -316,7 +333,7 @@ async fn read(
 ) -> Result<axum::Json<Directory>, Error> {
     let p = proof(&app, &auth, false)?;
     let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    let out = directory(&mut tx, p.tenant_id()).await?;
+    let out = directory(&mut tx, p.tenant_id(), None).await?;
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(axum::Json(out))
@@ -440,13 +457,14 @@ pub async fn rewrap(c: &mut PgConnection, tenant: &str, key: &Protector) -> Resu
 pub async fn snapshot(
     store: &crate::Store,
     p: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
+    applied: Option<i64>,
 ) -> Result<Directory, Error> {
     p.require(
         rss_mdm_authorization_service::Permission::RegistrationConfigurationRead,
         None,
     )?;
     let mut tx = store.begin_read(p.tenant_id()).await?;
-    let values = directory(&mut tx, p.tenant_id()).await?;
+    let values = directory(&mut tx, p.tenant_id(), applied).await?;
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(values)
@@ -572,6 +590,77 @@ pub async fn revoke(
 pub async fn is_selected(c: &mut PgConnection, tenant: &str, revision: i64) -> Result<bool, Error> {
     sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND revision=$2 AND selected AND NOT revoked AND qualified_at IS NOT NULL)")
         .bind(tenant).bind(revision).fetch_one(c).await.map_err(db)
+}
+
+pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "wns_versions",
+    default_limit: 64,
+    max_limit: 200,
+    order: "revision DESC",
+    context: &[],
+};
+async fn history(
+    axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
+    axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+) -> Result<axum::Json<rss_mdm_query::Page<Receipt>>, Error> {
+    let p = proof(&app, &auth, false)?;
+    let (q, _) = HISTORY
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    let mut tx = app.access.begin_read(p.tenant_id()).await?;
+    rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    let current =
+        rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+    current
+        .require(
+            p,
+            rss_mdm_authorization_service::Permission::RegistrationConfigurationRead,
+            None,
+        )
+        .map_err(rss_mdm_authorization_service::Error::from)?;
+    let binding = rss_mdm_query::cursor::fingerprint(&(
+        HISTORY.id,
+        p.tenant_id(),
+        p.instance_id(),
+        current.query_binding(p)?,
+    ))
+    .map_err(|_| Error::Malformed)?;
+    let before: Option<i64> = q
+        .cursor
+        .as_ref()
+        .map(|v| {
+            app.query_cursor
+                .decode(
+                    &rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?,
+                    &binding,
+                )
+                .map_err(|_| Error::Conflict)
+        })
+        .transpose()?;
+    let rows=sqlx::query("SELECT operation_id,revision,pfn,qualified_at,attempted_at,failure_reason,selected,revoked FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
+    let more = rows.len() > q.limit;
+    let items = rows
+        .iter()
+        .take(q.limit)
+        .map(receipt)
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_cursor = if more {
+        items
+            .last()
+            .map(|v| {
+                app.query_cursor
+                    .encode(&binding, &v.revision)
+                    .map(|v| v.as_str().to_owned())
+                    .map_err(|_| Error::Conflict)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    tx.rollback().await.map_err(db)?;
+    p.check_live()?;
+    Ok(axum::Json(rss_mdm_query::Page { items, next_cursor }))
 }
 
 #[cfg(test)]

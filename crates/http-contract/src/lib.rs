@@ -59,8 +59,6 @@ pub struct Resource {
 pub enum QueryPolicy {
     Unified,
     ResourceV1,
-    Pending(u32),
-    FixedWindow,
     SourceCatalog,
     Protocol,
     NotCollection,
@@ -105,21 +103,13 @@ pub enum Violation {
     DuplicateResource(String),
     Orphan(String),
     Unknown(String),
-    StaleGap(String, Operation),
     MissingQuery(String),
     InvalidQueryDescription(String),
 }
-#[derive(Clone, Copy, Debug, Serialize)]
-pub struct Gap {
-    pub resource: &'static str,
-    pub operation: Operation,
-    pub issue: u32,
-    pub reason: &'static str,
-}
 /// The expected resource set is independent from the endpoints; deleting both a list and
 /// its descriptor cannot erase its resource's required operation.
-pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) -> Vec<Violation> {
-    let mut violations = validate_ownership(endpoints, expected, gaps);
+pub fn validate(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec<Violation> {
+    let mut violations = validate_ownership(endpoints, expected);
     for endpoint in endpoints {
         if endpoint.resource.query == QueryPolicy::Unified
             && (endpoint.operations.contains(&Operation::List)
@@ -135,11 +125,7 @@ pub fn validate(endpoints: &[Endpoint], expected: &[&Resource], gaps: &[Gap]) ->
     violations
 }
 /// Static registration proves ownership; mounted descriptors additionally prove field binding.
-pub fn validate_ownership(
-    endpoints: &[Endpoint],
-    expected: &[&Resource],
-    gaps: &[Gap],
-) -> Vec<Violation> {
+pub fn validate_ownership(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec<Violation> {
     let mut violations = Vec::new();
     let mut resources = BTreeSet::new();
     for resource in expected {
@@ -165,7 +151,7 @@ pub fn validate_ownership(
             .extend(endpoint.operations);
     }
     for resource in expected {
-        if !collections::valid(resource, gaps) {
+        if !collections::valid(resource) {
             violations.push(Violation::InvalidQueryDescription(resource.id.into()));
         }
         if resource.category.required().contains(&Operation::List)
@@ -179,14 +165,8 @@ pub fn validate_ownership(
         }
         for operation in resource.category.required() {
             let present = operations.is_some_and(|ops| ops.contains(operation));
-            let gap = gaps
-                .iter()
-                .any(|g| g.resource == resource.id && &g.operation == operation);
-            if !present && !gap {
+            if !present {
                 violations.push(Violation::Missing(resource.id.into(), *operation));
-            }
-            if present && gap {
-                violations.push(Violation::StaleGap(resource.id.into(), *operation));
             }
         }
     }

@@ -1432,8 +1432,9 @@ MODULES[module.id] = replace(module, policies=tuple(
                actors=module.actors, configuration_devices=count, materials=materials)
     for name, (count, materials) in _counts.items()))
 
-# These native protocol cases alone consume a second member actor.
+# These native protocol and account-directory cases consume a second member actor.
 for name, suffix in (
+    ('apple.account_enrollment', 'apple::tests::account_enrollment::account_enrollment_and_reauthentication_keep_one_registration'),
     ('windows.enrollment', 'windows::t2::enrollment::self_enrollment_preserves_server_identity_and_terminal_protocol_id'),
     ('windows.entra', 'windows::t2::entra::management_policy_body_replay_and_audit_faults'),
     ('apple.scep', 'apple::tests::scep::self_enrollment_uses_current_user_and_one_macos_allocation'),
@@ -2054,3 +2055,11 @@ for selector in (
 consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_service policy.persistence')
 
 T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',)
+
+# Remaining management query owners; route declarations alone do not imply business coverage.
+consume(('crates/authorization-service/src/directory.rs',), 'authorization.rules authorization.membership authorization.capacity authorization.programmatic')
+consume(('crates/webhook-service/src/directory.rs',), 'webhooks.product')
+consume(('crates/certificate-archive-service/src/directory.rs',), 'certificate-archive.http')
+consume(('crates/apple-channel/src/management_query.rs',), 'apple.account_enrollment apple.ade settings.recent_auth')
+consume(('crates/app/src/tenant_directory.rs',), 'installation.tenants deployment.management-tenant settings.recent_auth')
+consume(('crates/content-service/src/connections/authority.rs',), 'content.storage settings.recent_auth')

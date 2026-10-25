@@ -1,4 +1,4 @@
-use crate::{Error, MAX_SUBSCRIPTIONS, PAGE, model::*};
+use crate::{Error, MAX_SUBSCRIPTIONS, model::*};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -44,13 +44,6 @@ pub async fn get(c: &mut PgConnection, t: Uuid, id: Uuid) -> Result<Subscription
             .await?
             .ok_or(Error::NotFound)?,
     )
-}
-pub async fn list(
-    c: &mut PgConnection,
-    t: Uuid,
-    after: Option<Uuid>,
-) -> Result<Vec<Subscription>, Error> {
-    sqlx::query("SELECT * FROM mdm_webhook.subscriptions WHERE tenant_id=$1 AND NOT deleted AND ($2::uuid IS NULL OR id>$2) ORDER BY id LIMIT $3").bind(t).bind(after).bind(PAGE).fetch_all(c).await?.into_iter().map(decode).collect()
 }
 pub async fn replay_operation(
     c: &mut PgConnection,
@@ -218,13 +211,4 @@ pub async fn binding(c: &mut PgConnection, t: Uuid, id: Uuid) -> Result<Binding,
         subscription,
         fingerprint: row.try_get("fingerprint")?,
     })
-}
-pub async fn deliveries(
-    c: &mut PgConnection,
-    t: Uuid,
-    after: Option<Uuid>,
-    only: Option<Uuid>,
-) -> Result<Vec<Value>, Error> {
-    let rows=sqlx::query("SELECT d.id,d.event_id,d.subscription,d.target_version,d.source_delivery,d.attempts,d.last_outcome,d.last_stage,d.last_reason,o.status,o.fingerprint,o.recovery_version,coalesce(o.automatic_retry_deadline>clock_timestamp(),false) AS redrive_open FROM mdm_webhook.deliveries d JOIN rss_transactional_messaging.outbox o ON(o.tenant_id,o.message_id)=(d.tenant_id,d.id::text) WHERE d.tenant_id=$1 AND o.domain='mdm-webhook-delivery' AND o.fingerprint=d.fingerprint AND ($2::uuid IS NULL OR d.id>$2) AND ($3::uuid IS NULL OR d.id=$3) ORDER BY d.id LIMIT $4").bind(t).bind(after).bind(only).bind(PAGE).fetch_all(c).await?;
-    rows.into_iter().map(|r|Ok(serde_json::json!({"id":r.try_get::<Uuid,_>("id")?,"eventId":r.try_get::<Uuid,_>("event_id")?,"subscriptionId":r.try_get::<Uuid,_>("subscription")?,"targetVersion":r.try_get::<i64,_>("target_version")?,"sourceDelivery":r.try_get::<Option<Uuid>,_>("source_delivery")?,"recoveryVersion":r.try_get::<i64,_>("recovery_version")?,"redriveWindowOpen":r.try_get::<bool,_>("redrive_open")?,"attempts":r.try_get::<i64,_>("attempts")?,"status":r.try_get::<String,_>("status")?,"transportObservation":r.try_get::<Option<String>,_>("last_outcome")?,"failureStage":r.try_get::<Option<String>,_>("last_stage")?,"failureReason":r.try_get::<Option<String>,_>("last_reason")?}))).collect()
 }

@@ -16,6 +16,7 @@ async fn fixture() -> Result<(authority::Authority, Router)> {
     use rss_mdm_management_http::{api_access, authorization::http, boundary};
     let authority = authority::Authority::open().await?;
     let management = Arc::new(api_access::Management {
+        cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         access: authority.authorization.clone(),
         audit: authority.audit.clone(),
     });
@@ -473,6 +474,7 @@ async fn business_writes_bind_key_actor_and_managed_enrollment() -> Result<()> {
         .resources
         .resource(rss_mdm_execution_service::Resource(execution.clone()));
     let apple = Arc::new(rss_mdm_apple_channel::HttpState {
+        query_cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
         platform_sso: None,
         platform_objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
             authority.audit.clone(),
@@ -718,6 +720,7 @@ async fn critical_action_denials_are_durable() -> Result<()> {
                 catalog: Arc::new(rss_mdm_software_service::catalog::Reader::new(tenant)),
             });
             let routes = api_access::key_routes(Arc::new(api_access::Management {
+                cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
                 access: authority.authorization.clone(),
                 audit: authority.audit.clone(),
             }))

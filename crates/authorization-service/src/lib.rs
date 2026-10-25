@@ -7,6 +7,7 @@ pub mod api_key_store;
 pub mod context;
 pub mod credential;
 mod database;
+pub mod directory;
 pub mod error;
 mod evaluate;
 pub mod identity_management;

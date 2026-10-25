@@ -222,7 +222,7 @@ fn all_ingress_registrations_have_resource_and_real_method_owners() {
         count += inventory.registrations;
     }
     assert!(count > 0, "no production registration was examined");
-    let violations = validate_ownership(&endpoints, catalog::ALL, catalog::GAPS);
+    let violations = validate_ownership(&endpoints, catalog::ALL);
     assert!(
         violations.is_empty(),
         "resource inventory violations: {violations:?}"

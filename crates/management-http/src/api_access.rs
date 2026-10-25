@@ -2,7 +2,7 @@
 use crate::Error;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, Request, State},
+    extract::{Path, RawQuery, Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -24,6 +24,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Management {
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub access: Arc<rss_mdm_authorization_service::Store>,
     pub audit: Arc<rss_mdm_audit_integration::AuditStore>,
 }
@@ -33,6 +34,7 @@ pub fn key_routes(state: Arc<Management>) -> Router {
             "/api-keys",
             get(list)
                 .owned(&contracts::API_KEYS, &[RouteOperation::List])
+                .queried(&rss_mdm_authorization_service::directory::KEYS)
                 .post(create)
                 .owned(&contracts::API_KEYS, &[RouteOperation::Create]),
         )
@@ -64,17 +66,26 @@ pub fn network_routes(state: Arc<Management>) -> Router {
         )
         .with_state(state)
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
 async fn list(
+    State(state): State<Arc<Management>>,
     Extension(auth): Extension<RequestAuth>,
-    Query(page): Query<Page>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    let (items, next) = api_key_store::list_keys(&auth.proof, page.after)?;
-    Ok(Json(json!({"items": items, "nextCursor": next})))
+    use rss_mdm_authorization_service::directory::{self, Directory};
+    let q = directory::KEYS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(
+        directory::list(
+            &state.audit,
+            &auth.proof,
+            &state.cursor,
+            Directory::Keys,
+            &q,
+        )
+        .await?
+        .ok_or(Error::NotFound)?,
+    ))
 }
 async fn detail(
     Extension(auth): Extension<RequestAuth>,

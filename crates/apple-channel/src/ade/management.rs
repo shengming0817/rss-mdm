@@ -2,7 +2,7 @@ use super::*;
 use crate::account_enrollment::management::operation as operation_id;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::HeaderMap,
     response::IntoResponse,
 };
@@ -554,50 +554,35 @@ pub async fn operation_status(
         json!({"operationId":op,"kind":row.try_get::<String,_>("kind").map_err(db)?,"state":row.try_get::<String,_>("state").map_err(db)?,"result":row.try_get::<Option<Value>,_>("result").map_err(db)?}),
     ))
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Page {
-    after: Option<String>,
-}
 pub async fn devices(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
-    Query(page): Query<Page>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    if page
-        .after
-        .as_ref()
-        .is_some_and(|s| s.len() > 128 || s.chars().any(char::is_control))
-    {
-        return Err(Error::Malformed);
-    }
-    let p = proof(&auth, false)?;
-    let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    let rows=sqlx::query("SELECT serial,deleted,remote_profile,observed_at FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND ($3::text IS NULL OR serial>$3) ORDER BY serial LIMIT 101").bind(p.tenant_id()).bind(id).bind(page.after).fetch_all(&mut *tx).await.map_err(db)?;
-    let items=rows.iter().take(100).map(|r|Ok(json!({"serial":r.try_get::<String,_>("serial").map_err(db)?,"deleted":r.try_get::<bool,_>("deleted").map_err(db)?,"profileUuid":r.try_get::<Option<Uuid>,_>("remote_profile").map_err(db)?,"observedAt":r.try_get::<i64,_>("observed_at").map_err(db)?,"registration":"not_implied"}))).collect::<Result<Vec<_>,Error>>()?;
-    let next = if rows.len() > 100 {
-        rows[99]
-            .try_get::<Option<String>, _>("serial")
-            .map_err(db)?
-    } else {
-        None
-    };
-    Ok(Json(json!({"items":items,"nextCursor":next})))
+    crate::management_query::page(
+        &app,
+        &auth.proof,
+        crate::management_query::Collection::Devices(id),
+        raw.as_deref().unwrap_or(""),
+    )
+    .await
+    .map(Json)
 }
 pub async fn profiles(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    let p = proof(&auth, false)?;
-    let mut tx = app.access.begin_read(p.tenant_id()).await?;
-    let rows=sqlx::query("SELECT id,revision,configuration,remote_uuid FROM mdm_apple.ade_profiles WHERE tenant_id=$1::uuid AND organization=$2 ORDER BY id LIMIT 1001").bind(p.tenant_id()).bind(id).fetch_all(&mut *tx).await.map_err(db)?;
-    if rows.len() > 1000 {
-        return Err(Error::Unavailable(Failure::Capacity));
-    }
-    let items=rows.iter().map(|r|Ok(json!({"id":r.try_get::<Uuid,_>("id").map_err(db)?,"revision":r.try_get::<i64,_>("revision").map_err(db)?,"configuration":r.try_get::<Value,_>("configuration").map_err(db)?,"remoteUuid":r.try_get::<Option<Uuid>,_>("remote_uuid").map_err(db)?}))).collect::<Result<Vec<_>,Error>>()?;
-    Ok(Json(json!({"items":items})))
+    crate::management_query::page(
+        &app,
+        &auth.proof,
+        crate::management_query::Collection::Profiles(id),
+        raw.as_deref().unwrap_or(""),
+    )
+    .await
+    .map(Json)
 }
 
 async fn recovery_idle(c: &mut sqlx::PgConnection, tenant: &str, id: Uuid) -> Result<(), Error> {

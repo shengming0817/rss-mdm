@@ -655,6 +655,7 @@ async fn enrollment(
 }
 
 pub struct HttpState {
+    pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub mount: crate::device::ChannelMount,
     pub audit_store: std::sync::Arc<rss_mdm_audit_integration::AuditStore>,

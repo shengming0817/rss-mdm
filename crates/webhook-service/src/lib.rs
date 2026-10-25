@@ -1,6 +1,7 @@
 //! MDM-owned subscriptions and event fanout; RSS owns execution and recovery.
 //! ref: svix server/svix-server/src/core/message_app.rs@5e53ee906261197cf48c06a40ec2fcca1d40c420
 #![forbid(unsafe_code)]
+pub mod directory;
 pub mod events;
 pub mod fanout;
 pub mod materials;

@@ -4,7 +4,7 @@ use crate::{
 };
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
 use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -25,7 +25,7 @@ pub enum Command {
     TransitionMaterial(Uuid, rss_mdm_webhook_service::materials::Transition),
     Types,
     Health,
-    Subscriptions(Option<Uuid>),
+    Subscriptions(String),
     Subscription(Uuid),
     Change(Uuid, Mutation),
     Test {
@@ -33,7 +33,7 @@ pub enum Command {
         operation: Uuid,
         device: String,
     },
-    Deliveries(Option<Uuid>),
+    Deliveries(String),
     Delivery(Uuid),
     Replay {
         delivery: Uuid,
@@ -81,7 +81,9 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/subscriptions",
-            get(subscriptions).owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List]),
+            get(subscriptions)
+                .owned(&contracts::WEBHOOK_SUBSCRIPTIONS, &[RouteOperation::List])
+                .queried(&rss_mdm_webhook_service::directory::SUBSCRIPTIONS),
         )
         .route(
             "/webhooks/subscriptions/{id}",
@@ -103,7 +105,9 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         )
         .route(
             "/webhooks/deliveries",
-            get(deliveries).owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List]),
+            get(deliveries)
+                .owned(&contracts::WEBHOOK_DELIVERIES, &[RouteOperation::List])
+                .queried(&rss_mdm_webhook_service::directory::DELIVERIES),
         )
         .route(
             "/webhooks/deliveries/{id}",
@@ -120,11 +124,6 @@ pub fn routes(source: Arc<dyn Source>) -> Router {
         .with_state(source)
 }
 type Response = Result<Json<Value>, Error>;
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Test {
@@ -235,15 +234,9 @@ async fn subscriptions(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    q: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
+    RawQuery(q): RawQuery,
 ) -> Response {
-    call(
-        s,
-        a,
-        audit,
-        Command::Subscriptions(q.map_err(|_| Error::Malformed)?.after),
-    )
-    .await
+    call(s, a, audit, Command::Subscriptions(q.unwrap_or_default())).await
 }
 async fn subscription(
     State(s): State<Arc<dyn Source>>,
@@ -292,15 +285,9 @@ async fn deliveries(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-    q: Result<Query<Page>, axum::extract::rejection::QueryRejection>,
+    RawQuery(q): RawQuery,
 ) -> Response {
-    call(
-        s,
-        a,
-        audit,
-        Command::Deliveries(q.map_err(|_| Error::Malformed)?.after),
-    )
-    .await
+    call(s, a, audit, Command::Deliveries(q.unwrap_or_default())).await
 }
 async fn delivery(
     State(s): State<Arc<dyn Source>>,

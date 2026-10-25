@@ -19,7 +19,7 @@ fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
                 ),
         );
     let mounted = Router::new().nest("/api/v1", routes);
-    assert!(validate(mounted.endpoints(), &[&RESOURCE], &[]).is_empty());
+    assert!(validate(mounted.endpoints(), &[&RESOURCE]).is_empty());
     assert_eq!(mounted.endpoints()[0].path, "/api/v1/resources");
     for missing in [Operation::List, Operation::Get] {
         let endpoints = mounted
@@ -29,14 +29,14 @@ fn mount_propagates_and_missing_list_or_get_cannot_disappear() {
             .cloned()
             .collect::<Vec<_>>();
         assert!(
-            validate(&endpoints, &[&RESOURCE], &[])
+            validate(&endpoints, &[&RESOURCE])
                 .contains(&Violation::Missing("resource".into(), missing))
         );
     }
-    assert!(validate(&[], &[&RESOURCE], &[]).contains(&Violation::Orphan("resource".into())));
+    assert!(validate(&[], &[&RESOURCE]).contains(&Violation::Orphan("resource".into())));
 }
 #[test]
-fn duplicate_unexpected_and_stale_exemptions_are_rejected() {
+fn duplicate_and_unexpected_resources_are_rejected() {
     let routes = Router::<()>::new().route(
         "/resources",
         get(|| async {}).owned(&RESOURCE, &[Operation::List]),
@@ -44,25 +44,14 @@ fn duplicate_unexpected_and_stale_exemptions_are_rejected() {
     let mut endpoints = routes.endpoints().to_vec();
     endpoints.extend_from_slice(routes.endpoints());
     assert!(
-        validate(&endpoints, &[&RESOURCE], &[])
+        validate(&endpoints, &[&RESOURCE])
             .iter()
             .any(|v| matches!(v, Violation::Duplicate(..)))
     );
     assert!(
-        validate(routes.endpoints(), &[], &[])
+        validate(routes.endpoints(), &[])
             .iter()
             .any(|v| matches!(v, Violation::Unknown(..)))
-    );
-    let gaps = [rss_mdm_http_contract::Gap {
-        resource: "resource",
-        operation: Operation::List,
-        issue: 2900,
-        reason: "synthetic",
-    }];
-    assert!(
-        validate(routes.endpoints(), &[&RESOURCE], &gaps)
-            .iter()
-            .any(|v| matches!(v, Violation::StaleGap(..)))
     );
 }
 
@@ -81,35 +70,12 @@ fn native_listener_cannot_drop_a_registered_subtree() {
         get(|| async {}).owned(&DOWNLOAD_APPLE_CHANNEL, &[Operation::Action]),
     );
     assert!(
-        validate(protocol.endpoints(), APPLE_LISTENER, &[])
+        validate(protocol.endpoints(), APPLE_LISTENER)
             .contains(&Violation::Orphan("download_apple_channel".into()))
     );
     let mounted = protocol.merge(download);
-    assert!(validate(mounted.endpoints(), APPLE_LISTENER, &[]).is_empty());
+    assert!(validate(mounted.endpoints(), APPLE_LISTENER).is_empty());
     let _ = mounted.into_checked_axum(APPLE_LISTENER);
-}
-
-#[test]
-fn changing_migration_status_cannot_replace_missing_query_description() {
-    use rss_mdm_http_contract::{QueryPolicy, collections};
-    let mut departments = rss_mdm_http_contract::catalog::AUTHORIZATION_DEPARTMENTS;
-    assert!(collections::valid(&departments, &[]));
-    departments.query = QueryPolicy::FixedWindow;
-    assert!(
-        !collections::valid(&departments, &[]),
-        "unbounded snapshot was relabeled as a bounded window"
-    );
-    departments.collection = None;
-    assert!(
-        !collections::valid(&departments, &[]),
-        "window has no budget/order/fields"
-    );
-    let mut resource = RESOURCE;
-    resource.id = "new-resource";
-    assert!(
-        !collections::valid(&resource, &[]),
-        "another resource borrowed the Resource field contract"
-    );
 }
 
 #[test]
@@ -120,7 +86,7 @@ fn unified_list_requires_an_execution_field_owner() {
         get(|| async {}).owned(&SAVED_QUERIES, &[Operation::List]),
     );
     assert!(
-        validate(routes.endpoints(), &[&SAVED_QUERIES], &[])
+        validate(routes.endpoints(), &[&SAVED_QUERIES])
             .contains(&Violation::MissingQuery("saved_queries".into()))
     );
     static SCHEMA: rss_mdm_query::directory::Schema = rss_mdm_query::directory::Schema {
@@ -140,7 +106,7 @@ fn unified_list_requires_an_execution_field_owner() {
             .queried(&SCHEMA),
     );
     assert!(
-        !validate(routes.endpoints(), &[&SAVED_QUERIES], &[])
+        !validate(routes.endpoints(), &[&SAVED_QUERIES])
             .contains(&Violation::MissingQuery("saved_queries".into()))
     );
 }

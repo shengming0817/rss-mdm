@@ -15,6 +15,7 @@ mod error;
 mod evidence;
 pub mod exchange;
 pub mod flow_store;
+pub mod management_query;
 mod material;
 mod native;
 mod operations;
@@ -396,6 +397,7 @@ impl Apple {
 }
 
 pub struct HttpState {
+    pub query_cursor: rss_mdm_query::cursor::CursorCodec,
     pub platform_sso: Option<Arc<platform_sso::Runtime>>,
     pub platform_objects: Arc<rss_mdm_device_service::planning::PlanningObjects>,
     /// Deployment-approved signing roots; tenant requests cannot add trust anchors.

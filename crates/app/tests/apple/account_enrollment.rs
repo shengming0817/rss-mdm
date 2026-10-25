@@ -224,6 +224,76 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     let org = Uuid::new_v4();
     let name = "admin@managed.example.test";
     configure(&mut f, org, name).await?;
+    let base = format!("/api/v1/apple/organizations/{org}/account-enrollment");
+    let detail = f.browser.call(&f.router, Method::GET, &base, None).await?;
+    ensure!(
+        detail.0 == StatusCode::OK
+            && detail.1["domain"] == "managed.example.test"
+            && detail.1["revision"] == 1
+    );
+    let binding = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{base}/accounts/{name}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        binding.0 == StatusCode::OK && binding.1["account"] == name && binding.1["revision"] == 1
+    );
+    let organizations = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("/api/v1/apple/organizations?filter=id%3D%3D{org}&limit=1"),
+            None,
+        )
+        .await?;
+    ensure!(
+        organizations.0 == StatusCode::OK
+            && organizations.1["items"][0]["id"] == org.to_string()
+            && organizations.1["items"][0]["accountEnrollment"]
+                .get("accounts")
+                .is_none()
+    );
+    let second_principal = crate::test_support::case::context()
+        .actors()
+        .iter()
+        .find(|a| a.tenant == case_tenant() && a.role == "other")
+        .and_then(|a| a.principal.as_deref())
+        .expect("second prepared account");
+    f.browser.operation = Some(Uuid::new_v4());
+    let added=f.browser.call(&f.router,Method::PUT,&format!("{base}/accounts/second@managed.example.test"),Some(json!({"expectedRevision":0,"principalId":second_principal,"instanceId":crate::test_support::INSTANCE,"enabled":true}))).await?;
+    ensure!(added.0 == StatusCode::OK);
+    let first = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{base}/accounts?limit=1&fields=account,revision"),
+            None,
+        )
+        .await?;
+    ensure!(first.0 == StatusCode::OK && first.1["items"][0]["account"] == name);
+    let next = first.1["nextCursor"].as_str().unwrap();
+    let second = f
+        .browser
+        .call(
+            &f.router,
+            Method::GET,
+            &format!("{base}/accounts?limit=1&fields=account,revision&cursor={next}"),
+            None,
+        )
+        .await?;
+    ensure!(
+        second.0 == StatusCode::OK
+            && second.1["items"][0]["account"] == "second@managed.example.test"
+            && second.1["nextCursor"].is_null()
+    );
+
     let discovery = request(
         &f,
         Method::GET,

@@ -4,7 +4,6 @@ fn main() {
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
             "resources":rss_mdm_http_contract::catalog::ALL,
-            "operationGaps":rss_mdm_http_contract::catalog::GAPS,
             "directoryQueries":[
                 rss_mdm_inventory_service::groups::directory::schema(),
                 &rss_mdm_flow_service::planning::directory::SCHEMA,

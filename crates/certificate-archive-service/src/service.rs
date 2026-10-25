@@ -452,8 +452,7 @@ impl Archive {
         {
             return Ok(receipt);
         }
-        let history = self.history(p, entry, None).await?;
-        let latest = history.first().ok_or(Error::NotFound)?;
+        let latest = self.entry(p, entry).await?.latest;
         let (previous, bundle) = self
             .read_material(
                 p,
@@ -516,31 +515,62 @@ impl Archive {
         tx.rollback().await?;
         Ok(result)
     }
-    pub async fn list(&self, p: &AuthorizedPrincipal, after: Option<Uuid>) -> Result<Page, Error> {
+    pub async fn entry(&self, p: &AuthorizedPrincipal, id: Uuid) -> Result<Entry, Error> {
         p.manage(P::CertificateArchiveRead)?;
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
+        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
+                .await?;
+        current
+            .require(p, P::CertificateArchiveRead, None)
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let mut sql = sqlx::QueryBuilder::new(directory::SELECT);
+        sql.push_bind(p.tenant_id().to_owned())
+            .push("::uuid AND e.id=")
+            .push_bind(id);
+        let row = sql
+            .build()
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let result = directory::entry(&row)?;
+        tx.rollback().await?;
+        p.check_live()?;
+        Ok(result)
+    }
+    pub async fn list(
+        &self,
+        p: &AuthorizedPrincipal,
+        q: &rss_mdm_query::directory::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<Page, Error> {
+        q.require_schema(&directory::SCHEMA)
+            .map_err(directory::error)?;
+        p.manage(P::CertificateArchiveRead)?;
+        let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
+        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
+                .await?;
+        current
+            .require(p, P::CertificateArchiveRead, None)
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let binding = q
+            .binding(&(p.tenant_id(), p.instance_id(), current.query_binding(p)?))
+            .map_err(directory::error)?;
+        let after = q.after(codec, &binding).map_err(directory::error)?;
         let settings = store::settings(&mut tx, p.tenant_id()).await?;
-        let rows=sqlx::query("SELECT e.id::text,e.revision,e.retired,e.recommended_version,v.entry_id::text,v.version,v.actor::text,v.instance::text,v.operation_id::text,v.created_at,v.metadata::text,v.facts::text,v.request_entry_id::text,v.request_version,v.source FROM mdm_certificate_archive.entries e JOIN LATERAL(SELECT * FROM mdm_certificate_archive.versions x WHERE x.tenant_id=e.tenant_id AND x.entry_id=e.id ORDER BY x.version DESC LIMIT 1)v ON true WHERE e.tenant_id=$1::uuid AND ($2::uuid IS NULL OR e.id>$2::uuid) ORDER BY e.id LIMIT 51").bind(p.tenant_id()).bind(after.map(|id|id.to_string())).fetch_all(&mut *tx).await?;
-        let more = rows.len() > 50;
-        let items = rows
+        let mut sql = sqlx::QueryBuilder::new(directory::SELECT);
+        sql.push_bind(p.tenant_id().to_owned()).push("::uuid");
+        rss_mdm_query_postgres::append(&mut sql, q, after.as_ref(), directory::column)
+            .map_err(directory::error)?;
+        let rows = sql.build().fetch_all(&mut *tx).await?;
+        let values = rows
             .iter()
-            .take(50)
-            .map(|r| {
-                Ok(Entry {
-                    id: Uuid::parse_str(&r.try_get::<String, _>("id")?)
-                        .map_err(|_| Error::Integrity)?,
-                    revision: r.try_get("revision")?,
-                    retired: r.try_get("retired")?,
-                    recommended_version: r.try_get("recommended_version")?,
-                    latest: store::decode_version(r)?,
-                })
-            })
+            .map(|r| serde_json::to_value(directory::entry(r)?).map_err(|_| Error::Integrity))
             .collect::<Result<Vec<_>, Error>>()?;
-        let next_after = if more {
-            items.last().map(|v| v.id)
-        } else {
-            None
-        };
+        let page = q.page(values, codec, &binding).map_err(directory::error)?;
         let now = self.clock.unix_seconds()?;
         let warning = now + i64::from(settings.value.reminder_days) * 86400;
         let alerts=sqlx::query(r#"WITH current_versions AS (
@@ -556,8 +586,8 @@ impl Archive {
         tx.rollback().await?;
         Ok(Page {
             tenant_id: p.tenant_id().into(),
-            items,
-            next_after,
+            items: page.items,
+            next_cursor: page.next_cursor,
             as_of: now,
             reminder_days: settings.value.reminder_days,
             alerts,
@@ -567,20 +597,64 @@ impl Archive {
         &self,
         p: &AuthorizedPrincipal,
         entry: Uuid,
-        before: Option<i64>,
-    ) -> Result<Vec<Version>, Error> {
+        q: &rss_mdm_query::window::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<Version>, Error> {
         p.manage(P::CertificateArchiveRead)?;
-        if entry.is_nil() || before.is_some_and(|v| v <= 0) {
+        if entry.is_nil() {
             return Err(Error::Malformed);
         }
         let mut tx = store::begin(&self.pool, p.tenant_id()).await?;
-        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2::uuid AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT 50").bind(p.tenant_id()).bind(entry.to_string()).bind(before).fetch_all(&mut *tx).await?;
-        let values = rows
+        rss_mdm_authorization_service::lock_on(&mut tx, p.tenant_id(), p.instance_id()).await?;
+        let current =
+            rss_mdm_authorization_service::snapshot_on(&mut tx, p.tenant_id(), p.instance_id())
+                .await?;
+        current
+            .require(p, P::CertificateArchiveRead, None)
+            .map_err(rss_mdm_authorization_service::Error::from)?;
+        let binding = rss_mdm_query::cursor::fingerprint(&(
+            "certificate_versions",
+            p.tenant_id(),
+            p.instance_id(),
+            current.query_binding(p)?,
+            entry,
+        ))
+        .map_err(directory::error)?;
+        let before: Option<i64> = q
+            .cursor
+            .as_ref()
+            .map(|v| {
+                codec
+                    .decode(
+                        &rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?,
+                        &binding,
+                    )
+                    .map_err(directory::error)
+            })
+            .transpose()?;
+        let rows=sqlx::query("SELECT entry_id::text,version,actor::text,instance::text,operation_id::text,created_at,metadata::text,facts::text,request_entry_id::text,request_version,source FROM mdm_certificate_archive.versions WHERE tenant_id=$1::uuid AND entry_id=$2 AND ($3::bigint IS NULL OR version<$3) ORDER BY version DESC LIMIT $4").bind(p.tenant_id()).bind(entry).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await?;
+        let more = rows.len() > q.limit;
+        let items = rows
             .iter()
+            .take(q.limit)
             .map(store::decode_version)
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_cursor = if more {
+            items
+                .last()
+                .map(|v| {
+                    codec
+                        .encode(&binding, &v.version)
+                        .map(|v| v.as_str().to_owned())
+                        .map_err(directory::error)
+                })
+                .transpose()?
+        } else {
+            None
+        };
         tx.rollback().await?;
-        Ok(values)
+        p.check_live()?;
+        Ok(rss_mdm_query::Page { items, next_cursor })
     }
     pub async fn export(
         &self,

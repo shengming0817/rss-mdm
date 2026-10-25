@@ -839,6 +839,39 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
     )?))?))
     .await?;
     c.prepared_directory().await?;
+    let profiles =
+        c.f.browser
+            .call(
+                &c.f.router,
+                Method::GET,
+                &format!(
+                    "{}/profiles?filter=id%3D%3D{}&fields=id,revision&limit=1",
+                    c.path(),
+                    c.profile
+                ),
+                None,
+            )
+            .await?;
+    ensure!(
+        profiles.0 == StatusCode::OK
+            && profiles.1["items"][0]["id"] == c.profile.to_string()
+            && profiles.1["items"][0]["revision"] == 1
+    );
+    let devices =
+        c.f.browser
+            .call(
+                &c.f.router,
+                Method::GET,
+                &format!("{}/devices?filter=deleted%3D%3Dfalse&limit=1", c.path()),
+                None,
+            )
+            .await?;
+    ensure!(
+        devices.0 == StatusCode::OK
+            && devices.1["items"][0]["serial"] == crate::test_support::case::name("ade-serial")
+            && devices.1["items"][0]["registration"] == "not_implied"
+    );
+
     let machine = c.machine()?;
     let signed = c.enroll(machine.clone()).await?;
     ensure!(signed.0 == StatusCode::OK);

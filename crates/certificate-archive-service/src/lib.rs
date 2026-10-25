@@ -1,5 +1,6 @@
 //! Tenant-owned certificate archive. Runtime certificate consumers remain file-configured.
 //! ref: rust-openssl openssl/src/x509/mod.rs; sqlx v0.9.0 sqlx-core/src/transaction.rs.
+pub mod directory;
 mod generation;
 mod materials;
 mod model;

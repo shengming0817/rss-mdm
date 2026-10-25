@@ -2,14 +2,11 @@ use super::*;
 use crate::{Error, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
 };
+use rss_mdm_authorization_service::directory::{self, Directory};
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
-use rss_mdm_http_contract::{
-    Router,
-    routing::{get, put},
-};
-use serde::Deserialize;
+use rss_mdm_http_contract::{Router, routing::get};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,28 +15,35 @@ pub fn routes() -> Router<Arc<HttpState>> {
     rule_routes()
         .route(
             "/authorization/user-groups",
-            get(groups).owned(&contracts::USER_GROUPS, &[RouteOperation::List]),
+            get(groups)
+                .owned(&contracts::USER_GROUPS, &[RouteOperation::List])
+                .queried(&directory::GROUPS),
         )
         .route(
             "/authorization/user-groups/{id}",
-            put(group_write).owned(
-                &contracts::USER_GROUPS,
-                &[
-                    RouteOperation::Create,
-                    RouteOperation::Update,
-                    RouteOperation::Delete,
-                ],
-            ),
+            get(group_detail)
+                .owned(&contracts::USER_GROUPS, &[RouteOperation::Get])
+                .put(group_write)
+                .owned(
+                    &contracts::USER_GROUPS,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
         )
         .route(
             "/authorization/user-groups/{id}/members",
-            get(members).owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List]),
+            get(members)
+                .owned(&contracts::USER_GROUP_MEMBERS, &[RouteOperation::List])
+                .queried(&directory::MEMBERS),
         )
         .route(
             "/authorization/departments",
             get(departments).owned(
                 &contracts::AUTHORIZATION_DEPARTMENTS,
-                &[RouteOperation::List],
+                &[RouteOperation::Get],
             ),
         )
 }
@@ -52,33 +56,24 @@ pub fn rule_routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/authorization/rules",
-            get(rules).owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List]),
+            get(rules)
+                .owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::List])
+                .queried(&directory::RULES),
         )
         .route(
             "/authorization/rules/{id}",
-            put(rule_write).owned(
-                &contracts::AUTHORIZATION_RULES,
-                &[
-                    RouteOperation::Create,
-                    RouteOperation::Update,
-                    RouteOperation::Delete,
-                ],
-            ),
+            get(rule_detail)
+                .owned(&contracts::AUTHORIZATION_RULES, &[RouteOperation::Get])
+                .put(rule_write)
+                .owned(
+                    &contracts::AUTHORIZATION_RULES,
+                    &[
+                        RouteOperation::Create,
+                        RouteOperation::Update,
+                        RouteOperation::Delete,
+                    ],
+                ),
         )
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Page {
-    after: Option<Uuid>,
-}
-fn page<T: serde::Serialize>(items: &[Revision<T>], after: Option<Uuid>) -> Value {
-    let selected = items
-        .iter()
-        .filter(|r| after.is_none_or(|after| r.id > after))
-        .take(101)
-        .collect::<Vec<_>>();
-    let next = (selected.len() > 100).then(|| selected[99].id);
-    json!({"items":selected.into_iter().take(100).collect::<Vec<_>>(),"nextCursor":next})
 }
 async fn effective(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value>, Error> {
     let proof = &auth.proof;
@@ -86,36 +81,57 @@ async fn effective(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value
         json!({"instanceId":proof.instance_id(),"tenantId":proof.tenant_id(),"principalId":proof.principal_id(),"grants":proof.authorization()?.effective(proof)?}),
     ))
 }
-async fn rules(
-    Extension(auth): Extension<RequestAuth>,
-    Query(page_request): Query<Page>,
+async fn listing(
+    app: &HttpState,
+    auth: &RequestAuth,
+    raw: Option<String>,
+    kind: Directory,
 ) -> Result<Json<Value>, Error> {
-    auth.proof.require(Permission::AuthorizationRead, None)?;
-    Ok(Json(page(
-        &auth.proof.authorization()?.rules,
-        page_request.after,
-    )))
+    let q = kind
+        .schema()
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| Error::Malformed)?;
+    Ok(Json(
+        directory::list(&app.audit_store, &auth.proof, &app.cursor, kind, &q)
+            .await?
+            .ok_or(Error::NotFound)?,
+    ))
+}
+async fn rules(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, Error> {
+    listing(&app, &auth, raw, Directory::Rules).await
 }
 async fn groups(
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Query(page_request): Query<Page>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    auth.proof.require(Permission::UserGroupRead, None)?;
-    // Memberships have a separately bounded, revision-bearing projection.
-    let groups =
-        auth.proof
-            .authorization()?
-            .groups
-            .iter()
-            .map(|r| Revision {
-                id: r.id,
-                revision: r.revision,
-                value: r.value.as_ref().map(
-                    |g| json!({"name":g.name,"enabled":g.enabled,"memberCount":g.members.len()}),
-                ),
-            })
-            .collect::<Vec<_>>();
-    Ok(Json(page(&groups, page_request.after)))
+    listing(&app, &auth, raw, Directory::Groups).await
+}
+async fn rule_detail(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    Ok(Json(
+        directory::detail(&app.audit_store, &auth.proof, false, id)
+            .await?
+            .ok_or(Error::NotFound)?,
+    ))
+}
+async fn group_detail(
+    State(app): State<Arc<HttpState>>,
+    Extension(auth): Extension<RequestAuth>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    Ok(Json(
+        directory::detail(&app.audit_store, &auth.proof, true, id)
+            .await?
+            .ok_or(Error::NotFound)?,
+    ))
 }
 async fn rule_write(
     State(app): State<Arc<HttpState>>,
@@ -155,46 +171,13 @@ async fn group_write(
         .map(Json)
         .map_err(Error::from)
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MemberPage {
-    offset: Option<usize>,
-    expected_revision: Option<u64>,
-}
 async fn members(
+    State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
-    Extension(audit): Extension<RequestAudit>,
     Path(id): Path<Uuid>,
-    Query(page): Query<MemberPage>,
+    RawQuery(raw): RawQuery,
 ) -> Result<Json<Value>, Error> {
-    audit.target(&id.to_string());
-    auth.proof.require(Permission::UserGroupRead, None)?;
-    let record = auth
-        .proof
-        .authorization()?
-        .groups
-        .iter()
-        .find(|r| r.id == id)
-        .ok_or(Error::NotFound)?;
-    let group = record.value.as_ref().ok_or(Error::NotFound)?;
-    let offset = page.offset.unwrap_or(0);
-    if offset > 10000 {
-        return Err(Error::Malformed);
-    }
-    if page.expected_revision.is_some_and(|v| v != record.revision)
-        || (offset > 0 && page.expected_revision.is_none())
-    {
-        return Err(Error::Conflict);
-    }
-    let items = group
-        .members
-        .iter()
-        .skip(offset)
-        .take(100)
-        .collect::<Vec<_>>();
-    Ok(Json(
-        json!({"id":id,"revision":record.revision,"items":items,"nextOffset":(offset + 100 < group.members.len()).then_some(offset + 100)}),
-    ))
+    listing(&app, &auth, raw, Directory::Members(id)).await
 }
 async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value>, Error> {
     use rss_identity_postgres::VerifiedDepartmentSnapshot as Department;
@@ -221,6 +204,7 @@ async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Val
 }
 
 pub struct HttpState {
+    pub cursor: rss_mdm_query::cursor::CursorCodec,
     pub audit_store: Arc<rss_mdm_audit_integration::AuditStore>,
 }
 

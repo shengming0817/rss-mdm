@@ -40,13 +40,22 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         first.0 == StatusCode::OK
             && first.1["items"] == json!(members(100))
             && first.1["revision"] == 1
-            && first.1["nextOffset"] == 100
+            && first.1["nextCursor"].is_string()
     );
+    let cursor = first.1["nextCursor"].as_str().unwrap();
+    let detail = admin.call(router, Method::GET, &path, None).await?;
+    ensure!(
+        detail.0 == StatusCode::OK
+            && detail.1["id"] == id.to_string()
+            && detail.1["revision"] == 1
+            && detail.1["value"] == group
+    );
+    ensure!(member.call(router, Method::GET, &path, None).await?.0 == StatusCode::FORBIDDEN);
     let second = admin
         .call(
             router,
             Method::GET,
-            &format!("{page}?offset=100&expectedRevision=1"),
+            &format!("{page}?cursor={cursor}"),
             None,
         )
         .await?;
@@ -54,14 +63,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         second.0 == StatusCode::OK
             && second.1["items"] == json!([members(101).pop().unwrap()])
             && second.1["revision"] == 1
-            && second.1["nextOffset"].is_null()
-    );
-    ensure!(
-        admin
-            .call(router, Method::GET, &format!("{page}?offset=100"), None)
-            .await?
-            .0
-            == StatusCode::CONFLICT
+            && second.1["nextCursor"].is_null()
     );
     ensure!(member.call(router, Method::GET, &page, None).await?.0 == StatusCode::FORBIDDEN);
     for status in [200, 403] {
@@ -90,7 +92,7 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
             .call(
                 router,
                 Method::GET,
-                &format!("{page}?offset=100&expectedRevision=1"),
+                &format!("{page}?cursor={cursor}"),
                 None
             )
             .await?
@@ -101,23 +103,18 @@ async fn verify(router: &Router, admin: &mut Browser, member: &mut Browser) -> R
         .call(
             router,
             Method::GET,
-            &format!("{page}?offset=10000&expectedRevision=2"),
+            &format!("{page}?filter=principalId%3D%3Dffffffff-ffff-ffff-ffff-ffffffffffff"),
             None,
         )
         .await?;
     ensure!(
         empty.0 == StatusCode::OK
             && empty.1["items"] == json!([])
-            && empty.1["nextOffset"].is_null()
+            && empty.1["nextCursor"].is_null()
     );
     ensure!(
         admin
-            .call(
-                router,
-                Method::GET,
-                &format!("{page}?offset=10001&expectedRevision=2"),
-                None
-            )
+            .call(router, Method::GET, &format!("{page}?limit=1001"), None)
             .await?
             .0
             == StatusCode::BAD_REQUEST

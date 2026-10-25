@@ -229,6 +229,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         Arc::new(crate::clock::SystemClock),
         protection,
         binding,
+        rss_mdm_query::cursor::CursorCodec::new(&[31; 32])?,
     )
     .await?;
     resources.resource(crate::webhooks::Resource(backend.clone()));
@@ -338,7 +339,7 @@ async fn subscription_versions_atomic_fanout_and_same_id_https_retry() -> Result
         ensure!(status==StatusCode::OK);
         let (status,list)=browser.call(&router,Method::GET,"/api/v1/webhooks/deliveries",None).await?;ensure!(status==StatusCode::OK && list["items"].as_array().is_some_and(|i|i.len()==rss_mdm_webhook_service::PAGE as usize));
         let next=list["nextCursor"].as_str().ok_or_else(||anyhow::anyhow!("missing delivery cursor"))?;
-        let page=browser.call(&router,Method::GET,&format!("/api/v1/webhooks/deliveries?after={next}"),None).await?;
+        let page=browser.call(&router,Method::GET,&format!("/api/v1/webhooks/deliveries?cursor={next}"),None).await?;
         ensure!(page.0==StatusCode::OK && page.1["items"].as_array().is_some_and(|items|items.len()==2));
         let disabled=call(&mut browser,&router,&subscriptions[0].0,3,json!({"kind":"enabled","value":false})).await?;
         ensure!(disabled["targetVersion"]!=subscriptions[0].1["targetVersion"]);

@@ -62,7 +62,9 @@ pub struct Receipt {
 pub struct Directory {
     pub revision: i64,
     pub selected_revision: Option<i64>,
-    pub versions: Vec<Receipt>,
+    pub version_count: i64,
+    pub current: Option<Receipt>,
+    pub latest: Option<Receipt>,
 }
 fn db(_: sqlx::Error) -> Error {
     Error::Storage
@@ -77,7 +79,7 @@ fn aad(tenant: &str, owner: &str, purpose: &str) -> Result<DerivedAad> {
     .map(|v| v.derive())
     .map_err(|_| Error::Input)
 }
-fn receipt(row: &sqlx::postgres::PgRow) -> Result<Receipt> {
+pub(crate) fn receipt(row: &sqlx::postgres::PgRow) -> Result<Receipt> {
     Ok(Receipt {
         operation_id: row.try_get("operation_id").map_err(db)?,
         revision: row.try_get("revision").map_err(db)?,
@@ -188,20 +190,23 @@ pub async fn directory(c: &mut PgConnection, tenant: &str) -> Result<Directory> 
     .await
     .map_err(db)?
     .unwrap_or((0, None));
-    let versions = sqlx::query(
-        "SELECT * FROM mdm_mail.versions WHERE tenant_id=$1::uuid ORDER BY revision DESC LIMIT 64",
-    )
-    .bind(tenant)
-    .fetch_all(c)
-    .await
-    .map_err(db)?
-    .iter()
-    .map(receipt)
-    .collect::<Result<Vec<_>>>()?;
+    let version_count =
+        sqlx::query_scalar("SELECT count(*) FROM mdm_mail.versions WHERE tenant_id=$1::uuid")
+            .bind(tenant)
+            .fetch_one(&mut *c)
+            .await
+            .map_err(db)?;
+    let rows=sqlx::query("SELECT operation_id,revision,profile,state,attempted_at,accepted_at,failure_reason FROM mdm_mail.versions WHERE tenant_id=$1::uuid AND (revision=$2 OR revision=$3)").bind(tenant).bind(revision).bind(selected_revision).fetch_all(c).await.map_err(db)?;
+    let values = rows.iter().map(receipt).collect::<Result<Vec<_>>>()?;
     Ok(Directory {
         revision,
         selected_revision,
-        versions,
+        version_count,
+        current: values
+            .iter()
+            .find(|v| Some(v.revision) == selected_revision)
+            .cloned(),
+        latest: values.iter().find(|v| v.revision == revision).cloned(),
     })
 }
 pub async fn operation(c: &mut PgConnection, tenant: &str, operation: Uuid) -> Result<Receipt> {

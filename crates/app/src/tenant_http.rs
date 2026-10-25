@@ -1,8 +1,10 @@
 //! Installation tenant HTTP adapter; CLI and HTTP share the registry mutation owner.
 use super::*;
+#[path = "tenant_directory.rs"]
+mod directory;
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, RawQuery, State},
     http::HeaderMap,
 };
 use rss_mdm_audit_integration::{AuditStore, Fact, RequestAudit, budget::AuditBudget};
@@ -149,41 +151,43 @@ impl Service {
         query: Read,
     ) -> std::result::Result<serde_json::Value, Error> {
         proof.require(Permission::TenantRead, None)?;
-        self.registry_read((self, proof, query), |(service, proof, query), c| Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(2346)").execute(&mut *c).await.map_err(|_| Reason::Storage)?;
-            service.authorize(c, proof, Permission::TenantRead).await?;
-            match query {
-                Read::Tenant(tenant) => {
-                    validate_tenant(&service.installation, tenant)?;
-                    serde_json::to_value(tenant_on(c, tenant, false).await?).map_err(|_| Reason::Storage)
+        self.registry_read((self, proof, query), |(service, proof, query), c| {
+            Box::pin(async move {
+                sqlx::query("SELECT pg_advisory_xact_lock(2346)")
+                    .execute(&mut *c)
+                    .await
+                    .map_err(|_| Reason::Storage)?;
+                service.authorize(c, proof, Permission::TenantRead).await?;
+                match query {
+                    Read::Tenant(tenant) => {
+                        validate_tenant(&service.installation, tenant)?;
+                        serde_json::to_value(tenant_on(c, tenant, false).await?)
+                            .map_err(|_| Reason::Storage)
+                    }
+                    Read::Operation(operation) => {
+                        if operation.is_nil() {
+                            return Err(Reason::Invalid);
+                        }
+                        let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
+                        serde_json::to_value(receipt).map_err(|_| Reason::Storage)
+                    }
+                    Read::Provisionings(q) => directory::page(service, c, proof, q, true).await,
+                    Read::List(q) => directory::page(service, c, proof, q, false).await,
                 }
-                Read::Operation(operation) => {
-                    if operation.is_nil() { return Err(Reason::Invalid); }
-                    let receipt = receipt_on(c, *operation).await?.ok_or(Reason::NotFound)?.0;
-                    serde_json::to_value(receipt).map_err(|_| Reason::Storage)
-                }
-                Read::Provisionings(page) => provisionings_on(c, page).await,
-                Read::Hosts => {
-                    let items:Vec<serde_json::Value>=sqlx::query_scalar("SELECT o.receipt FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='provision' AND NOT t.deleted ORDER BY o.operation_id").fetch_all(&mut *c).await.map_err(|_|Reason::Storage)?;
-                    Ok(serde_json::json!({"items":items}))
-                }
-                Read::List => {
-                    let ids: Vec<String> = sqlx::query_scalar("SELECT tenant_id::text FROM public.mdm_tenants WHERE NOT deleted ORDER BY tenant_id")
-                        .fetch_all(&mut *c).await.map_err(|_| Reason::Storage)?;
-                    let mut items = Vec::new();
-                    for id in ids { items.push(tenant_on(c, &id, false).await?); }
-                    Ok(serde_json::json!({"items":items}))
-                }
-            }
-        })).await
+            })
+        })
+        .await
     }
-    pub(crate) async fn directory(
+    pub(crate) async fn summary(
         &self,
         proof: &AuthorizedPrincipal,
         hosts: bool,
     ) -> std::result::Result<serde_json::Value, Error> {
-        self.read(proof, if hosts { Read::Hosts } else { Read::List })
-            .await
+        self.registry_read((self,proof,hosts),|(service,proof,hosts),c|Box::pin(async move{
+            service.authorize(c,proof,Permission::TenantRead).await?;
+            let result=if *hosts {sqlx::query_scalar("SELECT jsonb_build_object('count',count(*),'blocked',coalesce(bool_or(o.receipt->'result'->'blocked'<>'null'::jsonb),false),'pending',coalesce(bool_or(o.receipt->'result'->>'phase'<>'enabled'),false)) FROM public.mdm_tenant_operations o JOIN public.mdm_tenants t USING(tenant_id) WHERE o.action='provision' AND NOT t.deleted").fetch_one(c).await}else{sqlx::query_scalar("SELECT jsonb_build_object('count',count(*),'blocked',false,'pending',false) FROM public.mdm_tenants WHERE NOT deleted").fetch_one(c).await}.map_err(|_|Reason::Storage)?;
+            proof.check_live().map_err(|_|Reason::Forbidden)?;Ok(result)
+        })).await
     }
     async fn registry_read<C: Send, T: Send>(
         &self,
@@ -338,9 +342,8 @@ impl rss_runtime::ManagedResource for Resource {
     }
 }
 enum Read {
-    List,
-    Hosts,
-    Provisionings(ProvisioningPage),
+    List(rss_mdm_query::directory::Query),
+    Provisionings(rss_mdm_query::directory::Query),
     Tenant(String),
     Operation(Uuid),
 }
@@ -376,12 +379,15 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
     Router::new()
         .route(
             "/tenants",
-            get(list).owned(&contracts::TENANTS, &[RouteOperation::List]),
+            get(list)
+                .owned(&contracts::TENANTS, &[RouteOperation::List])
+                .queried(&directory::TENANTS),
         )
         .route(
             "/provisionings",
             get(provisionings)
                 .owned(&contracts::PROVISIONINGS, &[RouteOperation::List])
+                .queried(&directory::PROVISIONINGS)
                 .post(provisioning::create)
                 .owned(&contracts::TENANTS, &[RouteOperation::Create]),
         )
@@ -411,9 +417,13 @@ pub(crate) fn routes(service: Option<Arc<Service>>) -> Router {
 async fn list(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
+    let q = directory::TENANTS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| HttpFailure(Error::Malformed))?;
     service
-        .read(&auth.proof, Read::List)
+        .read(&auth.proof, Read::List(q))
         .await
         .map(Json)
         .map_err(HttpFailure)
@@ -421,14 +431,13 @@ async fn list(
 async fn provisionings(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
-    query: std::result::Result<Query<ProvisioningPage>, axum::extract::rejection::QueryRejection>,
+    RawQuery(raw): RawQuery,
 ) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
-    let Query(page) = query.map_err(|_| HttpFailure(Error::Malformed))?;
-    if page.after.is_some_and(|id| id.is_nil()) || !(1..=1000).contains(&page.limit) {
-        return Err(HttpFailure(Error::Malformed));
-    }
+    let q = directory::PROVISIONINGS
+        .parse(raw.as_deref().unwrap_or(""))
+        .map_err(|_| HttpFailure(Error::Malformed))?;
     service
-        .read(&auth.proof, Read::Provisionings(page))
+        .read(&auth.proof, Read::Provisionings(q))
         .await
         .map(Json)
         .map_err(HttpFailure)
@@ -558,32 +567,4 @@ impl axum::response::IntoResponse for HttpFailure {
         };
         error.into_response()
     }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProvisioningPage {
-    after: Option<Uuid>,
-    #[serde(default = "provisioning_page_limit")]
-    limit: u16,
-}
-fn provisioning_page_limit() -> u16 {
-    100
-}
-async fn provisionings_on(
-    c: &mut sqlx::PgConnection,
-    page: &ProvisioningPage,
-) -> std::result::Result<serde_json::Value, Reason> {
-    let mut rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as("SELECT operation_id,receipt FROM public.mdm_tenant_operations WHERE action='provision' AND ($1::uuid IS NULL OR operation_id>$1) ORDER BY operation_id LIMIT $2")
-        .bind(page.after).bind(i64::from(page.limit)+1).fetch_all(c).await.map_err(|_| Reason::Storage)?;
-    let more = rows.len() > usize::from(page.limit);
-    rows.truncate(usize::from(page.limit));
-    let next = if more {
-        rows.last().map(|(id, _)| *id)
-    } else {
-        None
-    };
-    Ok(
-        serde_json::json!({"items":rows.into_iter().map(|(_,receipt)|receipt).collect::<Vec<_>>(),"nextAfter":next}),
-    )
 }

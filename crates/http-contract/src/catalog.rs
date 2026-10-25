@@ -13,7 +13,7 @@ pub static ADE_DEVICES: Resource = Resource {
     category: Category::Facts,
     owner: "apple-channel",
     proof: "apple.ade",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::ADE_DEVICES),
 };
 pub static ADE_PROFILES: Resource = Resource {
@@ -21,7 +21,7 @@ pub static ADE_PROFILES: Resource = Resource {
     category: Category::Facts,
     owner: "apple-channel",
     proof: "apple.ade",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::ADE_PROFILES),
 };
 pub static AGENT_CONFIGURATIONS: Resource = Resource {
@@ -101,7 +101,7 @@ pub static API_KEYS: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "authorization.programmatic",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::API_KEYS),
 };
 pub static API_NETWORK_POLICY: Resource = Resource {
@@ -141,7 +141,7 @@ pub static APPLE_ORGANIZATIONS: Resource = Resource {
     category: Category::Facts,
     owner: "apple-channel",
     proof: "apple.account_enrollment",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::APPLE_ORGANIZATIONS),
 };
 pub static ASSET_FIELDS: Resource = Resource {
@@ -181,23 +181,23 @@ pub static AUDIT: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "timeline.http",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::AUDIT),
 };
 pub static AUTHORIZATION_DEPARTMENTS: Resource = Resource {
     id: "authorization_departments",
-    category: Category::Facts,
+    category: Category::ReadModel,
     owner: "management-http",
     proof: "authorization.membership",
-    query: QueryPolicy::Pending(2906),
-    collection: Some(&super::collections::AUTHORIZATION_DEPARTMENTS),
+    query: QueryPolicy::NotCollection,
+    collection: None,
 };
 pub static AUTHORIZATION_RULES: Resource = Resource {
     id: "authorization_rules",
     category: Category::Mutable,
     owner: "management-http",
     proof: "authorization.rules",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::AUTHORIZATION_RULES),
 };
 pub static BLUEPRINTS: Resource = Resource {
@@ -213,7 +213,7 @@ pub static CERTIFICATES: Resource = Resource {
     category: Category::Signed,
     owner: "management-http",
     proof: "certificate-archive.http",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::CERTIFICATES),
 };
 pub static CERTIFICATE_OPERATIONS: Resource = Resource {
@@ -437,7 +437,7 @@ pub static PROVISIONINGS: Resource = Resource {
     category: Category::Projection,
     owner: "app",
     proof: "installation.tenants",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::PROVISIONINGS),
 };
 pub static PUBLICATIONS: Resource = Resource {
@@ -589,7 +589,7 @@ pub static TENANTS: Resource = Resource {
     category: Category::Mutable,
     owner: "app",
     proof: "installation.tenants",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::TENANTS),
 };
 pub static USER_ATTRIBUTES: Resource = Resource {
@@ -613,7 +613,7 @@ pub static USER_GROUPS: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "authorization.rules",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::USER_GROUPS),
 };
 pub static USER_PROFILES: Resource = Resource {
@@ -629,7 +629,7 @@ pub static WEBHOOK_DELIVERIES: Resource = Resource {
     category: Category::Projection,
     owner: "management-http",
     proof: "webhooks.product",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::WEBHOOK_DELIVERIES),
 };
 pub static WEBHOOK_HEALTH: Resource = Resource {
@@ -653,7 +653,7 @@ pub static WEBHOOK_SUBSCRIPTIONS: Resource = Resource {
     category: Category::Mutable,
     owner: "management-http",
     proof: "webhooks.product",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::WEBHOOK_SUBSCRIPTIONS),
 };
 pub static WEBHOOK_TYPES: Resource = Resource {
@@ -681,6 +681,12 @@ pub static WORKSPACE: Resource = Resource {
     collection: None,
 };
 pub static ALL: &[&Resource] = &[
+    &CERTIFICATE_VERSIONS,
+    &APPLE_ACCOUNTS,
+    &SMTP_VERSIONS,
+    &STORAGE_CONNECTION_VERSIONS,
+    &WNS_VERSIONS,
+    &APPLE_MATERIAL_VERSIONS,
     &ASSOCIATION_CHANGES,
     &USER_GROUP_MEMBERS,
     &ASSET_RESULTS,
@@ -777,41 +783,6 @@ pub static ALL: &[&Resource] = &[
     &WORKSPACE,
 ];
 
-/// Exact pre-existing operation gaps, retired by the named implementation PBI.
-/// A satisfied entry is an error: migration never retains a stale exemption.
-pub static GAPS: &[crate::Gap] = &[
-    crate::Gap {
-        resource: "apple_account_bindings",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "account configuration is embedded in organization List",
-    },
-    crate::Gap {
-        resource: "apple_account_configuration",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "configuration is embedded in the organization directory",
-    },
-    crate::Gap {
-        resource: "authorization_rules",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "no independent rule detail route",
-    },
-    crate::Gap {
-        resource: "certificates",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "entry metadata is currently returned by List and history",
-    },
-    crate::Gap {
-        resource: "user_groups",
-        operation: crate::Operation::Get,
-        issue: 2906,
-        reason: "no independent user-group detail route",
-    },
-];
-
 /// Browser expectations come from product configuration, never from observed endpoints.
 pub fn browser(installation: bool, agent: bool, recovery: bool) -> Vec<&'static Resource> {
     ALL.iter()
@@ -848,7 +819,7 @@ pub static DEVICE_TIMELINE: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "timeline.http",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::DEVICE_TIMELINE),
 };
 
@@ -866,7 +837,7 @@ pub static APPLE_ACCOUNT_BINDINGS: Resource = Resource {
     category: Category::Singleton,
     owner: "apple-channel",
     proof: "apple.account_enrollment",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::NotCollection,
     collection: None,
 };
 
@@ -895,7 +866,7 @@ pub static USER_GROUP_MEMBERS: Resource = Resource {
     category: Category::Facts,
     owner: "management-http",
     proof: "authorization.membership",
-    query: QueryPolicy::Pending(2906),
+    query: QueryPolicy::Unified,
     collection: Some(&super::collections::USER_GROUP_MEMBERS),
 };
 
@@ -915,4 +886,58 @@ pub static ENTERPRISE_CONFIGURATION: Resource = Resource {
     proof: "device-access.http",
     query: QueryPolicy::Unified,
     collection: Some(&super::collections::ENTERPRISE_CONFIGURATION),
+};
+
+pub static CERTIFICATE_VERSIONS: Resource = Resource {
+    id: "certificate_versions",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "certificate-archive.http",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::CERTIFICATE_VERSIONS),
+};
+
+pub static APPLE_ACCOUNTS: Resource = Resource {
+    id: "apple_accounts",
+    category: Category::Facts,
+    owner: "apple-channel",
+    proof: "apple.account_enrollment",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::APPLE_ACCOUNTS),
+};
+
+pub static SMTP_VERSIONS: Resource = Resource {
+    id: "smtp_versions",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "installation.smtp",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::SMTP_VERSIONS),
+};
+
+pub static STORAGE_CONNECTION_VERSIONS: Resource = Resource {
+    id: "storage_connection_versions",
+    category: Category::Facts,
+    owner: "management-http",
+    proof: "content.storage",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::STORAGE_CONNECTION_VERSIONS),
+};
+
+pub static WNS_VERSIONS: Resource = Resource {
+    id: "wns_versions",
+    category: Category::Facts,
+    owner: "windows-channel",
+    proof: "windows.management",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::WNS_VERSIONS),
+};
+
+pub static APPLE_MATERIAL_VERSIONS: Resource = Resource {
+    id: "apple_material_versions",
+    category: Category::Facts,
+    owner: "apple-channel",
+    proof: "apple.host",
+    query: QueryPolicy::Unified,
+    collection: Some(&super::collections::APPLE_MATERIAL_VERSIONS),
 };

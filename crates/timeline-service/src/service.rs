@@ -14,7 +14,7 @@ pub struct Timeline {
     pool: PgPool,
     audit: Arc<AuditStore>,
     tenant: TenantId,
-    key: ring::hmac::Key,
+    key: rss_mdm_query::cursor::CursorCodec,
 }
 type Prepared = ((i64, i64, Uuid), Vec<Projected>, i64);
 struct Projected {
@@ -40,7 +40,7 @@ impl Timeline {
             pool,
             audit,
             tenant,
-            key: ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret),
+            key: rss_mdm_query::cursor::CursorCodec::new(secret).map_err(|_| Error::Integrity)?,
         })
     }
     /// Initialize only rebuildable product coordinates. Does not append an Audit fact.
@@ -77,7 +77,14 @@ impl Timeline {
         let token = query
             .cursor
             .as_ref()
-            .map(|v| cursor::decode(&self.key, v))
+            .map(|v| {
+                self.key
+                    .decode::<cursor::Cursor>(
+                        &rss_contract::PageCursor::parse(v).map_err(|_| Error::Malformed)?,
+                        "timeline",
+                    )
+                    .map_err(|_| Error::Conflict)
+            })
             .transpose()?;
         // Reject immutable cursor bindings before any source read or projection write.
         if let Some(token) = &token {
@@ -417,23 +424,26 @@ impl Timeline {
             items
                 .last()
                 .map(|last| {
-                    cursor::encode(
-                        &self.key,
-                        &cursor::Cursor {
-                            tenant: tenant.clone(),
-                            instance: proof.instance_id().into(),
-                            authority: proof
-                                .authorization()
-                                .and_then(|s| s.query_binding(proof))
-                                .map_err(|_| Error::Forbidden)?,
-                            family: family.into(),
-                            query: query.binding(),
-                            generation,
-                            through,
-                            after_at: last.recorded_at,
-                            after_position: last.position as i64,
-                        },
-                    )
+                    self.key
+                        .encode(
+                            "timeline",
+                            &cursor::Cursor {
+                                tenant: tenant.clone(),
+                                instance: proof.instance_id().into(),
+                                authority: proof
+                                    .authorization()
+                                    .and_then(|s| s.query_binding(proof))
+                                    .map_err(|_| Error::Forbidden)?,
+                                family: family.into(),
+                                query: query.binding(),
+                                generation,
+                                through,
+                                after_at: last.recorded_at,
+                                after_position: last.position as i64,
+                            },
+                        )
+                        .map(|v| v.as_str().to_owned())
+                        .map_err(|_| Error::Conflict)
                 })
                 .transpose()?
         } else {

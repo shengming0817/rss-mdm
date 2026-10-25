@@ -122,6 +122,8 @@ impl Authority {
             "/api/v1",
             crate::authorization::http::routes()
                 .with_state(Arc::new(crate::authorization::http::HttpState {
+                    cursor: rss_mdm_query::cursor::CursorCodec::new(&[31; 32])
+                        .expect("fixture cursor"),
                     audit_store: self.audit.clone(),
                 }))
                 .into_axum(),

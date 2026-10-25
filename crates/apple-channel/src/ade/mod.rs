@@ -44,11 +44,15 @@ pub(crate) fn management_routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/devices",
-            get(management::devices).owned(&contracts::ADE_DEVICES, &[RouteOperation::List]),
+            get(management::devices)
+                .owned(&contracts::ADE_DEVICES, &[RouteOperation::List])
+                .queried(&crate::management_query::DEVICES),
         )
         .route(
             "/api/v1/apple/organizations/{id}/ade/profiles",
-            get(management::profiles).owned(&contracts::ADE_PROFILES, &[RouteOperation::List]),
+            get(management::profiles)
+                .owned(&contracts::ADE_PROFILES, &[RouteOperation::List])
+                .queried(&crate::management_query::PROFILES),
         )
 }
 pub(crate) fn routes() -> Router<Arc<HttpState>> {

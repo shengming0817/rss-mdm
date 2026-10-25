@@ -13,7 +13,10 @@ pub struct Authority {
 pub struct Directory {
     pub revision: i64,
     pub desired_revision: Option<i64>,
-    pub versions: Vec<Receipt>,
+    pub version_count: i64,
+    pub current: Option<Receipt>,
+    pub latest: Option<Receipt>,
+    pub applied: Option<Receipt>,
 }
 fn failure(value: rss_mdm_audit_integration::TransactionError<Failure>) -> Failure {
     match value {
@@ -82,6 +85,7 @@ impl Authority {
         &self,
         p: &AuthorizedPrincipal,
         audit: &RequestAudit,
+        applied: Option<i64>,
     ) -> Result<Directory, Failure> {
         if p.tenant_id() != self.tenant.to_string() {
             return Err(Failure::Forbidden);
@@ -89,12 +93,15 @@ impl Authority {
         p.require(Permission::StorageConfigurationRead, None)?;
         p.bind_audit(audit)?;
         let budget = AuditBudget::new(Duration::from_secs(6));
-        let result=self.audit.read(self.tenant,&budget.control(),(self,p),|(service,p),tx|Box::pin(async move {
-            let tenant=service.tenant;
+        let result=self.audit.read(self.tenant,&budget.control(),(self,p,applied),|(service,p,applied),tx|Box::pin(async move {
+            let tenant=service.tenant;let applied=*applied;
             let directory=tx.with_connection(move|c|Box::pin(async move {
                 let (revision,desired): (i64,Option<i64>)=sqlx::query_as("SELECT revision,desired_revision FROM mdm_content_connections.heads WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_optional(&mut *c).await.map_err(|_|Failure::Storage)?.unwrap_or((0,None));
-                let rows=sqlx::query("SELECT * FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid ORDER BY revision DESC LIMIT 64").bind(tenant.to_string()).fetch_all(c).await.map_err(|_|Failure::Storage)?;
-                Ok::<_,Failure>(Directory {revision,desired_revision:desired,versions:rows.iter().map(receipt).collect::<Result<_,_>>()?})
+                let version_count=sqlx::query_scalar("SELECT count(*) FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid").bind(tenant.to_string()).fetch_one(&mut *c).await.map_err(|_|Failure::Storage)?;
+                let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,selected,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND (revision=$2 OR revision=$3 OR revision=$4)").bind(tenant.to_string()).bind(revision).bind(desired).bind(applied).fetch_all(c).await.map_err(|_|Failure::Storage)?;
+                let values=rows.iter().map(receipt).collect::<Result<Vec<_>,_>>()?;
+                Ok::<_,Failure>(Directory {revision,desired_revision:desired,version_count,current:values.iter().find(|v|Some(v.revision)==desired).cloned(),latest:values.iter().find(|v|v.revision==revision).cloned(),applied:values.iter().find(|v|Some(v.revision)==applied).cloned()})
+
             })).await?;
             p.check_live()?;Ok::<_,Failure>(directory)
         })).await;
@@ -140,5 +147,44 @@ impl Authority {
             audit.mark_commit_started();Ok(value)
         })).await;
         settle(result, audit, true)
+    }
+}
+
+pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "storage_connection_versions",
+    default_limit: 64,
+    max_limit: 200,
+    order: "revision DESC",
+    context: &[],
+};
+
+impl Authority {
+    pub async fn history(
+        &self,
+        p: &AuthorizedPrincipal,
+        audit: &RequestAudit,
+        q: &rss_mdm_query::window::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<Receipt>, Failure> {
+        if p.tenant_id() != self.tenant.to_string() {
+            return Err(Failure::Forbidden);
+        }
+        p.require(Permission::StorageConfigurationRead, None)?;
+        p.bind_audit(audit)?;
+        let budget = AuditBudget::new(Duration::from_secs(6));
+        let result=self.audit.read(self.tenant,&budget.control(),(p,q,codec),|ctx,tx|Box::pin(async move{
+   tx.with_connection_context(ctx,|(p,q,codec),c|Box::pin(async move{
+    rss_mdm_authorization_service::lock_on(c,p.tenant_id(),p.instance_id()).await?;
+    let current=rss_mdm_authorization_service::snapshot_on(c,p.tenant_id(),p.instance_id()).await?;
+    current.require(p,Permission::StorageConfigurationRead,None).map_err(rss_mdm_authorization_service::Error::from)?;
+    let binding=rss_mdm_query::cursor::fingerprint(&("storage_connection_versions",p.tenant_id(),p.instance_id(),current.query_binding(p)?)).map_err(|_|Failure::Malformed)?;
+    let before:Option<i64>=q.cursor.as_ref().map(|v|codec.decode(&rss_contract::PageCursor::parse(v).map_err(|_|Failure::Malformed)?,&binding).map_err(|_|Failure::Conflict)).transpose()?;
+    let rows=sqlx::query("SELECT operation_id,revision,profile,state,failure_reason,selected,revoked,qualified_at,expires_at FROM mdm_content_connections.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit+1) as i64).fetch_all(c).await.map_err(|_|Failure::Storage)?;
+    let more=rows.len()>q.limit;let items=rows.iter().take(q.limit).map(|r|receipt(r).map_err(Failure::from)).collect::<Result<Vec<_>,_>>()?;
+    let next_cursor=if more{items.last().map(|v|codec.encode(&binding,&v.revision).map(|v|v.as_str().to_owned()).map_err(|_|Failure::Conflict)).transpose()?}else{None};
+    p.check_live()?;Ok(rss_mdm_query::Page{items,next_cursor})
+   })).await
+  })).await;
+        settle(result, audit, false)
     }
 }
