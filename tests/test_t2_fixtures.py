@@ -60,16 +60,20 @@ class PoolTests(unittest.TestCase):
             pool.owner.sql.assert_called_once()
 
     def test_cleanup_failure_preserves_case_failure_and_quarantines_owner(self):
-        pool = self.pool()
-        pool.sample_connections = Mock()
-        pool.owner.sql.side_effect = RuntimeError('drop failed')
-        failure = RuntimeError('business failed')
-        with self.assertRaises(RuntimeError) as original:
-            with pool.disposable('product'):
-                raise failure
-        self.assertIs(original.exception, failure)
-        self.assertIsNotNone(pool.cleanup_error)
-        self.assertTrue(any('drop failed' in note for note in failure.__notes__))
+        for profile in ('product', 'empty'):
+            with self.subTest(profile=profile):
+                pool = self.pool()
+                pool.sample_connections = Mock()
+                def sql(statement, *args):
+                    if statement.startswith('DROP'): raise RuntimeError('drop failed')
+                pool.owner.sql.side_effect = sql
+                failure = RuntimeError('business failed')
+                with self.assertRaises(RuntimeError) as original:
+                    with pool.disposable(profile):
+                        raise failure
+                self.assertIs(original.exception, failure)
+                self.assertIsNotNone(pool.cleanup_error)
+                self.assertTrue(any('drop failed' in note for note in failure.__notes__))
 
     def test_compatible_cases_share_database_without_cloning_per_worker(self):
         pool = self.pool()
@@ -115,6 +119,7 @@ class PoolTests(unittest.TestCase):
         pool.owner = Mock()
         pool.owner.sql.return_value = '128'
         pool.dirty = True
+        pool.cleanup_error = RuntimeError('old generation cleanup failed')
         pool.templates = {'product': 'stale'}
         pool.postgres()
         self.assertEqual(pool.templates, {})
@@ -122,6 +127,7 @@ class PoolTests(unittest.TestCase):
         pool.owner.up.assert_called_once()
         self.assertEqual(pool.costs.snapshot()['counts']['faultReplacements'], 1)
         self.assertEqual(pool.generation, 1)
+        self.assertIsNone(pool.cleanup_error)
 
     def test_tenant_seed_batches_only_missing_coordinates_and_records_after_commit(self):
         pool = self.pool()

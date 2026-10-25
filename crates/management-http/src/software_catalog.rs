@@ -384,7 +384,7 @@ pub fn agent_packages_public(app: Arc<HttpState>) -> Router {
 async fn agent_package_list(
     State(app): State<Arc<HttpState>>,
 ) -> Result<Json<Vec<rss_mdm_agent_wire::enroll::configuration::Package>>, Error> {
-    rss_mdm_software_service::agent_packages::list(&app)
+    rss_mdm_software_service::agent_packages::list(&app.runtime, app.tenant)
         .await
         .map(Json)
         .map_err(Into::into)

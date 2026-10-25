@@ -776,7 +776,7 @@ pub(crate) fn from_state(
         clock: state.clock.clone(),
         protection: state.protection.clone(),
         pki: state.pki.clone(),
-        software: software_access(&state),
+        software_runtime: state.flow.runtime.clone(),
         registration: state.agent_enrollment.clone(),
         webhooks: state.webhooks.clone(),
         windows: state.access.windows_store(),
@@ -799,7 +799,8 @@ pub(crate) fn from_state(
             }),
         signing_key: state.execution.loaded_task_signing_key().map(str::to_owned),
         recovery: state.execution.recovery_credentials(),
-        apple: apple_state.clone(),
+        apple_store: apple_state.access.clone(),
+        apple: apple_state.apple.clone(),
     };
     let settings: Arc<dyn rss_mdm_management_http::settings::Source> = Arc::new(directory.clone());
     let first_use = Arc::new(crate::first_use::FirstUse {

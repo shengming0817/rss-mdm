@@ -92,8 +92,7 @@ async fn publish_format(
     until: Option<i64>,
     package: (&str, &str),
 ) -> Result<Uuid> {
-    let (format, version) = package;
-    let msix = format == "msix";
+    let (format, _) = package;
     use software::write;
     let mut grants = installation_grants()?;
     if !windows {
@@ -109,91 +108,14 @@ async fn publish_format(
         }
     }
     identity::seed_grants(case_tenant(), &prepared_subject(user)?, grants).await?;
-    let package_bytes = match format {
-        "msix" => installer_fixtures::msix(version, false),
-        "exe" => installer_fixtures::exe(version),
-        _ if windows => installer_fixtures::msi(Some(version), false),
-        _ => installer_fixtures::pkg(version),
-    };
-    let platform = if windows { "windows" } else { "macos" };
-    let arch = if windows { "x86_64" } else { "aarch64" };
-    let detect = if windows {
-        json!({"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"})
-    } else {
-        json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
-    };
-    let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
-    let mut behavior = json!({"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":detect});
-    if msix {
-        behavior = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
-    }
-    if format == "exe" {
-        behavior["kind"] = json!("exe");
-        behavior["layout"] = json!({"rss-agent.exe":"package"});
-        behavior["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
-    }
-    let source = rss_mdm_software_service::catalog::SourceDefinition {
-        id: Uuid::new_v4().to_string(),
-        revision: "1".into(),
-        protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
-    };
-    let snapshot = planning
-        .runtime
-        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
-            Box::pin(async move {
-                rss_mdm_software_service::catalog::fixture::source_in(tx, source)
-                    .await
-                    .map_err(|e| {
-                        rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
-                            e.to_string(),
-                        ))
-                    })
-            })
-        })
-        .await
-        .fold(Ok, Err, Err, Err, Err, Err)?;
-    let resource = Uuid::new_v4();
-    let definition = json!({"material":{"format":if windows {format}else{"pkg"},"installer":"package"},"source":snapshot,"package":format!("Private.{resource}"),"version":version,"artifacts":{"package":{"reference":"package","length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}},"behavior":behavior,"reboot":"report","downgrade":"deny","dependencies":[],"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
-    let stored = software_execution::seed_resource(
+    let published = seed_package(
         &planning.runtime,
         planning.tenant,
-        resource,
-        platform,
-        arch,
-        definition,
-    )
-    .await?;
-    let artifact = rss_mdm_resource::Artifact::new(
-        rss_mdm_resource::Id::new("package")?,
-        package_bytes.len() as u64,
-        rss_mdm_resource::Digest::of(&package_bytes),
-    )?;
-    rss_mdm_content_service::fixture::artifact(
         content,
-        &artifact,
-        package_bytes,
-        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+        windows,
+        package,
     )
     .await?;
-    software_execution::seed_enabled(&(planning).runtime, content, &stored).await?;
-    let target = serde_json::from_value(json!({"platform":platform,"architecture":arch}))?;
-    let published = planning
-        .runtime
-        .local_tx(planning.tenant, crate::identity::deadline(), move |tx| {
-            Box::pin(async move {
-                rss_mdm_software_service::agent_packages::fixture_release_in(
-                    tx, &stored, target, "default",
-                )
-                .await
-                .map_err(|e| {
-                    rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
-                        e.to_string(),
-                    ))
-                })
-            })
-        })
-        .await
-        .fold(Ok, Err, Err, Err, Err, Err)?;
 
     if format == "exe" || device.is_empty() {
         return Ok(published.release_id);
@@ -222,6 +144,95 @@ async fn publish_format(
     .await?;
     Ok(policy)
 }
+pub(crate) async fn seed_package(
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    tenant: rss_request_context::TenantId,
+    content: &rss_mdm_content_service::Store,
+    windows: bool,
+    package: (&str, &str),
+) -> Result<rss_mdm_agent_wire::enroll::configuration::Package> {
+    let (format, version) = package;
+    let msix = format == "msix";
+    let package_bytes = match format {
+        "msix" => installer_fixtures::msix(version, false),
+        "exe" => installer_fixtures::exe(version),
+        _ if windows => installer_fixtures::msi(Some(version), false),
+        _ => installer_fixtures::pkg(version),
+    };
+    let platform = if windows { "windows" } else { "macos" };
+    let arch = if windows { "x86_64" } else { "aarch64" };
+    let detect = if windows {
+        json!({"kind":"msi_product","productCode":"{12345678-1234-4234-8234-123456789abc}","version":"1.2.3"})
+    } else {
+        json!({"kind":"pkg_receipt","receipt":"com.rss.agent.pkg","version":"1.2.3"})
+    };
+    let invocation = json!({"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}});
+    let mut behavior = json!({"kind":if windows{"msi"}else{"pkg"},"installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":detect});
+    if msix {
+        behavior = json!({"kind":"msix","container":{"kind":"package","installer":"package"},"identity":{"name":"RSS.Agent","publisher":"CN=RSS","version":version.split('.').map(str::parse::<u16>).collect::<std::result::Result<Vec<_>,_>>()?,"architecture":"x86_64","resourceId":""},"dependencies":[],"deployment":{"kind":"device_provisioning"},"minimumOs":[10,0,19041,0],"requireSideload":true,"allowUnsigned":false,"uninstall":false,"invocation":{"runAs":"system","arguments":[],"environment":{},"timeoutSeconds":60,"outputBytes":4096,"exitCodes":{"success":[0],"reboot":[]}},"upgrade":"in_place"});
+    }
+    if format == "exe" {
+        behavior["kind"] = json!("exe");
+        behavior["layout"] = json!({"rss-agent.exe":"package"});
+        behavior["detect"] = json!({"kind":"registry","scope":"system","key":"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\rss-agent","value":"DisplayVersion","version":"1.2.3"});
+    }
+    let source = rss_mdm_software_service::catalog::SourceDefinition {
+        id: Uuid::new_v4().to_string(),
+        revision: "1".into(),
+        protocol: rss_mdm_software_service::catalog::SourceProtocol::Private,
+    };
+    let snapshot = runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_software_service::catalog::fixture::source_in(tx, source)
+                    .await
+                    .map_err(|e| {
+                        rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                            e.to_string(),
+                        ))
+                    })
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    let resource = Uuid::new_v4();
+    let definition = json!({"material":{"format":if windows {format}else{"pkg"},"installer":"package"},"source":snapshot,"package":format!("Private.{resource}"),"version":version,"artifacts":{"package":{"reference":"package","length":package_bytes.len(),"sha256":rss_mdm_resource::Digest::of(&package_bytes).bytes()}},"behavior":behavior,"reboot":"report","downgrade":"deny","dependencies":[],"signatures":[],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
+    let stored =
+        software_execution::seed_resource(runtime, tenant, resource, platform, arch, definition)
+            .await?;
+    let artifact = rss_mdm_resource::Artifact::new(
+        rss_mdm_resource::Id::new("package")?,
+        package_bytes.len() as u64,
+        rss_mdm_resource::Digest::of(&package_bytes),
+    )?;
+    rss_mdm_content_service::fixture::artifact(
+        content,
+        &artifact,
+        package_bytes,
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 86400,
+    )
+    .await?;
+    software_execution::seed_enabled(runtime, content, &stored).await?;
+    let target = serde_json::from_value(json!({"platform":platform,"architecture":arch}))?;
+    let published = runtime
+        .local_tx(tenant, crate::identity::deadline(), move |tx| {
+            Box::pin(async move {
+                rss_mdm_software_service::agent_packages::fixture_release_in(
+                    tx, &stored, target, "default",
+                )
+                .await
+                .map_err(|e| {
+                    rss_transactional_messaging_postgres::PgError::from(sqlx::Error::Protocol(
+                        e.to_string(),
+                    ))
+                })
+            })
+        })
+        .await
+        .fold(Ok, Err, Err, Err, Err, Err)?;
+    Ok(published)
+}
+
 pub(crate) async fn operation(policy: Uuid) -> Result<Uuid> {
     tokio::time::timeout(Duration::from_secs(30),async{loop{
         let id=pg(&format!("SELECT o.id FROM mdm_commands.operations o JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(o.tenant_id,o.policy_version) JOIN rss_device_command.commands d ON d.tenant_id=o.tenant_id AND d.command_id=o.id::text WHERE o.tenant_id='{}' AND v.policy='{policy}' AND o.authority->>'stage'='install' AND d.status IN('published','received','applied')",case_tenant()))?;

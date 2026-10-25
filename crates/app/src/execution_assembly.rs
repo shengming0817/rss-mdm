@@ -93,36 +93,6 @@ pub(crate) async fn open(
     );
     let task_signing_audit = audit_store.clone();
     let result = async {
-        let audit_budget =
-            rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
-        let audit_store = Arc::new(
-            audit_store
-                .on_runtime(runtime.clone(), tenant, &audit_budget.control())
-                .await?,
-        );
-        let (outbox, store, reconcile) = open_storage(
-            runtime.clone(),
-            database.options()?,
-            tenant,
-            &protection,
-            command_clock,
-        )
-        .await?;
-        config.enrollment_entries.validate()?;
-        let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> =
-            Arc::new(
-                rss_mdm_flow_service::planning::execution_source::ExecutionSource {
-                    objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
-                        audit_store.clone(),
-                    )),
-                    mdm_software_enabled: config.software_distribution.mdm_enabled,
-                },
-            );
-        let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
-            Arc::new(rss_mdm_agent_channel::Bindings);
-        let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
-            protection: protection.clone(),
-        });
         let channels = Arc::new(crate::channel_status::Channels::new(config));
         let providers = crate::device_pki::prepare(&config.device_pki, &channels)?;
         let loaded_signing = crate::task_signing::prepare(
@@ -144,84 +114,32 @@ pub(crate) async fn open(
                 ),
             )?
             .flatten();
-        let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
-            rss_mdm_software_service::catalog::Reader::new(tenant),
-            exports
-                .into_iter()
-                .map(|(name, service)| (name, Arc::new(service.exports())))
-                .collect(),
-        ));
-        let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
-            rss_mdm_execution_service::InputDependencies {
-                software_distribution: config.software_distribution,
-                product_origin: config.product_origin.clone(),
-                recovery_enabled: config.recovery_credentials.is_some(),
-                protection: protection.clone(),
-                software,
-                bootstrap: bootstrap.as_ref().map(|_| {
-                    config
-                        .device_pki
-                        .iter()
-                        .filter(|p| p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap)
-                        .filter_map(|p| {
-                            p.scep_url
-                                .as_ref()
-                                .map(|url| (p.issuer.clone(), url.clone()))
-                        })
-                        .collect()
-                }),
-                enrollment_entries: config.enrollment_entries.clone(),
-                runtime: runtime.clone(),
-                tenant,
-                content: content.clone(),
-                signing_enabled: signer.is_some(),
-                agent_installation: channels.clone(),
-            },
-        ));
-        let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
-            rss_mdm_execution_service::queries::Dependencies {
-                source: source.clone(),
-                protection: protection.clone(),
-                agent_store: agent_store.clone(),
-                apple_results: apple_store.clone(),
-                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
-                runtime: runtime.clone(),
-                tenant,
-                inputs: inputs.clone(),
-                signed: signer.is_some(),
-                content_available: content.is_some(),
-            },
-        ));
-        let service = Arc::new(ExecutionService::new(
-            rss_mdm_execution_service::Dependencies {
-                recovery_credentials: config
-                    .recovery_credentials
-                    .as_ref()
-                    .map(crate::recovery_credentials::Config::open)
-                    .transpose()?,
-                sessions,
-                source,
-                protection: protection.clone(),
-                inputs: inputs.clone(),
-                agent_store,
-                apple_profiles: apple_store.clone(),
-                apple_push: apple_store.clone(),
-                apple_collections: apple_store.clone(),
-                apple_results: apple_store.clone(),
-                policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
-                audit_store,
-                task_signing_audit,
-                runtime: runtime.clone(),
-                outbox,
-                store,
-                reconcile,
-                tenant,
-                instance: config.identity.instance_id.clone(),
-                content: content.clone(),
-                signer,
-            },
-        ));
-        service.validate_recovery_credentials().await?;
+        let bootstrap_urls = bootstrap.as_ref().map(|_| {
+            config
+                .device_pki
+                .iter()
+                .filter(|p| p.purpose == rss_mdm_agent_wire::pki::Purpose::AgentBootstrap)
+                .filter_map(|p| {
+                    p.scep_url
+                        .as_ref()
+                        .map(|url| (p.issuer.clone(), url.clone()))
+                })
+                .collect()
+        });
+        let (service, inputs, queries) = assemble(
+            config,
+            protection.clone(),
+            task_signing_audit,
+            content.clone(),
+            exports,
+            runtime.clone(),
+            channels.clone(),
+            signer,
+            bootstrap_urls,
+            sessions,
+            command_clock,
+        )
+        .await?;
         Ok(Assembly {
             channels,
             providers,
@@ -239,6 +157,134 @@ pub(crate) async fn open(
         runtime.close().await;
     }
     result
+}
+
+/// Compose execution from the host's already prepared capabilities; no platform preparation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit host capabilities avoid a second assembly container"
+)]
+pub(crate) async fn assemble(
+    config: &crate::config::Config,
+    protection: Arc<rss_mdm_native_protection::Protector>,
+    task_signing_audit: Arc<rss_mdm_audit_integration::AuditStore>,
+    content: Option<Arc<rss_mdm_content_service::Store>>,
+    exports: std::collections::BTreeMap<
+        String,
+        Arc<rss_mdm_software_service::publication::PublicationService>,
+    >,
+    runtime: Arc<PgRuntime>,
+    channels: Arc<crate::channel_status::Channels>,
+    signer: Option<Arc<rss_mdm_execution_service::task_signing::Signer>>,
+    bootstrap: Option<std::collections::BTreeMap<String, String>>,
+    sessions: Arc<rss_mdm_authorization_service::session::SessionAuthority>,
+    command_clock: rss_device_command_postgres::CommandClock,
+) -> Result<
+    (
+        Arc<ExecutionService>,
+        Arc<rss_mdm_execution_service::Inputs>,
+        Arc<rss_mdm_execution_service::queries::Queries>,
+    ),
+    Error,
+> {
+    let tenant = TenantId::parse(&config.identity.tenant_id)
+        .map_err(|_| Error::Configuration(crate::ConfigIssue::Execution))?;
+    config.enrollment_entries.validate()?;
+    let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+    let audit_store = Arc::new(
+        task_signing_audit
+            .on_runtime(runtime.clone(), tenant, &budget.control())
+            .await?,
+    );
+    let (outbox, store, reconcile) = open_storage(
+        runtime.clone(),
+        config.execution.database.options()?,
+        tenant,
+        &protection,
+        command_clock,
+    )
+    .await?;
+    let source: Arc<dyn rss_mdm_execution_service::source_authority::SourceAuthority> = Arc::new(
+        rss_mdm_flow_service::planning::execution_source::ExecutionSource {
+            objects: Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(
+                audit_store.clone(),
+            )),
+            mdm_software_enabled: config.software_distribution.mdm_enabled,
+        },
+    );
+    let agent_store: Arc<dyn rss_mdm_execution_service::channels::Agent> =
+        Arc::new(rss_mdm_agent_channel::Bindings);
+    let apple_store = Arc::new(rss_mdm_apple_channel::flow_store::Store {
+        protection: protection.clone(),
+    });
+    let software = Arc::new(rss_mdm_software_service::preparation::Preparation::new(
+        rss_mdm_software_service::catalog::Reader::new(tenant),
+        exports
+            .into_iter()
+            .map(|(name, service)| (name, Arc::new(service.exports())))
+            .collect(),
+    ));
+    let inputs = Arc::new(rss_mdm_execution_service::Inputs::new(
+        rss_mdm_execution_service::InputDependencies {
+            software_distribution: config.software_distribution,
+            product_origin: config.product_origin.clone(),
+            recovery_enabled: config.recovery_credentials.is_some(),
+            protection: protection.clone(),
+            software,
+            bootstrap,
+            enrollment_entries: config.enrollment_entries.clone(),
+            runtime: runtime.clone(),
+            tenant,
+            content: content.clone(),
+            signing_enabled: signer.is_some(),
+            agent_installation: channels.clone(),
+        },
+    ));
+    let queries = Arc::new(rss_mdm_execution_service::queries::Queries::new(
+        rss_mdm_execution_service::queries::Dependencies {
+            source: source.clone(),
+            protection: protection.clone(),
+            agent_store: agent_store.clone(),
+            apple_results: apple_store.clone(),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            runtime: runtime.clone(),
+            tenant,
+            inputs: inputs.clone(),
+            signed: signer.is_some(),
+            content_available: content.is_some(),
+        },
+    ));
+    let service = Arc::new(ExecutionService::new(
+        rss_mdm_execution_service::Dependencies {
+            recovery_credentials: config
+                .recovery_credentials
+                .as_ref()
+                .map(crate::recovery_credentials::Config::open)
+                .transpose()?,
+            sessions,
+            source,
+            protection: protection.clone(),
+            inputs: inputs.clone(),
+            agent_store,
+            apple_profiles: apple_store.clone(),
+            apple_push: apple_store.clone(),
+            apple_collections: apple_store.clone(),
+            apple_results: apple_store.clone(),
+            policy_reader: rss_mdm_policy_postgres::PolicyReader::bind(runtime.clone(), tenant),
+            audit_store,
+            task_signing_audit,
+            runtime: runtime.clone(),
+            outbox,
+            store,
+            reconcile,
+            tenant,
+            instance: config.identity.instance_id.clone(),
+            content: content.clone(),
+            signer,
+        },
+    ));
+    service.validate_recovery_credentials().await?;
+    Ok((service, inputs, queries))
 }
 
 /// Execution storage admission on the host's runtime, independent of product assembly.

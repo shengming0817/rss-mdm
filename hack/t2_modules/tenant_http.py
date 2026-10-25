@@ -85,11 +85,10 @@ def administrator(fixture):
         require(call('POST',path,request,admin_key) == (200,first), 'replay after grant revocation changed')
         require(sql(f"SELECT document IS NULL FROM mdm_access.authorization_rules WHERE tenant_id='{tenant}' AND id='{rule_id}'") == 't', 'replay regranted administrator')
         # Change target password through the independent second administrator; original fingerprint stays valid.
-        other = Browser(target_host,config['product_origin'])
+        other = Browser(h.host,config['product_origin'])
         login(other,tenant,'tenant-admin-two')
         require(other.call('POST',f"/api/v1/identity/tenants/{tenant}/accounts/{first['result']['principalId']}/password",dict(password=password+'rotated'))[0] == 200, 'target password reset failed')
         require(call('POST',path,request,admin_key) == (200,first), 'password change invalidated immutable replay')
-        target_host.close()
 
 
 def recent_auth(fixture):

@@ -18,11 +18,7 @@ pub(crate) struct Directory {
     pub clock: Arc<dyn crate::clock::Clock>,
     pub protection: Arc<rss_mdm_native_protection::Protector>,
     pub pki: Arc<rss_mdm_pki_service::registry::Registry>,
-    pub software: Arc<
-        rss_mdm_software_service::management::catalog::Access<
-            rss_mdm_content_service::software::SoftwareContent,
-        >,
-    >,
+    pub software_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub registration: Option<Arc<rss_mdm_registration_service::agent::Service>>,
     pub webhooks: Arc<crate::webhooks::Backend>,
     pub windows: Arc<rss_mdm_windows_channel::Store>,
@@ -32,7 +28,8 @@ pub(crate) struct Directory {
     pub s3_revision: Option<i64>,
     pub signing_key: Option<String>,
     pub recovery: Option<Arc<rss_mdm_recovery_credentials::Protection>>,
-    pub apple: Arc<rss_mdm_apple_channel::HttpState>,
+    pub apple_store: Arc<rss_mdm_apple_channel::Store>,
+    pub apple: Option<Arc<rss_mdm_apple_channel::Apple>>,
 }
 fn route(id: &str) -> Option<&'static str> {
     Some(match id {
@@ -284,7 +281,9 @@ impl Source for Directory {
                         if organizations.is_none() {
                             organizations = Some(
                                 match rss_mdm_apple_channel::account_enrollment::directory(
-                                    &self.apple,
+                                    &self.apple_store,
+                                    self.apple.as_deref(),
+                                    &crate::clock::InventoryClock(self.clock.clone()),
                                     &proof,
                                 )
                                 .await
@@ -363,8 +362,12 @@ impl Source for Directory {
                             });
                     }
                     "agent-package" if business => {
-                        let access = &self.software;
-                        match rss_mdm_software_service::agent_packages::list(access).await {
+                        match rss_mdm_software_service::agent_packages::list(
+                            &self.software_runtime,
+                            self.tenant,
+                        )
+                        .await
+                        {
                             Ok(packages) => {
                                 configured(&mut projection, packages.len());
                                 projection.ready = !packages.is_empty();
@@ -431,7 +434,8 @@ impl Source for Directory {
                             _ => Purpose::ManagedAccount,
                         };
                         match directory(
-                            &self.apple,
+                            &self.apple_store,
+                            self.tenant,
                             &RequestAuth {
                                 proof: proof.clone(),
                             },

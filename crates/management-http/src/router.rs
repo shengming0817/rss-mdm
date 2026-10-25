@@ -134,12 +134,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
         .merge(crate::first_use::routes(state.first_use))
         .merge(crate::mail::routes(state.mail))
         .merge(crate::content::connections::routes().with_state(state.storage_connections))
-        .route(
-            "/settings/catalog",
-            get(crate::settings::tenant)
-                .owned(&contracts::SETTINGS_CATALOG, &[RouteOperation::Get])
-                .layer(Extension(state.settings)),
-        )
+        .merge(crate::settings::routes(state.settings))
         .merge(crate::webhooks::routes(state.webhooks))
         .merge(crate::telemetry::routes(state.telemetry.clone()))
         .merge(crate::api_access::key_routes(Arc::new(

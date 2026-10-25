@@ -78,8 +78,6 @@ class DatabasePool:
 
     def postgres(self):
         with self.lock:
-            if self.cleanup_error is not None:
-                raise DependencyBlocked('database cleanup left the pool unisolated', self.cleanup_error) from self.cleanup_error
             if self.dirty:
                 with measure(self.costs, 'fault-reset', pg=self.owner.project, pgGeneration=self.generation):
                     self.owner.reset()
@@ -90,7 +88,10 @@ class DatabasePool:
                 self.shared.clear()
                 self.seeded_tenants.clear()
                 self.dirty = False
+                self.cleanup_error = None
                 self.costs.increment('faultReplacements')
+            if self.cleanup_error is not None:
+                raise DependencyBlocked('database cleanup left the pool unisolated', self.cleanup_error) from self.cleanup_error
             if self.start_error is not None:
                 raise DependencyBlocked('PostgreSQL preparation previously failed', self.start_error) from self.start_error
             if not self.ready:
@@ -304,13 +305,15 @@ class DatabasePool:
     def disposable(self, profile):
         self.postgres()
         if profile == 'empty':
-            with self.owner.database() as name:
-                self.costs.increment('emptyDatabases')
-                yield name
-            return
-        name = self.clone(profile, 't2_case_')
+            name = 't2_empty_' + uuid.uuid4().hex
+            self.owner.sql(f'CREATE DATABASE {identifier(name)} OWNER mdm_owner')
+            self.costs.increment('emptyDatabases')
+        else:
+            name = self.clone(profile, 't2_case_')
         primary = None
         try:
+            if profile == 'empty':
+                self.owner.sql(f'GRANT CREATE ON DATABASE {identifier(name)} TO mdm_audit_owner,mdm_ledger_owner,mdm_group_owner; GRANT CREATE ON SCHEMA public TO mdm_owner,mdm_group_owner;', name)
             yield name
         except BaseException as error:
             primary = error

@@ -1,6 +1,7 @@
 use super::*;
 use crate::audit_test_support::audit_count;
 use crate::test_support::{http::*, runtime::*, *};
+use anyhow::Context;
 use uuid::Uuid;
 const PATH: &str = "/api/v1/settings/first-use";
 const ADMISSION: &str = "/api/v1/registration-channels/windows_mdm/admission";
@@ -22,11 +23,96 @@ async fn put(browser: &mut Browser, router: &Router, path: &str, body: Value) ->
     browser.operation = Some(Uuid::new_v4());
     ok(browser, router, Method::PUT, path, Some(body)).await
 }
+fn progress_router(
+    f: &authority::Authority,
+    directory: crate::settings::Directory,
+    channels: Arc<crate::registration_channels::Channels>,
+) -> Result<Router> {
+    let source = Arc::new(crate::first_use::FirstUse {
+        directory: Arc::new(directory),
+        tenant: f.identity.tenant,
+        instance: f.identity.instance,
+        audit: f.audit.clone(),
+        admission: rss_mdm_registration_service::admission::Admission::new(
+            f.registration.clone(),
+            f.audit.clone(),
+        ),
+        channels: channels.clone(),
+    });
+    let enrollment = Arc::new(crate::enrollment::http::HttpState {
+        channels,
+        service: Arc::new(crate::enrollment::EnrollmentService::new(
+            f.registration.clone(),
+            f.credentials.clone(),
+            f.audit.clone(),
+        )),
+        native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+            sessions: Arc::new(
+                rss_mdm_authorization_service::session::SessionAuthority::new(
+                    f.identity.authority.clone(),
+                    f.identity.tenant,
+                ),
+            ),
+            windows: None,
+            apple: None,
+        }),
+        devices: Arc::new(crate::device::DeviceService::new(
+            f.registration.clone(),
+            case_tenant().into(),
+            f.audit.clone(),
+        )),
+        apple: false,
+        windows: true,
+    });
+    f.router(
+        Router::new().nest(
+            "/api/v1",
+            rss_mdm_management_http::first_use::routes(source)
+                .merge(
+                    rss_mdm_management_http::enrollment::channels::routes().with_state(enrollment),
+                )
+                .into_axum(),
+        ),
+    )
+}
 #[tokio::test]
 #[ignore = "MODULE=settings.first_use: real owner readiness, durable intent, CAS and authority"]
 async fn progress_recovers_and_completes_only_selected_ready_requirements() -> Result<()> {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let (router, resources) = app(&base).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let directory = crate::test_support::settings::directory(&mut fixture).await?;
+    let config: Config = serde_json::from_value(fixture.base.clone())?;
+    let channels = Arc::new(crate::channel_status::Channels::new(&config));
+    let windows = config
+        .native_protocols
+        .windows
+        .context("Windows readiness fixture")?;
+    let loaded = channels.material(
+        crate::channel_status::ChannelName::Windows,
+        crate::windows::Windows::load(
+            windows,
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
+            crate::device_pki::providers(&config.device_pki)?,
+            None,
+        ),
+    )?;
+    channels.mounted(crate::channel_status::ChannelName::Windows)?;
+    let loaded = loaded.context("Windows materials ready")?;
+    let pki = Arc::new(rss_mdm_pki_service::registry::Registry::new(
+        fixture.pool.clone(),
+        fixture.audit.clone(),
+        vec![loaded.channel.ca.trust.clone()],
+        crate::device_pki::providers(&config.device_pki)?,
+    ));
+    let channels = Arc::new(crate::registration_channels::Channels {
+        preparation: channels,
+        windows: Some(Arc::new(loaded)),
+        agent: None,
+        apple: None,
+        pki,
+        clock: Arc::new(crate::clock::SystemClock),
+    });
+    let router = progress_router(&fixture, directory.clone(), channels.clone())?;
+    let resources = std::mem::take(&mut fixture.resources);
     resources
         .finish(async {
             let mut admin = crate::test_support::authority::Authority::prepared_browser("admin")?;
@@ -135,46 +221,45 @@ async fn progress_recovers_and_completes_only_selected_ready_requirements() -> R
                     .0
                     == StatusCode::FORBIDDEN
             );
-            let (restarted, resources) = app(&base).await?;
-            resources
-                .finish(async {
-                    let after = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
-                    ensure!(
-                        after["saved"]["revision"] == 3
-                            && after["saved"]["intent"]["capabilities"]["smtp"]["kind"] == "skip"
-                    );
-                    let mut observe = input(3, false);
-                    observe["intent"]["capabilities"]["smtp"] = json!({"kind":"configure"});
-                    put(&mut admin, &restarted, PATH, observe).await?;
-                    let before = audit_count(|r| r.action() == "first_use_read").await?;
-                    let progress = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
-                    ensure!(progress["steps"].as_array().unwrap().iter().any(|s| s["id"]
+            let restarted = progress_router(&fixture, directory.clone(), channels.clone())?;
+            async {
+                let after = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
+                ensure!(
+                    after["saved"]["revision"] == 3
+                        && after["saved"]["intent"]["capabilities"]["smtp"]["kind"] == "skip"
+                );
+                let mut observe = input(3, false);
+                observe["intent"]["capabilities"]["smtp"] = json!({"kind":"configure"});
+                put(&mut admin, &restarted, PATH, observe).await?;
+                let before = audit_count(|r| r.action() == "first_use_read").await?;
+                let progress = ok(&mut admin, &restarted, Method::GET, PATH, None).await?;
+                ensure!(progress["steps"].as_array().unwrap().iter().any(|s| s["id"]
                         == "smtp"
                         && !s["evidence"].as_array().unwrap().is_empty()));
-                    ensure!(
-                        audit_count(|r| r.action() == "first_use_read").await? == before + 1,
-                        "owner observations changed the enclosing Audit action"
-                    );
-                    // A valid peer-tenant credential cannot be used against this host.
-                    let peer = identity::credential_for(case::peer(), "admin")?;
-                    let mut cross = Browser {
-                        cookies: BTreeMap::from([(
-                            "__Host-identity-session".into(),
-                            peer.expose().into(),
-                        )]),
-                        csrf: Some(peer.csrf()),
-                        ..Default::default()
-                    };
-                    ensure!(
-                        !cross
-                            .call(&restarted, Method::GET, PATH, None)
-                            .await?
-                            .0
-                            .is_success()
-                    );
-                    Ok(())
-                })
-                .await
+                ensure!(
+                    audit_count(|r| r.action() == "first_use_read").await? == before + 1,
+                    "owner observations changed the enclosing Audit action"
+                );
+                // A valid peer-tenant credential cannot be used against this host.
+                let peer = identity::credential_for(case::peer(), "admin")?;
+                let mut cross = Browser {
+                    cookies: BTreeMap::from([(
+                        "__Host-identity-session".into(),
+                        peer.expose().into(),
+                    )]),
+                    csrf: Some(peer.csrf()),
+                    ..Default::default()
+                };
+                ensure!(
+                    !cross
+                        .call(&restarted, Method::GET, PATH, None)
+                        .await?
+                        .0
+                        .is_success()
+                );
+                Ok(())
+            }
+            .await
         })
         .await
 }

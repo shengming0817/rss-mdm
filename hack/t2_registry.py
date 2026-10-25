@@ -963,6 +963,7 @@ APP_HELPER_CONSUMERS = {
                         'apple.collection', 'windows.management', 'assets.queries'),
     'support/identity.rs': ('identity.local', 'identity.sso'),
     'support/authority.rs': ('authorization.rules',),
+    'support/settings.rs': ('settings.recent_auth', 'settings.first_use', 'execution.agent.task_trust'),
     'device/support.rs': ('device.binding',),
     'support/agent.rs': ('agent.registration',),
     'support/agent_tls.rs': ('agent.registration',),

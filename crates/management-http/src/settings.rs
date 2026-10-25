@@ -590,6 +590,15 @@ async fn directory(
         domains: domains(&auth.proof, platform),
     }))
 }
+pub fn routes(source: Arc<dyn Source>) -> rss_mdm_http_contract::Router {
+    use rss_mdm_http_contract::{Operation, Router, catalog, routing::get};
+    Router::new().route(
+        "/settings/catalog",
+        get(tenant)
+            .owned(&catalog::SETTINGS_CATALOG, &[Operation::Get])
+            .layer(Extension(source)),
+    )
+}
 pub(crate) async fn tenant(
     Extension(source): Extension<Arc<dyn Source>>,
     Extension(auth): Extension<RequestAuth>,

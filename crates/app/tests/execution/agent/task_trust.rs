@@ -91,8 +91,10 @@ async fn rotation_requires_exact_generation_ack_and_keeps_original_operation() -
 #[ignore = "MODULE=execution.agent.task_trust: settings directory reads the actual task authority and filters inaccessible owners"]
 async fn settings_catalog_projects_authority_without_cross_session_or_secret_exposure() -> Result<()>
 {
-    let base: Value = serde_json::from_slice(&std::fs::read(std::env::var("MDM_TEST_CONFIG")?)?)?;
-    let (router, resources) = app(&base).await?;
+    let mut fixture = authority::Authority::open().await?;
+    let directory = settings::directory(&mut fixture).await?;
+    let router = settings::catalog(&fixture, directory)?;
+    let resources = std::mem::take(&mut fixture.resources);
     let mut author = authority::Authority::prepared_browser("other")?;
     let subject = crate::test_support::http::prepared_subject(&author)?;
     identity::seed_grants(case_tenant(), &subject, vec![]).await?;

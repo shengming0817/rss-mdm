@@ -44,12 +44,19 @@ async function post(page,path,body,token){
   if(token===undefined){const session=await request(page,api+'/session');assert(session.status===200,'session before write');token=session.value.csrfToken}
   return request(page,path,'POST',body,{'X-CSRF-Token':token});
 }
+async function landed(page){
+  const paths=[`/tenants/${input.tenant}/workspace`,`/tenants/${input.tenant}/settings/guide`];
+  await page.waitForURL(url=>url.origin===origin && paths.includes(url.pathname));
+  await page.locator('.console-page:not([aria-busy="true"]) h1').waitFor();
+  assert(await page.locator('.console-page-error').count()===0,'landing page failed');
+  await poll(async()=> (await request(page,api+'/session')).status===200);
+}
 async function login(page,user,password){
   await delay(3100); // Respect the real ingress rate policy; do not widen it for tests.
   await page.goto(origin+`/tenants/${input.tenant}/login`);
   await page.locator('#login-name').fill(user);await page.locator('#login-password').fill(password);
   await page.locator('form button[type=submit]').click();
-  await poll(async()=> (await request(page,api+'/session')).status===200);
+  await landed(page);
   await page.goto(origin+`/tenants/${input.tenant}/sessions`);
   const r=await request(page,api+'/session');assert(r.status===200,'UI login');return r.value;
 }
@@ -204,11 +211,11 @@ await localUsers();
   await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   await member.locator('#link-provider').selectOption(provider);await member.locator('#link-password').fill(input.memberPassword);
   await member.locator('form').filter({has:member.locator('#link-provider')}).locator('button').click();
-  await keycloak(member,'alice',input);await member.waitForURL(origin+'/**');await poll(async()=> (await request(member,api+'/session')).status===200);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
+  await keycloak(member,'alice',input);await landed(member);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'link changed subject');
   await logoutUI(member);await member.context().clearCookies();
   await member.goto(origin+`/tenants/${input.tenant}/login`);
-  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice',input);await member.waitForURL(origin+'/**');await poll(async()=> (await request(member,api+'/session')).status===200);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
+  await member.getByRole('button',{name:/SSO|企业|单点/i}).click();await keycloak(member,'alice',input);await landed(member);await member.goto(origin+`/tenants/${input.tenant}/sessions`);
   assert((await request(member,api+'/session')).value.identity.principalId===input.ssoMember,'SSO subject binding');
   assert((await request(member,inventory)).status===200,'SSO authorized resource');
   assert((await request(member,api+'/accounts')).status===403,'SSO unauthorized resource');checks.enterprise=true;

@@ -643,7 +643,14 @@ async fn fixed_packages_and_configurations_activate_beyond_self_quota() -> Resul
 async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":2}), None).await?;
     let mut other = authority::Authority::prepared_browser("other")?;
     ensure!(
@@ -851,7 +858,14 @@ async fn finite_reservations_and_frozen_authority_survive_revoke() -> Result<()>
 async fn unknown_exchange_and_issuance_do_not_reset_quantity() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let mut authority = authority::Authority::open().await?;
     let (agent_router, _) = agent::router(&mut authority).await?;
@@ -975,7 +989,14 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
     use sqlx::Connection;
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let (file, _) = configuration(&f, &mut user, json!({"kind":"finite","count":1}), None).await?;
     let input = exchange(&file, &package, 0)?;
     let (status, grant) =
@@ -1056,7 +1077,14 @@ async fn expired_reservation_cannot_be_consumed_after_configuration_lock_wait() 
 async fn backend_settings_are_the_only_grant_lifetime_authority() -> Result<()> {
     let f = fixture().await?;
     let mut user = f.user.clone();
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let initial = user
         .call(
             &f.router,
@@ -1523,7 +1551,29 @@ async fn agent_publication_business_identity_is_unique() -> Result<()> {
     let right = json!({"operationId":Uuid::new_v4(),"packageId":second});
     let mut a = author.clone();
     let mut b = author.clone();
-    let (a, b) = tokio::join!(
+    use sqlx::Connection;
+    let mut owner =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    let mut hold = owner.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+        .bind(format!("mdm-software:{}", case_tenant()))
+        .execute(&mut *hold)
+        .await?;
+    let release = async {
+        let observed = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let blocked: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut *hold).await?;
+                if blocked >= 2 { return Ok::<_, sqlx::Error>(()); }
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *hold).await?;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }).await;
+        hold.rollback().await?;
+        observed??;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (a, b, released) = tokio::join!(
         a.call(
             &f.router,
             Method::POST,
@@ -1535,8 +1585,11 @@ async fn agent_publication_business_identity_is_unique() -> Result<()> {
             Method::POST,
             "/api/v1/agent-packages",
             Some(right.clone())
-        )
+        ),
+        release
     );
+    released?;
+    owner.close().await?;
     let a = a?;
     let b = b?;
     ensure!(
@@ -1650,7 +1703,14 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
     );
     let (old_material, _) =
         configuration(&f, &mut user, json!({"kind":"unlimited"}), Some(3600)).await?;
-    let package = publish(&f, &mut user, false).await?;
+    let package = channel_onboarding::seed_package(
+        &f.runtime,
+        f.software.tenant,
+        f.content.as_deref().context("content")?,
+        false,
+        ("pkg", "1+enterprise"),
+    )
+    .await?;
     let pending = exchange(&old_material, &package, 0)?;
     let grant = machine(&f, "/api/v1/agent/enroll/configurations/exchange", &pending).await?;
     ensure!(grant.0 == StatusCode::OK);

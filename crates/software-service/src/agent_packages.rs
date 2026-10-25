@@ -14,9 +14,11 @@ use rss_mdm_audit_integration::{Fact, RequestAudit};
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_resource as r;
 use rss_request_context::TenantId;
+use rss_transactional_messaging_postgres::PgRuntime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
+use std::sync::Arc;
 use uuid::Uuid;
 pub mod directory;
 pub const INSTALL_SQL: &str = include_str!("agent_packages.sql");
@@ -569,10 +571,11 @@ async fn current_on(
     admitted_on(c, tenant, &w::Installation { release_id: id }).await?;
     Ok((package, binding))
 }
-pub async fn list<C: ManagementContentPort>(
-    app: &management::catalog::Access<C>,
+pub async fn list(
+    runtime: &Arc<PgRuntime>,
+    tenant: rss_request_context::TenantId,
 ) -> Result<Vec<w::Package>, Error> {
-    transaction::inspect(&app.runtime,app.tenant,app.tenant,|tenant,tx|{
+    transaction::inspect(runtime,tenant,tenant,|tenant,tx|{
   let tenant=*tenant;
   Box::pin(async move {Ok(tx.with_connection(move|c|Box::pin(async move{
    let ids:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM mdm_agent_packages.releases WHERE tenant_id=$1::uuid AND state='published' ORDER BY id").bind(tenant.to_string()).fetch_all(&mut *c).await?;
