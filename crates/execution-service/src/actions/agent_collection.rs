@@ -174,13 +174,12 @@ pub async fn finish(
         progress,
         now,
         observed_at,
+        project: allowed && trusted,
     };
-    if allowed && trusted {
-        tx.with_connection(move |c| {
-            Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
-        })
-        .await?;
-    }
+    tx.with_connection(move |c| {
+        Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
+    })
+    .await?;
     // Both inline and chunked input retain the same recoverable canonical evidence.
     super::output::retain_native(tx, run, result).await?;
     run.state.result(attempt, true)?;

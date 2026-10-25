@@ -56,8 +56,6 @@ BEGIN
   FROM memberships
  )
  SELECT (SELECT count(*) FROM evidence)>16000 AS overflow,
-  coalesce(bool_or(reference->>'kind'='device' AND (target OR limitation OR exclusion)
-   AND (CASE WHEN known THEN true WHEN uncertain THEN NULL ELSE false END IS DISTINCT FROM (reference->>'id'=p_device))),false) AS invalid_direct,
   coalesce(bool_or(target AND known),false) AS target_known,
   coalesce(bool_or(target AND NOT known AND uncertain),false) AS target_unknown,
   coalesce(bool_or(limitation AND known),false) AS limit_known,
@@ -65,7 +63,7 @@ BEGIN
   coalesce(bool_or(exclusion AND known),false) AS exclude_known,
   coalesce(bool_or(exclusion AND NOT known AND uncertain),false) AS exclude_unknown
  INTO evaluation FROM selected;
- IF evaluation.overflow OR evaluation.invalid_direct THEN
+ IF evaluation.overflow THEN
   RAISE EXCEPTION 'invalid scope source evidence' USING ERRCODE='23514';
  END IF;
  IF NOT evaluation.target_known AND NOT evaluation.target_unknown THEN

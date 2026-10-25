@@ -87,7 +87,7 @@ impl Planning {
         let watermark = tx
             .with_connection(move |c| {
                 Box::pin(async move {
-                    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant)
+                    rss_mdm_inventory_postgres::watermark_in(c, tenant)
                         .await
                         .map_err(|_| sqlx::Error::Protocol("asset coordinate unavailable".into()))
                 })

@@ -57,8 +57,23 @@ pub(super) async fn interrupt_after_backend_write(
     body["batchId"] = json!(id);
     body["observations"][0]["id"] = json!(observation);
     body["observations"][0]["sequence"] = json!(3);
-    body["observations"][0]["observedAt"] =
-        json!(original["observations"][0]["observedAt"].as_i64().unwrap());
+    let observed_at = original["observations"][0]["observedAt"].as_i64().unwrap() - 10_000_000;
+    body["observations"][0]["observedAt"] = json!(observed_at);
+    use base64::Engine;
+    let mut configuration: wire::SignedTelemetryConfiguration =
+        serde_json::from_value(body["configuration"].clone())?;
+    configuration.configuration.issued_at = observed_at / 1_000_000 - 1;
+    configuration.configuration.expires_at = configuration.configuration.issued_at + 300;
+    configuration.signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+        f.key
+            .sign(
+                &configuration
+                    .configuration
+                    .signing_bytes(&configuration.key_id)?,
+            )
+            .as_ref(),
+    );
+    body["configuration"] = json!(configuration);
     pg(&format!(
         "CREATE FUNCTION public.interrupt_telemetry_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='{id}'::uuid AND NEW.delivery='published' THEN RAISE EXCEPTION 'fixture interruption after destination write' USING ERRCODE='40001'; END IF; RETURN NEW; END $$; CREATE TRIGGER interrupt_telemetry_delivery BEFORE UPDATE ON mdm_telemetry.batches FOR EACH ROW EXECUTE FUNCTION public.interrupt_telemetry_delivery();"
     ))?;

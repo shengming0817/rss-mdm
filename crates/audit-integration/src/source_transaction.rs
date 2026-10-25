@@ -10,6 +10,7 @@ use sqlx::PgConnection;
 pub struct SourceTransaction<'a, 'tx> {
     pub(crate) inner: &'a mut PgTransaction<'tx>,
     pub(crate) facts: Vec<crate::queue::StagedFact>,
+    pub(crate) partitions_declared: bool,
 }
 impl SourceTransaction<'_, '_> {
     pub fn tenant_id(&self) -> TenantId {
@@ -114,6 +115,7 @@ where
                     let mut source = SourceTransaction {
                         inner: tx,
                         facts: Vec::new(),
+                        partitions_declared: false,
                     };
                     match control.run(operation(context, &mut source)).await {
                         Ok(value) => Ok(value),

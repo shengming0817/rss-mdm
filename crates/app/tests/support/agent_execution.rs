@@ -84,7 +84,9 @@ pub(crate) async fn task_event_request(
     kind: &mut Value,
 ) -> Result<(StatusCode, Value)> {
     if kind["kind"] == "result" && kind.get("collectedAt").is_none() {
-        kind["collectedAt"] = json!(2);
+        kind["collectedAt"] = json!(crate::clock::Clock::unix_seconds(
+            &crate::clock::SystemClock
+        )?);
     }
     if kind["kind"] == "result" && kind.get("diagnostics").is_none() {
         let failure = match kind["quality"].as_str() {
@@ -92,7 +94,7 @@ pub(crate) async fn task_event_request(
             Some("failed") => json!("capture_failed"),
             _ => Value::Null,
         };
-        kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":1,"failure":failure});
+        kind["diagnostics"] = json!({"stdout":"captured stdout","stderr":"captured stderr","durationMs":1,"executedAt":kind["collectedAt"],"failure":failure});
     }
     agent_call(router,Method::POST,&format!("/api/v1/agent/runtime/tasks/{}/events",task["payload"]["task"]["taskId"].as_str().unwrap()),Some(case_credential()),Some(json!({"wireVersion":1,"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs),"operationId":operation,"attemptId":task["payload"]["task"]["attemptId"],"event":kind}))).await
 }

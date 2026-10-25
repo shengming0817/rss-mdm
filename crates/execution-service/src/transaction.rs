@@ -159,20 +159,6 @@ impl From<crate::device::DeviceError> for Fault {
         Error::from(error).into()
     }
 }
-pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
-    let tenant = tx.tenant_id().to_string();
-    tx.with_connection(move |c| {
-        Box::pin(async move {
-            sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
-                .bind(tenant)
-                .execute(c)
-                .await?;
-            Ok(())
-        })
-    })
-    .await?;
-    Ok(())
-}
 
 /// Short preflight read/row-lock transaction. It must not persist business changes or audit facts.
 /// It deliberately does not advance the outer request's single mutation settlement state.
@@ -330,8 +316,6 @@ impl From<rss_mdm_audit_integration::operation_receipts::Error> for Fault {
         }
     }
 }
-
-/// Existing authorization and planning fences precede device and callback-owned locks.
 
 /// Source writes reach the directory trigger before their late audit flush. Native
 /// transactions must take the same row before declaring any outbox partitions.

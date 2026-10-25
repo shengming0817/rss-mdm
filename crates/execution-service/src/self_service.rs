@@ -40,7 +40,6 @@ pub struct Invocation {
 }
 impl Invocation {
     /// Verify the accepted invocation against its immutable task and real execution target.
-
     pub async fn valid_in(
         &self,
         service: &ExecutionService,

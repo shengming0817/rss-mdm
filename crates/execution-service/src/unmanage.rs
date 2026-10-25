@@ -164,7 +164,6 @@ impl ExecutionService {
             Box::pin(async move { Ok(crate::authorization::lock_on(c, &t, &instance).await) })
         })
         .await??;
-        crate::transaction::lock(tx).await?;
         let devices = original
             .channels
             .iter()

@@ -398,7 +398,6 @@ impl ExecutionService {
                     })
                 })
                 .await??;
-                crate::transaction::lock(tx).await?;
                 let op = storage::load(tx, &s.protection, id).await?;
                 storage::lock(tx, &op.device).await?;
                 let crate::authority::ExecutionAuthority::Software { version, .. } = &op.authority

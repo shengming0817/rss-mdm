@@ -183,10 +183,15 @@ impl TransactionOwner {
 }
 pub async fn lock(tx: &mut PgTransaction<'_>) -> Result<()> {
     let tenant = tx.tenant_id().to_string();
+    let directory_tenant = tenant.clone();
     tx.with_connection(move |c| {
         Box::pin(async move {
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
                 .bind(tenant)
+                .execute(&mut *c)
+                .await?;
+            sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                .bind(directory_tenant)
                 .execute(c)
                 .await?;
             Ok(())

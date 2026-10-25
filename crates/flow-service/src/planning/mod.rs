@@ -163,13 +163,6 @@ impl Planning {
     ) -> Result<Value> {
         admit_in(tx).await?;
         if matches!(command, Command::Scope { .. }) {
-            let tenant = tx.tenant_id();
-            tx.with_connection(move |c| {
-                Box::pin(
-                    async move { rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await },
-                )
-            })
-            .await?;
             crate::transaction::lock(tx).await?;
         }
         authorize()?;

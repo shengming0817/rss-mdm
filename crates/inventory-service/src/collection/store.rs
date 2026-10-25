@@ -430,21 +430,16 @@ impl Delivery {
                 (&self.audit_store, tenant, &audit),
                 |(store, tenant, audit), tx| {
                     Box::pin(async move {
+                        store
+                            .prepare_source(tx, audit, &[])
+                            .await
+                            .map_err(Error::from)?;
                         let mut facts = Vec::new();
                         let count = tx
                             .with_connection_context(
                                 &mut (*tenant, &mut facts),
                                 |(tenant, facts), c| {
-                                    Box::pin(async move {
-                                        rss_mdm_inventory_postgres::lock_watermark_in(
-                                            c,
-                                            rss_request_context::TenantId::parse(tenant)
-                                                .map_err(|_| corrupt())?,
-                                        )
-                                        .await
-                                        .map_err(db)?;
-                                        expire_timed(c, facts, tenant).await
-                                    })
+                                    Box::pin(async move { expire_timed(c, facts, tenant).await })
                                 },
                             )
                             .await?;

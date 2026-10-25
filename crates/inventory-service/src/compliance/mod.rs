@@ -80,6 +80,15 @@ impl Compliance {
             |ctx, tx| {
                 Box::pin(async move {
                     let (s, command, audit, proof) = *ctx;
+                    if command.operation().is_some() {
+                        let tenant = tx.tenant_id();
+                        tx.with_connection(move |c| {
+                            Box::pin(async move {
+                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                            })
+                        })
+                        .await?;
+                    }
                     let current = query_authority(tx, proof).await?;
                     authorize(&current, proof, command)?;
                     let sensitive =

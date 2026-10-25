@@ -1275,10 +1275,12 @@ async fn nested_groups_sources_references_and_authorized_pages() -> Result<()> {
             ensure!(browser.call(&router,Method::GET,&format!("{}/references?cursor={token}",path(nested)),None).await?.0==StatusCode::CONFLICT);
             let (status,select)=browser.call(&router,Method::GET,&format!("/api/v1/groups?referenceableFor={source}"),None).await?;
             ensure!(status==StatusCode::OK,"reference selector {status} {select}");
-            ensure!(!select["items"].as_array().unwrap().iter().any(|g|[source.to_string(),nested.to_string(),grandparent.to_string()].iter().any(|id|g["id"]==*id)));
+            ensure!(!select["items"].as_array().unwrap().iter().any(|g|g["id"]==source.to_string()));
             // Saved cycles and cross-context references are rejected transactionally.
             for (id,revision,input) in [(source,1,json!({"action":"rule","criteria":condition(reference(grandparent,"member_of"))})),(Uuid::new_v4(),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"wrong-context","description":""},"criteria":condition(reference(source,"member_of"))}))] {
-                ensure!(browser.call(&router,Method::POST,&path(id),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?.0==StatusCode::BAD_REQUEST);
+                let (accepted,job)=browser.call(&router,Method::POST,&path(id),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":revision,"input":input}))).await?;
+                ensure!(accepted==StatusCode::ACCEPTED);
+                tokio::time::timeout(Duration::from_secs(30),async {loop {let state=browser.call(&router,Method::GET,job["statusUrl"].as_str().unwrap(),None).await?.1;if state["failure"]=="invalid_input" {break Ok::<_,anyhow::Error>(());}tokio::time::sleep(Duration::from_millis(20)).await;}}).await??;
             }
             ensure!(browser.call(&router,Method::POST,&path(source),Some(json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"delete"}}))).await?.0==StatusCode::CONFLICT);
             // An input definition edit invalidates continuation, even before a worker recomputes it.

@@ -11,11 +11,13 @@ pub async fn accept(
     tx: &mut PgTransaction<'_>,
     frozen: &FrozenAction,
     run: &Run,
-    output: &Value,
+    result: &rss_mdm_agent_wire::runtime::TaskResult,
     trusted: bool,
     now: i64,
-    collected_at: i64,
+    project: bool,
 ) -> Result<()> {
+    let output = result.output();
+    let collected_at = result.collected_at();
     let ScriptPurpose::Collection { mappings, .. } = &frozen.definition.spec().purpose else {
         return Ok(());
     };
@@ -44,6 +46,7 @@ pub async fn accept(
         progress,
         now,
         observed_at: collected_at,
+        project,
     };
     tx.with_connection(move |c| {
         Box::pin(crate::collection::enterprise::accept_in(c, tenant, report))
@@ -129,9 +132,16 @@ pub async fn finish(
         );
     run.state
         .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
-    if allowed && effect_allowed && trusted {
-        accept(tx, frozen, run, output, true, now, result.collected_at()).await?;
-    }
+    accept(
+        tx,
+        frozen,
+        run,
+        result,
+        trusted,
+        now,
+        allowed && effect_allowed,
+    )
+    .await?;
     let (output, reference) = if !budget_valid || bytes.len() > 1024 * 1024 {
         (
             Value::Null,

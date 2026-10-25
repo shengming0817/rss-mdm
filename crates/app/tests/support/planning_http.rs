@@ -37,6 +37,9 @@ pub(crate) async fn call(
             .unwrap_or_else(|| format!("{path}/tasks/{task}"));
         await_task(browser, router, &status_url).await?;
     }
+    if result["kind"] == "group_definition" {
+        await_ingress().await?;
+    }
     Ok(result)
 }
 // Normal writes can collide with the live automation worker's serializable

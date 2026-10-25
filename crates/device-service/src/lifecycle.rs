@@ -215,7 +215,6 @@ pub async fn complete_target_in(
     let ObjectRef::Endpoint(device) = &input.object else {
         return Ok(input.clone());
     };
-    rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
     let row=sqlx::query("SELECT a.id,a.version,a.state FROM mdm_devices.members m JOIN mdm_devices.associations a ON(a.tenant_id,a.id)=(m.tenant_id,m.association_id) WHERE m.tenant_id=$1::uuid AND m.device=$2 AND NOT m.released AND a.state<>'revoked'")
         .bind(tenant.to_string()).bind(device).fetch_optional(&mut *c).await?;
     let Some(row) = row else {

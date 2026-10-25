@@ -89,7 +89,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
     connection.close().await.unwrap();
     let running = RunningAutomation::start(service.clone()).await;
     let group = Uuid::new_v4();
-    let accepted = execute(
+    let accepted = seed_group(
         &service,
         &GroupCommand::Group {
             sensitive: true,
@@ -525,14 +525,15 @@ async fn agent_health_drives_mdm_configuration_assignment() -> anyhow::Result<()
     identity::seed_grants(case_tenant(), &member, grants).await?;
     let automation = start_automation(&fixture.base).await?;
     let group = Uuid::new_v4();
-    let receipt=call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"unhealthy Agent","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
+    call(&mut browser,&router,&format!("/api/v1/groups/{group}"),0,json!({"action":"create","assetContext":"associated_device","presentation":{"name":"unhealthy Agent","description":""},"criteria":{"selector":{"kind":"device"},"quantifier":"one","criteria":{"kind":"predicate","field":"custom.corporate_agent.healthy","op":"eq","value":{"kind":"boolean","value":false}}}})).await?;
+    let group_read=browser.call(&router,Method::GET,&format!("/api/v1/groups/{group}"),None).await?.1;
     let (_, decisions) = browser
         .call(
             &router,
             Method::GET,
             &format!(
                 "/api/v1/groups/{group}/results/{}/decisions",
-                receipt["task"].as_str().unwrap()
+                group_read["memberSet"].as_str().unwrap()
             ),
             None,
         )

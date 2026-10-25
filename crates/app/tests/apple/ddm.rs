@@ -313,11 +313,11 @@ async fn policy_coowners_share_native_publication_without_fabricating_removal() 
     )
     .await?;
     ensure!(
-        manifest(&peer, None).await?["Declarations"]["Configurations"]
+        !manifest(&peer, None).await?["Declarations"]["Configurations"]
             .as_array()
             .unwrap()
             .is_empty(),
-        "retained publication outlived current authority"
+        "accepted retained publication survives author permission change"
     );
     pg.close().await?;
     ensure!(owner.shutdown().join().await?.is_clean());

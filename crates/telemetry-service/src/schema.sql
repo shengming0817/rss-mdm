@@ -30,7 +30,7 @@ CREATE POLICY tenant ON mdm_telemetry.rate_windows USING(tenant_id=nullif(curren
 REVOKE ALL ON ALL TABLES IN SCHEMA mdm_telemetry FROM PUBLIC;
 GRANT USAGE ON SCHEMA mdm_telemetry TO mdm_flow_runtime;
 GRANT SELECT,INSERT ON mdm_telemetry.batches TO mdm_flow_runtime;
-GRANT UPDATE(delivery) ON mdm_telemetry.batches TO mdm_flow_runtime;
+GRANT UPDATE(delivery,current_assets) ON mdm_telemetry.batches TO mdm_flow_runtime;
 GRANT SELECT,INSERT,UPDATE ON mdm_telemetry.rate_windows TO mdm_flow_runtime;
 
 -- Confirmed progress of the catalog projection; definitions remain owned by Inventory/RSS.

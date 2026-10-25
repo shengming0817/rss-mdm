@@ -406,8 +406,8 @@ impl ExecutionAuthority {
                         }
                     );
                 if !*remove {
-                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled')")
-                        .bind(tenant).bind(policy).fetch_one(conn).await.map_err(db)?;
+                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled') OR EXISTS(SELECT 1 FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(c.tenant_id,c.policy) WHERE c.tenant_id=$1::uuid AND c.device=$3 AND o.authority->>'unit'=$4 AND p.state='enabled')")
+                        .bind(tenant).bind(policy).bind(device).bind(unit).fetch_one(conn).await.map_err(db)?;
                     return Ok(enabled || retain_ddm);
                 }
                 let expected_objects = native.objects()?;

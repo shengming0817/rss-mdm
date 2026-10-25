@@ -10,6 +10,7 @@ pub struct Report {
     pub progress: CollectionProgress,
     pub now: i64,
     pub observed_at: i64,
+    pub project: bool,
 }
 pub async fn accept_in(
     c: &mut sqlx::PgConnection,
@@ -23,6 +24,7 @@ pub async fn accept_in(
         progress,
         now,
         observed_at,
+        project,
     } = report;
     let definition = progress.definition();
     let body = progress
@@ -91,9 +93,9 @@ pub async fn accept_in(
         .map(|v| format!("{v:02x}"))
         .collect::<String>();
     let quality = progress;
-    sqlx::query("UPDATE mdm_access.collection_runs SET sealed_at=$3,attempts=$4,result=$5,reason='complete',batch=$6,digest=$7,delivery_pending=true WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL")
+    sqlx::query("UPDATE mdm_access.collection_runs SET sealed_at=$3,attempts=$4,result=$5,reason='complete',batch=$6,digest=$7,delivery_pending=$8 WHERE tenant_id=$1::uuid AND id=$2 AND sealed_at IS NULL")
         .bind(tenant.to_string()).bind(id).bind(now).bind(serde_json::to_string(&quality).expect("closed quality"))
-        .bind(result).bind(batch.encode()).bind(digest).execute(&mut *c).await?;
+        .bind(result).bind(batch.encode()).bind(digest).bind(project).execute(&mut *c).await?;
     crate::wake::notify(c).await?;
     Ok(())
 }

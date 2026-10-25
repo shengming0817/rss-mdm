@@ -68,11 +68,6 @@ pub async fn lock_devices_in(
     if devices.len() > 1000 {
         return Err(Error::Malformed);
     }
-    sqlx::query("SELECT mdm.lock_asset_watermark($1::uuid)")
-        .bind(tenant)
-        .execute(&mut *c)
-        .await
-        .map_err(crate::database::db)?;
     let keys = devices
         .iter()
         .collect::<std::collections::BTreeSet<_>>()

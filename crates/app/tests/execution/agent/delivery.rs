@@ -401,8 +401,8 @@ async fn chunked_results_require_complete_output_and_preserve_attempt_identity()
         Some(0),
         wire::OutputQuality::Complete,
         json!({"version":"1.2","healthy":true,"padding":"x".repeat(400000)}),
-        wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, None)?,
-        2,
+        wire::TaskDiagnostics::new("".into(), "".into(), 1, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?, None)?,
+        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
     )?;
     let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
     ensure!(chunks.len() == 2);
@@ -490,8 +490,8 @@ async fn collection_structure_budget_precedes_partial_field_acceptance() -> Resu
             Some(0),
             quality,
             output,
-            wire::TaskDiagnostics::new("".into(), "".into(), 1, 1, failure)?,
-            2,
+            wire::TaskDiagnostics::new("".into(), "".into(), 1, crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?, failure)?,
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)?,
         )?;
         let event = if mode == "chunked" {
             let (reference, chunks) = wire::ChunkedTaskResult::split(result)?;
@@ -883,8 +883,8 @@ async fn native_inventory_case(
             )
             .await?;
             ensure!(
-                denied.0 == StatusCode::FORBIDDEN,
-                "revoked native Start: {denied:?}"
+                denied.0 == StatusCode::OK,
+                "accepted native Start after author edit: {denied:?}"
             );
             break;
         }

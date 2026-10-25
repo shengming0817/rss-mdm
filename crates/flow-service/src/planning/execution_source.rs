@@ -56,7 +56,6 @@ impl SourceAuthority for ExecutionSource {
         channel: Channel,
     ) -> Pending<'a, Option<Vec<ScopeResult>>> {
         Box::pin(async move {
-            rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await?;
             let mut runs = Vec::new();
             for scope in scopes {
                 let status: Value =

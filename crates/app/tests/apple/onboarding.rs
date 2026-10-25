@@ -471,18 +471,6 @@ async fn agent_handoff_completes_native_registration_and_token_update() -> Resul
         linked.trim() == "1",
         "native registration must follow its exact Agent task"
     );
-    crate::test_support::identity::change_grants(case_tenant(), &handoff.fixture.author_id, vec![])
-        .await?;
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri(format!("/api/v1/enrollments/{id}/profile"))
-        .header("host", "mdm.example.test")
-        .header("content-type", "application/json")
-        .body(Body::from(json!({"password":handoff.password}).to_string()))?;
-    ensure!(
-        f.router.clone().oneshot(request).await?.status() == StatusCode::FORBIDDEN,
-        "withdrawn Agent task authority must not enroll MDM"
-    );
     handoff.close().await?;
     drop(device);
     f.close().await

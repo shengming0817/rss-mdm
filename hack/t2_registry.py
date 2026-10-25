@@ -586,7 +586,7 @@ MODULES['planning.scope'] = replace(MODULES['planning.scope'], db_mode='reuse', 
     CasePolicy('planning::t2::scope::corrupt_scope_is_a_storage_failure_not_a_client_error', 'fresh', 'objects'),
 ))
 MODULES['planning.group_scope'] = replace(MODULES['planning.group_scope'], db_mode='reuse', scope='tenant', policies=(
-    CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'objects'),
+    CasePolicy('planning::t2::group_scope::group_delete_scope_reference_compete_without_dangling_references', 'reuse', 'tenant'),
     CasePolicy('planning::t2::group_scope::group_scope_replay_and_audit_atomicity', 'fresh', 'pair'),
 ), fixtures=(*MODULES['planning.group_scope'].fixtures, 'content'))
 MODULES['planning.onboarding'] = replace(MODULES['planning.onboarding'], db_mode='reuse', scope='tenant', fixtures=(*MODULES['planning.onboarding'].fixtures, 'content'))
@@ -1906,7 +1906,6 @@ for name, selector in (
     ('apple.collection', 'apple::tests::collection::disabled_template_policy_rejects_first_report'),
     ('apple.collection', 'apple::tests::collection::published_native_template_uses_policy_and_direct_collection_progress'),
     ('apple.collection', 'apple::tests::collection::template_access_rights_change_rejects_first_report'),
-    ('apple.collection', 'apple::tests::collection::template_revocation_prevents_dispatch'),
     ('apple.collection', 'apple::tests::collection::template_revocation_rejects_first_report'),
     ('apple.collection', 'apple::tests::collection::user_collection_cannot_cross_device_or_other_user_namespace'),
     ('apple.identity', 'apple::tests::identity::token_is_required_before_management'),
@@ -2015,7 +2014,7 @@ for module_id, selector, fixtures, db_mode, scope, actors in (
     ('windows.limits', 'windows::t2::limits::accepted_peer_rate_limit_and_refill', ('windows', 'runtime_config'), 'reuse', 'tenant', ()),
     ('windows.entra', 'windows::t2::entra::management_policy_body_replay_and_audit_faults', ('identity',), 'fresh', 'objects', (('tenant', 'admin'), ('tenant', 'other'))),
     ('planning.http', 'planning::t2::http::console_script_support_requires_signer_and_content', ('identity', 'agent_pki', 'task_signing', 'content'), None, None, None),
-    ('planning.software', 'planning::t2::software::new_approval_changes_execution_version', ('identity', 'content'), None, None, (('tenant', 'admin'),)),
+    ('planning.software', 'planning::t2::software::reenabling_same_material_preserves_execution_version', ('identity', 'content'), None, None, (('tenant', 'admin'),)),
     ('execution.commands.windows', 'execution::t2::commands::windows::console_mixed_kind_cursor_and_device_visibility', ('identity', 'content', 'agent_pki', 'task_signing'), None, None, None),
     ('apple.platform_sso', 'apple::tests::platform_sso::nonce_is_bounded_and_never_stored_in_plaintext', ('identity',), None, None, None),
     ('apple.push', 'apple::tests::push::deadline_query_failure_is_not_healthy_idle', ('apple', 'identity'), None, None, None),

@@ -532,6 +532,24 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         pool.clone(),
         Arc::new(crate::lifecycle::RuntimeTimer),
     );
+    let mut grants =
+        crate::test_support::identity::device_grants(None, &["inventory_read"]).unwrap();
+    for operation in [
+        crate::authorization::Permission::ComplianceWrite,
+        crate::authorization::Permission::GroupRead,
+    ] {
+        grants.push(crate::authorization::Grant {
+            operation,
+            scope: crate::authorization::Scope::Tenant,
+        });
+    }
+    crate::test_support::identity::seed_grants(
+        &tenant().to_string(),
+        crate::test_support::case::admin(),
+        grants,
+    )
+    .await
+    .unwrap();
     let proof = crate::authorization::context::AuthorizedPrincipal::new(
         identity
             .authority
@@ -627,24 +645,29 @@ async fn group_delete_scope_reference_compete_without_dangling_references() {
         .await
         .unwrap();
         sqlx::query("BEGIN").execute(&mut holder).await.unwrap();
-        sqlx::query("SELECT 1 FROM mdm_group.groups WHERE tenant_id=$1::uuid AND id=$2 FOR UPDATE")
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2390))")
             .bind(tenant().to_string())
-            .bind(group)
             .fetch_one(&mut holder)
             .await
             .unwrap();
         let release = async {
-            tokio::time::timeout(Duration::from_secs(8), async {
+            let overlapped=tokio::time::timeout(Duration::from_secs(8), async {
                 loop {
+                    sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await.unwrap();
                     let waiting: i64 = sqlx::query_scalar("WITH RECURSIVE blocked(pid) AS (SELECT pid FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) UNION SELECT a.pid FROM pg_stat_activity a JOIN blocked b ON b.pid=ANY(pg_blocking_pids(a.pid)) WHERE a.datname=current_database()) SELECT count(*) FROM blocked").fetch_one(&mut holder).await.unwrap();
                     if waiting >= 2 { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-            }).await.expect("delete and reference never overlapped");
+            }).await.is_ok();
             sqlx::query("ROLLBACK").execute(&mut holder).await.unwrap();
+            overlapped
         };
-        let (a, b, ()) = tokio::join!(execute(&first, &delete), reference, release);
+        let (a, b, overlapped) = tokio::join!(execute(&first, &delete), reference, release);
         holder.close().await.unwrap();
+        assert!(
+            overlapped,
+            "{kind}: delete and reference did not overlap: delete={a:?}, reference={b:?}"
+        );
         assert_ne!(a.is_ok(), b.is_ok());
         assert_eq!(
             sql(&format!(

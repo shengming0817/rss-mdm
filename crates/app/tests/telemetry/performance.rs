@@ -129,8 +129,8 @@ pub(super) async fn published_cpu(f: &mut Fixture) -> Result<()> {
     let (status, _) =
         agent_call(&f.router, Method::GET, &path, Some(case_credential()), None).await?;
     ensure!(
-        status == StatusCode::SERVICE_UNAVAILABLE,
-        "missing native engine received executable configuration"
+        status == StatusCode::BAD_REQUEST,
+        "missing native engine response: {status}"
     );
     announce(f, json!({"macos.performance":1})).await?;
     directory(f, &policy, true).await?;
@@ -227,7 +227,7 @@ async fn cpu_reading(
     Ok(())
 }
 
-async fn publish(
+pub(super) async fn publish(
     f: &mut Fixture,
     id: Uuid,
     kind: &str,
@@ -579,7 +579,7 @@ async fn published_network(f: &mut Fixture, registration: Uuid) -> Result<()> {
         agent_call(&f.router, Method::GET, &path, Some(case_credential()), None)
             .await?
             .0
-            == StatusCode::SERVICE_UNAVAILABLE
+            == StatusCode::BAD_REQUEST
     );
     let original = enable_counter_capability(registration)?;
     directory(f, &policy, true).await?;

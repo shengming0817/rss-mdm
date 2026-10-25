@@ -243,7 +243,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             ensure!(!quality.contains("vendor_extra"),"unknown field entered quality: {quality}");
         }
         let mut tampered=body.clone();let tampered_id=Uuid::new_v4();tampered["batchId"]=json!(tampered_id);tampered["configuration"]["configuration"]["expiresAt"]=json!(configuration.expires_at+1);
-        ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(tampered)).await?.0==StatusCode::FORBIDDEN);
+        ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(tampered)).await?.0==StatusCode::UNAUTHORIZED);
         ensure!(pg(&format!("SELECT count(*) FROM mdm_telemetry.batches WHERE tenant_id='{}' AND id='{tampered_id}'",case_tenant()))?.trim()=="0");
         let mut conflict=body.clone();conflict["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
         ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(conflict)).await?.0==StatusCode::CONFLICT);
@@ -496,6 +496,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             if let Some(other_device) = other_device {
                 let mut denied = query.clone();
                 denied["device"] = json!(other_device);
+                denied["endMicros"]=json!(f.planning.clock.unix_seconds()?*1_000_000+1);
                 let permitted = post(
                     &mut f.author,
                     &router,
@@ -551,18 +552,22 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
             // The same backend intake accepts a first batch for an older issued Profile.
             identity::change_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
             let owner=body["configuration"]["configuration"]["policy"].as_str().unwrap();
-            let replacement=pg(&format!("SELECT definition::text FROM mdm_policy.policies WHERE tenant_id='{}' AND id<>'{owner}' AND definition->'action'->>'kind'='telemetry_profile' ORDER BY id LIMIT 1",case_tenant()))?;
-            let replacement:Value=serde_json::from_str(&replacement)?;
             let (status,current)=f.author.call(&router,Method::GET,&format!("/api/v1/policies/{owner}"),None).await?;ensure!(status==StatusCode::OK);
+            let new_scope=Uuid::new_v4();f.scope(new_scope,json!([{"kind":"device","id":case_device_id()}])).await?;
+            let frozen: rss_mdm_flow_service::planning::policies::telemetry::FrozenProfile=serde_json::from_str(&pg(&format!("SELECT frozen::text FROM mdm_policy.versions WHERE tenant_id='{}' AND id='{}'",case_tenant(),body["configuration"]["configuration"]["policyVersion"].as_str().unwrap()))?)?;
+            let mut spec=frozen.profile.spec().clone();spec.sample_millis=10000;spec.upload_millis=20000;
+            let revised=r::TelemetryProfile::new(spec)?;let revised_resource=Uuid::new_v4();
+            performance::publish(&mut f,revised_resource,"telemetry_profile",json!(revised),&revised.canonical()).await?;
+            let mut replacement=current["definition"].clone();replacement["scope"]=json!(new_scope);replacement["action"]["resource"]["id"]=json!(revised_resource);
             let updated=post(&mut f.author,&router,&format!("/api/v1/policies/{owner}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":current["revision"],"input":{"action":"put","enabled":true,"definition":replacement}})).await?;
             ensure!(updated["versionId"]!=body["configuration"]["configuration"]["policyVersion"]);
             let before_current=current_field(&mut f.author,&router).await?;
             let mut old=body.clone();let old_batch=Uuid::new_v4();old["batchId"]=json!(old_batch);
             let mut original:wire::SignedTelemetryConfiguration=serde_json::from_value(old["configuration"].clone())?;
             let received=f.planning.clock.unix_seconds()?;
-            original.configuration.issued_at=received-400;original.configuration.expires_at=received-100;
+            original.configuration.issued_at=received-301;original.configuration.expires_at=received-1;
             original.signature=base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(f.key.sign(&original.configuration.signing_bytes(&original.key_id)?).as_ref());
-            let observed_at=(received-200)*1_000_000;
+            let observed_at=(received-2)*1_000_000;
             old["configuration"]=json!(original);old["observations"][0]["id"]=json!(Uuid::new_v4());old["observations"][0]["sequence"]=json!(3);old["observations"][0]["observedAt"]=json!(observed_at);old["observations"][0]["values"]["custom.corporate_agent.healthy"]["value"]["value"]=json!(false);
             let (status,result)=agent_call(&router,Method::POST,"/api/v1/agent/runtime/telemetry/batches",Some(case_credential()),Some(old)).await?;
             ensure!(status==StatusCode::ACCEPTED,"old issued profile: {status} {result}");

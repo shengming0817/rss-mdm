@@ -113,14 +113,18 @@ impl Groups {
                         command,
                         Command::Group { .. } | Command::GroupPreview { .. }
                     ) {
-                        let tenant = tx.tenant_id();
+                        crate::transaction::lock(tx).await?;
+                        let tenant = tx.tenant_id().to_string();
                         tx.with_connection(move |c| {
                             Box::pin(async move {
-                                rss_mdm_inventory_postgres::lock_watermark_in(c, tenant).await
+                                sqlx::query("SELECT mdm_devices.lock_query_revision($1::uuid)")
+                                    .bind(tenant)
+                                    .execute(c)
+                                    .await?;
+                                Ok(())
                             })
                         })
                         .await?;
-                        crate::transaction::lock(tx).await?;
                     }
                     authorize()?;
                     let partitions = match command {
