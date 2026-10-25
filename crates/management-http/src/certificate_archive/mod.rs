@@ -58,7 +58,10 @@ pub fn routes(cursor: rss_mdm_query::cursor::CursorCodec) -> Router<Arc<archive:
         )
         .route(
             "/certificate-archive/entries/{entry}/metadata",
-            put(metadata).owned(&contracts::CERTIFICATES, &[RouteOperation::Action]),
+            put(metadata).owned(
+                &contracts::CERTIFICATES,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
         )
         .route(
             "/certificate-archive/import",

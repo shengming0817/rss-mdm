@@ -61,22 +61,12 @@ impl FilevaultService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(&source.device);
-        let identity = serde_json::to_vec(&(
-            source.registration,
-            source.generation,
-            input.operation_id,
-            &input.cms_digest,
-            input.custody_id,
-            input.custody_epoch,
-        ))
-        .map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
             audit,
             &format!(
                 "filevault:{}:{}:{}",
                 source.registration, source.generation, input.operation_id
             ),
-            &identity,
             200,
             "success",
             None,
@@ -98,7 +88,7 @@ impl FilevaultService {
                 let value=owner::receive(c,ctx.2,ctx.3,&ctx.0.protection).await?;
                 Ok::<_,Error>((value,replayed))
             })).await?;
-                        ctx.0.audit.append(tx, &ctx.5, replayed).await?;
+                        if !replayed { ctx.0.audit.append(tx, &ctx.5).await?; }
                         ctx.4.mark_commit_started();
                         Ok::<_, Error>(value)
                     })
@@ -127,14 +117,12 @@ impl FilevaultService {
             registration: input.registration,
             generation: input.generation,
         };
-        let bytes = serde_json::to_vec(input).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
             audit,
             &format!(
                 "filevault:configure:{}:{}:{}",
                 source.registration, source.generation, input.operation_id
             ),
-            &bytes,
             200,
             "success",
             None,
@@ -168,7 +156,7 @@ impl FilevaultService {
                                 })
                             })
                             .await?;
-                        ctx.0.audit.append(tx, &ctx.5, replayed).await?;
+                        if !replayed { ctx.0.audit.append(tx, &ctx.5).await?; }
                         ctx.1.check_live()?;
                         ctx.4.mark_commit_started();
                         Ok::<_, Error>(value)
@@ -211,11 +199,9 @@ impl FilevaultService {
             rss_mdm_audit_integration::AuditIntent::Management,
         );
         audit.target_device(device);
-        let bytes = serde_json::to_vec(&(device, input)).map_err(|_| Error::Malformed)?;
         let fact = Fact::business(
             audit,
             &format!("filevault:link:{device}:{}", input.operation_id),
-            &bytes,
             200,
             "success",
             None,
@@ -250,7 +236,7 @@ impl FilevaultService {
                     .bind(serde_json::to_value(&result).map_err(|_|Error::Malformed)?).execute(c).await?;
                 Ok((result,false))
             })).await?;
-            ctx.0.audit.append(tx,&ctx.5,replayed).await?;
+            if !replayed { ctx.0.audit.append(tx,&ctx.5).await?; }
             ctx.1.check_live()?;ctx.4.mark_commit_started();Ok::<_,Error>(value)
         })).await;
         crate::service::finish(result, audit)

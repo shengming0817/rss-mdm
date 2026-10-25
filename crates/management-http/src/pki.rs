@@ -30,19 +30,31 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/pki/rotations",
-            post(prepare).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+            post(prepare).owned(
+                &contracts::PKI_OPERATIONS,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/pki/signing/recover",
-            post(recover).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+            post(recover).owned(
+                &contracts::PKI_OPERATIONS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/pki/crls",
-            post(publish).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+            post(publish).owned(
+                &contracts::PKI_OPERATIONS,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/pki/{purpose}/rotations",
-            post(transition).owned(&contracts::PKI_OPERATIONS, &[RouteOperation::Action]),
+            post(transition).owned(
+                &contracts::PKI_OPERATIONS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
 }
 fn purpose(value: &str) -> Result<Purpose, Error> {

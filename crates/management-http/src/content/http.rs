@@ -31,28 +31,46 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/software/content/cleanup",
-            post(cleanup).owned(&contracts::CONTENT_MAINTENANCE, &[RouteOperation::Action]),
+            post(cleanup).owned(
+                &contracts::CONTENT_MAINTENANCE,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/resources/{id}/content",
-            post(upload).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+            post(upload).owned(
+                &contracts::RESOURCE,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/resources/{id}/content/mirror",
-            post(mirror).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+            post(mirror).owned(
+                &contracts::RESOURCE,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/resources/{id}/uploads/{upload}",
             post(begin)
-                .owned(&contracts::RESOURCE, &[RouteOperation::Action])
+                .owned(
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action, RouteOperation::Create],
+                )
                 .get(status)
                 .owned(&contracts::RESOURCE, &[RouteOperation::Action])
                 .patch(append)
-                .owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+                .owned(
+                    &contracts::RESOURCE,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
         )
         .route(
             "/resources/{id}/uploads/{upload}/complete",
-            post(complete).owned(&contracts::RESOURCE, &[RouteOperation::Action]),
+            post(complete).owned(
+                &contracts::RESOURCE,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
 }
 use rss_mdm_content_service::service::{Selection, current};

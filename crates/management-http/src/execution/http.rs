@@ -38,7 +38,10 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/recovery-credentials/operations",
-            post(create_recovery).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            post(create_recovery).owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .merge(
             Router::new()
@@ -67,15 +70,24 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/operations",
-            post(create).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            post(create).owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
         .route(
             "/devices/{device}/operations/{id}/cancel",
-            post(cancel).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            post(cancel).owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/devices/{device}/operations/{id}/reauthorize",
-            post(reauthorize).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            post(reauthorize).owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
 }
 async fn directory(
@@ -240,6 +252,12 @@ async fn create_recovery(
     >,
 ) -> Result<(StatusCode, Json<Value>), Error> {
     let input = input.map_err(Error::from)?.0;
+    audit.operation(
+        input.operation_id,
+        "command_accept",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     app.execution
         .create_recovery_credential(&auth.proof, &device, &input, &audit)
         .await

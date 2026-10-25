@@ -36,7 +36,10 @@ pub fn routes(service: Option<Arc<Service>>) -> Router {
         )
         .route(
             "/telemetry/maintenance",
-            post(maintenance).owned(&contracts::TELEMETRY_QUERIES, &[RouteOperation::Action]),
+            post(maintenance).owned(
+                &contracts::TELEMETRY_QUERIES,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/telemetry/health",

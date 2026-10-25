@@ -116,11 +116,17 @@ pub fn filevault_routes(
             get(read_filevault_configuration)
                 .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action])
                 .post(configure_filevault)
-                .owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+                .owned(
+                    &contracts::RECOVERY_CREDENTIALS,
+                    &[RouteOperation::Action, RouteOperation::Update],
+                ),
         )
         .route(
             "/devices/{device}/recovery-credentials/filevault/link",
-            post(link_filevault).owned(&contracts::RECOVERY_CREDENTIALS, &[RouteOperation::Action]),
+            post(link_filevault).owned(
+                &contracts::RECOVERY_CREDENTIALS,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
         )
         .with_state(service)
 }

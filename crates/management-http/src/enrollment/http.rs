@@ -166,13 +166,17 @@ pub fn routes() -> rss_mdm_http_contract::Router<Arc<HttpState>> {
         )
         .route(
             "/enrollments/{id}/resume",
-            post(resume_enrollment)
-                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Action]),
+            post(resume_enrollment).owned(
+                &contracts::ENROLLMENT_ATTEMPTS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/enrollments/{id}/cancel",
-            post(cancel_enrollment)
-                .owned(&contracts::ENROLLMENT_ATTEMPTS, &[RouteOperation::Action]),
+            post(cancel_enrollment).owned(
+                &contracts::ENROLLMENT_ATTEMPTS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/devices/{device}/registrations/{registration}/revoke",

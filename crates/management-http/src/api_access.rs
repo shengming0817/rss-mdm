@@ -47,7 +47,10 @@ pub fn key_routes(state: Arc<Management>) -> Router {
         )
         .route(
             "/api-keys/{id}/rotate",
-            post(rotate).owned(&contracts::API_KEYS, &[RouteOperation::Action]),
+            post(rotate).owned(
+                &contracts::API_KEYS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/api-keys/{id}/revoke",

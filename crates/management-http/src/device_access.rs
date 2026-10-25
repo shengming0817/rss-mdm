@@ -79,7 +79,10 @@ pub fn routes(
         .route(
             "/devices/{device}/device-access/operations/{id}/offboarding/identity",
             rss_mdm_http_contract::routing::post(offboarding_identity)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action])
+                .owned(
+                    &contracts::DEVICE_ACCESS,
+                    &[RouteOperation::Action, RouteOperation::Lifecycle],
+                )
                 .windowed(&access::lifecycle::IDENTITY_RECONCILIATION),
         )
         .route(
@@ -114,8 +117,10 @@ pub fn routes(
         )
         .route(
             "/devices/{device}/device-access/operations/{id}/offboarding/idp",
-            rss_mdm_http_contract::routing::post(offboarding_idp)
-                .owned(&contracts::DEVICE_ACCESS, &[RouteOperation::Action]),
+            rss_mdm_http_contract::routing::post(offboarding_idp).owned(
+                &contracts::DEVICE_ACCESS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .with_state(Arc::new(Services {
             cursor,
@@ -382,6 +387,12 @@ async fn offboarding_identity(
 ) -> Result<Json<Value>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P};
     let input = body.map_err(Error::from)?.0;
+    audit.operation(
+        id,
+        "device_access_external_phase",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     let (page_query, _) = access::lifecycle::IDENTITY_RECONCILIATION
         .parse(raw.as_deref().unwrap_or(""))
         .map_err(|_| Error::Malformed)?;
@@ -658,6 +669,12 @@ async fn offboarding_idp(
 ) -> Result<Json<access::lifecycle::Progress>, Error> {
     use access::lifecycle::{ExternalComponent as C, ExternalPhase as P, IdpAction as A};
     let input = body.map_err(Error::from)?.0;
+    audit.operation(
+        id,
+        "device_access_external_phase",
+        rss_mdm_audit_integration::AuditIntent::Management,
+    );
+    audit.target_device(&device);
     let original = s.registration.offboarding(&auth.proof, &device, id).await?;
     let target_id = match input {
         IdpDisposition::Execute { target, .. } | IdpDisposition::Reconcile { target } => target,

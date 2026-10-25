@@ -65,7 +65,10 @@ pub fn routes(queries: Arc<rss_mdm_execution_service::queries::Queries>) -> Rout
         )
         .route(
             "/policies/{id}/reruns",
-            post(rerun).owned(&contracts::POLICIES, &[RouteOperation::Action]),
+            post(rerun).owned(
+                &contracts::POLICIES,
+                &[RouteOperation::Action, RouteOperation::Create],
+            ),
         )
 }
 async fn change(

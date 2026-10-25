@@ -117,7 +117,10 @@ pub fn routes() -> Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{id}/manual-fields/{field}",
-            put(manual).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            put(manual).owned(
+                &contracts::DEVICES,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
         )
         .route(
             "/saved-queries",

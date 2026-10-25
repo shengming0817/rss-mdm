@@ -35,11 +35,17 @@ pub fn routes(
         )
         .route(
             "/device-retirements/{id}/force-revoke",
-            post(force_retirement).owned(&contracts::DEVICE_RETIREMENTS, &[RouteOperation::Action]),
+            post(force_retirement).owned(
+                &contracts::DEVICE_RETIREMENTS,
+                &[RouteOperation::Action, RouteOperation::Lifecycle],
+            ),
         )
         .route(
             "/device-views/{kind}/{id}/asset-state",
-            post(asset_state).owned(&contracts::DEVICE_VIEWS, &[RouteOperation::Action]),
+            post(asset_state).owned(
+                &contracts::DEVICE_VIEWS,
+                &[RouteOperation::Action, RouteOperation::Update],
+            ),
         )
         .route(
             "/device-views/{kind}/{id}",
