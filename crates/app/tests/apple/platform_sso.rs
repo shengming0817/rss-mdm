@@ -230,8 +230,7 @@ async fn pair(
         .await?
         .context("Agent member")?;
     let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    f.app
-        .associations
+    f.associations
         .confirm(
             &proof,
             &rss_mdm_device_service::Confirm {
@@ -248,18 +247,18 @@ async fn pair(
             ),
         )
         .await?;
-    let objects = rss_mdm_device_service::planning::PlanningObjects::new(f.app.audit_store.clone());
+    let objects = rss_mdm_device_service::planning::PlanningObjects::new(f.authority.audit.clone());
     let mut tx = c.begin().await?;
     sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
         .bind(case_tenant())
         .execute(&mut *tx)
         .await?;
-    let snapshot = objects.freeze(&mut tx, f.app.identity.tenant).await?;
+    let snapshot = objects.freeze(&mut tx, f.authority.identity.tenant).await?;
     let mut ready = false;
     for _ in 0..16 {
         if matches!(
             objects
-                .advance(&mut tx, f.app.identity.tenant, &snapshot)
+                .advance(&mut tx, f.authority.identity.tenant, &snapshot)
                 .await?,
             SnapshotProgress::Ready
         ) {
@@ -344,7 +343,7 @@ async fn register_key(
     );
     let _: rss_mdm_agent_wire::platform_sso::BootstrapResponse =
         serde_json::from_value(challenge.clone())?;
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let proof=signing.signer.sign("rss-mdm-platform-sso-registration+jwt",&json!({"iss":registration,"aud":format!("{}/register",challenge["endpoints"]["base"].as_str().unwrap()),"challengeId":challenge["id"],"sourceId":challenge["sourceId"],"sourceVersion":challenge["sourceVersion"],"nonce":challenge["nonce"],"encryptionKeyId":crypto::kid(&encryption.public)?,"iat":now,"exp":now+120}))?;
     let input = json!({"operationId":Uuid::new_v4(),"challengeId":challenge["id"],"signingKey":signing.public,"encryptionKey":encryption.public,"proof":proof});
     let (status, receipt) = agent(f, "register", input.clone()).await?;
@@ -419,7 +418,7 @@ async fn login_request(
     )
     .await?;
     ensure!(status == StatusCode::OK);
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let client_nonce = Uuid::new_v4().to_string();
     let inner=user.signer.sign(ASSERTION_TYPE,&json!({"iss":id,"sub":id,"aud":rt.endpoints.issuer,"iat":now,"exp":now+120,"scope":SCOPE,"nonce":client_nonce,"request_nonce":nonce["nonce"]}))?;
     device.signer.sign(LOGIN_TYPE,&json!({"iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,"aud":rt.endpoints.token,"sub":id,"username":id,"grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer","iat":now,"exp":now+120,"scope":SCOPE,"nonce":client_nonce,"request_nonce":nonce["nonce"],"assertion":inner,"jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":apv(&encryption.public,&client_nonce)?}})).map_err(Into::into)
@@ -623,7 +622,7 @@ async fn browser_exchange(
         .split(';')
         .next()
         .context("browser cookie")?;
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let proof=user.signer.sign(BRIDGE_TYPE,&json!({"iss":registered["sourceId"],"sourceVersion":registered["sourceVersion"],"aud":challenge["audience"],"nonce":challenge["nonce"],"accessToken":access,"iat":now,"exp":now+120}))?;
     let request = Request::builder()
         .method(Method::POST)
@@ -678,7 +677,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
         context["osVersion"]=json!([26,4,0,0]);
         context["interactiveUser"]=json!({"windowsAuthority":null,"identity":"501","generatedUid":account,"sessionId":Uuid::new_v4(),"administrator":false});
-        let agent_receipt=crate::test_support::agent::seed_service(f.app.agent_enrollment.as_ref().context("Agent service")?,agent_label(),crate::test_support::case::name("psso-agent-device"),json!({"executionContext":context,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","device_access.v1"]})).await?;
+        let agent_receipt=crate::test_support::agent::seed_service(f.agent_enrollment.as_ref().context("Agent service")?,agent_label(),crate::test_support::case::name("psso-agent-device"),json!({"executionContext":context,"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","device_access.v1"]})).await?;
         let agent_registration:Uuid=serde_json::from_value(agent_receipt["registrationId"].clone())?;
         let agent_device=agent_receipt["deviceId"].as_str().context("Agent device")?;
         let mdm=pair(&f,agent_device).await?;
@@ -759,7 +758,7 @@ async fn native_registration_scenario(password: Option<password::Fixture>) -> Re
         ensure!(headers.get_all("set-cookie").iter().any(|h|h.to_str().is_ok_and(|s|s.starts_with("__Host-identity-session="))),"P2 must issue ordinary Identity session");
         if !mode {
         let secret=headers.get_all("set-cookie").iter().filter_map(|h|h.to_str().ok()).find_map(|v|v.strip_prefix("__Host-identity-session=").and_then(|v|v.split(';').next())).context("platform cookie")?;
-        let session=f.app.identity.authority.inspect_session(f.app.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
+        let session=f.authority.identity.authority.inspect_session(f.authority.identity.tenant,rss_identity_core::session::SessionSecret::parse(secret.into())?,crate::identity::deadline()).await?;
         let reference=serde_json::to_value(session.reference()?)?;
         {
             let mut pg=sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;

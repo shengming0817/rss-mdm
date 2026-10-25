@@ -1,4 +1,3 @@
-use crate::api::Assembly;
 use crate::windows::test_support::*;
 use anyhow::ensure;
 use axum::http::StatusCode;
@@ -14,13 +13,13 @@ use uuid::Uuid;
 async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
-    let app = &host.app;
+    let app = &host;
     let client = &host.client;
     ensure!(
         client
             .get(format!(
                 "{}/accepted-peer",
-                app.windows()?.config.enrollment.origin
+                app.windows.as_ref().config.enrollment.origin
             ))
             .header("x-forwarded-for", "198.51.100.23")
             .send()
@@ -42,7 +41,7 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
         .unwrap();
     discover_and_policy(
         client,
-        app,
+        &host.windows,
         peer.receipt.enrollment_id,
         token.password.0.as_str(),
     )
@@ -152,11 +151,11 @@ async fn discovery_wstep_replay_and_tls_identity() -> anyhow::Result<()> {
 )]
 async fn discover_and_policy(
     client: &reqwest::Client,
-    app: &Assembly,
+    windows: &crate::windows::Windows,
     enrollment: Uuid,
     password: &str,
 ) -> anyhow::Result<()> {
-    let origin = &app.windows()?.config.enrollment.origin;
+    let origin = &windows.config.enrollment.origin;
     let mut discovery = soap::decode(
         include_bytes!("../../../windows-mdm/tests/fixtures/discovery-request.xml"),
         Operation::Discover,
@@ -201,7 +200,7 @@ async fn discover_and_policy(
         .username
         .as_mut()
         .unwrap();
-    token.username = Secret(app.windows()?.channel.enrollment_username(enrollment)?);
+    token.username = Secret(windows.channel.enrollment_username(enrollment)?);
     token.password = Secret(password.to_owned());
     let response = client
         .post(&found.policy_url)
@@ -366,7 +365,7 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let origin = format!("http://{}", listener.local_addr()?);
     let _server = crate::test_support::software::HttpServer::start(listener, host.browser.clone());
-    let secret = crate::test_support::identity::credential(&host.app.identity, "other")?;
+    let secret = crate::test_support::identity::credential(&host.authority.identity, "other")?;
     let mut browser = crate::test_support::http::Browser {
         network: Some((
             reqwest::Client::builder()
@@ -404,8 +403,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     ensure!(
         before["instructions"]["username"]
             == host
-                .app
-                .windows()?
+                .windows
+                .as_ref()
                 .channel
                 .enrollment_username(peer.receipt.enrollment_id)?
     );
@@ -438,7 +437,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         status == StatusCode::OK && ready["progress"]["managementReady"] == true,
         "{ready}"
     );
-    let mut tx = host.store.begin(case_tenant()).await?;
+    let mut tx = host.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=false WHERE tenant_id=$1::uuid AND registration=$2")
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -449,7 +449,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         disabled["progress"]["managementReady"] == false
             && disabled["progress"]["diagnostic"] == "channel_unavailable"
     );
-    let mut tx = host.store.begin(case_tenant()).await?;
+    let mut tx = host.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     sqlx::query("UPDATE mdm_access.report_sources SET enabled=true WHERE tenant_id=$1::uuid AND registration=$2")
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut *tx).await?;
     tx.commit().await?;
@@ -464,8 +465,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         .bind(case_tenant()).bind(peer.intent.registration).execute(&mut pg).await?.rows_affected() == 1);
     ensure!(
         rss_mdm_windows_channel::retention::prune_management(
-            &host.store.windows_store(),
-            host.app.audit_store.as_ref(),
+            &host.windows_state.access.clone(),
+            host.authority.audit.as_ref(),
             case_tenant()
         )
         .await?
@@ -485,8 +486,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     );
     let proof = crate::device::test_support::admin(case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
-        host.store.registration(),
-        host.app.audit_store.clone(),
+        host.authority.registration.clone(),
+        host.authority.audit.clone(),
     );
     let usage = quotas.usage(&proof, None).await?;
     let usage = usage
@@ -495,7 +496,8 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
         .find(|c| c.channel == rss_mdm_registration_service::quotas::Channel::WindowsMdm)
         .unwrap();
     ensure!(usage.active == 1 && usage.reserved == 0 && usage.used == 1);
-    let mut tx = host.store.begin(case_tenant()).await?;
+    let mut tx = host.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     let device:String=sqlx::query_scalar("SELECT g.device FROM mdm_access.requests q JOIN mdm_access.grants g ON(q.tenant_id,q.grant_id)=(g.tenant_id,g.id) WHERE q.tenant_id=$1::uuid AND q.id=$2 AND q.self_service").bind(case_tenant()).bind(peer.receipt.enrollment_id).fetch_one(&mut *tx).await?;
     ensure!(device.starts_with("self:") && device != crate::test_support::case::name("tls-device"));
     tx.rollback().await?;
@@ -506,8 +508,7 @@ async fn self_enrollment_preserves_server_identity_and_terminal_protocol_id() ->
     )
     .await?;
     let admin = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
-    host.app
-        .devices
+    host.devices
         .revoke(&admin, &device, peer.intent.registration, Uuid::new_v4())
         .await?;
     let (_, revoked) = browser

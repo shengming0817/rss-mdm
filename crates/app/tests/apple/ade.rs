@@ -547,18 +547,18 @@ impl Control {
         )
         .await?;
         let remote_profile = self.state.lock().await.profile;
-        let mut tx = self.f.app.access.archive_pool().begin().await?;
+        let mut tx = self.f.authority.pool.clone().begin().await?;
         sqlx::query("SELECT set_config('rss.tenant_id',$1,true)")
             .bind(case_tenant())
             .execute(&mut *tx)
             .await?;
-        let configuration = rss_mdm_apple_channel::ade::fixture::seed_in(&mut tx, &self.f.app.protection,
+        let configuration = rss_mdm_apple_channel::ade::fixture::seed_in(&mut tx, &self.f.commands.protection,
             rss_mdm_apple_channel::ade::fixture::Directory {
                 tenant: case_tenant(), organization: self.organization, profile: self.profile, remote_profile,
                 serial: crate::test_support::case::name("ade-serial"),
                 token: &serde_json::to_vec(&json!({"consumer_key":"fixture-consumer","consumer_secret":"fixture-secret","access_token":"fixture-access","access_secret":"fixture-access-secret","access_token_expiry":"2030-01-01T00:00:00Z"}))?,
                 configuration: json!({"name":"T2 ADE","mandatory":true,"removable":false,"skip":["AppleID","Intelligence"]}),
-                origin: &self.f.ade.authentication.origin, now: self.f.app.clock.unix_seconds()?,
+                origin: &self.f.ade.authentication.origin, now: self.f.clock.unix_seconds()?,
             }).await?;
         tx.commit().await?;
         let mut state = self.state.lock().await;
@@ -674,7 +674,7 @@ impl Control {
                     .path()
                     .join("machine.pk8"),
             )?,
-            self.f.app.clock.unix_seconds()?,
+            self.f.clock.unix_seconds()?,
         )?;
         Ok(signer.sign(
             &protocol::xml(protocol::dictionary([
@@ -690,7 +690,7 @@ impl Control {
                 ("OS_VERSION", "15.0".into()),
                 ("VERSION", "24A335".into()),
             ]))?,
-            self.f.app.clock.unix_seconds()?,
+            self.f.clock.unix_seconds()?,
         )?)
     }
     fn coordinates(bytes: &[u8]) -> Result<(Uuid, Uuid, String)> {
@@ -768,11 +768,11 @@ async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<(
     let ordinary = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
         &std::fs::read(c.f.root.join("apple-profile.pem"))?,
         &std::fs::read(c.f.root.join("apple-profile.pk8"))?,
-        c.f.app.clock.unix_seconds()?,
+        c.f.clock.unix_seconds()?,
     )?;
     let forged = ordinary.sign(
         &protocol::xml(account_enrollment::plist_cms(&machine)?)?,
-        c.f.app.clock.unix_seconds()?,
+        c.f.clock.unix_seconds()?,
     )?;
     ensure!(
         c.enroll(forged).await?.0 != StatusCode::OK,
@@ -808,12 +808,12 @@ async fn organization_ade_enrolls_without_a_user_or_personal_quota() -> Result<(
     let csr = device.request(
         &c.f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        c.f.app.clock.unix_seconds()?,
+        c.f.clock.unix_seconds()?,
     )?;
     let der = device
         .enroll(
             &c.f.client()?,
-            &c.f.app.apple()?.channel.scep_fixture()?.0,
+            &c.f.apple.as_ref().channel.scep_fixture()?.0,
             &csr,
         )
         .await?;
@@ -847,7 +847,7 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
     let old_csr = old_device.request(
         &c.f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        c.f.app.clock.unix_seconds()?,
+        c.f.clock.unix_seconds()?,
     )?;
     c.command(json!({"kind":"clear","devices":[crate::test_support::case::name("ade-serial")]}))
         .await?;
@@ -860,7 +860,7 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
         old_device
             .enroll(
                 &c.f.client()?,
-                &c.f.app.apple()?.channel.scep_fixture()?.0,
+                &c.f.apple.as_ref().channel.scep_fixture()?.0,
                 &old_csr
             )
             .await
@@ -896,12 +896,12 @@ async fn unknown_profile_is_resolved_and_unassignment_revokes_pending_admission(
     let csr = device.request(
         &c.f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        c.f.app.clock.unix_seconds()?,
+        c.f.clock.unix_seconds()?,
     )?;
     let der = device
         .enroll(
             &c.f.client()?,
-            &c.f.app.apple()?.channel.scep_fixture()?.0,
+            &c.f.apple.as_ref().channel.scep_fixture()?.0,
             &csr,
         )
         .await?;
@@ -968,9 +968,7 @@ async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publ
     let visible:bool=sqlx::query_scalar("SELECT NOT deleted FROM mdm_apple.ade_devices WHERE tenant_id=$1::uuid AND organization=$2 AND serial=$3").bind(case_tenant()).bind(c.organization).bind(serial).fetch_one(&mut pg).await?;
     ensure!(visible, "incomplete snapshot deleted an existing device");
     // Discard the worker handle and continue from a newly assembled durable reader.
-    let resumed =
-        crate::api::from_state(c.f.app.clone(), "mdm.example.test".into(), fixture_clock())
-            .apple_control;
+    let resumed = c.f.ade.clone();
     c.state.lock().await.cursor_fail_once = true;
     ensure!(rss_mdm_apple_channel::ade::worker::cycle(&resumed).await?);
     let state = c.result(op).await?;
@@ -1045,7 +1043,8 @@ async fn interrupted_snapshots_and_unknown_assignment_recover_without_false_publ
         c.result(assign).await?["state"] == "succeeded"
             && c.result(recovery).await?["state"] == "succeeded"
     );
-    let mut other = c.f.app.access.begin(&Uuid::new_v4().to_string()).await?;
+    let mut other = c.f.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut other, &Uuid::new_v4().to_string()).await?;
     let leaked: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_apple.ade_devices")
         .fetch_one(&mut *other)
         .await?;

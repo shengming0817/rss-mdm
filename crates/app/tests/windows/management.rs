@@ -20,7 +20,7 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
         message,
         ..
     } = host.peer().await?;
-    let app = &host.app;
+    let app = &host;
     let reader = rss_mdm_inventory_postgres::InventoryReader::connect(options("mdm_api")?).await?;
     let wire = syncml::encode(&message, &CodecLimits::default())?;
     let post = |bytes: Vec<u8>| {
@@ -31,10 +31,11 @@ async fn session_replay_nonce_collection_and_revoke() -> anyhow::Result<()> {
     };
     #[cfg(feature = "integration")]
     {
-        app.execution
+        app.commands
+            .service
             .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
         ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
-        app.execution.inject_fault(
+        app.commands.service.inject_fault(
             rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
         );
         ensure!(post(wire.clone()).send().await?.status() == StatusCode::SERVICE_UNAVAILABLE);
@@ -478,8 +479,14 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
         .status()
             == StatusCode::OK
     );
-    let mut work =
-        crate::execution::test_support::Client::start(host.browser.clone(), &host.app).await?;
+    let mut work = crate::execution::test_support::Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     work.accept_authorized().await?;
     work.publish_operation(work.operation).await?;
     let pool = sqlx::PgPool::connect_with(options("postgres")?).await?;
@@ -527,8 +534,8 @@ async fn native_unenrollment_notification_retires_only_its_authenticated_registr
             .send()
     };
     ensure!(post(other).await?.status() == StatusCode::FORBIDDEN);
-    host.app
-        .audit_store
+    host.authority
+        .audit
         .inject_next_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(post(notification.clone()).await?.status() == StatusCode::SERVICE_UNAVAILABLE);
     let intact: bool = sqlx::query_scalar("SELECT r.state='active' AND EXISTS(SELECT 1 FROM mdm_access.credentials c WHERE c.tenant_id=r.tenant_id AND c.registration=r.id AND c.state='active') AND NOT EXISTS(SELECT 1 FROM mdm_windows.unenrollment_receipts u WHERE u.tenant_id=r.tenant_id AND u.registration=r.id) FROM mdm_access.registrations r WHERE r.tenant_id=$1::uuid AND r.id=$2").bind(case_tenant()).bind(peer.intent.registration).fetch_one(&pool).await?;

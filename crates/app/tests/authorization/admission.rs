@@ -158,10 +158,23 @@ async fn permission_drift_corrupt_policy_and_stalled_postgres() -> Result<()> {
         let sessions = Arc::new(rss_mdm_authorization_service::session::SessionAuthority::new(authority.identity.authority.clone(), authority.identity.tenant));
         let (execution, _, _) = crate::test_support::command::command_service(authority.audit.clone(), sessions, rss_device_command_postgres::CommandClock::Postgres).await?;
         owners.resource(rss_mdm_execution_service::Resource(execution.clone()));
+        let tenant = authority.identity.tenant;
+        let runtime = crate::planning::test_support::runtime(tenant).await;
+        owners.resource(SourceResource(runtime.clone()));
+        let key = rss_mdm_flow_service::storage::cursor_key(&runtime, tenant).await?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let audit = Arc::new(authority.audit.on_runtime(runtime.clone(), tenant, &budget.control()).await?);
+        let planning = crate::planning::Planning::new(audit.clone(), runtime, tenant, Arc::new(crate::clock::SystemClock), &key,
+            Arc::new(rss_mdm_device_service::planning::PlanningObjects::new(audit))).await?;
+        let compliance = crate::planning::test_support::compliance(&planning).await;
         owners.finish(async {
-            let router = authority.router(authority.authorization())?;
+            let router = authority.router(authority.authorization().nest("/api/v1",
+                rss_mdm_management_http::compliance::http::routes().with_state(compliance).into_axum()))?;
             let mut browser = authority.browser("admin")?;
             ensure!(browser.call(&router, Method::GET, "/api/v1/authorization", None).await?.0 == StatusCode::OK);
+            let rules = browser.call(&router, Method::GET, "/api/v1/compliance-rules", None).await?;
+            ensure!(rules.0 == StatusCode::OK && rules.1["items"].is_array(), "isolated Compliance query: {rules:?}");
+            ensure!(planning.groups.get(rss_mdm_group_postgres::GroupId::parse(&Uuid::new_v4().to_string())?, crate::identity::deadline()).await?.is_none());
             execution.relay_once().await?;
             Ok(())
         }).await

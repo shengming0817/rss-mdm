@@ -183,32 +183,30 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         &origin,
         crate::windows::test_support::monotonic(),
     )?);
-    channel.push.as_mut().unwrap().configuration = host
-        .app
-        .windows
-        .as_ref()
-        .unwrap()
-        .channel
-        .push
-        .as_ref()
-        .unwrap()
-        .configuration;
-    let database = host.store.windows_store();
-    let eligibility = crate::windows::WakeEligibility(host.app.execution.clone());
+    channel.push.as_mut().unwrap().configuration =
+        host.windows.channel.push.as_ref().unwrap().configuration;
+    let database = host.windows_state.access.clone();
+    let eligibility = crate::windows::WakeEligibility(host.commands.service.clone());
     ensure!(
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?,
         "no work must not wake a device"
     );
-    let mut command =
-        crate::execution::test_support::Client::start(host.browser.clone(), &host.app).await?;
+    let mut command = crate::execution::test_support::Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     command.accept_authorized().await?;
     command.publish_operation(command.operation).await?;
     let before: i64 =
@@ -219,9 +217,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -253,9 +251,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -266,9 +264,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -284,9 +282,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         !rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?
@@ -296,9 +294,9 @@ async fn native_push_routes_require_correlated_pfn_and_refresh_without_resetting
         rss_mdm_windows_channel::push::wake_once(
             &windows.channel,
             &eligibility,
-            &host.app.protection,
+            &host.commands.protection,
             &database,
-            &host.app.audit_store,
+            &host.authority.audit,
             case_tenant()
         )
         .await?

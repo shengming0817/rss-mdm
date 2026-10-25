@@ -52,7 +52,7 @@ pub mod software_native;
 
 pub mod agent_enrollment;
 
-mod pki;
+pub mod pki;
 
 pub mod windows_entra;
 

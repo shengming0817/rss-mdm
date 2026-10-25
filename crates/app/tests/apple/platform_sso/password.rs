@@ -204,7 +204,9 @@ impl Fixture {
             .fetch_one(&mut *tx)
             .await?;
         ensure!(before == 1);
-        provider.admit_on(&mut tx, f.app.identity.tenant).await?;
+        provider
+            .admit_on(&mut tx, f.authority.identity.tenant)
+            .await?;
         let after: i64 = sqlx::query_scalar(query)
             .bind(source)
             .bind(&config)
@@ -263,7 +265,7 @@ pub(super) async fn register_user(
         status == StatusCode::OK,
         "Password registration challenge {status}: {challenge}"
     );
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let proof=signing.signer.sign("rss-mdm-platform-sso-registration+jwt",&json!({"iss":registration,"aud":format!("{}/register",challenge["endpoints"]["base"].as_str().context("base")?),"challengeId":challenge["id"],"sourceId":challenge["sourceId"],"sourceVersion":challenge["sourceVersion"],"nonce":challenge["nonce"],"encryptionKeyId":crypto::kid(&encryption.public)?,"iat":now,"exp":now+120}))?;
     let input = json!({"operationId":Uuid::new_v4(),"challengeId":challenge["id"],"signingKey":null,"encryptionKey":encryption.public,"proof":proof});
     let reply = agent(f, "register", input.clone()).await?;
@@ -287,7 +289,7 @@ async fn request(
     )
     .await?;
     ensure!(status == StatusCode::OK);
-    let now = f.app.clock.unix_seconds()?;
+    let now = f.clock.unix_seconds()?;
     let client_nonce = Uuid::new_v4().to_string();
     device.signer.sign(LOGIN_TYPE,&json!({"iss":rt.configuration.client_id,"client_id":rt.configuration.client_id,"aud":rt.endpoints.token,"sub":id,"username":id,"grant_type":"password","password":password,"iat":now,"exp":now+120,"scope":SCOPE,"nonce":client_nonce,"request_nonce":nonce["nonce"],"jwe_crypto":{"alg":"ECDH-ES","enc":"A256GCM","apv":apv(&encryption.public,&client_nonce)?}})).map_err(Into::into)
 }

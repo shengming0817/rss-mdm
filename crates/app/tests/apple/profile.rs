@@ -136,8 +136,8 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
     // after preparation so only the real protocol request can consume it.
     f.stop_execution_worker().await?;
     // The commit fault is consumed after channel confirmation, reducer and audit SQL have run.
-    f.app
-        .execution
+    f.commands
+        .service
         .inject_fault(rss_transactional_messaging_postgres::PgTransactionFault::CommitPending);
     ensure!(peer.send("/mdm", response.clone()).await?.0 == StatusCode::SERVICE_UNAVAILABLE);
     let state:(bool,bool)=sqlx::query_as("SELECT a.response IS NULL AND a.state='sent' AND NOT a.accepted,p.observed_at IS NULL AND p.retired_at IS NULL AND p.verification='unknown' FROM mdm_apple.attempts a JOIN mdm_apple.profiles p ON(p.tenant_id,p.operation)=(a.tenant_id,a.operation) WHERE a.tenant_id=$1::uuid AND a.id=$2")

@@ -13,7 +13,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     .await?;
     let (peer, device) = f.ready_local_peer().await?;
     let path = format!("/api/v1/devices/{}/operations", case_device());
-    let unknown=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
+    let unknown=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":Uuid::new_v4(),"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
     ensure!(
         !unknown.0.is_success(),
         "missing native prerequisites accepted: {unknown:?}"
@@ -40,7 +40,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
     ensure!(registration["source"] == "mdm.apple");
     let confirmation = json!({"confirmed":true,"expectedRegistrationId":registration["registrationId"],"expectedGeneration":registration["generation"]});
     let failed = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":failed,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&path,Some(json!({"operationId":failed,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"restart"}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, _) = peer.next("RestartDevice").await?;
     let canary = "native-error-must-not-disclose-password";
@@ -79,7 +79,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
         )?
         .derive();
         let plain = f
-            .app
+            .commands
             .protection
             .open_bytes(&row.try_get::<Vec<u8>, _>("response")?, &aad)?;
         ensure!(!String::from_utf8_lossy(plain.expose()).contains(canary));
@@ -110,7 +110,7 @@ async fn native_controls_are_closed_and_never_claim_effects() -> Result<()> {
             action["pin"] = json!("781239")
         }
         let input =
-            json!({"operationId":id,"deadline":f.app.clock.unix_seconds()?+300,"action":action});
+            json!({"operationId":id,"deadline":f.clock.unix_seconds()?+300,"action":action});
         let accepted = f
             .browser
             .call(&f.router, Method::POST, &path, Some(input.clone()))
@@ -189,13 +189,13 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     let generation = detail.1["primaryMdmRegistration"]["generation"].clone();
     let path = format!("/api/v1/devices/{}/recovery-credentials", case_device());
     let operation = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":operation,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"collect_filevault","expectedRevision":0,"recipient":null}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":operation,"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"collect_filevault","expectedRevision":0,"recipient":null}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
         "credential create: {accepted:?}"
     );
     let (attempt, _) = peer.next_security().await?;
-    let protection = f.app.execution.recovery_credentials().unwrap();
+    let protection = f.commands.service.recovery_credentials().unwrap();
     let mut recipients = Stack::new()?;
     recipients.push(X509::from_der(
         &protection.active_recipient().certificate_der()?,
@@ -243,7 +243,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     );
 
     let set = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":set,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":0,"current":null,"clear":false}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":set,"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":0,"current":null,"clear":false}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
         "recovery lock create: {accepted:?}"
@@ -260,7 +260,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         .unwrap();
     ensure!(lock["validity"] == "unknown");
     let verify = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":verify,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":lock["version"]}}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":verify,"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":lock["version"]}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, payload) = peer.next("VerifyRecoveryLock").await?;
     ensure!(payload["Password"].as_string() == Some(password.as_str()));
@@ -281,14 +281,14 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     ensure!(!f.operation(verify).await?.to_string().contains(&password));
     // A rejected replacement remains protected until the original password is independently verified.
     let replacement = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":replacement,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":1,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":replacement,"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":1,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
         "replacement {accepted:?}"
     );
     let (attempt, _) = peer.next("SetRecoveryLock").await?;
     peer.manage("Error", Some(attempt), None).await?;
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":2}}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":2}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, _) = peer.next("VerifyRecoveryLock").await?;
     peer.manage(
@@ -297,7 +297,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         Some(("PasswordVerified", false.into())),
     )
     .await?;
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"reconcile_recovery_lock","operation":replacement,"material":{"id":lock["id"],"version":1}}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"reconcile_recovery_lock","operation":replacement,"material":{"id":lock["id"],"version":1}}}))).await?;
     ensure!(
         accepted.0 == StatusCode::ACCEPTED,
         "reconcile old {accepted:?}"
@@ -310,11 +310,11 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         Some(("PasswordVerified", true.into())),
     )
     .await?;
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":2,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":2,"current":{"id":lock["id"],"version":1},"clear":false}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED, "next set {accepted:?}");
     let (attempt, _) = peer.next("SetRecoveryLock").await?;
     peer.manage("Acknowledged", Some(attempt), None).await?;
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, _) = peer.next("VerifyRecoveryLock").await?;
     peer.manage(
@@ -332,7 +332,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
     )
     .await?;
     let pending = Uuid::new_v4();
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":pending,"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"verify_recovery_lock","material":{"id":lock["id"],"version":3}}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED, "profile {accepted:?}");
     let mut pg =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
@@ -343,7 +343,7 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
             .bind(case_tenant())
             .fetch_one(&mut pg)
             .await?;
-    f.app.execution.maintain_recovery_credentials().await?;
+    f.commands.service.maintain_recovery_credentials().await?;
     let after: i64 =
         sqlx::query_scalar("SELECT count(*) FROM mdm_audit.receipts WHERE tenant_id=$1::uuid")
             .bind(case_tenant())
@@ -401,15 +401,15 @@ async fn recovery_material_is_escrowed_without_leaking_into_native_results() -> 
         Some(("PasswordVerified", true.into())),
     )
     .await?;
-    f.app.execution.maintain_recovery_credentials().await?;
+    f.commands.service.maintain_recovery_credentials().await?;
     let erased:bool=sqlx::query_scalar("SELECT sealed IS NULL AND key_id IS NULL FROM mdm_recovery.versions WHERE tenant_id=$1::uuid AND entry=$2 AND version=1").bind(case_tenant()).bind(Uuid::parse_str(lock["id"].as_str().unwrap())?).fetch_one(&mut pg).await?;
     ensure!(erased);
     // Clear authenticates with the unverified candidate but removes the whole lock object.
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":3,"current":{"id":lock["id"],"version":3},"clear":false}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":3,"current":{"id":lock["id"],"version":3},"clear":false}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, _) = peer.next("SetRecoveryLock").await?;
     peer.manage("Acknowledged", Some(attempt), None).await?;
-    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.app.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":4,"current":{"id":lock["id"],"version":4},"clear":true}}))).await?;
+    let accepted=f.browser.call(&f.router,Method::POST,&format!("{path}/operations"),Some(json!({"operationId":Uuid::new_v4(),"registration":registration,"generation":generation,"deadline":f.clock.unix_seconds()?+300,"action":{"kind":"set_recovery_lock","expectedRevision":4,"current":{"id":lock["id"],"version":4},"clear":true}}))).await?;
     ensure!(accepted.0 == StatusCode::ACCEPTED);
     let (attempt, payload) = peer.next("SetRecoveryLock").await?;
     ensure!(payload["NewPassword"].as_string() == Some(""));

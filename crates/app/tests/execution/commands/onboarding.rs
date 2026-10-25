@@ -205,19 +205,26 @@ fn reply(initial: &s::Message, response: &s::Message, installed: bool) -> s::Mes
 #[tokio::test]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn agent_maintenance_without_deadline_completes_more_data() -> Result<()> {
-    let mut host = crate::windows::test_support::Host::with_agent(
-        None,
-        rss_device_command_postgres::CommandClock::Postgres,
-    )
-    .await?;
+    let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     setup::publish(
         &mut client.browser,
         &client.router,
         case_device(),
-        &host.app,
+        &host.planning,
+        host.commands
+            .content
+            .as_deref()
+            .context("package content")?,
         true,
     )
     .await?;
@@ -287,7 +294,11 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     let (initial, execute, delivered_bootstrap) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let prepared = bootstrap::prepare_windows(
-        &host.app,
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
         &client.router,
         operation,
         delivered_bootstrap
@@ -296,7 +307,6 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     )
     .await?;
     let config = host
-        .app
         .agent_enrollment
         .as_ref()
         .context("Agent enrollment")?
@@ -427,7 +437,7 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
         case_tenant()
     ))?;
     let receipt = crate::test_support::agent::complete_grant(
-        host.app.agent_enrollment.as_ref().unwrap(),
+        host.agent_enrollment.as_ref().unwrap(),
         &receipt,
         &input,
         &credential("managed-agent"),
@@ -482,8 +492,8 @@ async fn windows_policy_install_register_and_replay_use_independent_identity() -
     )
     .await?;
     let future = crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301;
-    host.app
-        .execution
+    host.commands
+        .service
         .advance_installation_authorization_to(future)?;
     begin(&peer, 1600).await?;
     let recovered = pg(&format!(
@@ -612,26 +622,29 @@ async fn start_fixture_format(
     Uuid,
     Option<i64>,
 )> {
-    let mut host = crate::windows::test_support::Host::with_agent(
-        None,
-        rss_device_command_postgres::CommandClock::Postgres,
-    )
-    .await?;
+    let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(30))?,
         Arc::new(crate::lifecycle::RuntimeTimer),
     )?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            host.app.flow.planning.clone(),
+            host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.app.flow.assets.clone(),
-        host.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -660,7 +673,11 @@ async fn start_fixture_format(
             &mut client.browser,
             &client.router,
             case_device(),
-            &host.app,
+            &host.planning,
+            host.commands
+                .content
+                .as_deref()
+                .context("package content")?,
         )
         .await?
     } else {
@@ -668,7 +685,11 @@ async fn start_fixture_format(
             &mut client.browser,
             &client.router,
             case_device(),
-            &host.app,
+            &host.planning,
+            host.commands
+                .content
+                .as_deref()
+                .context("package content")?,
             true,
             until,
         )
@@ -944,10 +965,18 @@ async fn native_enforcement_failure_is_separate_from_delivery_and_never_reinstal
 async fn cancellation_blocks_registration_and_preserves_uncertain_native_effect() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
-        .await?
-        .notify(&client.router)
-        .await?;
+    let bootstrap_peer = bootstrap::prepare(
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
+        &client.router,
+        operation,
+    )
+    .await?
+    .notify(&client.router)
+    .await?;
     let result = client
         .call(
             Method::POST,
@@ -1003,10 +1032,18 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
         start_fixture_until(Some(300)).await?;
     let until = until.expect("scheduled fixture");
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
-        .await?
-        .notify(&client.router)
-        .await?;
+    let bootstrap_peer = bootstrap::prepare(
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
+        &client.router,
+        operation,
+    )
+    .await?
+    .notify(&client.router)
+    .await?;
     ensure!(
         client
             .call(Method::GET, &format!("/{operation}"), None)
@@ -1046,10 +1083,18 @@ async fn schedule_expiry_caps_installation_and_blocks_new_agent_registration() -
 async fn replacement_rejects_old_installation_and_requires_current_epoch_absence() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
-        .await?
-        .notify(&client.router)
-        .await?;
+    let bootstrap_peer = bootstrap::prepare(
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
+        &client.router,
+        operation,
+    )
+    .await?
+    .notify(&client.router)
+    .await?;
     let current = host.enrolled_peer().await?;
     let input = json!({"wireVersion":1,"operationId":Uuid::new_v4(),"installationOperation":operation,"secret":credential("replacement-agent"),"csr":crate::test_support::agent::csr()?,"runtime":{"executionContext":crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::Windows),"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","task.execute.v1"]}});
     ensure!(bootstrap::grant(&bootstrap_peer, &input).await?.status() == StatusCode::FORBIDDEN);
@@ -1111,10 +1156,18 @@ async fn replacement_rejects_old_installation_and_requires_current_epoch_absence
 async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadline() -> Result<()> {
     let (host, mut client, peer, commands, owner, policy, operation) = start_fixture().await?;
     installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
-    let bootstrap_peer = bootstrap::prepare(&host.app, &client.router, operation)
-        .await?
-        .notify(&client.router)
-        .await?;
+    let bootstrap_peer = bootstrap::prepare(
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
+        &client.router,
+        operation,
+    )
+    .await?
+    .notify(&client.router)
+    .await?;
     let policy_view = client
         .browser
         .call(
@@ -1179,24 +1232,30 @@ async fn scope_exit_preserves_dispatched_installation_authority_until_its_deadli
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn policy_freeze_distinguishes_superseded_identity_from_withdrawn_authority() -> Result<()> {
-    let host = crate::windows::test_support::Host::with_agent(
-        None,
-        rss_device_command_postgres::CommandClock::Postgres,
+    let host = crate::windows::test_support::Host::open().await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
     )
     .await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let release = setup::publish_until(
         &mut client.browser,
         &client.router,
         "",
-        &host.app,
+        &host.planning,
+        host.commands
+            .content
+            .as_deref()
+            .context("package content")?,
         true,
         None,
     )
     .await?;
     let scope = Uuid::new_v4();
-    crate::test_support::agent_execution::seed_scope(&host.app.flow.planning, scope, json!([]))
-        .await?;
+    crate::test_support::agent_execution::seed_scope(&host.planning, scope, json!([])).await?;
     let policy = Uuid::new_v4();
     crate::test_support::software::write(&mut client.browser, &client.router, &format!("/api/v1/policies/{policy}"), 0,
         json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":release},"runLifetimeSeconds":3600}}})).await?;
@@ -1269,7 +1328,8 @@ async fn installed_report_blocks_execute_after_preparation() -> Result<()> {
         installation(&peer, &mut client, policy, operation, AttemptPhase::Prepare).await?;
     // A pending maintenance query preserves the previous sealed channel fact,
     // including when Group reads its historical quality at a newer watermark.
-    let mut tx = host.app.access.begin(case_tenant()).await?;
+    let mut tx = host.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     let scope: String = sqlx::query_scalar("SELECT scope FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND source='mdm.windows' AND result='pending' ORDER BY sequence DESC LIMIT 1")
         .bind(case_tenant()).fetch_one(&mut *tx).await?;
     let watermark: i64 =
@@ -1433,7 +1493,11 @@ async fn installed_exe_invalidates_prior_msi_absence_and_blocks_second_installer
         &mut client.browser,
         &client.router,
         case_device(),
-        &host.app,
+        &host.planning,
+        host.commands
+            .content
+            .as_deref()
+            .context("package content")?,
     )
     .await?;
     let (initial, mut response) = begin(&peer, 2200).await?;
@@ -1489,19 +1553,26 @@ async fn installed_exe_invalidates_prior_msi_absence_and_blocks_second_installer
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "make t2 MODULE=execution.commands.onboarding"]
 async fn historical_msix_catalog_crosses_native_read_batch_without_losing_absence() -> Result<()> {
-    let mut host = crate::windows::test_support::Host::with_agent(
-        None,
-        rss_device_command_postgres::CommandClock::Postgres,
-    )
-    .await?;
+    let mut host = crate::windows::test_support::Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     for patch in 0..11 {
         setup::publish_msix_release(
             &mut client.browser,
             &client.router,
-            &host.app,
+            &host.planning,
+            host.commands
+                .content
+                .as_deref()
+                .context("package content")?,
             &format!("1.2.{patch}.0"),
         )
         .await?;
@@ -1563,7 +1634,11 @@ async fn expired_known_bootstrap_recovers_without_reinstall_or_unknown_resigning
     let (initial, execute, delivered) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let old = bootstrap::prepare_windows(
-        &host.app,
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
         &client.router,
         operation,
         delivered.as_ref().context("first bootstrap")?,
@@ -1788,7 +1863,11 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
     let (initial, execute, wire) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     bootstrap::prepare_windows(
-        &host.app,
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
         &client.router,
         operation,
         wire.as_ref().context("initial identity")?,
@@ -1808,10 +1887,19 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         for _ in 0..CodecLimits::default().session_messages {
             if !bootstrap::windows_fields(&wire.commands).is_empty() {
                 replacement = Some(
-                    bootstrap::prepare_windows(&host.app, &client.router, operation, &wire)
-                        .await?
-                        .notify(&client.router)
-                        .await?,
+                    bootstrap::prepare_windows(
+                        &host.commands.runtime,
+                        &host.commands.protection,
+                        host.agent_channel.as_ref().context("Agent listener")?,
+                        &host.authority.audit,
+                        host.agent_enrollment.as_ref().context("Agent enrollment")?,
+                        &client.router,
+                        operation,
+                        &wire,
+                    )
+                    .await?
+                    .notify(&client.router)
+                    .await?,
                 );
                 post(&peer, &reply(&start, &wire, false)).await?;
                 break 'sessions;
@@ -1848,7 +1936,7 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
     ensure!(response.status() == StatusCode::OK);
     let grant: Value = response.json().await?;
     crate::test_support::agent::complete_grant(
-        host.app.agent_enrollment.as_ref().unwrap(),
+        host.agent_enrollment.as_ref().unwrap(),
         &grant,
         &input,
         &secret,
@@ -1865,9 +1953,11 @@ async fn historical_bootstrap_cleanup_survives_current_identity_completion() -> 
         case_tenant()
     ))?;
     let original = Uuid::parse_str(original.trim()).context("historical cleanup stays pending")?;
-    host.app.execution.advance_installation_authorization_to(
-        crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301,
-    )?;
+    host.commands
+        .service
+        .advance_installation_authorization_to(
+            crate::clock::Clock::unix_seconds(&crate::clock::SystemClock)? + 301,
+        )?;
     finish_cleanup(&peer, old, 2700, None).await?;
     ensure!(
         pg(&format!(
@@ -1892,7 +1982,11 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
     // Complete the independent bootstrap certificate delivery without activating
     // an Agent registration. Otherwise that older uncertain command is the first blocker.
     bootstrap::prepare_windows(
-        &host.app,
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
         &client.router,
         operation,
         bootstrap_wire
@@ -1930,7 +2024,7 @@ async fn retirement_keeps_unregistered_installed_agent_as_explicit_residue() -> 
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.registrations WHERE tenant_id='{}' AND channel='agent'",case_tenant()))?.trim()=="0");
     let scope = Uuid::new_v4();
     crate::test_support::agent_execution::seed_scope(
-        &host.app.flow.planning,
+        &host.planning,
         scope,
         json!([{"kind":"device","id":case_device()}]),
     )
@@ -2009,30 +2103,36 @@ fn installation_counts() -> Result<String> {
 async fn assembled_channel_block_rejects_installation_freeze_without_side_effects() -> Result<()> {
     use crate::channel_status::{ChannelName, ChannelState, Reason};
     use rss_mdm_execution_service::AgentInstallationAdmission;
-    let host = crate::windows::test_support::Host::with_agent(
-        None,
-        rss_device_command_postgres::CommandClock::Postgres,
+    let host = crate::windows::test_support::Host::open().await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
     )
     .await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
     let release = setup::publish_until(
         &mut client.browser,
         &client.router,
         "",
-        &host.app,
+        &host.planning,
+        host.commands
+            .content
+            .as_deref()
+            .context("package content")?,
         true,
         None,
     )
     .await?;
     let scope = Uuid::new_v4();
-    crate::test_support::agent_execution::seed_scope(&host.app.flow.planning, scope, json!([]))
-        .await?;
+    crate::test_support::agent_execution::seed_scope(&host.planning, scope, json!([])).await?;
     let policy = Uuid::new_v4();
     crate::test_support::software::write(&mut client.browser, &client.router, &format!("/api/v1/policies/{policy}"), 0,
         json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"ensure_agent_installed","packages":{"windows_x86_64":release},"runLifetimeSeconds":3600}}})).await?;
     // The existing policy was accepted by this fully assembled owner.
     ensure!(
-        host.app
+        host.commands
             .channels
             .ready_signing_revision(crate::windows::test_support::now())
             == Some(1)
@@ -2048,13 +2148,13 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
         .await?;
     ensure!(original.0 == StatusCode::OK, "{original:?}");
     let before = installation_counts()?;
-    host.app.channels.set(
+    host.commands.channels.set(
         ChannelName::Agent,
         ChannelState::Degraded,
         Some(Reason::DependencyUnavailable),
     )?;
     ensure!(
-        host.app
+        host.commands
             .channels
             .ready_signing_revision(crate::windows::test_support::now())
             .is_none()
@@ -2071,12 +2171,12 @@ async fn assembled_channel_block_rejects_installation_freeze_without_side_effect
         installation_counts()? == before,
         "rejected freeze created command/bootstrap state"
     );
-    host.app
+    host.commands
         .channels
         .set(ChannelName::Agent, ChannelState::Ready, None)?;
     rotate_loaded_signing_authority(&mut client).await?;
     ensure!(
-        host.app
+        host.commands
             .channels
             .ready_signing_revision(crate::windows::test_support::now())
             == Some(1)
@@ -2186,7 +2286,11 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
     let (initial, execute, delivered) =
         installation(&peer, &mut client, policy, operation, AttemptPhase::Execute).await?;
     let _issued = bootstrap::prepare_windows(
-        &host.app,
+        &host.commands.runtime,
+        &host.commands.protection,
+        host.agent_channel.as_ref().context("Agent listener")?,
+        &host.authority.audit,
+        host.agent_enrollment.as_ref().context("Agent enrollment")?,
         &client.router,
         operation,
         delivered
@@ -2201,18 +2305,18 @@ async fn assembled_bootstrap_block_rejects_requeue_atomically() -> Result<()> {
     ensure!(owner.shutdown().join().await?.is_clean());
     use crate::channel_status::{ChannelName, ChannelState, Reason};
     ensure!(
-        host.app
+        host.commands
             .channels
             .ready_signing_revision(crate::windows::test_support::now())
             == Some(1)
     );
-    host.app.channels.set(
+    host.commands.channels.set(
         ChannelName::AgentBootstrap,
         ChannelState::Degraded,
         Some(Reason::MaterialRevoked),
     )?;
     ensure!(
-        host.app
+        host.commands
             .channels
             .ready_signing_revision(crate::windows::test_support::now())
             .is_none()

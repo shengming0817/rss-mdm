@@ -37,8 +37,6 @@ pub(crate) struct Assembly {
     pub(crate) queries: Arc<rss_mdm_execution_service::queries::Queries>,
     pub(crate) inputs: Arc<rss_mdm_execution_service::Inputs>,
     pub(crate) protection: Arc<rss_mdm_native_protection::Protector>,
-    #[cfg(test)]
-    pub(crate) execution_runtime: Arc<rss_transactional_messaging_postgres::PgRuntime>,
     pub(crate) flow: Arc<crate::flow::Flow>,
     pub(crate) identity: Arc<Identity>,
     pub(crate) credentials: Arc<Credentials>,
@@ -52,16 +50,6 @@ pub(crate) struct Assembly {
     pub(crate) windows: Option<Arc<crate::windows::Windows>>,
     pub(crate) access: Arc<Database>,
     pub(crate) requests: Arc<tokio::sync::Semaphore>,
-}
-
-#[cfg(test)]
-impl Assembly {
-    pub(crate) fn apple(&self) -> Result<&Arc<crate::apple::Apple>, Error> {
-        self.apple.as_ref().ok_or(Error::Unsupported)
-    }
-    pub(crate) fn windows(&self) -> Result<&Arc<crate::windows::Windows>, Error> {
-        self.windows.as_ref().ok_or(Error::Unsupported)
-    }
 }
 
 #[cfg(test)]
@@ -602,8 +590,6 @@ pub(crate) async fn from_compiled(
         inputs,
         queries,
         protection,
-        #[cfg(test)]
-        execution_runtime: _execution_runtime,
         audit_store,
         audit_projection_health,
         apple,

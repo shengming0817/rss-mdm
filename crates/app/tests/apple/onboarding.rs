@@ -1,5 +1,6 @@
 //! Controlled PKG and real Apple mTLS, observation, dynamic Group and independent enrollment.
 use crate::test_support::installer_fixtures;
+use anyhow::Context;
 mod native_software;
 use super::*;
 use crate::test_support::{channel_onboarding as setup, process::pg, runtime::credential};
@@ -14,12 +15,12 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     )?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            f.app.flow.planning.clone(),
+            f.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.app.flow.assets.clone(),
-        f.app.flow.compliance.clone(),
+        f.assets.clone(),
+        f.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -29,7 +30,15 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(automation.registration(f.signals.flow()).critical());
     launch.finish();
-    let policy = setup::publish(&mut f.browser, &f.router, case_device(), &f.app, false).await?;
+    let policy = setup::publish(
+        &mut f.browser,
+        &f.router,
+        case_device(),
+        &f.planning,
+        f.commands.content.as_deref().context("package content")?,
+        false,
+    )
+    .await?;
     let (platform, payload) = peer.next("DeviceInformation").await?;
     ensure!(
         payload["Queries"]
@@ -197,8 +206,13 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
         bootstrap_payload.contains_key("Payload"),
         "native bootstrap must deliver a profile"
     );
+    let agent_channel = f.agent_channel.as_ref().context("Agent listener")?;
     let bootstrap_peer = crate::test_support::bootstrap::prepare_apple(
-        &f.app,
+        &f.commands.runtime,
+        &f.commands.protection,
+        &agent_channel,
+        &f.authority.audit,
+        f.agent_enrollment.as_ref().context("Agent enrollment")?,
         &f.router,
         operation,
         &bootstrap_payload,
@@ -224,7 +238,7 @@ async fn absent_agent_group_installs_fixed_package_and_registers_independently()
     ensure!(pg(&format!("SELECT count(*) FROM mdm_apple.attempts WHERE tenant_id='{}' AND operation='{operation}' AND phase='execute'",case_tenant()))?.trim()=="1");
     ensure!(pg(&format!("SELECT count(*) FROM mdm_access.agent_grants WHERE tenant_id='{}' AND source='native' AND (native_authority ? 'secret' OR native_authority ? 'input')",case_tenant()))?.trim()=="0", "native authority must not persist bootstrap secrets");
     let receipt = crate::test_support::agent::complete_grant(
-        f.app.agent_enrollment.as_ref().unwrap(),
+        f.agent_enrollment.as_ref().unwrap(),
         &receipt,
         &input,
         &credential("managed-apple-agent"),
@@ -254,9 +268,15 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     peer.token().await?;
     let mut config: config::Config =
         serde_json::from_slice(&std::fs::read(f.root.join("apple.json"))?)?;
-    config.management.origin = f.app.apple()?.config.management.origin.clone();
-    config.trust_file = f.app.apple()?.config.trust_file.clone();
-    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
+    config.management.origin = f.apple.as_ref().config.management.origin.clone();
+    config.trust_file = f.apple.as_ref().config.trust_file.clone();
+    setup::publish_macos_release(
+        &mut f.browser,
+        &f.router,
+        &f.planning,
+        f.commands.content.as_deref().context("package content")?,
+    )
+    .await?;
     let original_rights: i32 = pg(&format!(
         "SELECT access_rights FROM mdm_apple.devices WHERE tenant_id='{}' AND state='active'",
         case_tenant()
@@ -264,10 +284,10 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
     .trim()
     .parse()?;
     let updated = Apple::load(
-        f.app.protection.clone(),
+        f.commands.protection.clone(),
         config,
         fixture_materials(&f.root)?,
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
         (
             "https://mdm.example.test",
             rss_request_context::TenantId::parse(case_tenant())?,
@@ -275,11 +295,11 @@ async fn agent_publication_preserves_bound_attempt_identity() -> Result<()> {
         super::fixture_providers(&f.root)?,
     )?;
     let trust = rss_mdm_device_trust::apple::AppleDeviceTrust::from_trust(
-        f.app.apple()?.channel.device_trust().clone(),
+        f.apple.as_ref().channel.device_trust().clone(),
     )?;
     let leaf = trust.verify(
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(der)],
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("mdm_access")?)
@@ -353,7 +373,13 @@ async fn next_after_cooldown(
 async fn collected_bundle_presence_remains_unknown() -> Result<()> {
     let mut f = Fixture::with_agent().await?;
     let (peer, device) = f.ready_local_peer().await?;
-    setup::publish_macos_release(&mut f.browser, &f.router, &f.app).await?;
+    setup::publish_macos_release(
+        &mut f.browser,
+        &f.router,
+        &f.planning,
+        f.commands.content.as_deref().context("package content")?,
+    )
+    .await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
     let bytes = peer
         .manage(
@@ -423,12 +449,12 @@ async fn agent_handoff_completes_native_registration_and_token_update() -> Resul
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     let der = device
         .enroll(
             &f.client()?,
-            &f.app.apple()?.channel.scep_fixture()?.0,
+            &f.apple.as_ref().channel.scep_fixture()?.0,
             &request,
         )
         .await?;

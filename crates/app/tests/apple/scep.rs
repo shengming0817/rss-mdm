@@ -106,7 +106,7 @@ pub(super) async fn unbound_leaf_and_replay(
         device
             .enroll(
                 &f.client()?,
-                &f.app.apple()?.channel.scep_fixture()?.0,
+                &f.apple.as_ref().channel.scep_fixture()?.0,
                 request
             )
             .await
@@ -122,11 +122,11 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
     let mut f = Fixture::start().await?;
     let (enrollment, attempt, password) = f.enrollment().await?;
     let device = scep_client::Device::new(enrollment, attempt, &password)?;
-    let apple = f.app.apple()?;
+    let apple = f.apple.as_ref();
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     f.lose_notify
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -140,7 +140,7 @@ async fn external_scep_issuance_and_lost_notify() -> Result<()> {
         &[tokio_rustls::rustls::pki_types::CertificateDer::from(
             der.clone(),
         )],
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     ensure!(checked.enrollment() == enrollment && checked.attempt() == attempt);
     let client = reqwest::Client::builder()
@@ -197,11 +197,11 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     );
     ensure!(prepared["progress"]["diagnostic"] == "awaiting_certificate");
     let device = scep_client::Device::new(enrollment, attempt, &password)?;
-    let apple = f.app.apple()?;
+    let apple = f.apple.as_ref();
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     device
         .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
@@ -214,7 +214,7 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     ensure!(issued["progress"]["systemConfirmation"] == "unknown");
     // A signed old certificate must not advance a newly resumed, still-unbound handoff.
     let password = rss_mdm_registration_service::enrollment::random();
-    let secret = crate::test_support::identity::credential(&f.app.identity, "other")?;
+    let secret = crate::test_support::identity::credential(&f.authority.identity, "other")?;
     let mut browser = Browser {
         network: f.browser.network.clone(),
         cookies: std::collections::BTreeMap::from([(
@@ -259,7 +259,7 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     let der = device
         .enroll(&f.client()?, &apple.channel.scep_fixture()?.0, &request)
@@ -280,8 +280,8 @@ async fn self_enrollment_uses_current_user_and_one_macos_allocation() -> Result<
     ensure!(ready["progress"]["managementReady"] == true, "{ready}");
     let proof = crate::device::test_support::admin(super::case_tenant(), "other-a").await?;
     let quotas = rss_mdm_registration_service::quotas::Quotas::new(
-        f.app.access.registration(),
-        f.app.audit_store.clone(),
+        f.authority.registration.clone(),
+        f.authority.audit.clone(),
     );
     let usage = quotas.usage(&proof, None).await?;
     let usage = usage
@@ -303,14 +303,14 @@ async fn pause_during_signing_preserves_result_and_managed_continuity() -> Resul
     let request = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     f.pause_before_notify
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let der = device
         .enroll(
             &f.client()?,
-            &f.app.apple()?.channel.scep_fixture()?.0,
+            &f.apple.as_ref().channel.scep_fixture()?.0,
             &request,
         )
         .await?;

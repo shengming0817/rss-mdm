@@ -90,11 +90,11 @@ impl Fixture {
         let (enrollment, attempt, password) = self.enrollment().await?;
         let reused =
             scep_client::Device::with_key(enrollment, attempt, &password, Some(&old_device.key))?;
-        let apple = self.app.apple()?;
+        let apple = self.apple.as_ref();
         let request = reused.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
+            self.clock.unix_seconds()?,
         )?;
         ensure!(
             reused
@@ -107,7 +107,7 @@ impl Fixture {
         let request = device.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
+            self.clock.unix_seconds()?,
         )?;
         let der = device
             .enroll(&self.client()?, &apple.channel.scep_fixture()?.0, &request)
@@ -231,14 +231,14 @@ impl Fixture {
         );
         token_observer.close().await?;
         let old = self
-            .app
-            .execution
-            .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
+            .commands
+            .service
+            .apple_wake(&self.apple.as_ref().channel.push_fixture().configuration)
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing wake"))?;
         peer.token_value(44).await?;
-        self.app
-            .execution
+        self.commands
+            .service
             .apple_pushed(
                 &old,
                 Some(410),

@@ -96,7 +96,14 @@ async fn template_flow(
     } else {
         None
     };
-    let mut f = Client::start(host.browser.clone(), &host.app).await?;
+    let mut f = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut grants = crate::test_support::identity::device_grants(
         None,
         &[
@@ -128,12 +135,12 @@ async fn template_flow(
     .await?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            host.app.flow.planning.clone(),
+            host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.app.flow.assets.clone(),
-        host.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -151,8 +158,8 @@ async fn template_flow(
             .critical(),
     );
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),
@@ -240,8 +247,8 @@ async fn template_flow(
         post(&mut f.browser,&f.router,&format!("/api/v1/scopes/{scope}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","definition":{"targets":[{"kind":"device","id":case_device()}],"limitations":null,"exclusions":[]}}})).await?;
     } else {
         crate::test_support::planning_http::seed_native_template(
-            &(&host.app.flow.planning).runtime,
-            (&host.app.flow.planning).tenant,
+            &(&host.planning).runtime,
+            (&host.planning).tenant,
             id,
             rss_mdm_resource::Platform::Windows,
             template,
@@ -252,7 +259,7 @@ async fn template_flow(
                 == StatusCode::CREATED
         );
         crate::test_support::agent_execution::seed_scope(
-            &host.app.flow.planning,
+            &host.planning,
             scope,
             json!([{"kind":"device","id":case_device()}]),
         )
@@ -464,7 +471,14 @@ async fn template_flow(
     let browser = f.browser.clone();
     drop(f);
     host = host.restart().await?;
-    f = Client::with_browser(host.browser.clone(), &host.app, browser);
+    f = Client::with_browser(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+        browser,
+    );
     let mut end = packet.clone();
     end.header.message_id += 1;
     end.commands = vec![s::Command::Status(s::Status {
@@ -515,8 +529,8 @@ async fn template_flow(
         .await?;
     sqlx::query("UPDATE mdm_commands.action_runs SET state=jsonb_set(jsonb_set(state,'{execution}','\"running\"'),'{startedAt}',to_jsonb($3::bigint)) WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(runs[0]).bind(now-120).execute(&mut pg).await?;
-    host.app
-        .execution
+    host.commands
+        .service
         .recover_native_run_fixture(runs[0])
         .await?;
     let state:String=sqlx::query_scalar("SELECT state->>'execution' FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND id=$2")
@@ -533,8 +547,8 @@ async fn template_flow(
     )?;
     let mut launch = resumed.startup()?.commit();
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),
@@ -632,7 +646,7 @@ async fn authenticate_during_recovery(
             let locked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted AND classid::bigint=((hashtextextended($2,2348)>>32)&4294967295) AND objid::bigint=(hashtextextended($2,2348)&4294967295) AND objsubid=1)")
                 .bind(worker).bind(key).fetch_one(&mut *observer).await?;
             ensure!(locked, "recovery did not hold this device's channel fence");
-            let leaf = host.app.windows()?.channel.ca.verify(
+            let leaf = host.windows.as_ref().channel.ca.verify(
                 &[tokio_rustls::rustls::pki_types::CertificateDer::from(peer.certificate.as_slice())],
                 crate::windows::test_support::now(),
             )?;
@@ -641,7 +655,7 @@ async fn authenticate_during_recovery(
                 rss_mdm_inventory::ReportSource::MdmWindows,
                 rss_mdm_registration_service::Purpose::Primary,
             ).credential(leaf.fingerprint())?;
-            let principal = host.app.devices.management_principal(&credential).await?;
+            let principal = host.devices.management_principal(&credential).await?;
             ensure!(principal.registration() == peer.intent.registration && principal.device() == case_device(),
                 "authentication returned another registration while recovery held the channel");
             // The holder is still blocked by our row transaction: the read did not
@@ -656,7 +670,7 @@ async fn authenticate_during_recovery(
         result
     };
     let (recovered, authenticated) = tokio::join!(
-        host.app.execution.recover_native_run_fixture(row),
+        host.commands.service.recover_native_run_fixture(row),
         authentication
     );
     let closed = connection.close().await;
@@ -1135,8 +1149,8 @@ async fn dynamic_result(
     )?;
     let mut launch = recovery.startup()?.commit();
     launch.stage_deferred_task_with_token(
-        host.app
-            .execution
+        host.commands
+            .service
             .clone()
             .registration(host.notifications.signals.execution())
             .critical(),

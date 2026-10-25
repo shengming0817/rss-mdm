@@ -143,13 +143,6 @@ impl Database {
         self.pool.close().await;
     }
     #[cfg(test)]
-    pub(crate) async fn begin(&self, tenant: &str) -> Result<Transaction<'_, Postgres>, Error> {
-        let mut tx = self.pool.begin().await.map_err(db)?;
-        Self::configure_transaction(&mut tx, tenant).await?;
-        Ok(tx)
-    }
-    /// Pure work discovery uses the normal tenant boundary without Audit head ownership.
-    #[cfg(test)]
     pub(crate) async fn configure_transaction(
         tx: &mut Transaction<'_, Postgres>,
         tenant: &str,
@@ -176,6 +169,9 @@ async fn admission(pool: &PgPool) -> Result<(), Error> {
         .execute(&mut *tx)
         .await
         .map_err(db)?;
+    verify_product_storage(&mut tx)
+        .await
+        .map_err(|_| Error::Unavailable(Failure::AccessAdmission))?;
     let contracts = [
         crate::first_use::ACCESS_CONTRACT,
         crate::user_profiles::ACCESS_CONTRACT,

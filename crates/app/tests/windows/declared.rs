@@ -74,7 +74,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.enrolled_peer().await?;
-    let w = &host.app.windows()?.channel;
+    let w = &host.windows.as_ref().channel;
     let discovery = format!(
         "{}/EnrollmentConfiguration?api-version=1.0",
         w.enrollment_origin
@@ -105,8 +105,8 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         );
     }
     let parent_cert = sign_certificate(
-        &host.store.archive_pool(),
-        host.app.audit_store.clone(),
+        &host.authority.pool.clone(),
+        host.authority.audit.clone(),
         &w.ca,
         &peer.intent,
     )
@@ -177,7 +177,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
             .is_success(),
         "exported BST must not authenticate"
     );
-    host.app.audit_store.inject_next_fault(
+    host.authority.audit.inject_next_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let unknown = post(wire.clone()).send().await?;
@@ -309,8 +309,7 @@ async fn signed_parent_enrollment_independent_tls_and_retirement() -> anyhow::Re
         &peer.ack,
     )
     .await?;
-    host.app
-        .devices
+    host.devices
         .revoke(
             &peer.proof,
             crate::test_support::case::name("tls-device"),
@@ -350,7 +349,14 @@ struct MiOperation {
 async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     use crate::execution::test_support::Client;
     use serde_json::json;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     use crate::execution::test_support::configuration::{change, published, resource_input};
     let mut grants = crate::test_support::identity::device_grants(
         None,
@@ -392,7 +398,7 @@ async fn mi_admit(host: &Host) -> anyhow::Result<MiOperation> {
     let task = |operation| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
     let resource = resource_input(
         &mut client,
-        &host.app.flow.runtime,
+        &host.planning.runtime,
         json!({"target":{"kind":"device"},"apply":task("replace"),"remove":task("delete")}),
     )
     .await?;
@@ -757,7 +763,7 @@ async fn linked_peer(
     certificate: &[u8],
     key: &std::path::Path,
 ) -> anyhow::Result<LinkedPeer> {
-    let w = &host.app.windows()?.channel;
+    let w = &host.windows.as_ref().channel;
     let mut issue = parent.issue.clone();
     issue.header.to = Some(format!(
         "{}/EnrollmentServer/LinkedEnrollment.svc",
@@ -1078,10 +1084,10 @@ async fn linked_renewal_and_parent_child_supersession() -> anyhow::Result<()> {
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
-    let ca = &host.app.windows()?.channel.ca;
+    let ca = &host.windows.as_ref().channel.ca;
     let certificate = sign_certificate(
-        &host.store.archive_pool(),
-        host.app.audit_store.clone(),
+        &host.authority.pool.clone(),
+        host.authority.audit.clone(),
         ca,
         &parent.intent,
     )
@@ -1202,12 +1208,12 @@ async fn automation(host: &Host) -> anyhow::Result<rss_runtime::ShutdownStack> {
     use std::time::Duration;
     let service = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            host.app.flow.planning.clone(),
+            host.planning.clone(),
             options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.app.flow.assets.clone(),
-        host.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut owner = rss_runtime::ShutdownStack::try_new(
@@ -1377,15 +1383,22 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let mut host = Host::open().await?;
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
-    let ca = &host.app.windows()?.channel.ca;
+    let ca = &host.windows.as_ref().channel.ca;
     let certificate = sign_certificate(
-        &host.store.archive_pool(),
-        host.app.audit_store.clone(),
+        &host.authority.pool.clone(),
+        host.authority.audit.clone(),
         ca,
         &parent.intent,
     )
     .await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let mut grants = [
         "resource_read",
         "resource_write",
@@ -1441,7 +1454,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         r#"<DeclaredConfiguration schema="1.0" context="Device" id="{id}" checksum="policy-v1" osdefinedscenario="MSFTExtensibilityMIProviderConfig"><DSC namespace="root/test" className="ExampleProvider"><Key name="Name">resource</Key><Value name="Text">first-value</Value></DSC></DeclaredConfiguration>"#
     );
     let task = |id: Uuid, document: &str, operation: &str| json!({"platform":"windows","request":{"kind":"sync_ml","request":{"kind":"node","node":"./Device/Vendor/MSFT/DeclaredConfiguration/Host/Complete/Documents/*/Document","instance":[id],"operation":operation,"value":{"type":"xml","value":document}}}});
-    let resource=resource_input(&mut client, &host.app.flow.runtime,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
+    let resource=resource_input(&mut client, &host.planning.runtime,json!({"target":{"kind":"device"},"apply":task(id,&document,"replace"),"remove":task(id,&document,"delete")})).await?;
     let first = Uuid::new_v4();
     let definition = |resource: &str| json!({"scope":scope,"action":{"kind":"configuration","resource":{"id":resource,"version":"1","platform":"windows","architecture":"x86_64","variant":"native"},"exit":"remove"}});
     change(
@@ -1491,7 +1504,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     let other_document = document
         .replace(&id.to_string(), &other_id.to_string())
         .replace("first-value", "competing-value");
-    let other_resource=resource_input(&mut client, &host.app.flow.runtime,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
+    let other_resource=resource_input(&mut client, &host.planning.runtime,json!({"target":{"kind":"device"},"apply":task(other_id,&other_document,"replace"),"remove":task(other_id,&other_document,"delete")})).await?;
     let second = Uuid::new_v4();
     change(
         &mut client,
@@ -1594,7 +1607,7 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
     // Isolate the request fault from periodic background recovery on the same store.
     ensure!(commands.shutdown().join().await?.is_clean());
     ensure!(worker.shutdown().join().await?.is_clean());
-    host.app.execution.inject_fault(
+    host.commands.service.inject_fault(
         rss_transactional_messaging_postgres::PgTransactionFault::CommitUnknownAfterAck,
     );
     let response = native::post(&child.mutual, &child.url, &packet).await?;
@@ -1629,7 +1642,14 @@ async fn declared_policy_delete_claims_recover_from_unknown_commit() -> anyhow::
         replay.status() == StatusCode::OK && replay.bytes().await? == stable,
         "replay response changed"
     );
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     let worker = automation(&host).await?;
     let commands = client.command_worker(host.notifications.signals.clone())?;
     // Unknown submission may leave a fenced claim until lease expiry. The existing worker
@@ -1694,7 +1714,14 @@ async fn primary_commands_are_independent_of_declared_child_readiness() -> anyho
     let mut host = Host::open().await?;
     host.listen().await?;
     let parent = host.enrolled_peer().await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     client.set_authorized(true).await?;
     client
         .known_windows_capability(crate::test_support::case::name("tls-device"))
@@ -1706,10 +1733,10 @@ async fn primary_commands_are_independent_of_declared_child_readiness() -> anyho
         primary.0 == StatusCode::ACCEPTED,
         "Primary depended on child: {primary:?}"
     );
-    let ca = &host.app.windows()?.channel.ca;
+    let ca = &host.windows.as_ref().channel.ca;
     let certificate = sign_certificate(
-        &host.store.archive_pool(),
-        host.app.audit_store.clone(),
+        &host.authority.pool.clone(),
+        host.authority.audit.clone(),
         ca,
         &parent.intent,
     )

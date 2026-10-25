@@ -32,34 +32,62 @@ pub(crate) async fn publish(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
     windows: bool,
 ) -> Result<Uuid> {
-    publish_until(user, router, device, app, windows, None).await
+    publish_until(user, router, device, planning, content, windows, None).await
 }
 pub(crate) async fn publish_until(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, windows, until, ("msi", "1.2.3")).await
+    publish_format(
+        user,
+        router,
+        device,
+        planning,
+        content,
+        windows,
+        until,
+        ("msi", "1.2.3"),
+    )
+    .await
 }
 pub(crate) async fn publish_msix(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, true, None, ("msix", "1.2.3.0")).await
+    publish_format(
+        user,
+        router,
+        device,
+        planning,
+        content,
+        true,
+        None,
+        ("msix", "1.2.3.0"),
+    )
+    .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "specific publication prerequisites without an application container"
+)]
 async fn publish_format(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
     windows: bool,
     until: Option<i64>,
     package: (&str, &str),
@@ -67,7 +95,6 @@ async fn publish_format(
     let (format, version) = package;
     let msix = format == "msix";
     use software::write;
-    let planning = &app.flow.planning;
     let mut grants = installation_grants()?;
     if !windows {
         for operation in [
@@ -136,10 +163,6 @@ async fn publish_format(
         definition,
     )
     .await?;
-    let content = app
-        .content_writer
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Agent package content absent"))?;
     let artifact = rss_mdm_resource::Artifact::new(
         rss_mdm_resource::Id::new("package")?,
         package_bytes.len() as u64,
@@ -240,25 +263,58 @@ pub(crate) async fn publish_exe(
     user: &mut Browser,
     router: &Router,
     device: &str,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
-    publish_format(user, router, device, app, true, None, ("exe", "1.2.3")).await
+    publish_format(
+        user,
+        router,
+        device,
+        planning,
+        content,
+        true,
+        None,
+        ("exe", "1.2.3"),
+    )
+    .await
 }
 
 /// Admit a release without configuring a Policy or starting group automation.
 pub(crate) async fn publish_macos_release(
     user: &mut Browser,
     router: &Router,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
 ) -> Result<Uuid> {
-    publish_format(user, router, "", app, false, None, ("pkg", "1.2.3")).await
+    publish_format(
+        user,
+        router,
+        "",
+        planning,
+        content,
+        false,
+        None,
+        ("pkg", "1.2.3"),
+    )
+    .await
 }
 
 pub(crate) async fn publish_msix_release(
     user: &mut Browser,
     router: &Router,
-    app: &crate::api::Assembly,
+    planning: &crate::planning::Planning,
+    content: &rss_mdm_content_service::Store,
     version: &str,
 ) -> Result<Uuid> {
-    publish_format(user, router, "", app, true, None, ("msix", version)).await
+    publish_format(
+        user,
+        router,
+        "",
+        planning,
+        content,
+        true,
+        None,
+        ("msix", version),
+    )
+    .await
 }

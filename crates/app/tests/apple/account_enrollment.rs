@@ -141,7 +141,7 @@ fn signed(f: &Fixture, product: &str, build: &str) -> Result<Vec<u8>> {
     let signer = rss_mdm_certificate::apple::ProfileSigner::from_bytes(
         &std::fs::read(f.root.join("apple-profile.pem"))?,
         &std::fs::read(f.root.join("apple-profile.pk8"))?,
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     Ok(signer.sign(
         &protocol::xml(protocol::dictionary([
@@ -149,7 +149,7 @@ fn signed(f: &Fixture, product: &str, build: &str) -> Result<Vec<u8>> {
             ("PRODUCT", product.into()),
             ("VERSION", build.into()),
         ]))?,
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?)
 }
 async fn user_token(
@@ -342,11 +342,11 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     .await?;
     ensure!(old_profile.0 == StatusCode::UNAUTHORIZED);
     let sessions = rss_mdm_authorization_service::session::SessionAuthority::new(
-        f.app.identity.authority.clone(),
-        f.app.identity.tenant,
+        f.authority.identity.authority.clone(),
+        f.authority.identity.tenant,
     );
     let admission = rss_mdm_registration_service::enrollment::native::account(
-        &f.app.access.registration(),
+        &f.authority.registration.clone(),
         &sessions,
         enrollment,
         rss_mdm_apple_channel::account_enrollment::authority(),
@@ -395,7 +395,8 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     .bind(enrollment)
     .execute(&mut pg)
     .await?;
-    let mut tx = f.app.access.begin(case_tenant()).await?;
+    let mut tx = f.authority.pool.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     ensure!(
         matches!(
             admission.current(&mut tx).await,
@@ -415,12 +416,12 @@ async fn account_enrollment_and_reauthentication_keep_one_registration() -> Resu
     let csr = device.request(
         &f.root.join("apple-issuer.pem"),
         &Uuid::new_v4().to_string(),
-        f.app.clock.unix_seconds()?,
+        f.clock.unix_seconds()?,
     )?;
     let der = device
         .enroll(
             &f.client()?,
-            &f.app.apple()?.channel.scep_fixture()?.0,
+            &f.apple.as_ref().channel.scep_fixture()?.0,
             &csr,
         )
         .await?;
@@ -674,9 +675,9 @@ async fn user_asset(
     let resource = Uuid::new_v4();
     let content = json!({"fixture":"account-user-asset"});
     crate::test_support::planning_http::native_configuration_resource(
-        &(&f.app.flow.planning).runtime,
-        (&f.app.flow.planning).tenant,
-        f.app.content_writer.as_deref().expect("native content"),
+        &(&f.planning).runtime,
+        (&f.planning).tenant,
+        f.commands.content.as_deref().expect("native content"),
         resource,
         "macos",
         "aarch64",
@@ -709,7 +710,7 @@ async fn user_asset(
     );
     let worker = f.policy_worker().await?;
     let configuration = Uuid::new_v4();
-    crate::test_support::planning_http::native_configuration_resource(&(&f.app.flow.planning).runtime, (&f.app.flow.planning).tenant, f.app.content_writer.as_deref().expect("native content"),configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
+    crate::test_support::planning_http::native_configuration_resource(&(&f.planning).runtime, (&f.planning).tenant, f.commands.content.as_deref().expect("native content"),configuration,"macos","aarch64",json!({"target":{"kind":"user","userId":Uuid::from_u128(27)},"apply":task,"remove":ddm::task(vec![],vec![])})).await?;
     let scope = Uuid::new_v4();
     f.policy_post(&format!("/api/v1/scopes/{scope}"),0,json!({"action":"put","definition":{"targets":[{"kind":"device","id":device}],"limitations":null,"exclusions":[]}})).await?;
     // Retain keeps the asset authorized while renewal refreshes Scope authority.

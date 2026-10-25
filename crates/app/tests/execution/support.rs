@@ -36,11 +36,20 @@ pub(crate) struct Client {
     rule_revision: u64,
 }
 impl Client {
-    pub(crate) async fn start(router: Router, app: &crate::api::Assembly) -> anyhow::Result<Self> {
+    pub(crate) async fn start(
+        router: Router,
+        commands: &crate::execution_assembly::Assembly,
+        identity: &crate::identity::Identity,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        clock: Arc<dyn crate::clock::Clock>,
+    ) -> anyhow::Result<Self> {
         let secret = crate::test_support::identity::credential_for(case_tenant(), "admin")?;
         Ok(Self::with_browser(
             router,
-            app,
+            commands,
+            identity,
+            audit,
+            clock,
             Browser {
                 cookies: std::collections::BTreeMap::from([(
                     "__Host-identity-session".into(),
@@ -54,7 +63,10 @@ impl Client {
 
     pub(crate) fn with_browser(
         router: Router,
-        app: &crate::api::Assembly,
+        commands: &crate::execution_assembly::Assembly,
+        identity: &crate::identity::Identity,
+        audit: Arc<rss_mdm_audit_integration::AuditStore>,
+        clock: Arc<dyn crate::clock::Clock>,
         browser: Browser,
     ) -> Self {
         let router = router.layer(axum::Extension(rss_identity_http_axum::ClientAddress(
@@ -63,16 +75,16 @@ impl Client {
         Self {
             browser,
             router,
-            execution: app.execution.clone(),
-            execution_runtime: app.execution_runtime.clone(),
-            audit_store: app.audit_store.clone(),
-            tenant: app.identity.tenant,
-            clock: app.clock.clone(),
-            protection: app.protection.clone(),
+            execution: commands.service.clone(),
+            execution_runtime: commands.runtime.clone(),
+            audit_store: audit,
+            tenant: identity.tenant,
+            clock: clock,
+            protection: commands.protection.clone(),
             sessions: Arc::new(
                 rss_mdm_authorization_service::session::SessionAuthority::new(
-                    app.identity.authority.clone(),
-                    app.identity.tenant,
+                    identity.authority.clone(),
+                    identity.tenant,
                 ),
             ),
             operation: Uuid::new_v4(),

@@ -33,7 +33,7 @@ impl Fixture {
                 .await?;
         for (status, failures, minimum) in [(429, 1, 25.0), (429, 2, 55.0), (400, 0, 25.0)] {
             due(&mut pg).await?;
-            rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
+            rss_mdm_apple_channel::push::wake(&participant.push, &self.commands.service).await?;
             let receipt = state(&mut pg).await?;
             ensure!(
                 receipt["status"] == status
@@ -50,14 +50,14 @@ impl Fixture {
             ensure!(self.operation(operation).await?["commandStatus"] == "published");
         }
         due(&mut pg).await?;
-        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.commands.service).await?;
         ensure!(
             state(&mut pg).await?["status"] == 400,
             "permanent rejection was retried without recovery"
         );
         ensure!(
-            self.app
-                .execution
+            self.commands
+                .service
                 .apple_wake(&participant.push.configuration)
                 .await?
                 .is_none()
@@ -70,26 +70,26 @@ impl Fixture {
         )
         .await?;
         ensure!(rotated.push.configuration != participant.push.configuration);
-        rss_mdm_apple_channel::push::wake(&rotated.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&rotated.push, &self.commands.service).await?;
         ensure!(state(&mut pg).await?["outcome"] == "rejected");
         ensure!(
-            self.app
-                .execution
+            self.commands
+                .service
                 .apple_wake(&rotated.push.configuration)
                 .await?
                 .is_none()
         );
         // TokenUpdate is the explicit recovery transition for a paused token.
         peer.token().await?;
-        rss_mdm_apple_channel::push::wake(&rotated.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&rotated.push, &self.commands.service).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         rotated.close().await?;
         due(&mut pg).await?;
-        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.commands.service).await?;
         ensure!(state(&mut pg).await?["outcome"] == "accepted");
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
-        rss_mdm_apple_channel::push::wake(&participant.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&participant.push, &self.commands.service).await?;
         let unregistered = state(&mut pg).await?;
         ensure!(
             unregistered["state"] == "pending_token"
@@ -113,7 +113,7 @@ impl Fixture {
         participant.close().await?;
         peer.token().await?;
         let unavailable = push::test_support::Participant::unavailable_push().await?;
-        rss_mdm_apple_channel::push::wake(&unavailable, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&unavailable, &self.commands.service).await?;
         let failed = state(&mut pg).await?;
         ensure!(
             failed["status"].is_null()
@@ -124,7 +124,7 @@ impl Fixture {
         ensure!(self.operation(operation).await?["commandStatus"] == "published");
         due(&mut pg).await?;
         let recovered = push::test_support::Participant::start(vec![200], vec![42; 32]).await?;
-        rss_mdm_apple_channel::push::wake(&recovered.push, &self.app.execution).await?;
+        rss_mdm_apple_channel::push::wake(&recovered.push, &self.commands.service).await?;
         ensure!(state(&mut pg).await?["failures"] == 0);
         recovered.close().await?;
         pg.close().await?;

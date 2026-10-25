@@ -13,11 +13,11 @@ use rss_mdm_http_contract::{
 };
 use rss_mdm_pki_service::registry::{Receipt, Registry, Rotation, Transition};
 use std::sync::Arc;
-pub(crate) struct HttpState {
+pub struct HttpState {
     pub registry: Arc<Registry>,
     pub clock: Arc<dyn rss_mdm_registration_service::agent_pki::Clock>,
 }
-pub(crate) fn routes() -> Router<Arc<HttpState>> {
+pub fn routes() -> Router<Arc<HttpState>> {
     Router::new()
         .route(
             "/pki/agent/trust/devices/{device}/observation",

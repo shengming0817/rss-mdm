@@ -19,12 +19,12 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     )?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            f.app.flow.planning.clone(),
+            f.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        f.app.flow.assets.clone(),
-        f.app.flow.compliance.clone(),
+        f.assets.clone(),
+        f.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -45,8 +45,8 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     let resource = Uuid::new_v4();
     let definition = json!({"material":{"format":"pkg","installer":"package"},"source":registered["snapshot"],"package":"Acme.Generic","version":"1.2.3","artifacts":{"package":{"reference":"generic-pkg","length":bytes.len(),"sha256":Sha256::digest(bytes).to_vec()}},"reboot":"report","downgrade":"deny","dependencies":[],"behavior":{"kind":"pkg","installer":"package","scope":"system","install":invocation,"upgradeInvocation":invocation,"upgrade":"in_place","uninstall":null,"detect":{"kind":"pkg_receipt","receipt":"com.acme.generic","version":"1.2.3"}},"signatures":[{"artifact":"package","mechanism":"apple_developer_id","publisher":"Acme","evidence":{"reference":"generic-proof","length":proof.len(),"sha256":Sha256::digest(&proof).to_vec()}}],"provenance":{"kind":"private"},"export":{"kind":"disabled"}});
     let version = software_execution::seed_resource(
-        &f.app.flow.planning.runtime,
-        f.app.flow.planning.tenant,
+        &f.planning.runtime,
+        f.planning.tenant,
         resource,
         "macos",
         "aarch64",
@@ -64,12 +64,12 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         ensure!(f.router.clone().oneshot(request).await?.status() == StatusCode::CREATED);
     }
     software_execution::seed_enabled(
-        &(&f.app.flow.planning).runtime,
-        f.app.content_writer.as_ref().unwrap(),
+        &(&f.planning).runtime,
+        f.commands.content.as_ref().unwrap(),
         &version,
     )
     .await?;
-    let scope = software_execution::prepared_scope(&f.app.flow.planning, &[case_device()]).await?;
+    let scope = software_execution::prepared_scope(&f.planning, &[case_device()]).await?;
     let policy = Uuid::new_v4();
     software::write(&mut f.browser,&f.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"macos_aarch64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":scope,"opensAt":0}]}}}})).await?;
     let (platform, _) = peer.next("DeviceInformation").await?;
@@ -126,7 +126,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
     ensure!(lifecycle::command(&acknowledged, "InstallEnterpriseApplication").is_err());
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            f.app.execution.recover_action_fixture(policy).await?;
+            f.commands.service.recover_action_fixture(policy).await?;
             let runs = f
                 .browser
                 .call(
@@ -147,7 +147,7 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
         Ok::<_, anyhow::Error>(())
     })
     .await??;
-    f.app.execution.recover_action_fixture(policy).await?;
+    f.commands.service.recover_action_fixture(policy).await?;
     let after = peer.manage("Idle", None, None).await?;
     ensure!(
         lifecycle::command(&after, "InstallEnterpriseApplication").is_err(),

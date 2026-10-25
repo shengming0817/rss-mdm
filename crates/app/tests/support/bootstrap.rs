@@ -8,41 +8,99 @@ use rss_mdm_windows_mdm::native::{Execution, Request as Native, Value as NativeV
 use sqlx::Row;
 
 pub(crate) async fn prepare(
-    app: &Arc<crate::api::Assembly>,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
     installation: uuid::Uuid,
 ) -> Result<PreparedBootstrap> {
-    prepare_observed(app, router, installation, None).await
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
+        router,
+        installation,
+        None,
+    )
+    .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
 pub(crate) async fn prepare_windows(
-    app: &Arc<crate::api::Assembly>,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
     installation: uuid::Uuid,
     message: &rss_mdm_windows_mdm::syncml::Message,
 ) -> Result<PreparedBootstrap> {
-    prepare_observed(app, router, installation, Some(Observed::Windows(message))).await
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
+        router,
+        installation,
+        Some(Observed::Windows(message)),
+    )
+    .await
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
 pub(crate) async fn prepare_apple(
-    app: &Arc<crate::api::Assembly>,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
     installation: uuid::Uuid,
     payload: &plist::Dictionary,
 ) -> Result<PreparedBootstrap> {
-    prepare_observed(app, router, installation, Some(Observed::Apple(payload))).await
+    prepare_observed(
+        runtime,
+        protection,
+        channel,
+        audit,
+        enrollment,
+        router,
+        installation,
+        Some(Observed::Apple(payload)),
+    )
+    .await
 }
 enum Observed<'a> {
     Windows(&'a rss_mdm_windows_mdm::syncml::Message),
     Apple(&'a plist::Dictionary),
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit existing owners replace the full application dependency"
+)]
 async fn prepare_observed(
-    app: &Arc<crate::api::Assembly>,
+    runtime: &Arc<rss_transactional_messaging_postgres::PgRuntime>,
+    protection: &Arc<rss_mdm_native_protection::Protector>,
+    channel: &crate::native::ChannelRouter,
+    audit: &Arc<rss_mdm_audit_integration::AuditStore>,
+    enrollment: &Arc<rss_mdm_registration_service::agent::Service>,
     router: &Router,
     installation: uuid::Uuid,
     observed: Option<Observed<'_>>,
 ) -> Result<PreparedBootstrap> {
     let root = std::path::PathBuf::from(std::env::var("MDM_AGENT_PKI_FIXTURES")?);
     let root = root.as_path();
-    let (id, deadline, task) = transaction::inspect(&app.execution_runtime, rss_request_context::TenantId::parse(case_tenant())?, (&app.protection, installation), |ctx, tx| Box::pin(async move {
+    let (id, deadline, task) = transaction::inspect(runtime, rss_request_context::TenantId::parse(case_tenant())?, (protection, installation), |ctx, tx| Box::pin(async move {
         let (key, installation) = *ctx;
         let tenant = tx.tenant_id();
         let row = tx.with_connection(move |c| Box::pin(async move {
@@ -222,11 +280,7 @@ async fn prepare_observed(
         .args(["-subj", &subject, "-outform", "DER", "-out"])
         .arg(&csr_file))?;
     let csr = std::fs::read(csr_file)?;
-    let config = app
-        .agent_enrollment
-        .as_ref()
-        .unwrap()
-        .bootstrap_configuration()?;
+    let config = enrollment.bootstrap_configuration()?;
     let now = crate::clock::SystemClock.unix_seconds()?;
     let request = json!({"timestamp":time::OffsetDateTime::from_unix_timestamp(now)?.format(&time::format_description::well_known::Rfc3339)?,"provisionerName":provisioner_from_profile.unwrap_or(config.trust.active()?.provisioner.clone()),"x509CertificateRequest":{"raw":STANDARD.encode(&csr)},"scepChallenge":secret,"scepTransactionID":id.to_string()});
     let approval = webhook(router, config, "challenge", &request).await?;
@@ -259,22 +313,13 @@ async fn prepare_observed(
     let chain = super::pki::leaf(root, &csr, &subject, &[], now - 1, expiry)?;
     Ok(PreparedBootstrap {
         peer: BootstrapPeer {
-            channel: crate::api::from_state(
-                app.clone(),
-                "mdm.example.test".into(),
-                super::runtime::monotonic(),
-            )
-            .listeners
-            .into_iter()
-            .find(|(kind, _)| *kind == crate::native::ChannelKind::Agent)
-            .ok_or_else(|| anyhow::anyhow!("missing Agent listener"))?
-            .1,
-            audit: app.audit_store.clone(),
-            enrollment: app
-                .agent_enrollment
-                .as_ref()
-                .context("Agent enrollment")?
-                .clone(),
+            channel: crate::native::ChannelRouter {
+                origins: channel.origins.clone(),
+                router: channel.router.clone(),
+                admission: channel.admission.clone(),
+            },
+            audit: audit.clone(),
+            enrollment: enrollment.clone(),
             chain,
             directory: temp,
         },

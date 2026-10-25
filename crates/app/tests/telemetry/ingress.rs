@@ -324,8 +324,21 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
         let mut mismatch = base.clone();
         mismatch["telemetry"]["ingress"]["batchesPerMinute"] =
             json!(installation.configuration.ingress.batches_per_minute + 1);
+        let config: Config = serde_json::from_value(mismatch)?;
+        let binding = config
+            .telemetry
+            .as_ref()
+            .unwrap()
+            .configuration_binding()
+            .await?;
         ensure!(
-            app(&mismatch).await.is_err(),
+            rss_mdm_telemetry_service::admit_configuration(
+                &f.planning.runtime,
+                f.planning.tenant,
+                binding
+            )
+            .await
+            .is_err(),
             "a replica must not replace the tenant's fixed admission policy"
         );
     }

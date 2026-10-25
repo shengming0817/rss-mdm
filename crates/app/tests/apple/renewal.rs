@@ -15,18 +15,17 @@ impl Fixture {
         let row=sqlx::query("SELECT s.certificate,s.enrollment::text,s.registration::text,s.not_before,s.not_after,r.generation,c.id::text AS credential,p.epoch::text FROM mdm_apple.scep_attempts s JOIN mdm_access.registrations r ON (r.tenant_id,r.id)=(s.tenant_id,s.registration) JOIN mdm_access.credentials c ON (c.tenant_id,c.registration)=(r.tenant_id,r.id) JOIN mdm_access.report_sources p ON (p.tenant_id,p.registration)=(r.tenant_id,r.id) WHERE s.tenant_id=$1::uuid AND s.enrollment=$2 AND s.state='bound' AND c.state='active'").bind(case_tenant()).bind(enrollment).fetch_one(&mut pg).await?;
         let before: i64 = row.try_get("not_before")?;
         let after: i64 = row.try_get("not_after")?;
-        let old_leaf = self.app.apple()?.channel.trust_fixture().verify(
+        let old_leaf = self.apple.as_ref().channel.trust_fixture().verify(
             &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                 row.try_get::<Vec<u8>, _>("certificate")?,
             )],
-            self.app.clock.unix_seconds()?,
+            self.clock.unix_seconds()?,
         )?;
         let old_principal = self
-            .app
             .devices
             .management_principal(
                 &crate::device::ChannelMount::new(
-                    self.app.identity.tenant,
+                    self.authority.identity.tenant,
                     rss_mdm_inventory::ReportSource::MdmApple,
                     rss_mdm_registration_service::Purpose::Primary,
                 )
@@ -40,9 +39,9 @@ impl Fixture {
             ensure!(
                 matches!(
                     rss_mdm_apple_channel::renewal::maintain(
-                        &self.app.apple()?.channel,
-                        &self.app.access.apple_store(),
-                        &self.app.audit_store,
+                        &self.apple.as_ref().channel,
+                        &self.ade.access.clone(),
+                        &self.authority.audit,
                         case_tenant(),
                         due,
                     )
@@ -57,9 +56,9 @@ impl Fixture {
             super::scep::issuer_state(&mut pg, "active").await?;
             for _ in 0..2 {
                 rss_mdm_apple_channel::renewal::maintain(
-                    &self.app.apple()?.channel,
-                    &self.app.access.apple_store(),
-                    &self.app.audit_store,
+                    &self.apple.as_ref().channel,
+                    &self.ade.access.clone(),
+                    &self.authority.audit,
                     case_tenant(),
                     due,
                 )
@@ -70,9 +69,9 @@ impl Fixture {
             let expired: String = sqlx::query_scalar("SELECT id::text FROM mdm_apple.scep_attempts WHERE tenant_id=$1::uuid AND renewal_of IS NOT NULL AND state='prepared'").bind(case_tenant()).fetch_one(&mut pg).await?;
             sqlx::query("UPDATE mdm_apple.scep_attempts SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1::uuid").bind(&expired).execute(&mut pg).await?;
             rss_mdm_apple_channel::renewal::maintain(
-                &self.app.apple()?.channel,
-                &self.app.access.apple_store(),
-                &self.app.audit_store,
+                &self.apple.as_ref().channel,
+                &self.ade.access.clone(),
+                &self.authority.audit,
                 case_tenant(),
                 due,
             )
@@ -88,9 +87,9 @@ impl Fixture {
             );
         } else {
             rss_mdm_apple_channel::renewal::maintain(
-                &self.app.apple()?.channel,
-                &self.app.access.apple_store(),
-                &self.app.audit_store,
+                &self.apple.as_ref().channel,
+                &self.ade.access.clone(),
+                &self.authority.audit,
                 case_tenant(),
                 due,
             )
@@ -156,13 +155,13 @@ impl Fixture {
             let request = reused.request(
                 &self.root.join("apple-issuer.pem"),
                 &Uuid::new_v4().to_string(),
-                self.app.clock.unix_seconds()?,
+                self.clock.unix_seconds()?,
             )?;
             ensure!(
                 reused
                     .enroll(
                         &self.client()?,
-                        &self.app.apple()?.channel.scep_fixture()?.0,
+                        &self.apple.as_ref().channel.scep_fixture()?.0,
                         &request
                     )
                     .await
@@ -174,7 +173,7 @@ impl Fixture {
         let request = device.request(
             &self.root.join("apple-issuer.pem"),
             &Uuid::new_v4().to_string(),
-            self.app.clock.unix_seconds()?,
+            self.clock.unix_seconds()?,
         )?;
         self.lose_notify.store(
             expected_account.is_none(),
@@ -183,7 +182,7 @@ impl Fixture {
         let der = device
             .enroll(
                 &self.client()?,
-                &self.app.apple()?.channel.scep_fixture()?.0,
+                &self.apple.as_ref().channel.scep_fixture()?.0,
                 &request,
             )
             .await?;
@@ -194,7 +193,7 @@ impl Fixture {
                 device
                     .enroll(
                         &self.client()?,
-                        &self.app.apple()?.channel.scep_fixture()?.0,
+                        &self.apple.as_ref().channel.scep_fixture()?.0,
                         &request
                     )
                     .await
@@ -262,13 +261,13 @@ impl Fixture {
                 "apple_management",
             );
             let stale = self
-                .app
-                .execution
+                .commands
+                .service
                 .apple_management(
-                    self.app.apple()?.channel.clone(),
+                    self.apple.as_ref().channel.clone(),
                     &old_principal,
                     rss_mdm_apple_channel::exchange::prepare(
-                        self.app.apple()?.channel.clone(),
+                        self.apple.as_ref().channel.clone(),
                         protocol::dictionary([
                             ("Status", "Idle".into()),
                             (
@@ -323,15 +322,15 @@ impl Fixture {
                     != row.try_get::<String, _>("credential")?
         );
         if expected_account.is_none() {
-            let checked = self.app.apple()?.channel.trust_fixture().verify(
+            let checked = self.apple.as_ref().channel.trust_fixture().verify(
                 &[tokio_rustls::rustls::pki_types::CertificateDer::from(
                     der.clone(),
                 )],
-                self.app.clock.unix_seconds()?,
+                self.clock.unix_seconds()?,
             )?;
             ensure!(
-                self.app
-                    .apple()?
+                self.apple
+                    .as_ref()
                     .channel
                     .trust_fixture()
                     .verify(

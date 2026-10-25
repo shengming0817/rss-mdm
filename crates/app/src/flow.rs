@@ -419,8 +419,6 @@ async fn admit_storage_in(
     if !valid {
         return Err(sqlx::Error::Protocol("host capability admission".into()).into());
     }
-    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
-        .await?;
     let contracts = [
         (
             "telemetry",

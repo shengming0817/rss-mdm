@@ -41,13 +41,13 @@ impl Fixture {
         )?;
         let automation = crate::automation::Automation::connect(
             crate::automation::PlanningWork::connect(
-                self.app.flow.planning.clone(),
+                self.planning.clone(),
                 crate::device::test_support::options("mdm_flow_runtime")?
                     .password("runtime-fixture"),
             )
             .await?,
-            self.app.flow.assets.clone(),
-            self.app.flow.compliance.clone(),
+            self.assets.clone(),
+            self.compliance.clone(),
         )
         .await?;
         let mut startup = owner.startup()?;
@@ -101,9 +101,9 @@ impl Fixture {
     ) -> Result<(Uuid, Uuid)> {
         let resource = Uuid::new_v4();
         crate::test_support::planning_http::native_configuration_resource(
-            &(&self.app.flow.planning).runtime,
-            (&self.app.flow.planning).tenant,
-            self.app.content_writer.as_deref().expect("native content"),
+            &(&self.planning).runtime,
+            (&self.planning).tenant,
+            self.commands.content.as_deref().expect("native content"),
             resource,
             "macos",
             "aarch64",
@@ -141,8 +141,8 @@ impl Fixture {
             .await?;
         let (registration, generation): (Uuid, i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND purpose='primary' AND state='active'")
             .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
-        self.app
-            .apple()?
+        self.apple
+            .as_ref()
             .channel
             .prepare_context_fixture(&mut tx, case_tenant(), registration, generation)
             .await?;
@@ -160,7 +160,7 @@ impl Fixture {
         let owner = self.policy_worker().await?;
         let resource = Uuid::new_v4();
         let profile = Uuid::new_v4();
-        crate::test_support::planning_http::native_configuration_resource(&(&self.app.flow.planning).runtime, (&self.app.flow.planning).tenant, self.app.content_writer.as_deref().expect("native content"), resource, "macos", "aarch64",
+        crate::test_support::planning_http::native_configuration_resource(&(&self.planning).runtime, (&self.planning).tenant, self.commands.content.as_deref().expect("native content"), resource, "macos", "aarch64",
             json!({"target":{"kind":"device"},"apply":profile_task(profile,true),"remove":remove_profile_task(profile)}),
         ).await?;
         let scope = Uuid::new_v4();
@@ -325,9 +325,9 @@ impl Fixture {
         ensure!(refused.0 == StatusCode::FORBIDDEN);
         ensure!(self.operation(op).await?["authorization"] == "blocked");
         ensure!(
-            self.app
-                .execution
-                .apple_wake(&self.app.apple()?.channel.push_fixture().configuration)
+            self.commands
+                .service
+                .apple_wake(&self.apple.as_ref().channel.push_fixture().configuration)
                 .await?
                 .is_none(),
             "revoked authorization triggered APNs"

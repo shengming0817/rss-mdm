@@ -1,6 +1,6 @@
 //! Real PG failure/role/concurrency tests, called by the native Windows T2 scenario.
-use crate::windows::test_support::*;
 use crate::device::test_support::options;
+use crate::windows::test_support::*;
 use anyhow::ensure;
 use axum::http::StatusCode;
 use rss_mdm_windows_mdm::{CodecLimits, syncml};
@@ -67,7 +67,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     let mut host = Host::open().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let store = &host.store;
+    let store = &host.authority.pool;
     let tenant = case_tenant();
     let registration = peer.intent.registration;
     let response = peer
@@ -100,7 +100,8 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     .fetch_one(&mut pg)
     .await?;
     // The role itself cannot delete a live session or its exact response.
-    let mut tx = store.begin(tenant).await?;
+    let mut tx = store.begin().await?;
+    crate::Database::configure_transaction(&mut tx, tenant).await?;
     ensure!(
         sqlx::query("DELETE FROM mdm_access.management_messages")
             .execute(&mut *tx)
@@ -116,15 +117,16 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
             == 0
     );
     tx.rollback().await?;
-    let audit_store = store
-        .audit_store_fixture(&crate::config::AuditConfig::Plain)
-        .await?;
+    let audit_store = host.authority.audit.clone();
     // Only the deadline query uses ceil(numeric); other empty work succeeds.
     pg.execute("REVOKE EXECUTE ON FUNCTION pg_catalog.ceil(numeric) FROM PUBLIC")
         .await?;
-    let failed_deadline =
-        rss_mdm_windows_channel::retention::sweep(&store.windows_store(), &audit_store, tenant)
-            .await;
+    let failed_deadline = rss_mdm_windows_channel::retention::sweep(
+        &host.windows_state.access.clone(),
+        &audit_store,
+        tenant,
+    )
+    .await;
     pg.execute("GRANT EXECUTE ON FUNCTION pg_catalog.ceil(numeric) TO PUBLIC")
         .await?;
     ensure!(
@@ -137,10 +139,13 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         "deadline query failure became healthy idle"
     );
     ensure!(
-        rss_mdm_windows_channel::retention::sweep(&store.windows_store(), &audit_store, tenant)
-            .await?
-            .0
-            == 0
+        rss_mdm_windows_channel::retention::sweep(
+            &host.windows_state.access.clone(),
+            &audit_store,
+            tenant
+        )
+        .await?
+        .0 == 0
     );
     let mut held_head = pg.begin().await?;
     let _: i32 =
@@ -152,7 +157,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
         tokio::time::timeout(
             Duration::from_millis(500),
             rss_mdm_windows_channel::retention::prune_management(
-                &store.windows_store(),
+                &host.windows_state.access.clone(),
                 &audit_store,
                 tenant
             )
@@ -165,7 +170,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     seed(&mut pg, tenant, registration, 1064).await?;
     ensure!(
         rss_mdm_windows_channel::retention::prune_management(
-            &store.windows_store(),
+            &host.windows_state.access.clone(),
             &audit_store,
             crate::test_support::case::peer()
         )
@@ -178,7 +183,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     pg.execute("CREATE FUNCTION mdm_access.reject_session_gc() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture'; END $$; CREATE TRIGGER reject_session_gc BEFORE DELETE ON mdm_access.management_sessions FOR EACH ROW EXECUTE FUNCTION mdm_access.reject_session_gc()").await?;
     ensure!(
         rss_mdm_windows_channel::retention::prune_management(
-            &store.windows_store(),
+            &host.windows_state.access.clone(),
             &audit_store,
             tenant
         )
@@ -188,7 +193,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     ensure!(messages(&mut pg, tenant).await? == 65);
     ensure!(queries(&mut pg, tenant).await? == 65);
     pg.execute("DROP TRIGGER reject_session_gc ON mdm_access.management_sessions; DROP FUNCTION mdm_access.reject_session_gc()").await?;
-    let channel_store = store.windows_store();
+    let channel_store = host.windows_state.access.clone();
     let (a, b) = tokio::join!(
         rss_mdm_windows_channel::retention::prune_management(&channel_store, &audit_store, tenant),
         rss_mdm_windows_channel::retention::prune_management(&channel_store, &audit_store, tenant)
@@ -198,7 +203,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     let mut pruned = a + b;
     loop {
         let count = rss_mdm_windows_channel::retention::prune_management(
-            &store.windows_store(),
+            &host.windows_state.access.clone(),
             &audit_store,
             tenant,
         )
@@ -212,7 +217,7 @@ async fn bounded_pruning_preserves_durable_history() -> anyhow::Result<()> {
     ensure!(pruned == 65);
     ensure!(
         rss_mdm_windows_channel::retention::prune_management(
-            &store.windows_store(),
+            &host.windows_state.access.clone(),
             &audit_store,
             tenant
         )

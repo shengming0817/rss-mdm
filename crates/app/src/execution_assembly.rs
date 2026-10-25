@@ -100,22 +100,6 @@ pub(crate) async fn open(
                 .on_runtime(runtime.clone(), tenant, &audit_budget.control())
                 .await?,
         );
-        runtime
-            .local_tx(tenant, deadline(), |tx| {
-                Box::pin(async move {
-                    tx.with_connection(|c| Box::pin(crate::database::verify_product_storage(c)))
-                        .await
-                })
-            })
-            .await
-            .fold(
-                Ok,
-                |_| Err(bad()),
-                |_| Err(bad()),
-                |_| Err(Error::CommitUnknown),
-                |_| Err(Error::CommitUnknown),
-                |_| Err(bad()),
-            )?;
         let (outbox, store, reconcile) = open_storage(
             runtime.clone(),
             database.options()?,

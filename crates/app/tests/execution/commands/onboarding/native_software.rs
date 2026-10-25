@@ -26,7 +26,14 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     let mut host = crate::windows::test_support::Host::with_mdm_software().await?;
     host.listen().await?;
     let peer = host.peer().await?;
-    let mut client = Client::start(host.browser.clone(), &host.app).await?;
+    let mut client = Client::start(
+        host.browser.clone(),
+        &host.commands,
+        &host.authority.identity,
+        host.authority.audit.clone(),
+        host.clock.clone(),
+    )
+    .await?;
     crate::test_support::identity::seed_grants(
         case_tenant(),
         &crate::test_support::http::prepared_subject(&client.browser)?,
@@ -39,12 +46,12 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     )?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect(
-            host.app.flow.planning.clone(),
+            host.planning.clone(),
             crate::device::test_support::options("mdm_flow_runtime")?.password("runtime-fixture"),
         )
         .await?,
-        host.app.flow.assets.clone(),
-        host.app.flow.compliance.clone(),
+        host.assets.clone(),
+        host.compliance.clone(),
     )
     .await?;
     let mut startup = owner.startup()?;
@@ -77,8 +84,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
                 json!("{22345678-1234-4234-8234-123456789abc}");
         }
         let version = software_execution::seed_resource(
-            &host.app.flow.planning.runtime,
-            host.app.flow.planning.tenant,
+            &host.planning.runtime,
+            host.planning.tenant,
             resource,
             "windows",
             "x86_64",
@@ -101,8 +108,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
             );
         }
         software_execution::seed_enabled(
-            &(&host.app.flow.planning).runtime,
-            host.app.content_writer.as_ref().unwrap(),
+            &(&host.planning).runtime,
+            host.commands.content.as_ref().unwrap(),
             &version,
         )
         .await
@@ -111,9 +118,9 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     let scope = if agent_unknown {
         let label = crate::test_support::runtime::credential("native-conflicting-agent");
         let device = crate::test_support::case::name("native-conflicting-agent");
-        let registered=crate::test_support::agent::seed_service(host.app.agent_enrollment.as_ref().context("agent enrollment")?,&label,device,json!({"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","software.msi.system.v1"],"executionContext":software_execution::context(software_execution::Platform::Windows)})).await.context("seed conflicting Agent peer")?;
+        let registered=crate::test_support::agent::seed_service(host.agent_enrollment.as_ref().context("agent enrollment")?,&label,device,json!({"platform":"windows","architecture":"x86_64","capabilities":["inventory.collect.v1","software.msi.system.v1"],"executionContext":software_execution::context(software_execution::Platform::Windows)})).await.context("seed conflicting Agent peer")?;
         let device = registered["deviceId"].as_str().context("agent device")?;
-        let agent_scope = software_execution::prepared_scope(&host.app.flow.planning, &[device])
+        let agent_scope = software_execution::prepared_scope(&host.planning, &[device])
             .await
             .context("prepare Agent scope")?;
         let agent_policy = Uuid::new_v4();
@@ -162,7 +169,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         conn.close().await?;
         let scope = Uuid::new_v4();
         crate::test_support::agent_execution::seed_scope(
-            &host.app.flow.planning,
+            &host.planning,
             scope,
             json!([{"kind":"device","id":case_device()}]),
         )
@@ -170,9 +177,9 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         .context("prepare associated native scope")?;
         scope
     } else {
-        software_execution::prepared_scope(&host.app.flow.planning, &[case_device()]).await?
+        software_execution::prepared_scope(&host.planning, &[case_device()]).await?
     };
-    let stage = software_execution::prepared_scope(&host.app.flow.planning, &[case_device()])
+    let stage = software_execution::prepared_scope(&host.planning, &[case_device()])
         .await
         .context("prepare native rollout stage")?;
     let policy = Uuid::new_v4();
@@ -181,8 +188,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         content_setup::write(&mut client.browser,&client.router,&format!("/api/v1/policies/{policy}"),0,json!({"action":"put","enabled":true,"definition":{"scope":scope,"action":{"kind":"software","channel":"mdm","resource":{"kind":"software","id":resource,"version":"v1","variants":{"windows_x86_64":"default"}},"delivery":{"kind":"direct"},"intent":"required_install","runLifetimeSeconds":600,"rollout":{"stages":[{"scope":stage,"opensAt":0}]}}}})).await?;
     }
     let (a, b) = tokio::join!(
-        host.app.execution.recover_action_fixture(policy),
-        host.app.execution.recover_action_fixture(competing)
+        host.commands.service.recover_action_fixture(policy),
+        host.commands.service.recover_action_fixture(competing)
     );
     a?;
     b?;
@@ -224,8 +231,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
                 if response.commands.iter().all(|c|matches!(c,s::Command::Status(_))) { break; }
                 response=post(&peer,&native_reply(&initial,&response,unsupported_architecture)).await?;
             }
-            host.app.execution.recover_action_fixture(policy).await?;
-            host.app.execution.recover_action_fixture(competing).await?;
+            host.commands.service.recover_action_fixture(policy).await?;
+            host.commands.service.recover_action_fixture(competing).await?;
             if unsupported_architecture {
                 let progress = client.browser.call(&client.router,Method::GET,&format!("/api/v1/policies/{policy}/software/rollout"),None).await?;
                 if progress.1["stages"][0]["ready"] == true && progress.1["stages"][0]["totalTargets"] == 1 {
@@ -269,7 +276,7 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         "must execute once then verify read-only"
     );
     for policy in [policy, competing] {
-        host.app.execution.recover_action_fixture(policy).await?;
+        host.commands.service.recover_action_fixture(policy).await?;
     }
     let (_, response) = begin(&peer, 2100).await?;
     ensure!(

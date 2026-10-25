@@ -229,12 +229,18 @@ async fn tou_flow(host: &Host, token: &str) -> anyhow::Result<String> {
         .oneshot(request("https://mdm.example.test", form.clone())?)
         .await?;
     let location = accepted.headers()["location"].to_str()?.to_owned();
-    let refreshed = crate::api::from_state(
-        host.app.clone(),
-        "mdm.example.test".into(),
-        host.ingress_clock.clone(),
+    let refreshed = rss_mdm_windows_channel::entra::browser_routes(
+        host.windows_state.clone(),
+        rss_mdm_windows_channel::boundary::Envelope {
+            admission: Arc::new(tokio::sync::Semaphore::new(32)),
+            host: "mdm.example.test".into(),
+            clock: host.ingress_clock.clone(),
+            audit_store: host.authority.audit.clone(),
+            requests: Arc::new(tokio::sync::Semaphore::new(4)),
+            tenant: case_tenant().into(),
+        },
     )
-    .browser;
+    .into_axum();
     let retry = refreshed
         .clone()
         .oneshot(request("https://mdm.example.test", form)?)
@@ -305,7 +311,7 @@ fn issue(host: &Host, token: String, opaque: Option<&str>) -> anyhow::Result<soa
     )?;
     message.header.to = Some(format!(
         "{}/EnrollmentServer/Enrollment.svc",
-        host.app.windows()?.config.enrollment.origin
+        host.windows.as_ref().config.enrollment.origin
     ));
     let security = message.header.security.as_mut().unwrap();
     security.username = None;

@@ -671,10 +671,10 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
     let mut host = Host::renewal_window().await?;
     host.listen().await?;
     let peer = host.enrolled_peer().await?;
-    let ca = &host.app.windows()?.channel.ca;
+    let ca = &host.windows.as_ref().channel.ca;
     let certificate = sign_certificate(
-        &host.store.archive_pool(),
-        host.app.audit_store.clone(),
+        &host.authority.pool.clone(),
+        host.authority.audit.clone(),
         ca,
         &peer.intent,
     )
@@ -835,7 +835,6 @@ async fn native_renewal_preserves_registration_and_activates_only_after_new_tls_
         "old credential survived activation"
     );
     let scope = host
-        .app
         .devices
         .current_scope(
             &peer.proof,
