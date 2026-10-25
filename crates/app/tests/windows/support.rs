@@ -524,7 +524,7 @@ impl Host {
         Ok(Self {
             resources: Default::default(),
             root,
-            authority, commands: execution, planning, assets, compliance, windows, windows_state, devices, clock, pki, agent_channel, agent_enrollment,
+            authority, commands: execution, planning, assets, compliance, windows, windows_state, devices, clock, agent_channel, agent_enrollment,
             notifications: crate::worker_wake::Listener::new(
                 crate::device::test_support::options("mdm_access")?,
                 rss_request_context::TenantId::parse(case_tenant())?,
