@@ -339,7 +339,7 @@ mod tests {
         let routes = crate::pki::routes();
         for mut endpoint in routes.endpoints().iter().cloned() {
             endpoint.path = format!("/api/v1{}", endpoint.path);
-            let expected = match endpoint.method.as_str() {
+            let expected = match endpoint.method {
                 "POST" => AuditIntent::Management,
                 "GET" => AuditIntent::Routine,
                 method => panic!("unexpected PKI method: {method}"),
