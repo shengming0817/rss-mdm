@@ -125,12 +125,8 @@ pub async fn finish(
     let process_complete =
         result.exit_code() == Some(0) && result.quality() == OutputQuality::Complete;
     let success = process_complete && budget_valid && (schema_valid || frozen.collection.is_some());
-    let trusted = success
-        && result.collected_at() <= now
-        && run.state.trusts_result(
-            result.collected_at(),
-            frozen.definition.spec().timeout_seconds,
-        );
+    let trusted =
+        success && result.collected_at() <= now && run.state.trusts_result(result.collected_at());
     run.state
         .result(run.state.attempt().ok_or(crate::Error::Conflict)?, success)?;
     accept(

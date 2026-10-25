@@ -34,7 +34,7 @@ async fn started_execution_becomes_unknown_and_disabled_policy_cancels() -> Resu
     task_event(&router, &pending, json!({"kind":"start"})).await?;
     let task_id = pending["payload"]["task"]["taskId"].as_str().unwrap();
     pg(&format!(
-        "UPDATE mdm_commands.action_runs SET state=jsonb_set(state,'{{startedAt}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-61)) WHERE id='{task_id}'"
+        "UPDATE mdm_commands.action_runs SET deadline=floor(extract(epoch FROM clock_timestamp()))::bigint-1, state=jsonb_set(state,'{{deadline}}',to_jsonb(floor(extract(epoch FROM clock_timestamp()))::bigint-1)) WHERE id='{task_id}'"
     ))?;
     for _ in 0..2 {
         execution.recover_action_fixture(unknown_policy).await?;

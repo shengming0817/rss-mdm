@@ -115,14 +115,12 @@ impl RunState {
         self.started_at = Some(now);
         Ok(())
     }
-    pub fn trusts_result(&self, observed_at: i64, timeout: u32) -> bool {
+    pub fn trusts_result(&self, observed_at: i64) -> bool {
         matches!(
             self.execution,
             Execution::Running | Execution::Unknown | Execution::WaitingReboot
         ) && observed_at < self.deadline
-            && self.started_at.is_some_and(|start| {
-                observed_at >= start && observed_at - start <= i64::from(timeout)
-            })
+            && self.started_at.is_some_and(|start| observed_at >= start)
     }
     pub fn result(&mut self, attempt: Uuid, success: bool) -> Result<(), Error> {
         // Late evidence from the same attempt can resolve Unknown, but cannot authorize rerun.
@@ -187,13 +185,8 @@ impl RunState {
         }
         Ok(())
     }
-    pub fn expire(&mut self, now: i64, timeout: u32) {
-        if self.execution == Execution::Running
-            && (now >= self.deadline
-                || self
-                    .started_at
-                    .is_some_and(|start| now.saturating_sub(start) >= i64::from(timeout)))
-        {
+    pub fn expire(&mut self, now: i64) {
+        if self.execution == Execution::Running && now >= self.deadline {
             self.execution = Execution::Unknown;
         }
         if now >= self.deadline && self.execution == Execution::NotStarted {

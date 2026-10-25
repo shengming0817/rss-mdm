@@ -73,9 +73,7 @@ pub async fn finish(
         .map(|q| q.collected_at)
         .max()
         .ok_or(Error::Malformed)?;
-    let trusted = run
-        .state
-        .trusts_result(observed_at, spec.plan.spec().budget.timeout_seconds)
+    let trusted = run.state.trusts_result(observed_at)
         && run
             .state
             .started_at

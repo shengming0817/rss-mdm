@@ -71,6 +71,10 @@ impl ExecutionService {
             let event_key = format!("agent:{}:offer:{}",p.registration(),input.operation_id());
             // Old successful polls are replayable only while their exact offer remains authorized.
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
+                if matches!(input.event(),wire::TaskEvent::Start) {
+                    if now>=run.deadline || run.state.cancellation!=Cancellation::None || run.state.attempt()!=Some(input.attempt_id()) || run.state.execution!=Execution::Running {return Err(Error::Conflict.into());}
+                    if plan.withdrawn_in(service,tx,&run.target,now).await? || !plan.authorized_run_in(service,tx,&run,now).await? {return Err(Error::Forbidden.into());}
+                }
                 if let Some(task)=response.get("task").filter(|v|!v.is_null()) {
                     let id=stored(Uuid::parse_str(task["payload"]["task"]["taskId"].as_str().ok_or(Error::Conflict)?))?;
                     let run=db::load_run(tx,id).await?;belongs(&run,p)?;run.source.audit(audit);audit.target(&run.id.to_string());
@@ -123,7 +127,7 @@ impl ExecutionService {
             for id in ids {
                 let mut run=db::load_run(tx,stored(Uuid::parse_str(&id))?).await?;belongs(&run,p)?;let plan=db::load_source(&service.policy_reader,tx,run.source).await?;
                 let previous=run.state.clone();
-                run.state.expire(now,plan.timeout_seconds());
+                run.state.expire(now);
                 let capable=match &plan { db::ScheduledPolicy::DeviceAccess(v) => crate::device_access::capable(&binding, &v.binding.configuration.windows), db::ScheduledPolicy::Retirement(_) => binding.capabilities.contains(&wire::Capability::DeviceUnmanageV1), db::ScheduledPolicy::Credential(v) => crate::credential_tasks::capable(&binding,v.frozen.input.architecture), db::ScheduledPolicy::Native(_) => false, db::ScheduledPolicy::AgentCollection(v) => crate::agent_collection_eligibility::matches(&binding,v.frozen.input.platform,v.frozen.input.architecture,&v.frozen.definition,input.environment()), db::ScheduledPolicy::Script(script) => crate::script_eligibility::matches(&binding,script.frozen.input.platform,script.frozen.input.architecture,script.frozen.executor_profile(),input.profiles()), db::ScheduledPolicy::Software(software) => software.assignment.supported_in(&service.admission(),tx,&binding).await?, db::ScheduledPolicy::Enrollment(_) => enrollment_capable };
                 let waiting_ready = if run.state.execution == Execution::NotStarted && run.state.cancellation == Cancellation::None && now < run.deadline { crate::self_service::advance_waiting_in(service,tx,&mut run,&plan,now).await? } else { true };
                 let allowed=capable && waiting_ready && plan.authorized_run_in(service,tx,&run,now).await?;
@@ -182,6 +186,10 @@ impl ExecutionService {
             let actor=format!("agent:{}",p.registration());let hash=fingerprint(&(id,input))?;
             let event_key = format!("agent:{}:task:{id}:event:{}",p.registration(),input.operation_id());
             if let Some(response)=db::replay(tx,&actor,input.operation_id(),&hash).await?{
+                if matches!(input.event(),wire::TaskEvent::Start) {
+                    if now>=run.deadline || run.state.cancellation!=Cancellation::None || run.state.attempt()!=Some(input.attempt_id()) || run.state.execution!=Execution::Running {return Err(Error::Conflict.into());}
+                    if plan.withdrawn_in(service,tx,&run.target,now).await? || !plan.authorized_run_in(service,tx,&run,now).await? {return Err(Error::Forbidden.into());}
+                }
                 audit.management_result(rss_mdm_audit_integration::ManagementResult::Replayed);
                 let fact=Fact::business(audit,&event_key,&hash,200,"success",None)?;
                 let fact=if let Some(details)=db::audit_details(tx,&actor,input.operation_id()).await? {fact.with_details(details)?}else{fact};
@@ -213,7 +221,7 @@ impl ExecutionService {
                     credentials = if matches!(plan,db::ScheduledPolicy::DeviceAccess(_)) {
                         crate::device_access::provisioning::escrow(service,tx,&run,input.attempt_id(),value).await?
                     } else { crate::credential_tasks::escrow(service,tx,&run,input.attempt_id(),value).await? };
-                    if !run.state.trusts_result(now,plan.timeout_seconds()) {
+                    if !run.state.trusts_result(now) {
                         run.state.uncertain_result(input.attempt_id())?;
                         let tenant=checked_input(Uuid::parse_str(&service.tenant.to_string()))?;
                         tx.with_connection(move|c|Box::pin(async move{Ok(rss_mdm_recovery_credentials::storage::unknown_in(c,tenant,id).await)})).await?.map_err(crate::recovery_credentials::error)?;
@@ -250,7 +258,7 @@ impl ExecutionService {
                     if matches!(plan,db::ScheduledPolicy::Credential(_)) {crate::credential_tasks::start(service,tx,&run,input.attempt_id()).await?;}
                     run.state.start(input.attempt_id(),now)?;
                     require_signing_trust(tx,p,service.signer.as_ref().ok_or(Error::Unsupported)?).await?;
-                    let expiry=(now+15).min(run.deadline);
+                    let expiry=run.deadline;
                     let payload=plan.task(service,tx,&run.target,db::TaskIssue { run:id,attempt:input.attempt_id(),permit:wire::TaskPermit::Start,expiry }).await?;
                     let tenant=tx.tenant_id().to_string();let attempt=input.attempt_id();
                     let offer:Value=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT offer FROM mdm_commands.action_attempts WHERE tenant_id=$1::uuid AND id=$2 AND run=$3").bind(tenant).bind(attempt).bind(id).fetch_one(c).await})).await?;

@@ -203,26 +203,6 @@ impl ScheduledPolicy {
             Self::Retirement(v) => v.owner,
         }
     }
-    pub fn timeout_seconds(&self) -> u32 {
-        match self {
-            Self::DeviceAccess(_) => 600,
-            Self::Credential(v) => v.frozen.input.run_lifetime_seconds,
-            Self::AgentCollection(v) => {
-                v.frozen
-                    .definition
-                    .spec()
-                    .plan
-                    .spec()
-                    .budget
-                    .timeout_seconds
-            }
-            Self::Script(v) => v.frozen.definition.spec().timeout_seconds,
-            Self::Native(v) => v.frozen.definition.spec().timeout_seconds,
-            Self::Software(v) => v.assignment.frozen.run_lifetime_seconds,
-            Self::Enrollment(v) => v.frozen.run_lifetime_seconds,
-            Self::Retirement(v) => v.lifetime,
-        }
-    }
     pub async fn authorized_in(
         &self,
         service: &crate::ExecutionService,
