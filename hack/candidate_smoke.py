@@ -69,11 +69,18 @@ def native_pki_journey(deployed,browser):
         client.sock=context.wrap_socket(socket.create_connection(('127.0.0.1',deployed.agent_port),timeout=15),server_hostname=host)
         return client
     def call(client,method,path,body=None):
-        client.request(method,path,body=json.dumps(body) if body is not None else None,
-                       headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})
-        response=client.getresponse();data=response.read(8*1024*1024+1)
-        require(len(data)<=8*1024*1024,'candidate native response limit')
-        return response.status,json.loads(data) if data else None
+        deadline=time.monotonic()+5
+        while True:
+            client.request(method,path,body=json.dumps(body) if body is not None else None,
+                           headers={'Content-Type':'application/json','Host':deployed.agent_origin.removeprefix('https://')})
+            response=client.getresponse();data=response.read(8*1024*1024+1)
+            require(len(data)<=8*1024*1024,'candidate native response limit')
+            # Functional enrollment checks share the gateway's real peer quota. Only a read
+            # may retry an explicit rate denial; mutation and identity responses remain exact.
+            if method=='GET' and response.status==429 and time.monotonic()<deadline:
+                time.sleep(.2)
+                continue
+            return response.status,json.loads(data) if data else None
     client=connection()
     try:
         status,pending=call(client,'POST','/api/v1/agent/enroll/requests',request)
