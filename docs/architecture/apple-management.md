@@ -1,6 +1,6 @@
 # Apple 原生管理设计
 
-产品拥有身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发，NanoMDM 仅作协议对照。复用 Execution/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
+产品拥有 Rust Apple 通道、身份、注册、采集和结果；step-ca 仅负责外部 SCEP 签发。复用 Execution/CollectionRun/Observation/Inventory，避免第二套队列与设备状态权威。
 
 组织身份由 Apple 产品 owner 单源持有，账户驱动与 ADE 各自持有配置和授权。ADE server token 使用独立 RSA/S-MIME 密钥并绑定租户/组织/版本加密；外部 HTTP 不持有业务行锁。ADE journal 仅持有 Apple 控制面操作，现有 runtime 执行每次一页/一效果，不新增设备任务框架。完成时重验 server revision、token revision 和租约；组织内未知外部写必须先只读恢复，不能覆盖或盲目重发。同步页面放入每操作隔离的暂存目录，最终页事务发布并推进 cursor；只有完整全量结果可证明目录缺席。
 
@@ -26,7 +26,7 @@ StatusReport 没有可用于判定生产先后的原生序号。原生 ServerTok
 
 Legacy Profile 只从受保护的不可变 Resource 下载，使用已验证的 schema 及真实目标条件编译。Mac 不返回 IsManaged；接管先核对加密保留的关联 ProfileList 请求确实为 ManagedOnly=true，再要求管理清单证明根和所有子载荷的类型、标识、UUID、数量和顺序一致；有效且激活的精确声明版本交接经典所有权。DDM guard 在撤回后继续存在，只能由发出时已关联该 guard 的独立完整 ProfileList 缺席证明释放；新的撤回不借用旧查询结果。
 
-操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)，协议来源固定于 [Apple fixtures](../../fixtures/apple-tools.lock.json)。
+操作、外部 CA 与恢复见 [Apple 指南](../guides/apple-management.md)。参考 [Apple 证书管理](https://developer.apple.com/documentation/devicemanagement/managing-certificates-for-device-management-services-and-devices)、[APNs 响应](https://developer.apple.com/documentation/usernotifications/handling-notification-responses-from-apns)。
 
 资产采集使用六类固定只读 adapter：DeviceInformation、InstalledApplicationList、SecurityInfo、ProfileList、CertificateList、UserList。每次运行先以自身的设备通道前置查询取得真实 OS、监督、硬件与登记事实，再冻结原生编译上下文；返回时重新检查当前权限。用户模板必须提供规范化 Apple UserID，派发、APNs、回执、dataset、结果与分页游标均绑定此 scope。设备搜索、分组和合规按显式范围选择器独立求值，再按量词归约，不拼接不同用户事实。用户详情、列表与运行详情通过 `scope` JSON 选择；历史用户范围读取不要求通道当前有效，仍检查当前读取权限。详细范围与规则契约见[资产采集](../guides/assets.md#macos-agent-声明式采集)。UserList 仍为监督设备通道能力。
 
