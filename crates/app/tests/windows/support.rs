@@ -337,7 +337,8 @@ impl Host {
                     identity.tenant,
                 ),
             ),
-        )
+        vec![1;32],
+)
         .await
         .map_err(|e| anyhow::anyhow!("command startup: {e:?}"))?;
         resources.resource(rss_mdm_execution_service::Resource(

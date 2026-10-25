@@ -18,6 +18,7 @@ pub use onboarding::*;
 mod native_collection;
 #[path = "tasks.rs"]
 mod tasks;
+pub use crate::addressing::*;
 pub use crate::self_service::*;
 pub use native_collection::*;
 pub use tasks::*;
@@ -51,7 +52,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "b86d77ee661fa68c783e2a8fbdc6eb149ab9a4627be4a11a0b7edc94c65b4a63";
+    "1698cda67864df85f0781c4b7b6aef820851f33328dbf205f8ec2b71bb34ebc8";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -600,6 +601,8 @@ pub struct ReportStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// The exact capability is absent or not visible to this caller.
+    CapabilityNotFound,
     /// JSON or field validation failed.
     MalformedRequest,
     /// The wire major is unsupported.

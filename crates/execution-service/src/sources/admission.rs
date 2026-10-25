@@ -8,6 +8,7 @@ pub struct ExecutionPolicy<T = FrozenAction> {
     pub frequency: Frequency,
     pub active: bool,
     policy: Policy,
+    channel: rss_mdm_inventory::Channel,
 }
 pub async fn read_in(
     reader: &rss_mdm_policy_postgres::PolicyReader,
@@ -21,10 +22,11 @@ pub async fn read_in(
     Ok(ExecutionPolicy {
         id,
         owner: policy.id,
-        active: policy.state.is_enabled() && policy.version == id,
+        active: policy.state.is_enabled(),
         frozen: *action,
         frequency,
         policy,
+        channel: rss_mdm_inventory::Channel::Agent,
     })
 }
 impl<T: ScheduledInput> ExecutionPolicy<T> {
@@ -45,7 +47,8 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         {
             return Ok(None);
         }
-        storage::eligible_in(source, tx, &self.policy, device).await
+        storage::execution_eligible_in(source, tx, &self.policy, self.id, self.channel, device)
+            .await
     }
     pub async fn withdrawn_in(
         &self,
@@ -56,7 +59,15 @@ impl<T: ScheduledInput> ExecutionPolicy<T> {
         if !self.active {
             return Ok(true);
         }
-        storage::withdrawn_in(source, tx, &self.policy, device).await
+        Ok(storage::admission_in(
+            source,
+            tx,
+            self.policy.definition.scope,
+            self.channel,
+            device,
+        )
+        .await?
+            == crate::source_authority::ScopeAdmission::Excluded)
     }
     pub async fn authorized_in(
         &self,
@@ -100,8 +111,9 @@ pub async fn native_in(
         owner: policy.id,
         frozen: *action,
         frequency,
-        active: policy.state.is_enabled() && policy.version == id,
+        active: policy.state.is_enabled(),
         policy,
+        channel: rss_mdm_inventory::Channel::Mdm,
     })
 }
 pub async fn agent_collection_in(
@@ -118,8 +130,9 @@ pub async fn agent_collection_in(
         owner: policy.id,
         frozen: *action,
         frequency,
-        active: policy.state.is_enabled() && policy.version == id,
+        active: policy.state.is_enabled(),
         policy,
+        channel: rss_mdm_inventory::Channel::Agent,
     })
 }
 
@@ -137,7 +150,8 @@ pub async fn credential_in(
         owner: policy.id,
         frozen: *action,
         frequency,
-        active: policy.state.is_enabled() && policy.version == id,
+        active: policy.state.is_enabled(),
         policy,
+        channel: rss_mdm_inventory::Channel::Agent,
     })
 }

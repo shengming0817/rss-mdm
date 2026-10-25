@@ -30,6 +30,7 @@ pub(crate) async fn command_service(
         sessions,
         None,
         command_clock,
+        vec![1; 32],
     )
     .await;
     let (service, _, queries) = match built {

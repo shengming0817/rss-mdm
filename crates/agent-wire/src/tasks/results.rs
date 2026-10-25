@@ -167,6 +167,9 @@ pub enum SoftwareProcessObservation {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareStepResult {
+    /// Exact producer node in this task and attempt.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
+    pub step_id: [u8; 32],
     /// Zero-based position in the signed dependency plan.
     #[schemars(extend("minimum" = 0, "maximum" = 31))]
     pub index: u8,
@@ -210,8 +213,11 @@ impl SoftwareTaskResult {
         if self.definition_digest == [0; 32] || self.steps.is_empty() || self.steps.len() > 32 {
             return Err(WireError::InvalidValue);
         }
+        let mut nodes = std::collections::BTreeSet::new();
         for (index, result) in self.steps.iter().enumerate() {
-            if result.index as usize != index
+            if result.step_id == [0; 32]
+                || !nodes.insert(result.step_id)
+                || result.index as usize != index
                 || result.step_digest == [0; 32]
                 || result.package.is_empty()
                 || result.package.len() > 1024

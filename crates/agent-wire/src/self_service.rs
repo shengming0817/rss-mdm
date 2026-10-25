@@ -72,7 +72,7 @@ pub enum TaskAuthorization {
         source: SelfServiceCaller,
         /// Policy identity.
         policy_id: Uuid,
-        /// Configuration revision approved at invocation.
+        /// Configuration revision observed at acceptance, retained as provenance only.
         policy_revision: u64,
         /// Immutable execution version.
         policy_version: Uuid,
@@ -141,10 +141,6 @@ pub struct SelfServiceInvoke {
     pub operation_id: Uuid,
     /// Policy chosen from the authorized directory.
     pub policy_id: Uuid,
-    /// Current configuration CAS.
-    pub policy_revision: u64,
-    /// Immutable execution version returned by the directory.
-    pub policy_version: Uuid,
     /// Caller origin attested by the device service.
     pub source: SelfServiceCaller,
     /// Service-attested employee confirmation for these exact inputs.
@@ -158,8 +154,16 @@ pub struct SelfServiceInvoke {
 pub struct SelfServiceDirectory {
     /// Caller origin.
     pub source: SelfServiceCaller,
-    /// Last examined Policy identity.
-    pub after: Option<Uuid>,
+    /// Supported RSQL filter.
+    pub filter: Option<String>,
+    /// Stable field ordering.
+    pub sort: Option<String>,
+    /// Selected directory fields.
+    pub fields: Option<String>,
+    /// Candidate page budget, at most 64.
+    pub limit: Option<u16>,
+    /// Opaque query and identity-bound continuation.
+    pub cursor: Option<String>,
 }
 
 fn risk_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -199,16 +203,44 @@ pub enum ScriptParameterSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfServiceDirectoryResponse {
     /// Authorized directory entries.
-    pub items: Vec<SelfServiceDirectoryItem>,
-    /// Last examined Policy when another page may exist.
-    pub next_cursor: Option<Uuid>,
+    pub items: Vec<SelfServiceDirectoryProjection>,
+    /// Opaque continuation after the last examined candidate.
+    pub next_cursor: Option<String>,
     /// Server observation time in Unix seconds.
     pub as_of: i64,
+}
+/// Selected directory fields; resolve returns the complete required descriptor instead.
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelfServiceDirectoryProjection {
+    /// Selected capability interface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<crate::runtime::CapabilityDescriptor>,
+    /// Selected Policy identity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_id: Option<Uuid>,
+    /// Selected informational configuration revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_revision: Option<u64>,
+    /// Selected informational material version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_version: Option<Uuid>,
+    /// Selected qualified subject.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<SelfServiceSubject>,
+    /// Selected presentation and invocation settings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub self_service: Option<SelfServiceMetadata>,
+    /// Selected operation-specific interface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<SelfServiceTask>,
 }
 /// One currently authorized script and its Resource-owned parameter schema.
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SelfServiceDirectoryItem {
+    /// Server-owned identity and current callable interface.
+    pub capability: crate::runtime::CapabilityDescriptor,
     /// Logical Policy identity.
     pub policy_id: Uuid,
     /// Current configuration CAS revision.

@@ -111,6 +111,13 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
             ),
         )
         .route(
+            "/self-service/resolve",
+            post(resolve).owned(
+                &contracts::PROTOCOL_AGENT_CHANNEL,
+                &[RouteOperation::Action],
+            ),
+        )
+        .route(
             "/self-service/invocations",
             post(invoke)
                 .owned(
@@ -342,18 +349,46 @@ async fn employee(
     proof.bind_audit(audit).map_err(Error::from)?;
     Ok(Some(proof))
 }
-async fn directory(
+async fn resolve(
     State(app): State<Arc<TaskState>>,
     Extension(audit): Extension<RequestAudit>,
     peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
     headers: HeaderMap,
-    Query(input): Query<wire::SelfServiceDirectory>,
+    input: Body<wire::SelfServiceResolve>,
 ) -> Result<Json<Value>, crate::AgentError> {
     crate::bounded(async {
         let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
         let proof = employee(&app, &headers, &audit).await?;
         app.execution
-            .self_service_directory(&p, proof.as_ref(), &input, &audit)
+            .resolve_self_service(&p, proof.as_ref(), &body(input)?, &audit)
+            .await
+            .map(Json)
+            .map_err(|error| match error {
+                rss_mdm_execution_service::Error::NotFound => {
+                    crate::AgentError::Wire(wire::ErrorCode::CapabilityNotFound)
+                }
+                other => task_error(other),
+            })
+    })
+    .await
+}
+async fn directory(
+    State(app): State<Arc<TaskState>>,
+    Extension(audit): Extension<RequestAudit>,
+    peer: Option<Extension<rss_mdm_certificate::ClientCertificateEvidence>>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
+) -> Result<Json<Value>, crate::AgentError> {
+    crate::bounded(async {
+        let p = authenticate(&app, &headers, peer.as_ref().map(|p| &p.0), &audit).await?;
+        let proof = employee(&app, &headers, &audit).await?;
+        app.execution
+            .self_service_directory(
+                &p,
+                proof.as_ref(),
+                raw.as_deref().unwrap_or_default(),
+                &audit,
+            )
             .await
             .map(Json)
             .map_err(task_error)

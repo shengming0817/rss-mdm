@@ -302,6 +302,7 @@ pub async fn serve(
                                     identity.tenant,
                                 ),
                             ),
+                            planning.cursor_key.clone(),
                         )
                         .await
                         .map_err(|e| ProcessError::at("startup.execution", e))?;

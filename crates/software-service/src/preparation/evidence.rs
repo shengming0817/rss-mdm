@@ -93,7 +93,8 @@ fn validate_association(
         return Err(WireError::InvalidValue);
     }
     for (result, step) in result.steps.iter().zip(steps) {
-        if result.step_digest != step.digest()?
+        if result.step_id != step.step_id
+            || result.step_digest != step.digest()?
             || result.target != step.target
             || result.package != step.action.package
             || result.identity != observed_identity(&step.action)

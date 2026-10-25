@@ -181,7 +181,8 @@ impl Fixture {
                     identity.tenant,
                 ),
             ),
-        )
+        vec![1;32],
+)
         .await?;
         resources.resource(rss_mdm_execution_service::Resource(
             execution.service.clone(),

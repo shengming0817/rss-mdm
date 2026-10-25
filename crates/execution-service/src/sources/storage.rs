@@ -74,6 +74,25 @@ pub async fn eligible_in(
     policy: &Policy,
     device: &str,
 ) -> Result<Option<i64>> {
+    execution_eligible_in(
+        source,
+        tx,
+        policy,
+        policy.version,
+        crate::source_authority::action_channel(&policy.definition.action)?,
+        device,
+    )
+    .await
+}
+
+pub async fn execution_eligible_in(
+    source: &std::sync::Arc<dyn crate::source_authority::SourceAuthority>,
+    tx: &mut PgTransaction<'_>,
+    policy: &Policy,
+    version: Uuid,
+    channel: rss_mdm_inventory::Channel,
+    device: &str,
+) -> Result<Option<i64>> {
     let tenant_name = tx.tenant_id().to_string();
     let device_name = device.to_owned();
     let allowed = tx
@@ -93,7 +112,6 @@ pub async fn eligible_in(
     }
     let reader = source.clone();
     let tenant = tx.tenant_id();
-    let version = policy.version;
     let readable = tx
         .with_connection(move |c| {
             Box::pin(async move { Ok(reader.policy_readable_on(c, tenant, version).await) })
@@ -103,15 +121,7 @@ pub async fn eligible_in(
         return Ok(None);
     }
     Ok(
-        match admission_in(
-            source,
-            tx,
-            policy.definition.scope,
-            crate::source_authority::action_channel(&policy.definition.action)?,
-            device,
-        )
-        .await?
-        {
+        match admission_in(source, tx, policy.definition.scope, channel, device).await? {
             crate::source_authority::ScopeAdmission::Eligible { entry } => Some(entry),
             _ => None,
         },

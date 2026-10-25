@@ -347,6 +347,54 @@ impl ScheduledPolicy {
             }
         }
     }
+    /// Recheck current authority for an existing Run without reselecting rollout.
+    pub(crate) async fn run_admission_in(
+        &self,
+        service: &crate::ExecutionService,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        now: i64,
+    ) -> Result<bool> {
+        if let Self::Software(v) = self {
+            let tenant = tx.tenant_id().to_string();
+            let device = target.device.clone();
+            if !tx
+                .with_connection(move |c| {
+                    Box::pin(async move {
+                        Ok(rss_mdm_registration_service::lifecycle::work_allowed_in(
+                            c, &tenant, &device,
+                        )
+                        .await)
+                    })
+                })
+                .await??
+            {
+                return Ok(false);
+            }
+            let profile = if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
+                crate::native_software::target_in(tx, &target.device)
+                    .await?
+                    .map(|(_, p, a)| (p, a))
+            } else {
+                agent_profile_in(service, tx, target.registration).await?
+            };
+            let Some((platform, architecture)) = profile else {
+                return Ok(false);
+            };
+            return v
+                .assignment
+                .authorized_run_in(
+                    &service.admission(),
+                    tx,
+                    &target.device,
+                    platform,
+                    architecture,
+                    now,
+                )
+                .await;
+        }
+        self.authorized_in(service, tx, target, now).await
+    }
     pub async fn authorized_run_in(
         &self,
         service: &crate::ExecutionService,
@@ -373,7 +421,7 @@ impl ScheduledPolicy {
             {
                 return Ok(false);
             }
-            return self.authorized_in(service, tx, &run.target, now).await;
+            return self.run_admission_in(service, tx, &run.target, now).await;
         }
         if run.state.started_at.is_none() {
             let channel = if matches!(self, Self::Native(_))
@@ -409,7 +457,7 @@ impl ScheduledPolicy {
             None if matches!(self, Self::Software(v) if v.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall) => {
                 Ok(false)
             }
-            None => self.authorized_in(service, tx, &run.target, now).await,
+            None => self.run_admission_in(service, tx, &run.target, now).await,
         }
     }
 
@@ -455,7 +503,7 @@ impl ScheduledPolicy {
                 return Ok(false);
             };
             v.assignment
-                .authorized_in(
+                .authorized_run_in(
                     &service.admission(),
                     tx,
                     &target.device,

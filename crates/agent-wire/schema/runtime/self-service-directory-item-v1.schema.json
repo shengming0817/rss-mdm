@@ -1,0 +1,546 @@
+{
+  "$defs": {
+    "CapabilityDescriptor": {
+      "additionalProperties": false,
+      "description": "Cross-endpoint capability identity and interface, never an execution permit.",
+      "properties": {
+        "alias": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PolicyAlias"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional administrator address."
+        },
+        "id": {
+          "description": "Stable Policy capability ID.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "inputSchema": {
+          "description": "Schema for caller-provided parameters."
+        },
+        "instance": {
+          "description": "Product service instance.",
+          "type": "string"
+        },
+        "objectType": {
+          "$ref": "#/$defs/CapabilityObject",
+          "description": "Object namespace."
+        },
+        "operations": {
+          "description": "Operations supported in this interface.",
+          "items": {
+            "$ref": "#/$defs/CapabilityOperation"
+          },
+          "type": "array"
+        },
+        "outputSchema": {
+          "description": "Schema of the operation result."
+        },
+        "revision": {
+          "description": "Current configuration revision, for information only.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "scope": {
+          "description": "Actual scope owner; membership is rechecked by execution.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenant": {
+          "description": "Tenant owning this capability.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "toolName": {
+          "description": "Server-owned stable invocation name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Material version observed while resolving, not a call precondition.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "objectType",
+        "toolName",
+        "scope",
+        "instance",
+        "tenant",
+        "revision",
+        "version",
+        "operations",
+        "inputSchema",
+        "outputSchema"
+      ],
+      "type": "object"
+    },
+    "CapabilityObject": {
+      "description": "Enterprise objects currently exposed through this contract.",
+      "oneOf": [
+        {
+          "const": "policy",
+          "description": "A Policy, including its self-service view.",
+          "type": "string"
+        }
+      ]
+    },
+    "CapabilityOperation": {
+      "description": "Operations available through the authenticated interface.",
+      "oneOf": [
+        {
+          "const": "read",
+          "description": "Read the Policy.",
+          "type": "string"
+        },
+        {
+          "const": "invoke",
+          "description": "Invoke its published self-service task.",
+          "type": "string"
+        }
+      ]
+    },
+    "EnrollmentEntry": {
+      "description": "Platform-owned enrollment entry; opening it never proves enrollment completed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Open Windows' standard device-enrollment UI for this HTTPS discovery authority.",
+          "properties": {
+            "kind": {
+              "const": "windows",
+              "type": "string"
+            },
+            "server": {
+              "description": "Organization's discovery server.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+/?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "server"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Open the organization's HTTPS profile enrollment page; user/system approval remains required.",
+          "properties": {
+            "kind": {
+              "const": "macos",
+              "type": "string"
+            },
+            "url": {
+              "description": "Organization's managed enrollment entry.",
+              "maxLength": 2048,
+              "pattern": "^https://[^/@?#\\s]+(?:/[^#\\s]*)?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ExecutionIdentity": {
+      "description": "Required operating-system execution identity.",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "Service identity.",
+          "type": "string"
+        },
+        {
+          "const": "logged_in_user",
+          "description": "Current logged-in user, without fallback.",
+          "type": "string"
+        }
+      ]
+    },
+    "PolicyAlias": {
+      "description": "Tenant-local canonical Policy alias.",
+      "type": "string"
+    },
+    "ScriptParameterSource": {
+      "description": "Public source of one Resource-declared parameter.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Administrator literal.",
+          "properties": {
+            "kind": {
+              "const": "fixed",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "pattern": "^[^\\u0000]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "maximum": 9223372036854775807,
+                  "minimum": -9223372036854775808,
+                  "type": "integer"
+                }
+              ],
+              "description": "Administrator-selected scalar checked against the Resource schema."
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Required call-time input.",
+          "properties": {
+            "kind": {
+              "const": "input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceMetadata": {
+      "additionalProperties": false,
+      "description": "Published presentation and invocation settings; values are normalized by Policy CAS.",
+      "properties": {
+        "allowAi": {
+          "description": "Effective administrator AI switch.",
+          "type": "boolean"
+        },
+        "presentation": {
+          "additionalProperties": true,
+          "description": "Open directory presentation; never used as authorization or executable input.",
+          "type": "object"
+        },
+        "published": {
+          "description": "Whether this script is published for self service.",
+          "type": "boolean"
+        },
+        "riskLevel": {
+          "description": "Effective risk level, one or two.",
+          "enum": [
+            1,
+            2
+          ],
+          "type": "integer"
+        }
+      },
+      "required": [
+        "published",
+        "presentation",
+        "allowAi",
+        "riskLevel"
+      ],
+      "type": "object"
+    },
+    "SelfServiceSubject": {
+      "description": "Subject selected by the server's explicit Policy access basis.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device credential plus effective device scope; no enterprise session.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A live enterprise session matched by product authorization.",
+          "properties": {
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "user": {
+              "$ref": "#/$defs/SelfServiceUser",
+              "description": "Authenticated enterprise coordinates, without a credential."
+            }
+          },
+          "required": [
+            "kind",
+            "user"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceTask": {
+      "description": "One directory interface; software does not inherit script parameter semantics.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Administrator-published native MDM enrollment; no caller-supplied parameters.",
+          "properties": {
+            "entry": {
+              "$ref": "#/$defs/EnrollmentEntry",
+              "description": "Fixed OS enrollment entry."
+            },
+            "kind": {
+              "const": "enrollment",
+              "type": "string"
+            },
+            "organization": {
+              "description": "Organization selected by Policy.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "organization",
+            "entry"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Resource-owned script execution interface.",
+          "properties": {
+            "kind": {
+              "const": "script",
+              "type": "string"
+            },
+            "parameterSchema": {
+              "description": "Full resolved parameter constraints owned by Resource."
+            },
+            "parameterSources": {
+              "additionalProperties": {
+                "$ref": "#/$defs/ScriptParameterSource"
+              },
+              "description": "Complete sources for script parameters.",
+              "type": "object"
+            },
+            "resource": {
+              "$ref": "#/$defs/TaskResource",
+              "description": "Exact Resource selection."
+            },
+            "runAs": {
+              "$ref": "#/$defs/ExecutionIdentity",
+              "description": "Required operating-system identity."
+            }
+          },
+          "required": [
+            "kind",
+            "resource",
+            "runAs",
+            "parameterSources",
+            "parameterSchema"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Explicit request for approved AvailableInstall software.",
+          "properties": {
+            "kind": {
+              "const": "software",
+              "type": "string"
+            },
+            "resource": {
+              "$ref": "#/$defs/TaskResource",
+              "description": "Exact Resource selection."
+            },
+            "runAs": {
+              "$ref": "#/$defs/ExecutionIdentity",
+              "description": "Required operating-system identity of the root operation."
+            },
+            "target": {
+              "$ref": "#/$defs/SoftwareExecutionTarget",
+              "description": "Exact effect target, distinct from enterprise login."
+            }
+          },
+          "required": [
+            "kind",
+            "resource",
+            "runAs",
+            "target"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SelfServiceUser": {
+      "additionalProperties": false,
+      "description": "Authenticated product user; contains no session credential.",
+      "properties": {
+        "instanceId": {
+          "description": "Identity instance.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "principalId": {
+          "description": "Authenticated principal.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "tenantId": {
+          "description": "Product tenant.",
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenantId",
+        "instanceId",
+        "principalId"
+      ],
+      "type": "object"
+    },
+    "SoftwareExecutionTarget": {
+      "description": "Concrete effect target bound before an Offer is signed.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Device installation or provisioning; user registration is a different target.",
+          "properties": {
+            "kind": {
+              "const": "device",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "One exact live interactive OS account and login generation.",
+          "properties": {
+            "identity": {
+              "description": "Exact SID/UID.",
+              "maxLength": 184,
+              "minLength": 1,
+              "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+              "type": "string"
+            },
+            "kind": {
+              "const": "user",
+              "type": "string"
+            },
+            "sessionId": {
+              "description": "Exact login generation.",
+              "format": "uuid",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              },
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "identity",
+            "sessionId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TaskResource": {
+      "additionalProperties": false,
+      "description": "Exact Resource identity accompanying its signed digest.",
+      "properties": {
+        "id": {
+          "description": "Logical Resource identity.",
+          "type": "string"
+        },
+        "variant": {
+          "description": "Exact selected variant.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Immutable Resource version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "variant"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One currently authorized script and its Resource-owned parameter schema.",
+  "properties": {
+    "capability": {
+      "$ref": "#/$defs/CapabilityDescriptor",
+      "description": "Server-owned identity and current callable interface."
+    },
+    "policyId": {
+      "description": "Logical Policy identity.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "policyRevision": {
+      "description": "Current configuration CAS revision.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "policyVersion": {
+      "description": "Immutable execution version.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "selfService": {
+      "$ref": "#/$defs/SelfServiceMetadata",
+      "description": "Normalized presentation and invocation settings."
+    },
+    "subject": {
+      "$ref": "#/$defs/SelfServiceSubject",
+      "description": "Current qualified subject, rechecked when invoking and before execution."
+    },
+    "task": {
+      "$ref": "#/$defs/SelfServiceTask",
+      "description": "Closed task kind and the exact invocation interface."
+    }
+  },
+  "required": [
+    "capability",
+    "policyId",
+    "policyRevision",
+    "policyVersion",
+    "subject",
+    "selfService",
+    "task"
+  ],
+  "title": "SelfServiceDirectoryItem",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/self-service-directory-item.schema.json"
+}

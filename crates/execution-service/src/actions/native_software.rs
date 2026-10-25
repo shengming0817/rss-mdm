@@ -274,7 +274,7 @@ pub async fn advance_run(
         || target.generation != run.target.generation
         || !policy
             .assignment
-            .authorized_in(&service.admission(), tx, &run.target.device, p, a, now)
+            .authorized_run_in(&service.admission(), tx, &run.target.device, p, a, now)
             .await?
     {
         return Ok(());

@@ -1,0 +1,72 @@
+{
+  "$defs": {
+    "PolicyAlias": {
+      "description": "Tenant-local canonical Policy alias.",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Explicit exact address in the authenticated tenant's Policy namespace.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Canonical Policy identity.",
+      "properties": {
+        "id": {
+          "description": "Object ID.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "kind": {
+          "const": "id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Server-generated tool name.",
+      "properties": {
+        "kind": {
+          "const": "tool_name",
+          "type": "string"
+        },
+        "name": {
+          "description": "Complete canonical name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Administrator-controlled unique alias.",
+      "properties": {
+        "alias": {
+          "$ref": "#/$defs/PolicyAlias",
+          "description": "Canonical tenant-local alias."
+        },
+        "kind": {
+          "const": "alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "alias"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "CapabilitySelector",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/capability-selector.schema.json"
+}

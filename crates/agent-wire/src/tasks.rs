@@ -1156,10 +1156,45 @@ impl SoftwareTaskAction {
         software::validate_action(self)
     }
 }
+/// Immutable producer coordinates of one software execution node.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoftwareStepDefinition {
+    /// Logical resource in the task tenant.
+    pub resource: String,
+    /// Immutable resource version.
+    pub version: String,
+    /// Exact target variant.
+    pub variant: String,
+    /// Complete resource version digest.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
+    pub digest: [u8; 32],
+}
+impl SoftwareStepDefinition {
+    /// Canonical node identity, independent of ordering and display names.
+    pub fn step_id(&self) -> Result<[u8; 32], WireError> {
+        use sha2::{Digest, Sha256};
+        if self.digest == [0; 32]
+            || [&self.resource, &self.version, &self.variant]
+                .into_iter()
+                .any(|s| s.is_empty() || s.len() > 1024 || s.chars().any(char::is_control))
+        {
+            return Err(WireError::InvalidValue);
+        }
+        let bytes = serde_json::to_vec(&("rss-mdm/software-node/v1", self))
+            .map_err(|_| WireError::InvalidValue)?;
+        Ok(Sha256::digest(bytes).into())
+    }
+}
 /// One locally executable step; the server has already ordered fixed prerequisites.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SoftwareTaskStep {
+    /// Producer-generated stable node identity.
+    #[schemars(schema_with = "crate::runtime::nonzero_digest_schema")]
+    pub step_id: [u8; 32],
+    /// Immutable coordinates used to generate the identity.
+    pub definition: SoftwareStepDefinition,
     /// Device action and independent detector without Catalog source or dependency graph.
     pub action: SoftwareTaskAction,
     /// Task-local artifacts for this step.
@@ -1272,7 +1307,11 @@ impl SoftwareTaskSpec {
             return Err(WireError::InvalidValue);
         }
         let mut keys = std::collections::BTreeSet::new();
+        let mut nodes = std::collections::BTreeSet::new();
         for (index, step) in self.steps.iter().enumerate() {
+            if step.definition.step_id()? != step.step_id || !nodes.insert(step.step_id) {
+                return Err(WireError::InvalidValue);
+            }
             step.action.validate()?;
             step.target.validate_for(self.platform)?;
             if !matches!(
