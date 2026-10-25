@@ -12,6 +12,8 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
         x509::X509,
     };
     let mut f = fixture().await?;
+    let requests = crate::test_support::runtime::NativeRequests::new();
+    f.resources.resource(requests.clone());
     let resources = std::mem::take(&mut f.resources);
     resources.finish(async {
         let registration=f.register_profile(json!(["inventory.collect.v1"])).await?;
@@ -21,12 +23,12 @@ async fn cms_upload_has_independent_authorization_and_exact_audit_replay() -> Re
             rss_mdm_agent_channel::filevault::routes(f.enrollment.clone(),Some(custody.clone())),
             rss_mdm_agent_channel::boundary::Envelope{admission:Arc::new(tokio::sync::Semaphore::new(32)),requests:Arc::new(tokio::sync::Semaphore::new(32)),
                 host:"mdm.example.test:9445".into(),clock:monotonic(),audit_store:f.authority.audit.clone(),tenant:case_tenant().into()});
-        f.router=f.router.clone().merge(Router::new().nest("/api/v1/agent/runtime",runtime.into_axum()));
+        f.router=f.router.clone().merge(requests.wrap(Router::new().nest("/api/v1/agent/runtime",runtime.into_axum())));
         let routes=rss_mdm_management_http::recovery_credentials::filevault_routes(Some(custody));
         f.router=f.router.clone().merge(f.authority.protect(Router::new().nest("/api/v1",routes.into_axum()))?);
         let path="/api/v1/agent/runtime/filevault/configuration";
         let initial=agent_call(&f.router,Method::GET,path,Some(execution::case_credential()),None).await?;
-        ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false);
+        ensure!(initial.0==StatusCode::OK && initial.1["enabled"]==false,"initial configuration: {initial:?}");
         let missing=agent_call(&f.router,Method::GET,path,None,None).await?;ensure!(!missing.0.is_success());
         f.grants.extend(crate::test_support::identity::device_grants(None,&["security_operate"])?);
         crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;

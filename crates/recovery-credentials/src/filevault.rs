@@ -204,7 +204,11 @@ pub async fn receipt(
         .transpose()
 }
 /// Both native ingress paths share material deduplication. Custody never proves an actual unlock.
-pub async fn receive_cms(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "explicit custody, operation and recipient coordinates shared by both authenticated ingress paths"
+)]
+async fn receive_cms(
     c: &mut PgConnection,
     protection: &Protection,
     tenant: Uuid,

@@ -683,7 +683,7 @@ async fn password_applied_binding(
     let mut c =
         sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
             .await?;
-    let applied: bool = sqlx::query_scalar("SELECT applied_revision=revision AND state='active' FROM mdm_access.device_access_bindings WHERE tenant_id=$1::uuid AND id=$2")
+    let applied: bool = sqlx::query_scalar("SELECT document->>'appliedRevision'=revision::text AND state='active' AND mdm_access.access_binding_ready(document) FROM mdm_access.device_access_bindings WHERE tenant_id=$1::uuid AND id=$2")
         .bind(case_tenant()).bind(serde_json::from_value::<Uuid>(spec["bindingId"].clone())?).fetch_one(&mut c).await?;
     ensure!(applied, "task result must persist Applied");
     c.close().await?;

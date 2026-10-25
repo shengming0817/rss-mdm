@@ -18,9 +18,7 @@
       "schema": "mdm_recovery",
       "table": "native_actions",
       "read_write": true,
-      "updates": [
-        "coordinates"
-      ],
+      "updates": [],
       "delete_policy": null
     },
     {

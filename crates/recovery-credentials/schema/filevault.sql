@@ -39,7 +39,6 @@ CREATE POLICY tenant ON mdm_recovery.filevault_receipts USING(tenant_id=nullif(c
 GRANT SELECT,INSERT ON mdm_recovery.filevault_custodies,mdm_recovery.filevault_sources,mdm_recovery.filevault_receipts TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(active,revision,enabled,recipient) ON mdm_recovery.filevault_custodies TO mdm_access,mdm_command_runtime;
 GRANT UPDATE(custody,epoch,active,association,association_version) ON mdm_recovery.filevault_sources TO mdm_access,mdm_command_runtime;
-GRANT SELECT ON mdm_recovery.filevault_custodies,mdm_recovery.filevault_sources TO mdm_identity_runtime;
 COMMIT;
 -- Resolve an authorized display/disclosure device through live ingress membership, not origin metadata.
 CREATE FUNCTION mdm_recovery.filevault_accessible(subject jsonb,device text) RETURNS boolean
