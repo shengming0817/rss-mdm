@@ -141,6 +141,11 @@ impl ExecutionService {
                     let item = describe_in(service, tx, p, proof, input.source, id, now)
                         .await?
                         .ok_or(Error::NotFound)?;
+                    if let wire::CapabilitySelector::Alias { alias } = &input.selector
+                        && item.capability.alias.as_ref() != Some(alias)
+                    {
+                        return Err(Error::NotFound.into());
+                    }
                     if let Some(proof) = proof {
                         proof.check_live()?;
                     }

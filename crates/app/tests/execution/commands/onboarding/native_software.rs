@@ -227,21 +227,21 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
     );
     a?;
     b?;
-    let mut stage_rechecked = false;
+    let mut accepted_stage_preserved = false;
     let mut executes = 0;
     let mut saw_observe = false;
     let outcome=tokio::time::timeout(Duration::from_secs(90),async {
         for session in 1900..2000 {
             let (initial,mut response)=begin(&peer,session).await?;
             for _ in 0..12 {
-                if !agent_unknown && !unsupported_architecture && !stage_rechecked
+                if !agent_unknown && !unsupported_architecture && !accepted_stage_preserved
                     && response.commands.iter().any(|c|matches!(c,s::Command::Add {items,..} if items.iter().any(|i|i.target.as_deref().is_some_and(|u|u.contains("EnterpriseDesktopAppManagement")))))
                 {
                     change_stage(&mut client, stage, 1, false).await?;
                     let blocked = post(&peer, &native_reply(&initial,&response,false)).await?;
-                    ensure!(!blocked.commands.iter().any(installation_write), "first write bypassed changed stage Scope");
+                    ensure!(blocked.commands.iter().any(installation_write), "accepted native run must not repeat rollout selection");
                     change_stage(&mut client, stage, 2, true).await?;
-                    stage_rechecked = true;
+                    accepted_stage_preserved = true;
                     response = blocked;
                 }
                 for command in &response.commands {
@@ -304,8 +304,8 @@ async fn native_case(agent_unknown: bool, unsupported_architecture: bool) -> Res
         return Ok(());
     }
     ensure!(
-        agent_unknown || stage_rechecked,
-        "stage withdrawal was not exercised"
+        agent_unknown || accepted_stage_preserved,
+        "accepted run after rollout change was not exercised"
     );
     ensure!(
         executes == 1 && saw_observe,

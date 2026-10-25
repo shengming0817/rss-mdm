@@ -173,6 +173,22 @@ async fn software_pkg_ack_is_unknown_and_does_not_reinstall() -> Result<()> {
                 && items.len() == 1
                 && items[0]["effect"] == "unknown"
             {
+                let detail = f
+                    .browser
+                    .call(
+                        &f.router,
+                        Method::GET,
+                        &format!(
+                            "/api/v1/policies/{policy}/runs/{}",
+                            items[0]["taskId"].as_str().unwrap()
+                        ),
+                        None,
+                    )
+                    .await?;
+                ensure!(
+                    detail.0 == StatusCode::OK && detail.1["nodes"] == json!([]),
+                    "native run details: {detail:?}"
+                );
                 break;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;

@@ -135,6 +135,8 @@ pub async fn resolve(
         crate::action_admission::current(tx,a).await?.require(a,Permission::PolicyRead,None)?;
         let id = checked(s.policy_store.reader().resolve_in(tx,selector).await?)?.ok_or(Error::NotFound)?;
         let policy = storage::read_in(s.policy_store.reader(),tx,id).await?.filter(|p| p.state != rss_mdm_policy::State::Archived).ok_or(Error::NotFound)?;
+        if let rss_mdm_agent_wire::runtime::CapabilitySelector::Alias { alias } = selector
+            && policy.definition.alias.as_ref() != Some(alias) { return Err(Error::NotFound.into()); }
         audit.resource_target(rss_mdm_audit_integration::TargetKind::Policy,&id.to_string());
         let descriptor = rss_mdm_agent_wire::runtime::CapabilityDescriptor {
             id, object_type:rss_mdm_agent_wire::runtime::CapabilityObject::Policy,
