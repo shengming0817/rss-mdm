@@ -3,6 +3,8 @@
 //! HTTP API versions do not select task payload or signature versions.
 /// Persistent bootstrap, certificate activation and recovery contracts.
 pub mod enroll;
+/// Immutable producer baselines shipped with the protocol package; never execution grants.
+pub mod packaged_collections;
 /// Runtime JSON payloads and signed task values (wire version one).
 pub mod runtime;
 mod self_service;

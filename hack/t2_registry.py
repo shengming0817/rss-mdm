@@ -1895,6 +1895,7 @@ for name, selector in (
 
 
 T1_INPUTS += ('crates/inventory-service/src/operation.rs',
+              'crates/inventory-service/examples/packaged_collections.rs',
               'crates/management-http/src/resource_catalog/mod.rs',
               'crates/management-http/examples/collection_schema.rs',
               'crates/management-http/schema/Collection.json')
