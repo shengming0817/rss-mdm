@@ -35,6 +35,7 @@ type VersionKey = (String, String, [u8; 32]);
 type SourceKey = (String, String);
 #[derive(Default)]
 struct Facts {
+    retained_bytes: usize,
     versions: BTreeMap<VersionKey, Option<(r::Version, Option<Lifecycle>)>>,
     sources: BTreeMap<SourceKey, Option<(SourceDefinition, Lifecycle)>>,
 }
@@ -216,9 +217,7 @@ async fn bindings(
     requests: &[BindingRequest],
     lock: bool,
 ) -> Result<Vec<Option<[u8; 32]>>> {
-    use sqlx::Row;
     let mut facts = Facts::default();
-    let mut retained_bytes = 0usize;
     let mut results = vec![None; requests.len()];
     let mut pending = (0..requests.len()).collect::<Vec<_>>();
     while !pending.is_empty() {
@@ -240,72 +239,99 @@ async fn bindings(
         }
         let versions = versions.into_iter().collect::<Vec<_>>();
         for batch in versions.chunks(1000) {
-            if lock {
-                for resource in batch.iter().map(|v| &v.0).collect::<BTreeSet<_>>() {
-                    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
-                        .bind(format!("mdm_resource:{tenant}:resource:{resource}"))
-                        .execute(&mut *c)
-                        .await?;
-                }
-            }
-            let loaded = rss_mdm_resource_postgres::software_versions_on(c, tenant, batch).await?;
-            retained_bytes = retained_bytes
-                .saturating_add(loaded.payload_bytes)
-                .saturating_add(batch.len() * 1024);
-            if retained_bytes > 16 * 1024 * 1024 {
-                return Err(Error::Capacity);
-            }
-            let values = loaded.versions;
-            let ids = batch.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
-            let labels = batch.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
-            let rows=sqlx::query_as::<_,(String,String,String)>("SELECT v.resource,v.version,v.lifecycle::text FROM mdm_software.versions v JOIN unnest($2::text[],$3::text[]) AS x(resource,version) USING(resource,version) WHERE tenant_id=$1::uuid").bind(tenant.to_string()).bind(ids).bind(labels).fetch_all(&mut *c).await?;
-            let lifecycle = rows
-                .into_iter()
-                .map(|(r, v, l)| Ok(((r, v), storage::decode::<Lifecycle>(&l)?)))
-                .collect::<Result<BTreeMap<_, _>>>()?;
-            for (key, value) in batch.iter().zip(values) {
-                facts.versions.insert(
-                    key.clone(),
-                    value.map(|v| (v, lifecycle.get(&(key.0.clone(), key.1.clone())).cloned())),
-                );
-            }
+            facts.load_versions(c, tenant, batch, lock).await?;
         }
         let sources = sources.into_iter().collect::<Vec<_>>();
         for batch in sources.chunks(1000) {
-            let ids = batch.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
-            let revisions = batch.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
-            let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT s.id,s.revision,s.definition::text,s.lifecycle::text FROM mdm_software.sources s JOIN unnest($2::text[],$3::text[]) AS x(id,revision) USING(id,revision) WHERE tenant_id=$1::uuid),budget AS(SELECT coalesce(sum(octet_length(definition)+octet_length(lifecycle)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(tenant.to_string()).bind(ids).bind(revisions).fetch_all(&mut *c).await?;
-            let bytes = rows
-                .first()
-                .ok_or(Error::Integrity)?
-                .try_get::<i64, _>("bytes")?;
-            retained_bytes = retained_bytes
-                .saturating_add(bytes as usize)
-                .saturating_add(batch.len() * 1024);
-            if retained_bytes > 16 * 1024 * 1024 {
-                return Err(Error::Capacity);
-            }
-            for key in batch {
-                facts.sources.insert(key.clone(), None);
-            }
-            for row in rows {
-                if row.try_get::<Option<String>, _>("id")?.is_none() {
-                    continue;
-                }
-                facts.sources.insert(
-                    (row.try_get("id")?, row.try_get("revision")?),
-                    Some((
-                        storage::decode(row.try_get("definition")?)?,
-                        storage::decode(row.try_get("lifecycle")?)?,
-                    )),
-                );
-            }
+            facts.load_sources(c, tenant, batch).await?;
         }
         pending = next;
     }
     Ok(results)
 }
 
+impl Facts {
+    async fn load_versions(
+        &mut self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+        batch: &[VersionKey],
+        lock: bool,
+    ) -> Result<()> {
+        use sqlx::Row;
+
+        if lock {
+            for resource in batch.iter().map(|v| &v.0).collect::<BTreeSet<_>>() {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,2388))")
+                    .bind(format!("mdm_resource:{tenant}:resource:{resource}"))
+                    .execute(&mut *c)
+                    .await?;
+            }
+        }
+        let loaded = rss_mdm_resource_postgres::software_versions_on(c, tenant, batch).await?;
+        self.retained_bytes = self
+            .retained_bytes
+            .saturating_add(loaded.payload_bytes)
+            .saturating_add(batch.len() * 1024);
+        if self.retained_bytes > 16 * 1024 * 1024 {
+            return Err(Error::Capacity);
+        }
+        let values = loaded.versions;
+        let ids = batch.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
+        let labels = batch.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
+        let rows=sqlx::query_as::<_,(String,String,String)>("SELECT v.resource,v.version,v.lifecycle::text FROM mdm_software.versions v JOIN unnest($2::text[],$3::text[]) AS x(resource,version) USING(resource,version) WHERE tenant_id=$1::uuid").bind(tenant.to_string()).bind(ids).bind(labels).fetch_all(&mut *c).await?;
+        let lifecycle = rows
+            .into_iter()
+            .map(|(r, v, l)| Ok(((r, v), storage::decode::<Lifecycle>(&l)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        for (key, value) in batch.iter().zip(values) {
+            self.versions.insert(
+                key.clone(),
+                value.map(|v| (v, lifecycle.get(&(key.0.clone(), key.1.clone())).cloned())),
+            );
+        }
+        Ok(())
+    }
+    async fn load_sources(
+        &mut self,
+        c: &mut sqlx::PgConnection,
+        tenant: TenantId,
+        batch: &[SourceKey],
+    ) -> Result<()> {
+        use sqlx::Row;
+
+        let ids = batch.iter().map(|v| v.0.clone()).collect::<Vec<_>>();
+        let revisions = batch.iter().map(|v| v.1.clone()).collect::<Vec<_>>();
+        let rows=sqlx::query("WITH selected AS MATERIALIZED(SELECT s.id,s.revision,s.definition::text,s.lifecycle::text FROM mdm_software.sources s JOIN unnest($2::text[],$3::text[]) AS x(id,revision) USING(id,revision) WHERE tenant_id=$1::uuid),budget AS(SELECT coalesce(sum(octet_length(definition)+octet_length(lifecycle)),0)::bigint AS bytes FROM selected) SELECT selected.*,budget.bytes FROM budget LEFT JOIN selected ON budget.bytes<=16777216").bind(tenant.to_string()).bind(ids).bind(revisions).fetch_all(&mut *c).await?;
+        let bytes = rows
+            .first()
+            .ok_or(Error::Integrity)?
+            .try_get::<i64, _>("bytes")?;
+        self.retained_bytes = self
+            .retained_bytes
+            .saturating_add(bytes as usize)
+            .saturating_add(batch.len() * 1024);
+        if self.retained_bytes > 16 * 1024 * 1024 {
+            return Err(Error::Capacity);
+        }
+        for key in batch {
+            self.sources.insert(key.clone(), None);
+        }
+        for row in rows {
+            if row.try_get::<Option<String>, _>("id")?.is_none() {
+                continue;
+            }
+            self.sources.insert(
+                (row.try_get("id")?, row.try_get("revision")?),
+                Some((
+                    storage::decode(row.try_get("definition")?)?,
+                    storage::decode(row.try_get("lifecycle")?)?,
+                )),
+            );
+        }
+        Ok(())
+    }
+}
 /// Mutations retain their original catalog lock and use the same resolver as batch reads.
 async fn resolve_on(
     c: &mut sqlx::PgConnection,

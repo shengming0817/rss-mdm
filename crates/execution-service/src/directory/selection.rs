@@ -6,7 +6,6 @@ use rss_mdm_query::directory::Position;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::collections::BTreeMap;
-const INPUT_BYTES: i64 = 16 * 1024 * 1024;
 const BATCH: usize = 1000;
 const DOCUMENT: &str = "jsonb_build_object('id',id,'kind',kind,'device',device,'registrationId',registration,'generation',generation,'origin',source_kind,'policy',policy,'deadline',deadline,'status',status)";
 fn metadata(name: &str) -> bool {
@@ -150,21 +149,13 @@ async fn matching(
         .await?)
 }
 fn split(rows: &[Value], start: usize) -> crate::Result<usize> {
-    let mut bytes = 0;
-    let mut end = start;
-    for row in &rows[start..] {
-        let size = row["inputBytes"].as_i64().ok_or(Error::Malformed)?;
-        if size > INPUT_BYTES || size < 0 {
-            return Err(Error::Unavailable(Failure::Capacity).into());
-        }
-        if bytes + size > INPUT_BYTES {
-            break;
-        }
-        bytes += size;
-        end += 1;
-    }
-    Ok(end)
+    let sizes = rows[start..]
+        .iter()
+        .map(|row| row["inputBytes"].as_i64().ok_or(Error::Malformed))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(start + crate::transaction::input_prefix(sizes)?)
 }
+
 async fn enrich(
     s: &crate::queries::Queries,
     tx: &mut PgTransaction<'_>,

@@ -137,3 +137,19 @@ fn authorization_contract_exposes_filters_without_a_second_sort_contract() {
     );
     assert!(serde_json::from_value::<Authorization>(serde_json::json!("blocked")).is_err());
 }
+
+#[test]
+fn legal_source_documents_cross_batches_without_a_total_candidate_cap() {
+    let sizes = [8 * 1024 * 1024, 8 * 1024 * 1024, 8 * 1024 * 1024];
+    let first = crate::transaction::input_prefix(sizes).unwrap();
+    assert_eq!(first, 2);
+    assert_eq!(
+        crate::transaction::input_prefix(sizes[first..].iter().copied()).unwrap(),
+        1
+    );
+    assert!(crate::transaction::input_prefix([16 * 1024 * 1024 + 1]).is_err());
+    assert_eq!(
+        crate::transaction::input_prefix(std::iter::repeat_n(1, 1001)).unwrap(),
+        1000
+    );
+}

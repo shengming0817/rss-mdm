@@ -326,3 +326,20 @@ pub(crate) async fn prepare_audit_in(
 ) -> std::result::Result<(), rss_mdm_audit_integration::Error> {
     store.prepare_in(tx, audit, business).await
 }
+
+/// One protected/source input batch, independent of the size of the filtered directory.
+pub(crate) fn input_prefix(sizes: impl IntoIterator<Item = i64>) -> Result<usize> {
+    let mut bytes = 0i64;
+    let mut count = 0;
+    for size in sizes.into_iter().take(1000) {
+        if !(0..=16 * 1024 * 1024).contains(&size) {
+            return Err(Error::Unavailable(Failure::Capacity).into());
+        }
+        if bytes + size > 16 * 1024 * 1024 {
+            break;
+        }
+        bytes += size;
+        count += 1;
+    }
+    Ok(count)
+}
