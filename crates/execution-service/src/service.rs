@@ -293,9 +293,16 @@ impl ExecutionService {
                 let crate::frozen::Frozen::Software { action } = frozen else {
                     return Err(Error::Unsupported.into());
                 };
-                let (_, platform, architecture) = crate::native_software::target_in(tx, device)
-                    .await?
-                    .ok_or(Error::Unsupported)?;
+                let crate::native_software::TargetAdmission::Eligible(
+                    crate::native_software::NativeTarget {
+                        platform,
+                        architecture,
+                        ..
+                    },
+                ) = crate::native_software::target_admission_in(tx, device).await?
+                else {
+                    return Err(Error::Unsupported.into());
+                };
                 let package = action
                     .native_packages
                     .get(&rss_mdm_policy::SoftwareTarget::new(platform, architecture))

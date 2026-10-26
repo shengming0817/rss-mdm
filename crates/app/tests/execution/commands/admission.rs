@@ -63,15 +63,16 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let effects:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(old_id.to_string()).bind(format!("dispatch.{old_id}")).fetch_one(&mut check).await?;
-        let audits = crate::audit_test_support::read(&mut check, crate::test_support::case::tenant())
-            .await?
-            .iter()
-            .filter(|r| {
-                r.source() == "mdm.business"
-                    && r.operation() == Some(old_id.to_string().as_str())
-                    && r.result() == "success"
-            })
-            .count() as i64;
+        let audits =
+            crate::audit_test_support::read(&mut check, crate::test_support::case::tenant())
+                .await?
+                .iter()
+                .filter(|r| {
+                    r.source() == "mdm.business"
+                        && r.operation() == Some(old_id.to_string().as_str())
+                        && r.result() == "success"
+                })
+                .count() as i64;
         let effects = (effects.0, effects.1, effects.2, audits);
         ensure!(effects == (0, 0, 0, 0));
         check.close().await?;
@@ -225,16 +226,17 @@ impl Client {
                 ensure!(a == b && a.0 == StatusCode::ACCEPTED);
             }
             let facts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
-            let audits = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
-                .await?
-                .iter()
-                .filter(|r| {
-                    r.source() == "mdm.business"
-                        && r.operation() == Some(id.to_string().as_str())
-                        && r.result() == "success"
-                        && r.action() == "command_accept"
-                })
-                .count() as i64;
+            let audits =
+                crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
+                    .await?
+                    .iter()
+                    .filter(|r| {
+                        r.source() == "mdm.business"
+                            && r.operation() == Some(id.to_string().as_str())
+                            && r.result() == "success"
+                            && r.action() == "command_accept"
+                    })
+                    .count() as i64;
             let facts = (facts.0, facts.1, facts.2, audits);
             ensure!(
                 facts == (1, 1, 1, 1),

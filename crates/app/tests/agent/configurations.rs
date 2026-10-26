@@ -1861,7 +1861,8 @@ async fn connection_publication_requires_deployment_and_preserves_operations() -
         .await?
         .0 == StatusCode::CONFLICT
     );
-    let records = crate::audit_test_support::read(&mut c, crate::test_support::case::tenant()).await?;
+    let records =
+        crate::audit_test_support::read(&mut c, crate::test_support::case::tenant()).await?;
     ensure!(
         records
             .iter()

@@ -119,7 +119,9 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
             })
             .count()
     };
-    let before = audit_count(crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?);
+    let before = audit_count(
+        crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?,
+    );
     let response = protocol::dictionary([
         ("Status", "Acknowledged".into()),
         (
@@ -147,7 +149,9 @@ async fn profile_confirmation_rolls_back_with_execution_and_audit() -> Result<()
         "attempt or guards escaped rollback: {state:?}"
     );
     ensure!(
-        audit_count(crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?) == before,
+        audit_count(
+            crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?
+        ) == before,
         "audit escaped rollback"
     );
     ensure!(

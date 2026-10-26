@@ -91,7 +91,13 @@ pub async fn slot_in(
         if !service.inputs.software_distribution.mdm_enabled {
             return Ok(Preparation::NotEligible);
         }
-        let Some((current, p, a)) = crate::native_software::target_in(tx, &target.device).await?
+        let crate::native_software::TargetAdmission::Eligible(
+            crate::native_software::NativeTarget {
+                target: current,
+                platform: p,
+                architecture: a,
+            },
+        ) = crate::native_software::target_admission_in(tx, &target.device).await?
         else {
             return Ok(Preparation::NotEligible);
         };

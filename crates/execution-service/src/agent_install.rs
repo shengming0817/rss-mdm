@@ -301,13 +301,15 @@ pub async fn absent_on(
         _ => return Ok(None),
     };
     let tenant_id = rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-    let Some(fact) =
-        crate::assets::channel::detail_in(c, tenant_id, *registration, *generation, source)
+    let fact =
+        match crate::assets::channel::detail_in(c, tenant_id, *registration, *generation, source)
             .await?
-            .filter(|f| f.state == "absent")
-    else {
-        return Ok(None);
-    };
+        {
+            crate::assets::channel::Observation::Ready(fact) if fact.state == "absent" => fact,
+            crate::assets::channel::Observation::Ready(_)
+            | crate::assets::channel::Observation::ProjectionPending { .. }
+            | crate::assets::channel::Observation::Unavailable => return Ok(None),
+        };
     let Some(evidence) = fact.evidence else {
         return Ok(None);
     };

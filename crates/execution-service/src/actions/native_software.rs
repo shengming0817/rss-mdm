@@ -266,7 +266,11 @@ pub async fn advance_run(
     if !accepted {
         return Ok(());
     }
-    let Some((target, p, a)) = crate::native_software::target_in(tx, &run.target.device).await?
+    let crate::native_software::TargetAdmission::Eligible(crate::native_software::NativeTarget {
+        target,
+        platform: p,
+        architecture: a,
+    }) = crate::native_software::target_admission_in(tx, &run.target.device).await?
     else {
         return Ok(());
     };

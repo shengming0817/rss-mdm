@@ -376,7 +376,11 @@ pub(crate) fn options() -> sqlx::postgres::PgConnectOptions {
 pub(crate) async fn query_job(service: &Planning, count: usize) -> Uuid {
     let prefix = Uuid::new_v4();
     use sqlx::Connection;
-    let mut connection = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres").unwrap()).await.unwrap();
+    let mut connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("postgres").unwrap(),
+    )
+    .await
+    .unwrap();
     let inserted = sqlx::query("INSERT INTO mdm_access.devices SELECT $1::uuid,$2||lpad(n::text,4,'0') FROM generate_series(1,$3) n")
         .bind(tenant().to_string()).bind(format!("resume-{prefix}-"))
         .bind(i32::try_from(count).unwrap()).execute(&mut connection).await;

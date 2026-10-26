@@ -137,7 +137,7 @@ impl ExecutionService {
             Err(Fault::Request(Error::Conflict)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let Some((fact, platform)) = self
+        let Some((crate::assets::channel::Observation::Ready(fact), platform)) = self
             .agent_install_fact_in(tx, registration, generation)
             .await?
         else {
@@ -461,7 +461,7 @@ pub(crate) async fn installation_observations(
             )
         })
         .await??;
-    let inputs=ops.iter().map(|op|serde_json::json!({"operation":op.id,"snapshot":current.get(&(op.registration,op.registration_generation,op.request.task.source().as_str().to_owned())).map(|f|f.snapshot)})).collect::<Vec<_>>();
+    let inputs=ops.iter().map(|op|serde_json::json!({"operation":op.id,"snapshot":current.get(&(op.registration,op.registration_generation,op.request.task.source().as_str().to_owned())).and_then(|f| match f { crate::assets::channel::Observation::Ready(f) => Some(f.snapshot), crate::assets::channel::Observation::ProjectionPending { .. } | crate::assets::channel::Observation::Unavailable => None })})).collect::<Vec<_>>();
     let rows = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -539,7 +539,11 @@ pub(crate) async fn installation_observations(
                     op.registration_generation,
                     op.request.task.source().as_str().to_owned(),
                 ))
-                .cloned(),
+                .and_then(|fact| match fact {
+                    crate::assets::channel::Observation::Ready(fact) => Some(fact.clone()),
+                    crate::assets::channel::Observation::ProjectionPending { .. }
+                    | crate::assets::channel::Observation::Unavailable => None,
+                }),
             sent: row.try_get("sent")?,
             query: row.try_get("channel_state")?,
             status: row.try_get("delivery_status")?,
@@ -721,7 +725,7 @@ impl ExecutionService {
         tx: &mut PgTransaction<'_>,
         registration: Uuid,
         generation: i64,
-    ) -> Result<Option<(crate::assets::channel::Current, Platform)>> {
+    ) -> Result<Option<(crate::assets::channel::Observation, Platform)>> {
         let tenant = tx.tenant_id();
         let source=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,String>("SELECT source FROM mdm_access.report_sources WHERE tenant_id=$1::uuid AND registration=$2 AND enabled AND source IN ('mdm.windows','mdm.apple')").bind(tenant.to_string()).bind(registration).fetch_optional(c).await})).await?;
         let (source, platform) = match source.as_deref() {
@@ -744,7 +748,7 @@ impl ExecutionService {
                 })
             })
             .await??;
-        Ok(fact.map(|fact| (fact, platform)))
+        Ok(Some((fact, platform)))
     }
     pub(crate) async fn agent_install_event_in(
         &self,
@@ -760,7 +764,7 @@ impl ExecutionService {
         if self
             .agent_install_fact_in(tx, target.registration, target.generation)
             .await?
-            .is_some_and(|(fact, _)| fact.state == "installed")
+            .is_some_and(|(fact, _)| matches!(fact, crate::assets::channel::Observation::Ready(fact) if fact.state == "installed"))
         {
             return Ok(Decision::NoChange {
                 reason: "agent_installed".into(),

@@ -399,7 +399,9 @@ impl Fixture {
             .await?
             .iter()
             .any(|r| {
-                r.action() == "management_write" && r.result() == "denied" && r.actor() == Some(crate::test_support::case::admin())
+                r.action() == "management_write"
+                    && r.result() == "denied"
+                    && r.actor() == Some(crate::test_support::case::admin())
             });
         ensure!(audited, "collection denial lost business action audit");
         // Publish a new collection only after its own current authorization is restored.
@@ -432,7 +434,8 @@ impl Fixture {
             terminal,
             "unreported collection did not expire without an Observation report"
         );
-        let terminal = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
+        let terminal =
+            crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
         ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
             && r.operation() == Some(run.to_string().as_str())
             && r.actor() == Some("service:collection-finalizer")));

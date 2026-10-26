@@ -289,8 +289,13 @@ impl ScheduledPolicy {
             Self::Enrollment(v) => v.authorized_in(service, tx, target, now).await,
             Self::Software(v) => {
                 if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                    let Some((_, p, a)) =
-                        crate::native_software::target_in(tx, &target.device).await?
+                    let crate::native_software::TargetAdmission::Eligible(
+                        crate::native_software::NativeTarget {
+                            platform: p,
+                            architecture: a,
+                            ..
+                        },
+                    ) = crate::native_software::target_admission_in(tx, &target.device).await?
                     else {
                         return Ok(false);
                     };
@@ -358,9 +363,13 @@ impl ScheduledPolicy {
                 return Ok(false);
             }
             let profile = if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                crate::native_software::target_in(tx, &target.device)
-                    .await?
-                    .map(|(_, p, a)| (p, a))
+                match crate::native_software::target_admission_in(tx, &target.device).await? {
+                    crate::native_software::TargetAdmission::Eligible(v) => {
+                        Some((v.platform, v.architecture))
+                    }
+                    crate::native_software::TargetAdmission::ProjectionPending(_)
+                    | crate::native_software::TargetAdmission::Rejected(_) => None,
+                }
             } else {
                 agent_profile_in(service, tx, target.registration).await?
             };
@@ -504,7 +513,13 @@ impl ScheduledPolicy {
         }
         if let Self::Software(v) = self {
             if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
-                let Some((_, p, a)) = crate::native_software::target_in(tx, &target.device).await?
+                let crate::native_software::TargetAdmission::Eligible(
+                    crate::native_software::NativeTarget {
+                        platform: p,
+                        architecture: a,
+                        ..
+                    },
+                ) = crate::native_software::target_admission_in(tx, &target.device).await?
                 else {
                     return Ok(false);
                 };
@@ -551,6 +566,28 @@ impl ScheduledPolicy {
             }
             Self::Script(v) => v.withdrawn_in(&service.source, tx, &target.device).await,
             Self::Native(v) => v.withdrawn_in(&service.source, tx, &target.device).await,
+            Self::Software(v) if v.assignment.channel() == rss_mdm_inventory::Channel::Mdm => {
+                match crate::native_software::target_admission_in(tx, &target.device).await? {
+                    crate::native_software::TargetAdmission::Eligible(current)
+                    | crate::native_software::TargetAdmission::ProjectionPending(current) => {
+                        // Pending evidence can deny authority, never authorize a new side effect.
+                        Ok(current.target.registration != target.registration
+                            || current.target.generation != target.generation
+                            || !v
+                                .assignment
+                                .authorized_run_in(
+                                    &service.admission(),
+                                    tx,
+                                    &target.device,
+                                    current.platform,
+                                    current.architecture,
+                                    now,
+                                )
+                                .await?)
+                    }
+                    crate::native_software::TargetAdmission::Rejected(_) => Ok(true),
+                }
+            }
             Self::Software(_) | Self::Enrollment(_) => Ok(!self
                 .completion_authorized_in(service, tx, target, now)
                 .await?),

@@ -200,19 +200,37 @@ impl Fixture {
         let mut token_observer =
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
-        let facts_before_change = crate::audit_test_support::read(&mut token_observer, case_tenant())
-            .await?.into_iter().filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin" && r.target() == case_device()).count();
+        let facts_before_change =
+            crate::audit_test_support::read(&mut token_observer, case_tenant())
+                .await?
+                .into_iter()
+                .filter(|r| {
+                    r.source() == "mdm.business"
+                        && r.action() == "apple_checkin"
+                        && r.target() == case_device()
+                })
+                .count();
         peer.token_value(43).await?;
         let revision: i64 =
             sqlx::query_scalar("SELECT token_revision FROM mdm_apple.channels WHERE tenant_id=$1::uuid AND registration IN (SELECT id FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2) AND state='active'")
                 .bind(case_tenant()).bind(case_device()).fetch_one(&mut token_observer)
                 .await?;
-        let facts_before = crate::audit_test_support::read(&mut token_observer, crate::test_support::case::tenant())
-            .await?
-            .into_iter()
-            .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin" && r.target() == case_device())
-            .count();
-        ensure!(facts_before == facts_before_change + 1, "changed TokenUpdate must append exactly one device fact");
+        let facts_before = crate::audit_test_support::read(
+            &mut token_observer,
+            crate::test_support::case::tenant(),
+        )
+        .await?
+        .into_iter()
+        .filter(|r| {
+            r.source() == "mdm.business"
+                && r.action() == "apple_checkin"
+                && r.target() == case_device()
+        })
+        .count();
+        ensure!(
+            facts_before == facts_before_change + 1,
+            "changed TokenUpdate must append exactly one device fact"
+        );
         peer.token_value(43).await?;
         ensure!(
             sqlx::query_scalar::<_, i64>(
@@ -223,11 +241,16 @@ impl Fixture {
                 == revision
         );
         ensure!(
-            crate::audit_test_support::read(&mut token_observer, crate::test_support::case::tenant())
-                .await?
-                .into_iter()
-                .filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin" && r.target() == case_device())
-                .count()
+            crate::audit_test_support::read(
+                &mut token_observer,
+                crate::test_support::case::tenant()
+            )
+            .await?
+            .into_iter()
+            .filter(|r| r.source() == "mdm.business"
+                && r.action() == "apple_checkin"
+                && r.target() == case_device())
+            .count()
                 == facts_before,
             "unchanged TokenUpdate duplicated business facts"
         );
@@ -285,7 +308,11 @@ impl Fixture {
             )
             .await?;
         ensure!(checkout.0 == StatusCode::OK);
-        let facts = crate::audit_test_support::read(&mut pending_reader, crate::test_support::case::tenant()).await?;
+        let facts = crate::audit_test_support::read(
+            &mut pending_reader,
+            crate::test_support::case::tenant(),
+        )
+        .await?;
         let terminal_count: i64 = sqlx::query_scalar("SELECT count(*) FROM mdm_access.collection_runs WHERE tenant_id=$1::uuid AND id=ANY($2) AND result='failed' AND reason='revoked' AND sealed_at IS NOT NULL AND batch IS NULL AND NOT delivery_pending")
             .bind(case_tenant()).bind(&runs).fetch_one(&mut pending_reader).await?;
         ensure!(
@@ -326,7 +353,8 @@ impl Fixture {
             result == ("failed".into(), "revoked".into(), true),
             "retirement left collection pending"
         );
-        let terminal = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
+        let terminal =
+            crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant()).await?;
         ensure!(terminal.iter().any(|r| r.action() == "collection_finish"
             && r.operation() == Some(run.to_string().as_str())
             && r.actor() == Some("service:collection-finalizer")));

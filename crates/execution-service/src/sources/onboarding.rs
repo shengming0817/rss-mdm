@@ -58,8 +58,12 @@ pub async fn state_in(
             return status(State::MissingNativeRights);
         }
     }
-    let Some(fact) = fact else {
-        return status(State::ChannelUnknown);
+    let fact = match fact {
+        crate::assets::channel::Observation::Ready(fact) => fact,
+        crate::assets::channel::Observation::ProjectionPending { .. } => {
+            return status(State::ProjectionPending);
+        }
+        crate::assets::channel::Observation::Unavailable => return status(State::ChannelUnknown),
     };
     match frozen {
         Frozen::AgentInstall { action } => {

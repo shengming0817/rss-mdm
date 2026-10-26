@@ -135,8 +135,12 @@ impl Fixture {
             instance: INSTANCE.into(),
         });
         let mut cleanup = std::mem::take(&mut authority.resources);
-        for resource in resources { cleanup.resource(resource); }
-        cleanup.resource(rss_mdm_execution_service::Resource(source.execution.clone()));
+        for resource in resources {
+            cleanup.resource(resource);
+        }
+        cleanup.resource(rss_mdm_execution_service::Resource(
+            source.execution.clone(),
+        ));
         cleanup.resource(InventoryFixtureResource(source.inventory.clone()));
         Ok(Self {
             authority,
@@ -152,11 +156,12 @@ impl Fixture {
                 .await,
         )?)
     }
-    async fn close(self) -> Result<()> { self.finish(Ok(())).await }
+    async fn close(self) -> Result<()> {
+        self.finish(Ok(())).await
+    }
     async fn finish(self, result: Result<()>) -> Result<()> {
         self.resources.finish(async { result }).await
     }
-
 }
 fn names(value: &Value, expected: &[&str]) -> Result<()> {
     let items = value
@@ -191,8 +196,10 @@ fn component(value: &Value, name: &str) -> Value {
 #[ignore = "make t2 MODULE=diagnostics.http: isolated execution connection failure and recovery"]
 async fn execution_first_scan_failure_recovers_only_after_real_success() -> Result<()> {
     let mut fixture = Fixture::open().await?;
-    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(crate::device::test_support::options("postgres")?).await?;
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
     fixture.resources.resource(PoolResource(admin.clone()));
     let initial = component(&fixture.query().await?, "execution_recovery");
     ensure!(initial["readiness"] == "not_ready" && initial["task"] == "unknown");
@@ -232,7 +239,9 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         })
         .await
         .context("execution recovery did not report the first failed scan")??;
-        sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1").execute(&admin).await?;
+        sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")
+            .execute(&admin)
+            .await?;
         signals.command_recovery().notify_one();
         signals.command_relay().notify_one();
         tokio::time::timeout(Duration::from_secs(30), async {
@@ -301,10 +310,14 @@ async fn execution_first_scan_failure_recovers_only_after_real_success() -> Resu
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let restored = sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1").execute(&admin).await;
+    let restored = sqlx::raw_sql("ALTER ROLE mdm_command_runtime CONNECTION LIMIT -1")
+        .execute(&admin)
+        .await;
     let receipt = stack.shutdown().join().await;
     let result = (|| {
-        result.with_context(|| format!("execution scenario failed; restore={restored:?}; drain={receipt:?}"))?;
+        result.with_context(|| {
+            format!("execution scenario failed; restore={restored:?}; drain={receipt:?}")
+        })?;
         restored?;
         ensure!(receipt?.is_clean());
         ensure!(!fixture.source.execution.health().is_ready());
@@ -319,14 +332,18 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
     use rss_mdm_management_http::runtime_diagnostics::Source;
     use rss_runtime::ManagedResource;
     let mut fixture = Fixture::open().await?;
-    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(crate::device::test_support::options("postgres")?).await?;
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
     fixture.resources.resource(PoolResource(admin.clone()));
     let config: Config = serde_json::from_value(fixture.authority.base.clone())?;
     let role = format!("diag_runner_{}", Uuid::new_v4().simple());
     sqlx::raw_sql(&format!(
         "CREATE ROLE {role} LOGIN PASSWORD 'diagnostic-fixture' IN ROLE mdm_flow_runtime"
-    )).execute(&admin).await?;
+    ))
+    .execute(&admin)
+    .await?;
     let automation = crate::automation::Automation::connect(
         crate::automation::PlanningWork::connect_planning(
             fixture.flow.planning.clone(),
@@ -344,7 +361,9 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         fixture.flow.compliance.clone(),
     )
     .await?;
-    fixture.resources.resource(crate::automation::Resource(automation.work.clone()));
+    fixture
+        .resources
+        .resource(crate::automation::Resource(automation.work.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut stack = rss_runtime::ShutdownStack::try_new(
         rss_runtime::TotalDrainBudget::new(Duration::from_secs(20))?,
@@ -463,14 +482,26 @@ async fn runner_failure_is_visible_while_bridge_and_queries_succeed() -> Result<
         }).await.context("apply recovery observation timed out")??;
         Ok::<_,anyhow::Error>(())
     }.await;
-    let restored = sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime").execute(&admin).await;
-    let connections = sqlx::raw_sql(&format!("ALTER ROLE {role} CONNECTION LIMIT -1")).execute(&admin).await;
+    let restored =
+        sqlx::raw_sql("GRANT INSERT ON mdm_assets.asset_query_results TO mdm_flow_runtime")
+            .execute(&admin)
+            .await;
+    let connections = sqlx::raw_sql(&format!("ALTER ROLE {role} CONNECTION LIMIT -1"))
+        .execute(&admin)
+        .await;
     let receipt = stack.shutdown().join().await;
-    let closed = crate::automation::Resource(automation.work.clone()).shutdown().await;
-    let dropped = sqlx::raw_sql(&format!("DROP ROLE {role}")).execute(&admin).await;
+    let closed = crate::automation::Resource(automation.work.clone())
+        .shutdown()
+        .await;
+    let dropped = sqlx::raw_sql(&format!("DROP ROLE {role}"))
+        .execute(&admin)
+        .await;
     let result = (|| {
         result.with_context(|| format!("runner scenario failed; restore={restored:?}; connections={connections:?}; drain={receipt:?}; close={closed:?}; role={dropped:?}"))?;
-        restored?; connections?; closed?; dropped?;
+        restored?;
+        connections?;
+        closed?;
+        dropped?;
         ensure!(receipt?.is_clean());
         Ok(())
     })();
@@ -556,8 +587,10 @@ async fn dependency_failure_preserves_partial_results_and_authority() -> Result<
 #[ignore = "make t2 MODULE=diagnostics.http: real retained jobs, bounded counting and tenant isolation"]
 async fn durable_backlog_is_distinct_from_storage_failure_and_is_bounded() -> Result<()> {
     let mut fixture = Fixture::open().await?;
-    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(crate::device::test_support::options("postgres")?).await?;
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
     fixture.resources.resource(PoolResource(admin.clone()));
     let own = case_tenant();
     let peer = case::peer();
@@ -604,8 +637,10 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     use rss_mdm_inventory::Channel;
     use rss_runtime::ManagedResource;
     let mut fixture = Fixture::open().await?;
-    let admin = sqlx::postgres::PgPoolOptions::new().max_connections(1)
-        .connect_with(crate::device::test_support::options("postgres")?).await?;
+    let admin = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(crate::device::test_support::options("postgres")?)
+        .await?;
     fixture.resources.resource(PoolResource(admin.clone()));
     let service = DeviceService::new(
         fixture.authority.registration.clone(),
@@ -664,7 +699,9 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
         fixture.flow.compliance.clone(),
     )
     .await?;
-    fixture.resources.resource(crate::automation::Resource(automation.work.clone()));
+    fixture
+        .resources
+        .resource(crate::automation::Resource(automation.work.clone()));
     let signals = Arc::new(rss_mdm_flow_service::worker_wake::Signals::default());
     let mut launch = startup.commit();
     launch.stage_deferred_task_with_token(
@@ -778,10 +815,16 @@ async fn actual_worker_progress_and_readiness_share_the_same_projection() -> Res
     let receipt = stack.shutdown().join().await;
     let terminal = fixture.query().await;
     let result = (|| {
-        result.with_context(|| format!("inventory scenario failed; drain={receipt:?}; terminal={terminal:?}"))?;
+        result.with_context(|| {
+            format!("inventory scenario failed; drain={receipt:?}; terminal={terminal:?}")
+        })?;
         let receipt = receipt?;
-        ensure!(!receipt.is_clean() && receipt.failures().len() == 1
-            && receipt.failures()[0].name == "mdm-inventory", "unexpected worker drain: {receipt:?}");
+        ensure!(
+            !receipt.is_clean()
+                && receipt.failures().len() == 1
+                && receipt.failures()[0].name == "mdm-inventory",
+            "unexpected worker drain: {receipt:?}"
+        );
         ensure!(component(&terminal?, "inventory")["task"] == "failed");
         Ok(())
     })();
