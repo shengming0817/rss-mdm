@@ -208,6 +208,7 @@ async fn assignment_pagination_uses_published_scope_without_eager_execution() ->
     let change_source=async {
         let waiting=tokio::time::timeout(Duration::from_secs(4),async {
             loop {
+                sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut holder).await?;
                 let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND pg_backend_pid()=ANY(pg_blocking_pids(pid)) AND query LIKE '%scope_admission%')").fetch_one(&mut holder).await?;
                 if blocked { return Ok::<_,anyhow::Error>(()); }
                 tokio::time::sleep(Duration::from_millis(10)).await;

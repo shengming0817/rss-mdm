@@ -79,6 +79,10 @@ fn decode(
         .map_err(|_| Error::Conflict.into())
 }
 impl Groups {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "transaction, result identity, projection and current authority remain explicit at this owner boundary"
+    )]
     pub async fn group_page_in(
         &self,
         tx: &mut PgTransaction<'_>,

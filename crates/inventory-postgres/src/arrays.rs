@@ -155,7 +155,7 @@ pub async fn page(
     byte_limit: usize,
 ) -> Result<Page> {
     ensure!(
-        (1..=200).contains(&limit) && (1..=16 * 1024 * 1024).contains(&byte_limit),
+        (1..=1000).contains(&limit) && (1..=16 * 1024 * 1024).contains(&byte_limit),
         "array page budget"
     );
     let m = metadata(c, tenant, &[version.to_owned()])

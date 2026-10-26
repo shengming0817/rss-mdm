@@ -173,7 +173,7 @@ pub async fn field_mapping_references_in(
     limit: u16,
 ) -> Result<Vec<(String, String, bool, State)>, PgError> {
     use sqlx::Row;
-    if !(1..=129).contains(&limit) {
+    if !(1..=rss_mdm_query::MAX_PAGE_LIMIT + 1).contains(&limit) {
         return Err(STORAGE.fault("field_refs::limit"));
     }
     let tenant = tx.tenant_id();

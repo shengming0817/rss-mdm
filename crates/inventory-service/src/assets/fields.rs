@@ -174,12 +174,12 @@ pub struct FieldReferenceQuery {
     #[schemars(skip)]
     pub authority: String,
     #[serde(default = "reference_limit")]
-    #[schemars(extend("minimum" = 1, "maximum" = 128))]
+    #[schemars(extend("minimum" = 1, "maximum" = 1000))]
     pub limit: u16,
     pub cursor: Option<String>,
 }
 fn reference_limit() -> u16 {
-    64
+    rss_mdm_query::DEFAULT_PAGE_LIMIT
 }
 /// Exact resource coordinates; presence is configuration, not an execution/readiness assertion.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
