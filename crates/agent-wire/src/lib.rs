@@ -32,3 +32,6 @@ pub mod enterprise;
 
 /// Independent, device-authenticated FileVault CMS custody.
 pub mod filevault;
+
+/// Shared static contract for published osquery templates and literal parameters.
+pub mod osquery;

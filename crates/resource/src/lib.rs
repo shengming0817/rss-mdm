@@ -13,8 +13,6 @@ mod presentation;
 pub use agent_collection::*;
 mod script;
 pub use native_collection::*;
-mod sql;
-pub use sql::SqlTemplate;
 mod software;
 pub use script::*;
 pub use software::*;
