@@ -172,6 +172,14 @@ pub trait SourceAuthority: Send + Sync {
         channel: Channel,
         device: &'a str,
     ) -> Pending<'a, ScopeAdmission>;
+    /// Read-only configuration candidates for a bounded directory batch.
+    fn configuration_candidates_batch_on<'a>(
+        &'a self,
+        connection: &'a mut PgConnection,
+        tenant: TenantId,
+        devices: &'a [String],
+        after: Option<&'a (Uuid, String)>,
+    ) -> Pending<'a, ConfigurationCandidates>;
     fn candidates_on<'a>(
         &'a self,
         connection: &'a mut PgConnection,
@@ -219,4 +227,10 @@ pub struct DeviceAssignment {
     pub object: DeviceObject,
     pub admission: ScopeAdmission,
     pub scope_result: Uuid,
+}
+
+pub struct ConfigurationCandidates {
+    pub items: Vec<(String, PolicyCandidate)>,
+    pub scanned_after: Option<(Uuid, String)>,
+    pub has_more: bool,
 }

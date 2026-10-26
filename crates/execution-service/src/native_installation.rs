@@ -330,7 +330,9 @@ impl ExecutionService {
                     )
                     .await?
                         != (op.registration, op.registration_generation)
-                    || !storage::authority_valid(&s.source, &s.protection, tx, &op, now).await?
+                    || !storage::authority_decision(&s.source, &s.protection, tx, &op, now)
+                        .await?
+                        .is_authorized()
                 {
                     return Err(Error::Forbidden.into());
                 }
@@ -367,7 +369,9 @@ impl ExecutionService {
             let op = storage::load(tx, &self.protection, id).await?;
             let now = storage::now(tx).await?;
             if now >= op.request.deadline
-                || !storage::authority_valid(&self.source, &self.protection, tx, &op, now).await?
+                || !storage::authority_decision(&self.source, &self.protection, tx, &op, now)
+                    .await?
+                    .is_authorized()
             {
                 continue;
             }

@@ -231,7 +231,10 @@ impl ExecutionService {
         })).await?;
         for (id, installation) in rows {
             let op = storage::load(tx, &self.protection, installation).await?;
-            if !storage::authority_valid(&self.source, &self.protection, tx, &op, now).await? {
+            if !storage::authority_decision(&self.source, &self.protection, tx, &op, now)
+                .await?
+                .is_authorized()
+            {
                 continue;
             }
             tx.with_connection(move |c| Box::pin(async move {

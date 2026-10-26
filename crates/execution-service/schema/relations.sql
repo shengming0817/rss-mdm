@@ -251,3 +251,28 @@ GRANT EXECUTE ON FUNCTION mdm_commands.lock_query_revision(uuid),mdm_commands.ob
 CREATE TRIGGER execution_query_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent.bindings FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
 
 GRANT SELECT ON mdm.asset_clock TO mdm_command_runtime;
+
+-- Current authorization dependencies invalidate the same execution continuation coordinate.
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.devices FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_access.report_sources FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.retirement_work FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.retirement_channels FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.checkpoints FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_commands.capabilities FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_apple.devices FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_policy.policies FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_policy.versions FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.configuration_claims FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scopes FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_runs FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_channel_results FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.source_heads FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_resource.aggregates FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_resource.immutable FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_software.versions FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_software.sources FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_agent_packages.releases FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_group.groups FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_planning.scope_source_members FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.associations FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();
+CREATE TRIGGER execution_authorization_revision AFTER INSERT OR UPDATE OR DELETE ON mdm_devices.members FOR EACH ROW EXECUTE FUNCTION mdm_commands.capture_query_revision();

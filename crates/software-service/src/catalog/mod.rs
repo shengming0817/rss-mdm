@@ -1,5 +1,8 @@
 mod binding;
-pub use binding::{admitted_on, binding_on, execution_admitted_on};
+pub use binding::{
+    BindingRequest, admitted_on, binding_on, bindings_many_locked_on, bindings_many_on,
+    execution_admitted_on,
+};
 // Borrowed-transaction software lifecycle; external publication is a separate capability.
 mod imports;
 mod installers;
@@ -17,6 +20,8 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("software read budget exceeded")]
+    Capacity,
     #[error("invalid software definition")]
     Input,
     #[error("software source behavior unsupported")]

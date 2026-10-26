@@ -67,6 +67,7 @@ pub enum ExecutionAuthority {
         remove: bool,
     },
 }
+mod validity;
 impl ExecutionAuthority {
     pub async fn dispatch_ready(
         &self,
@@ -78,7 +79,7 @@ impl ExecutionAuthority {
                 tenant, operation, ..
             } => Ok((source.mdm_software_enabled()
                 || crate::agent_install::dispatched_on(c, tenant, *operation).await?)
-                && crate::native_software::authority_on(source, c, self, true).await?),
+                && crate::native_software::dispatch_authority_on(source, c, self).await?),
             Self::Retirement {
                 tenant,
                 device,
@@ -233,19 +234,68 @@ impl ExecutionAuthority {
         permissions: &[Permission],
         now: i64,
     ) -> Result<bool, Error> {
-        if permissions.is_empty() {
-            return Ok(false);
-        }
-        let mut permissions = permissions.to_vec();
-        permissions.extend_from_slice(self.required());
-        permissions.sort();
-        permissions.dedup();
-        for permission in permissions {
-            if !self.valid_one(source, conn, key, permission, now).await? {
+        if let Self::Retirement {
+            tenant,
+            device,
+            execution,
+            ..
+        } = self
+        {
+            if !rss_mdm_device_service::lifecycle::execution_allowed_in(
+                conn, tenant, device, *execution,
+            )
+            .await
+            .map_err(Error::from)?
+            {
                 return Ok(false);
             }
         }
-        Ok(true)
+        if let Self::Policy {
+            tenant,
+            device,
+            remove: true,
+            ..
+        } = self
+        {
+            let tenant =
+                rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
+            let mut after = uuid::Uuid::nil();
+            loop {
+                let page = source
+                    .candidates_on(
+                        conn,
+                        tenant,
+                        device,
+                        crate::source_authority::CandidateKind::Configuration,
+                        after,
+                    )
+                    .await?;
+                if !page.has_more {
+                    break;
+                }
+                after = page.scanned_after;
+            }
+        }
+        Ok(validity::many(
+            source,
+            conn,
+            key,
+            &[(self.clone(), permissions.to_vec())],
+            now,
+            true,
+        )
+        .await?
+        .pop()
+        .unwrap_or(false))
+    }
+    pub(crate) async fn valid_many(
+        source: &dyn crate::source_authority::SourceAuthority,
+        conn: &mut PgConnection,
+        key: &rss_mdm_native_protection::Protector,
+        requests: &[(Self, Vec<Permission>)],
+        now: i64,
+    ) -> Result<Vec<bool>, Error> {
+        validity::many(source, conn, key, requests, now, false).await
     }
     /// A correlated receipt settles the original task, independently of later Scope membership.
     pub(crate) async fn receipt_valid(
@@ -301,162 +351,5 @@ impl ExecutionAuthority {
             return Ok(false);
         }
         Ok(true)
-    }
-    async fn valid_one(
-        &self,
-        source: &dyn crate::source_authority::SourceAuthority,
-        conn: &mut PgConnection,
-        key: &rss_mdm_native_protection::Protector,
-        permission: Permission,
-        _now: i64,
-    ) -> Result<bool, Error> {
-        match self {
-            Self::Software { .. } => {
-                if permission != Permission::SoftwareDeploy {
-                    return Ok(false);
-                }
-                crate::native_software::authority_on(source, conn, self, false).await
-            }
-            Self::Retirement {
-                tenant,
-                retirement,
-                device,
-                registration,
-                execution,
-                required,
-                ..
-            } => {
-                if !required.contains(&permission) {
-                    return Ok(false);
-                }
-                if !rss_mdm_device_service::lifecycle::execution_allowed_in(
-                    conn, tenant, device, *execution,
-                )
-                .await
-                .map_err(Error::from)?
-                {
-                    return Ok(false);
-                }
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_devices.retirement_work w JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(w.tenant_id,w.registration) WHERE w.tenant_id=$1::uuid AND w.operation=$2 AND w.registration=$3 AND w.execution=$4 AND r.device=$5 AND r.state='active')")
-                    .bind(tenant).bind(retirement).bind(registration).bind(execution).bind(device).fetch_one(conn).await.map_err(db)
-            }
-            Self::AgentInstall { stage, .. } => {
-                let allowed = match stage {
-                    AgentInstallStage::Install => permission == Permission::SoftwareDeploy,
-                    AgentInstallStage::Bootstrap | AgentInstallStage::Cleanup { .. } => matches!(
-                        permission,
-                        Permission::SecurityOperate
-                            | Permission::ConfigurationWrite
-                            | Permission::Enrollment
-                    ),
-                };
-                if !allowed {
-                    return Ok(false);
-                }
-                if matches!(stage, AgentInstallStage::Cleanup { .. }) {
-                    crate::agent_install::cleanup_authorized_on(conn, self).await
-                } else {
-                    crate::agent_install::authorized_on(conn, self).await
-                }
-            }
-            Self::DeviceControl { required, .. } | Self::Credential { required, .. } => {
-                Ok(required.contains(&permission))
-            }
-            Self::Policy {
-                tenant,
-                policy,
-                version,
-                device,
-                remove,
-                unit,
-                ..
-            } => {
-                let frozen=sqlx::query_scalar::<_,serde_json::Value>("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(version).bind(policy).fetch_optional(&mut *conn).await.map_err(db)?;
-                let Some(frozen) = frozen else {
-                    return Ok(false);
-                };
-                let expected: crate::frozen::Frozen =
-                    serde_json::from_value(frozen).map_err(|_| Error::Malformed)?;
-                let crate::frozen::Frozen::Configuration { native, exit, .. } = expected else {
-                    return Ok(false);
-                };
-                let tenant_id =
-                    rss_request_context::TenantId::parse(tenant).map_err(|_| Error::Malformed)?;
-                let native = native.open(
-                    key,
-                    tenant_id,
-                    crate::configuration::Owner::Policy {
-                        policy: *policy,
-                        version: *version,
-                    },
-                )?;
-                if *remove
-                    && (!matches!(exit, rss_mdm_policy::Exit::Remove) || native.remove.is_none())
-                {
-                    return Ok(false);
-                }
-                if native.unit_key(key, tenant_id, device)? != *unit {
-                    return Ok(false);
-                }
-                let retain_ddm = matches!(exit, rss_mdm_policy::Exit::Retain)
-                    && matches!(
-                        native.apply,
-                        crate::Task::Macos {
-                            request: rss_mdm_apple_mdm::native::request::Request::Declarations { .. }
-                        }
-                    );
-                if !*remove {
-                    let enabled: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND id=$2 AND state='enabled') OR EXISTS(SELECT 1 FROM mdm_planning.configuration_claims c JOIN mdm_commands.operations o ON(o.tenant_id,o.id)=(c.tenant_id,c.operation) JOIN mdm_policy.policies p ON(p.tenant_id,p.id)=(c.tenant_id,c.policy) WHERE c.tenant_id=$1::uuid AND c.device=$3 AND o.authority->>'unit'=$4 AND p.state='enabled')")
-                        .bind(tenant).bind(policy).bind(device).bind(unit).fetch_one(conn).await.map_err(db)?;
-                    return Ok(enabled || retain_ddm);
-                }
-                let expected_objects = native.objects()?;
-                let mut after = uuid::Uuid::nil();
-                loop {
-                    let rows = source
-                        .candidates_on(
-                            conn,
-                            tenant_id,
-                            device,
-                            crate::source_authority::CandidateKind::Configuration,
-                            after,
-                        )
-                        .await?;
-                    let more = rows.has_more;
-                    after = rows.scanned_after;
-
-                    for row in rows.items {
-                        let current_frozen: serde_json::Value = sqlx::query_scalar("SELECT frozen FROM mdm_policy.versions WHERE tenant_id=$1::uuid AND id=$2 AND policy=$3").bind(tenant).bind(row.version).bind(row.policy).fetch_one(&mut *conn).await.map_err(db)?;
-                        let current: crate::frozen::Frozen =
-                            serde_json::from_value(current_frozen.clone())
-                                .map_err(|_| Error::Malformed)?;
-                        let crate::frozen::Frozen::Configuration { native: other, .. } = current
-                        else {
-                            return Ok(false);
-                        };
-                        let other = other.open(
-                            key,
-                            tenant_id,
-                            crate::configuration::Owner::Policy {
-                                policy: row.policy,
-                                version: row.version,
-                            },
-                        )?;
-                        if !other
-                            .objects()?
-                            .iter()
-                            .any(|o| expected_objects.iter().any(|expected| o.overlaps(expected)))
-                        {
-                            continue;
-                        }
-                        return Ok(false);
-                    }
-                    if !more {
-                        break;
-                    }
-                }
-                Ok(true)
-            }
-        }
     }
 }

@@ -116,15 +116,69 @@ pub async fn execution_started(tx: &mut PgTransaction<'_>, id: Uuid) -> Result<b
     })).await?)
 }
 
-pub async fn authority_valid(
+pub async fn authority_decision(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
     key: &Arc<rss_mdm_native_protection::Protector>,
     tx: &mut PgTransaction<'_>,
     operation: &Operation,
     now: i64,
-) -> Result<bool> {
-    check_authority(source, key, tx, operation, now, false).await
+) -> Result<crate::authorization_decision::Authorization> {
+    let tenant = tx.tenant_id().to_string();
+    let device = operation.device.clone();
+    let id = operation.id;
+    let lifecycle = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(
+                    rss_mdm_device_service::lifecycle::execution_allowed_in(
+                        c, &tenant, &device, id,
+                    )
+                    .await
+                    .map_err(Error::from),
+                )
+            })
+        })
+        .await??;
+    let preliminary = crate::authorization_decision::decide(
+        operation,
+        lifecycle,
+        Some((operation.registration, operation.registration_generation)),
+        true,
+    )?;
+    if !preliminary.is_authorized() {
+        return Ok(preliminary);
+    }
+    let registration = match current_registration(
+        tx,
+        &operation.device,
+        operation.request.task.purpose()?,
+    )
+    .await
+    {
+        Ok(current) => Some(current),
+        Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => None,
+        Err(e) => return Err(e),
+    };
+    let decision = crate::authorization_decision::decide(operation, lifecycle, registration, true)?;
+    if !decision.is_authorized() {
+        return Ok(decision);
+    }
+    let key = key.clone();
+    let source = source.clone();
+    let authority = operation.authority.clone();
+    let permissions = operation.request.task.permissions()?;
+    let valid = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(authority
+                    .valid(source.as_ref(), c, &key, &permissions, now)
+                    .await)
+            })
+        })
+        .await??;
+    crate::authorization_decision::decide(operation, lifecycle, registration, valid)
 }
+
 pub async fn receipt_valid(
     source: &Arc<dyn crate::source_authority::SourceAuthority>,
     key: &Arc<rss_mdm_native_protection::Protector>,
@@ -132,45 +186,6 @@ pub async fn receipt_valid(
     operation: &Operation,
     now: i64,
 ) -> Result<bool> {
-    check_authority(source, key, tx, operation, now, true).await
-}
-async fn check_authority(
-    source: &Arc<dyn crate::source_authority::SourceAuthority>,
-    key: &Arc<rss_mdm_native_protection::Protector>,
-    tx: &mut PgTransaction<'_>,
-    operation: &Operation,
-    now: i64,
-    receipt: bool,
-) -> Result<bool> {
-    if !receipt {
-        let tenant = tx.tenant_id().to_string();
-        let device = operation.device.clone();
-        let id = operation.id;
-        let allowed = tx
-            .with_connection(move |c| {
-                Box::pin(async move {
-                    Ok(rss_mdm_device_service::lifecycle::execution_allowed_in(
-                        c, &tenant, &device, id,
-                    )
-                    .await
-                    .map_err(Error::from))
-                })
-            })
-            .await??;
-        if !allowed {
-            return Ok(false);
-        }
-    }
-    if matches!(
-        operation.authority,
-        ExecutionAuthority::DeviceControl { .. }
-    ) && !operation.authority.control_matches(
-        &operation.request,
-        operation.registration,
-        operation.registration_generation,
-    )? {
-        return Ok(false);
-    }
     match current_registration(tx, &operation.device, operation.request.task.purpose()?).await {
         Ok(current) if current == (operation.registration, operation.registration_generation) => {}
         Ok(_) | Err(Fault::Request(Error::Conflict | Error::WindowsDeclaredEnrollmentNotReady)) => {
@@ -181,19 +196,13 @@ async fn check_authority(
     let key = key.clone();
     let source = source.clone();
     let authority = operation.authority.clone();
-    let permission = operation.request.task.permissions()?;
+    let permissions = operation.request.task.permissions()?;
     Ok(tx
         .with_connection(move |c| {
             Box::pin(async move {
-                Ok(if receipt {
-                    authority
-                        .receipt_valid(source.as_ref(), c, &key, &permission, now)
-                        .await
-                } else {
-                    authority
-                        .valid(source.as_ref(), c, &key, &permission, now)
-                        .await
-                })
+                Ok(authority
+                    .receipt_valid(source.as_ref(), c, &key, &permissions, now)
+                    .await)
             })
         })
         .await??)

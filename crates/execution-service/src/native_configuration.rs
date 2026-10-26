@@ -634,7 +634,9 @@ impl ExecutionService {
         }
         if previous == digest
             && (command.status() == dc::Status::Applied
-                || storage::authority_valid(&self.source, &self.protection, tx, &old, now).await?)
+                || storage::authority_decision(&self.source, &self.protection, tx, &old, now)
+                    .await?
+                    .is_authorized())
             && !matches!(
                 command.status(),
                 dc::Status::TimedOut

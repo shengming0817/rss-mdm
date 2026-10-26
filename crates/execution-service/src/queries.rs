@@ -89,20 +89,27 @@ impl Queries {
                 Box::pin(async move {
                     let (service, proof, device, id, audit) = *ctx;
                     storage::authorized(tx, proof, device, Permission::OperationRead).await?;
+                    let generation = crate::query_generation::read(tx).await?;
                     let op = storage::load(tx, &service.protection, id).await?;
                     if op.device != device {
                         return Err(Error::Forbidden.into());
                     }
                     let command = service.command_status(tx, &op).await?;
                     let now = storage::now(tx).await?;
-                    let authorized = storage::authority_valid(
-                        &service.source,
-                        &service.protection,
+                    let grant = crate::action_admission::current(tx, proof).await?;
+                    let operations = std::collections::BTreeMap::from([(op.id, op)]);
+                    let mut decisions = crate::authorization_decision::batch(
+                        service,
                         tx,
-                        &op,
+                        proof,
+                        &grant,
+                        &operations,
+                        &std::collections::BTreeMap::from([(id, command)]),
                         now,
                     )
                     .await?;
+                    let decision = decisions.remove(&id).ok_or(Error::Conflict)?;
+                    let op = operations.into_values().next().ok_or(Error::Conflict)?;
                     let native_values = service.native_values_in(tx, proof, device, &op).await?;
                     let observation = protocol::observation(
                         tx,
@@ -126,6 +133,10 @@ impl Queries {
                     } else {
                         None
                     };
+                    if generation != crate::query_generation::read(tx).await? {
+                        return Err(Error::Conflict.into());
+                    }
+                    proof.check_live()?;
                     audit.require_final_request();
                     Ok(records::CommandDetail {
                         operation_id: op.id,
@@ -136,7 +147,8 @@ impl Queries {
                         input_version: op.request.input_version,
                         deadline: op.request.deadline,
                         dispatch_failure: op.dispatch_failure,
-                        authorization: if authorized { "authorized" } else { "blocked" }.into(),
+                        authorization: decision.authorization,
+                        reauthorization: decision.reauthorization,
                         command_status: crate::service::status(command).into(),
                         observation,
                         agent_installation: agent_installation.map(records::decode).transpose()?,

@@ -484,7 +484,9 @@ impl ExecutionService {
             if command.status().is_terminal() || (reauthorize && command.status() == dc::Status::Received) || now>=op.request.deadline {return Err(Error::Conflict.into());}
             let authority=if reauthorize {
                 let ExecutionAuthority::DeviceControl { action, confirmation, .. } = &op.authority else {return Err(Error::Conflict.into());};
-                if storage::current_registration(tx,device,op.request.task.purpose()?).await? != (op.registration,op.registration_generation) {return Err(Error::Conflict.into());}
+                let registration=storage::current_registration(tx,device,op.request.task.purpose()?).await?;
+                let eligibility=crate::authorization_decision::reauthorization(&op,command.status(),now,Some(registration),true,true)?;
+                if !matches!(eligibility,crate::authorization_decision::Reauthorization::Available {..}) {return Err(Error::Conflict.into());}
                 ExecutionAuthority::for_control(&auth,proof,device,*action,*confirmation)?
             } else {
                 if !command.status().is_terminal() {

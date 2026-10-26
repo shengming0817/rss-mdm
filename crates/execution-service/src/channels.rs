@@ -282,13 +282,12 @@ pub trait AppleResults: Send + Sync {
     ) -> Pending<'a, Vec<(Uuid, String)>>;
 
     /// Check current-registration platform evidence without issuing a command.
-    fn device_control_supported<'a>(
+    fn device_controls_supported<'a>(
         &'a self,
         c: &'a mut PgConnection,
-        target: AppleRegistration,
-        action: crate::device_control::Kind,
-        command: rss_mdm_apple_mdm::native::input::CommandInput,
-    ) -> Pending<'a, bool>;
+        tenant: &'a str,
+        requests: &'a [AppleControlCheck],
+    ) -> Pending<'a, std::collections::BTreeMap<Uuid, bool>>;
     /// Server publication withdrawal is distinct from native object absence.
     fn withdrawal_published<'a>(
         &'a self,
@@ -645,4 +644,14 @@ pub trait AppleAssetRead: Send + Sync {
         c: &'a mut PgConnection,
         p: &'a DevicePrincipal,
     ) -> Pending<'a, Option<rss_mdm_apple_mdm::native::ddm::AssetBinding>>;
+}
+
+/// Capability facts are read once for the requested current registration generations.
+#[derive(Clone)]
+pub struct AppleControlCheck {
+    pub id: Uuid,
+    pub registration: Uuid,
+    pub generation: i64,
+    pub action: crate::device_control::Kind,
+    pub command: rss_mdm_apple_mdm::native::input::CommandInput,
 }
