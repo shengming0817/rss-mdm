@@ -37,22 +37,27 @@ pub async fn target_in(
     channel: &str,
 ) -> Result<Option<Target>> {
     let tenant = tx.tenant_id().to_string();
-    let selected = device.to_owned();
     let device = device.to_owned();
-    let channel = channel.to_owned();
-    let rows:Vec<(Uuid,i64)>=tx.with_connection(move|c|Box::pin(async move {
-        sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel=$3 AND state='active' AND parent_id IS NULL ORDER BY id LIMIT 2")
-            .bind(tenant).bind(device).bind(channel).fetch_all(c).await
-    })).await?;
-    Ok(if rows.len() == 1 {
-        Some(Target {
-            device: selected,
-            registration: rows[0].0,
-            generation: rows[0].1,
+    let channel = match channel {
+        "agent" => rss_mdm_inventory::Channel::Agent,
+        "mdm" => rss_mdm_inventory::Channel::Mdm,
+        _ => return Err(crate::Error::Malformed.into()),
+    };
+    let current = tx
+        .with_connection(move |c| {
+            Box::pin(async move {
+                Ok(rss_mdm_registration_service::device::endpoints::current_in(
+                    c, &tenant, &device, channel,
+                )
+                .await)
+            })
         })
-    } else {
-        None
-    })
+        .await??;
+    Ok(current.map(|p| Target {
+        device: p.device,
+        registration: p.registration_id,
+        generation: p.generation,
+    }))
 }
 impl ExecutionService {
     /// Original execution transaction host for atomic event member acceptance.
@@ -208,43 +213,32 @@ impl ExecutionService {
                 let tenant = tx.tenant_id().to_string();
                 let device = target.device.clone();
                 tx.with_connection(move|c|Box::pin(async move {sqlx::query("INSERT INTO mdm_planning.configuration_devices(tenant_id,device) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING").bind(tenant).bind(device).execute(c).await?;Ok(())})).await?;
-                self.reconcile_configuration(tx, &target.device, audit)
+                self.reconcile_configuration_target_in(tx, &target.device, audit, Some(policy.id))
                     .await?;
                 self.configuration_event_result_in(tx, policy, target).await
             }
             Action::EnsureAgentInstalled { .. } => {
-                self.reconcile_agent_install_trigger_in(
-                    tx,
-                    &target.device,
-                    audit,
-                    Some((policy.id, deadline)),
-                )
-                .await?;
-                let tenant = tx.tenant_id().to_string();
-                let device = target.device.clone();
-                let version = policy.version;
-                let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT id FROM mdm_commands.operations WHERE tenant_id=$1::uuid AND device=$2 AND authority->>'kind'='agent_install' AND authority->>'version'=$3 ORDER BY id LIMIT 1000").bind(tenant).bind(device).bind(version.to_string()).fetch_all(c).await})).await?;
-                Ok(if ids.is_empty() {
-                    rejected("installation_not_eligible")
-                } else {
-                    accepted(ids, true)
-                })
+                self.agent_install_event_in(tx, policy, target, deadline, audit)
+                    .await
             }
             Action::DeviceAccess { .. } => {
-                let prepared =
-                    crate::device_access::prepare_target_reconciliation_in(self, tx, target)
-                        .await?;
-                crate::device_access::reconcile_in(self, tx, prepared, now, audit).await?;
-                let tenant = tx.tenant_id().to_string();
-                let device = target.device.clone();
-                let policy = policy.id;
-                let ids=tx.with_connection(move|c|Box::pin(async move {sqlx::query_scalar("SELECT r.id FROM mdm_commands.action_runs r JOIN mdm_policy.versions v ON(v.tenant_id,v.id)=(r.tenant_id,r.policy_version) WHERE r.tenant_id=$1::uuid AND r.device=$2 AND v.policy=$3 AND r.source_kind='device_access' ORDER BY r.created_at DESC,r.id LIMIT 1000").bind(tenant).bind(device).bind(policy).fetch_all(c).await})).await?;
-                Ok(if ids.is_empty() {
+                let prepared = crate::device_access::prepare_target_reconciliation_in(
+                    self,
+                    tx,
+                    target,
+                    Some(policy.id),
+                )
+                .await?;
+                let outcome =
+                    crate::device_access::reconcile_in(self, tx, prepared, now, audit).await?;
+                Ok(if !outcome.operations.is_empty() {
+                    accepted(outcome.operations, false)
+                } else if outcome.blocked {
+                    rejected("access_not_eligible")
+                } else {
                     Decision::NoChange {
                         reason: "account_bindings_current".into(),
                     }
-                } else {
-                    accepted(ids, false)
                 })
             }
             // These are handled by Planning, whose lifecycle and telemetry owners hold their contracts.
@@ -317,6 +311,21 @@ impl ExecutionService {
         })
         .await
     }
+    /// Apply the authoritative platform/revision check in the batch's original transaction.
+    pub async fn apply_event_context_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        target: &Target,
+        context: &rss_mdm_agent_wire::runtime::SoftwareExecutionContext,
+    ) -> Result<()> {
+        crate::channels::agent_context_in(
+            tx,
+            self.agent_store.clone(),
+            target.registration,
+            context,
+        )
+        .await
+    }
     /// A completed parent may replay its receipt, but cannot initiate another child event.
     pub async fn event_parent_current_in(
         &self,
@@ -361,8 +370,24 @@ impl ExecutionService {
             Operation::Native { id } => {
                 let operation = crate::storage::load(tx, &self.protection, *id).await?;
                 let command = self.required_command(tx, &operation).await?;
+                let installation = if matches!(
+                    operation.authority,
+                    crate::authority::ExecutionAuthority::AgentInstall { .. }
+                ) {
+                    Some(
+                        crate::native_installation::installation_observation(
+                            tx,
+                            self.apple_results.clone(),
+                            self.agent_store.clone(),
+                            &operation,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 Ok(
-                    json!({"reference":reference,"state":command.status().as_str(),"allowedActions":[]}),
+                    json!({"reference":reference,"state":command.status().as_str(),"agentInstallation":installation,"allowedActions":[]}),
                 )
             }
             Operation::Retirement { id } => {

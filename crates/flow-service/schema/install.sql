@@ -333,8 +333,9 @@ ALTER TABLE mdm_planning.event_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mdm_planning.event_members FORCE ROW LEVEL SECURITY;
 CREATE POLICY tenant ON mdm_planning.event_batches USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
 CREATE POLICY tenant ON mdm_planning.event_members USING(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid) WITH CHECK(tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid);
-GRANT SELECT,INSERT ON mdm_planning.event_batches TO mdm_flow_runtime;
-GRANT SELECT,INSERT,UPDATE ON mdm_planning.event_members TO mdm_flow_runtime;
+GRANT SELECT,INSERT ON mdm_planning.event_batches TO mdm_flow_runtime,mdm_command_runtime;
+GRANT SELECT,INSERT ON mdm_planning.event_members TO mdm_flow_runtime;
+GRANT INSERT ON mdm_planning.event_members TO mdm_command_runtime;
 
 COMMIT;
 

@@ -29,6 +29,7 @@ impl Caller {
 #[derive(Clone, Serialize, Deserialize)]
 struct MemberAuthority {
     permissions: Vec<(Permission, OperationAuthority)>,
+    retirement_target: Option<rss_mdm_inventory_service::objects::DeviceObject>,
 }
 const MAX_MEMBERS: usize = 1000;
 impl Events {
@@ -100,7 +101,7 @@ impl Events {
             "policy_event",
             rss_mdm_audit_integration::AuditIntent::Management,
         );
-        run(&p.audit_store,&p.runtime,p.tenant,audit,(self,&caller,proof,device,input,audit),|ctx,tx|Box::pin(async move{
+        run(&p.audit_store,if matches!(caller,Caller::Agent{..}){self.execution.event_runtime()}else{&p.runtime},p.tenant,audit,(self,&caller,proof,device,input,audit),|ctx,tx|Box::pin(async move{
             let(s,caller,proof,device,input,audit)=*ctx;
             let snapshot=match proof {Some(p)=>{let snapshot=crate::action_admission::current(tx,p).await?;snapshot.require(p,Permission::PolicyRead,None)?;Some(snapshot)},None=>None};
             crate::transaction::lock(tx).await?;
@@ -112,6 +113,7 @@ impl Events {
             let old:Option<(Vec<u8>,Uuid,i64)>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as("SELECT fingerprint,id,(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)) FROM mdm_planning.event_batches b WHERE tenant_id=$1::uuid AND actor=$2 AND request=$3 FOR UPDATE").bind(tenant).bind(actor_query).bind(operation).fetch_optional(c).await})).await?;
             if let Some((prior,batch,members))=old {if prior!=hash{return Err(Error::Conflict.into());}return Ok(json!(wire::PolicyEventAccepted{operation_id:operation,batch_id:batch,members:members as u32}));}
             if let Caller::Agent{target}=caller {if !s.execution.event_parent_current_in(tx,target,&input.source).await?{return Err(Error::Forbidden.into());}}
+            if let Caller::Agent{target}=caller {s.execution.apply_event_context_in(tx,target,input.execution_context.as_ref().ok_or(Error::Malformed)?).await?;}
             let tenant=tx.tenant_id().to_string();let name=input.event.as_str().to_owned();
             let ids:Vec<Uuid>=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_policy.policies WHERE tenant_id=$1::uuid AND definition->>'customEvent'=$2 AND state<>'archived' ORDER BY id LIMIT 1001 FOR SHARE").bind(tenant).bind(name).fetch_all(c).await})).await?;
             if ids.len()>MAX_MEMBERS {return Err(Error::Malformed.into());}
@@ -125,10 +127,16 @@ impl Events {
                 let policy=checked(reader.read_in(tx,id).await?)?.ok_or(Error::NotFound)?;
                 let permission=rss_mdm_execution_service::policy_permission(&policy.definition.action);
                 let mut permissions=Vec::new();let mut decision=wire::PolicyEventDecision::Pending;
+                let retirement_target=if matches!(policy.definition.action,rss_mdm_policy::Action::UnmanageDevice{..}) {
+                    let tenant=tx.tenant_id();let reader=s.planning.objects.clone();let device=device.to_owned();
+                    let object=tx.with_connection(move|c|Box::pin(async move{reader.endpoint(c,tenant,&device).await})).await?;
+                    Some(tx.with_connection(move|c|Box::pin(async move{Ok(rss_mdm_device_service::lifecycle::complete_target_in(c,tenant,&object).await)})).await?.map_err(Error::from)?)
+                }else{None};
                 if let (Some(snapshot),Some(proof))=(&snapshot,proof){
                     let mut required=vec![permission];
                     if matches!(policy.definition.action,rss_mdm_policy::Action::EnsureAgentInstalled{..}){required.push(Permission::Enrollment);}
-                    for p in required {match OperationAuthority::from_proof(snapshot,proof,device,p){Ok(a)=>permissions.push((p,a)),Err(_)=>decision=wire::PolicyEventDecision::Rejected{reason:"permission_denied".into()}}}
+                    let devices=retirement_target.as_ref().map_or_else(||vec![device.to_owned()],|object|object.members.iter().map(|m|m.device.clone()).collect());
+                    for device in devices {for p in &required {match OperationAuthority::from_proof(snapshot,proof,&device,*p){Ok(a)=>permissions.push((*p,a)),Err(_)=>decision=wire::PolicyEventDecision::Rejected{reason:"permission_denied".into()}}}}
                 }
                 let channel=policy.definition.action.target_channel().map_or("agent",|c|match c{rss_mdm_policy::SoftwareChannel::Agent=>"agent",rss_mdm_policy::SoftwareChannel::Mdm=>"mdm"});
                 let mut target=rss_mdm_execution_service::policy_events::target_in(tx,device,channel).await?;
@@ -139,7 +147,7 @@ impl Events {
                 }
                 member_count+=1;
                 if target.is_none(){decision=wire::PolicyEventDecision::Rejected{reason:"registration_unavailable".into()};}
-                let tenant=tx.tenant_id().to_string();let target=json(&target)?;let authority=json(&MemberAuthority{permissions})?;let decision=json(&decision)?;let member=Uuid::new_v4();
+                let tenant=tx.tenant_id().to_string();let target=json(&target)?;let authority=json(&MemberAuthority{permissions,retirement_target})?;let decision=json(&decision)?;let member=Uuid::new_v4();
                 tx.with_connection(move|c|Box::pin(async move{sqlx::query("INSERT INTO mdm_planning.event_members(tenant_id,batch,id,policy,revision,version,target,authority,decision) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9)").bind(tenant).bind(batch).bind(member).bind(policy.id).bind(policy.revision).bind(policy.version).bind(target).bind(authority).bind(decision).execute(c).await?;Ok(())})).await?;
             }
             crate::automation::jobs::enqueue_job_in(tx,batch,&crate::automation::JobInput::PolicyEvent{batch}).await?;
@@ -209,7 +217,15 @@ impl Planning {
                 rss_mdm_execution_service::policy_events::rejected("policy_disabled")
             } else {
                 self.dispatch_event_in(
-                    execution, tx, &policy, &target, member, deadline, &input, &audit,
+                    execution,
+                    tx,
+                    &policy,
+                    &target,
+                    member,
+                    deadline,
+                    &input,
+                    &audit,
+                    authority.retirement_target.as_ref(),
                 )
                 .await?
             }
@@ -244,6 +260,7 @@ impl Planning {
         deadline: i64,
         input: &wire::PolicyEventRequest,
         audit: &RequestAudit,
+        retirement_target: Option<&rss_mdm_inventory_service::objects::DeviceObject>,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_policy::Action;
         if matches!(input.source, wire::PolicyEventSource::Ai)
@@ -279,8 +296,15 @@ impl Planning {
                 })
             }
             Action::UnmanageDevice { .. } => {
-                self.accept_event_retirement_in(tx, policy, target, member, audit)
-                    .await
+                self.accept_event_retirement_in(
+                    tx,
+                    policy,
+                    target,
+                    member,
+                    audit,
+                    retirement_target.ok_or(Error::Malformed)?,
+                )
+                .await
             }
             _ => Ok(execution
                 .accept_policy_event_in(tx, policy, target, member, deadline, audit)
@@ -296,6 +320,7 @@ impl Planning {
         target: &Target,
         member: Uuid,
         _audit: &RequestAudit,
+        frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
         let tenant = tx.tenant_id();
@@ -319,6 +344,11 @@ impl Planning {
             })
             .await?
             .map_err(Error::from)?;
+        if &object != frozen_target {
+            return Ok(rss_mdm_execution_service::policy_events::rejected(
+                "target_changed",
+            ));
+        }
         for member in &object.members {
             let source = super::execution_source::ExecutionSource::new(self.objects.clone());
             let member = member.clone();

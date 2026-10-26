@@ -281,3 +281,130 @@ async fn early_native_agent_collection_reuses_run_clock_without_a_second_schedul
         worker.stop().await;Ok(())
     }).await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.custom_events"]
+async fn member_commit_unknown_resumes_original_run_and_original_request() -> Result<()> {
+    use rss_reconcile::DurableStore;
+    let mut f = setup().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources
+        .finish(async {
+            let (resource, _, _) = f.resource().await?;
+            let policy = policy(&mut f, resource, "resume", case_task_scope()).await?;
+            let input = request("resume");
+            let batch = post(&mut f.author, &f.router, &endpoint(), input.clone()).await?;
+            let id = Uuid::parse_str(batch["batchId"].as_str().unwrap())?;
+            let work = crate::automation::PlanningWork::connect(
+                f.planning.clone(),
+                crate::device::test_support::options("mdm_flow_runtime")?
+                    .password("runtime-fixture"),
+            )
+            .await?;
+            work.bind_execution(f.execution.clone())?;
+            let timer = rss_mdm_flow_service::planning::automation::Timer::new();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let control = rss_reconcile::Control::new(&timer, Duration::from_secs(15), &cancel);
+            let target = crate::automation::jobs::event_target(f.planning.tenant, id);
+            work.wake(&target, &control).await?;
+            let scope = rss_reconcile::Scope::new(f.planning.tenant, "mdm.assets")?;
+            let claim = work
+                .claim_due(&scope, 1, Duration::from_secs(2), &control)
+                .await?
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("event claim missing"))?;
+            ensure!(claim.target() == &target);
+            let observed = work.observe(&claim, &control).await?;
+            f.command_runtime.inject_next_transaction_fault(
+                rss_transactional_messaging_postgres::PgTransactionFault::CommitPending,
+            );
+            ensure!(work.apply(&claim, observed, &control).await.is_err());
+            work.close().await?;
+            let worker = RunningAutomation::start_with_execution(
+                f.planning.clone(),
+                Some(f.execution.clone()),
+            )
+            .await;
+            let settled = settled(&mut f, &batch).await?;
+            ensure!(settled["items"][0]["state"] == "accepted", "{settled}");
+            ensure!(run_count(policy)?.trim() == "1");
+            let detail = get(&mut f, &batch_path(&batch)).await?;
+            ensure!(detail["request"] == input);
+            ensure!(post(&mut f.author, &f.router, &endpoint(), input).await? == batch);
+            worker.stop().await;
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.custom_events"]
+async fn agent_context_updates_and_revision_conflicts_use_original_owner() -> Result<()> {
+    use crate::test_support::agent::agent_call;
+    let mut f = setup().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async{
+        let path="/api/v1/agent/runtime/policy-events";
+        let mut input=request("context");let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
+        context["revision"]=json!(2);input["executionContext"]=context.clone();
+        let(status,accepted)=agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(input.clone())).await?;
+        ensure!(status==StatusCode::ACCEPTED,"{status}: {accepted}");
+        let stored=crate::test_support::process::pg(&format!("SELECT execution_context->>'revision' FROM mdm_agent.bindings b JOIN mdm_access.registrations r ON(r.tenant_id,r.id)=(b.tenant_id,b.registration) WHERE b.tenant_id='{}' AND r.device='{}'",case_tenant(),case_device_id()))?;
+        ensure!(stored.trim()=="2");
+        for (revision,sideload,helper) in [(1,false,true),(2,false,false),(3,true,true)]{
+            let mut invalid=request("context");let mut c=context.clone();c["revision"]=json!(revision);c["msixSideload"]=json!(sideload);c["userHelper"]=json!(helper);invalid["executionContext"]=c;
+            ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(invalid)).await?.0!=StatusCode::ACCEPTED);
+        }
+        ensure!(agent_call(&f.router,Method::POST,path,Some(case_credential()),Some(input)).await?.1==accepted);
+        Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.custom_events"]
+async fn non_run_owners_return_no_change_and_exact_retirement_progress() -> Result<()> {
+    let mut f = setup().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async{
+        f.grants.extend(crate::test_support::identity::device_grants(None,&["account_write","device_unmanage"])?);
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        let access=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{access}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"access","scope":case_task_scope(),"action":{"kind":"device_access","mac":null,"windows":{"kind":"rss_factor","accounts":["local"]},"selfEnrollment":false,"role":null}}}})).await?;
+        let worker=RunningAutomation::start_with_execution(f.planning.clone(),Some(f.execution.clone())).await;
+        let batch=post(&mut f.author,&f.router,&endpoint(),request("access")).await?;
+        let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="no_change","{result}");ensure!(run_count(access)?.trim()=="0");
+        let retire=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{retire}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"retire","scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
+        let batch=post(&mut f.author,&f.router,&endpoint(),request("retire")).await?;
+        let result=settled(&mut f,&batch).await?;ensure!(result["items"][0]["state"]=="accepted","{result}");
+        ensure!(result["items"][0]["decision"]["operations"][0]["kind"]=="retirement");
+        ensure!(result["items"][0]["operations"][0]["state"]["channels"].as_array().is_some_and(|v|!v.is_empty()),"{result}");
+        worker.stop().await;Ok(())
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "make t2 MODULE=planning.custom_events"]
+async fn retirement_event_requires_authority_for_every_associated_endpoint() -> Result<()> {
+    use crate::authorization::{Grant, Permission, Scope};
+    let mut f = setup().await?;
+    let resources = std::mem::take(&mut f.resources);
+    resources.finish(async{
+        f.grants.extend(crate::test_support::identity::device_grants(None,&["device_unmanage"])?);
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        let policy=Uuid::new_v4();
+        post(&mut f.author,&f.router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":{"customEvent":"paired-retire","scope":case_task_scope(),"action":{"kind":"unmanage_device","runLifetimeSeconds":300}}}})).await?;
+        // A legal confirmed association is a precondition; this test exercises event authorization, not pairing.
+        let peer=format!("event-mdm-{}",Uuid::new_v4());let(registration,_)=crate::test_support::inventory::seed_source(&peer,"mdm","mdm.windows","event-model")?;
+        let association=Uuid::new_v4();let tenant=case_tenant();let agent=case_device_id();
+        crate::test_support::process::pg(&format!("INSERT INTO mdm_devices.associations(tenant_id,id,version,state,evidence,hardware,confirmed_by,confirmed_at) VALUES('{tenant}','{association}',1,'confirmed','fixture confirmed physical device','{{}}','fixture',1); INSERT INTO mdm_devices.members(tenant_id,association_id,device,channel,registration_id,generation) SELECT tenant_id,'{association}',device,channel,id,generation FROM mdm_access.registrations WHERE tenant_id='{tenant}' AND (id='{registration}' OR(device='{agent}' AND channel='agent' AND state='active' AND purpose='primary'));"))?;
+        f.grants.retain(|g|g.operation!=Permission::DeviceUnmanage);
+        f.grants.push(Grant{operation:Permission::DeviceUnmanage,scope:Scope::Device{id:agent.into()}});
+        crate::test_support::identity::seed_grants(case_tenant(),&f.author_id,f.grants.clone()).await?;
+        let batch=post(&mut f.author,&f.router,&endpoint(),request("paired-retire")).await?;
+        let result=get(&mut f,&format!("{}/members",batch_path(&batch))).await?;
+        ensure!(result["items"][0]["decision"]["reason"]=="permission_denied","{result}");
+        ensure!(crate::test_support::process::pg(&format!("SELECT count(*) FROM mdm_devices.retirements WHERE tenant_id='{tenant}'"))?.trim()=="0");
+        Ok(())
+    }).await
+}

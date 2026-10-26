@@ -17,6 +17,7 @@ pub static BATCHES: Schema = Schema {
         Field::output("deadline"),
         Field::output("members"),
         Field::output("admission"),
+        Field::output("request"),
         Field::output("processingFailure"),
     ],
 };
@@ -53,7 +54,7 @@ fn member_column(name: &str) -> &'static str {
         _ => unreachable!("checked member field"),
     }
 }
-const BATCH_SELECT: &str = "SELECT jsonb_build_object('id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM mdm_planning.event_members WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM mdm_planning.event_batches b WHERE b.tenant_id=";
+const BATCH_SELECT: &str = "SELECT jsonb_build_object('request',b.input,'id',b.id,'operationId',b.request,'event',b.input->>'event','createdAt',b.created_at,'deadline',b.deadline,'processingFailure',(SELECT failure FROM mdm_automation.automation_jobs WHERE tenant_id=b.tenant_id AND id=b.id),'members',(SELECT count(*) FROM mdm_planning.event_members m WHERE(m.tenant_id,m.batch)=(b.tenant_id,b.id)),'admission',(SELECT coalesce(jsonb_object_agg(state,n),'{}'::jsonb) FROM(SELECT decision->>'state' state,count(*) n FROM mdm_planning.event_members WHERE tenant_id=b.tenant_id AND batch=b.id GROUP BY decision->>'state') counts)) FROM mdm_planning.event_batches b WHERE b.tenant_id=";
 impl Events {
     pub async fn read_management(
         &self,

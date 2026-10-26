@@ -1,6 +1,7 @@
 WITH tables AS (
  SELECT c.* FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='mdm_commands' AND c.relkind='r'
 ), update_columns(relation, col) AS (VALUES
+ ('mdm_access.devices','retirement'),
  ('mdm_planning.event_members','decision'),('mdm_automation.automation_jobs','completed'),('mdm_automation.automation_jobs','failure'),
  ('mdm_apple.psso_password_providers','revision'),('mdm_apple.psso_password_providers','fingerprint'),
  ('mdm_access.device_access_bindings','instance'),('mdm_access.device_access_bindings','principal'),('mdm_access.device_access_bindings','generation'),('mdm_access.device_access_bindings','revision'),('mdm_access.device_access_bindings','state'),('mdm_access.device_access_bindings','account'),('mdm_access.device_access_bindings','document'),('mdm_commands.action_runs','access_binding'),
@@ -50,7 +51,7 @@ WITH tables AS (
  ('public.mdm_installation','instance_id'),('public.mdm_installation','management_tenant_id'),
  ('mdm_access.agent_issuances','tenant_id'),('mdm_access.agent_issuances','credential'),('mdm_access.agent_issuances','not_after')
 ), allowed(relation,sel,ins,del) AS (VALUES
- ('mdm_planning.event_batches',true,false,false),('mdm_planning.event_members',true,false,false),('mdm_automation.automation_jobs',true,false,false),
+ ('mdm_planning.event_batches',true,true,false),('mdm_planning.event_members',true,true,false),('mdm_automation.automation_jobs',true,true,false),
  ('mdm_apple.psso_password_providers',true,true,false),
  ('mdm_commands.query_revisions',true,false,false),('mdm.asset_clock',true,false,false),
  ('mdm_access.device_access_bindings',true,false,false),('mdm_access.device_access_results',true,true,false),('mdm_recovery.rss_login_uses',true,true,false),

@@ -564,6 +564,7 @@ pub(crate) async fn prepare_reconciliation_in(
             registration: device.registration(),
             generation: device.generation(),
         },
+        None,
     )
     .await
 }
@@ -572,6 +573,7 @@ pub(crate) async fn prepare_target_reconciliation_in(
     service: &ExecutionService,
     tx: &mut PgTransaction<'_>,
     target: &crate::Target,
+    policy: Option<Uuid>,
 ) -> Result<PreparedReconciliation> {
     // Retirement needs this poll to carry its accepted cleanup/unmanage work.
     // Keep the existing lifecycle lock and propagate storage faults unchanged.
@@ -592,13 +594,15 @@ pub(crate) async fn prepare_target_reconciliation_in(
     if !work_allowed {
         return Ok(PreparedReconciliation {
             bindings: Vec::new(),
+            blocked: true,
         });
     }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
     let name = target.device.clone();
     let registration = target.registration;
+    let generation = target.generation;
     let documents:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
-        sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 ORDER BY id LIMIT 128").bind(tenant).bind(name).bind(registration).fetch_all(c).await
+        sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 AND ($4::uuid IS NULL OR document->>'policy'=$4::text) AND (document->>'registrationGeneration')::bigint=$5 ORDER BY id LIMIT 128").bind(tenant).bind(name).bind(registration).bind(policy).bind(generation).fetch_all(c).await
     })).await?;
     let mut bindings = Vec::new();
     for document in documents {
@@ -631,10 +635,18 @@ pub(crate) async fn prepare_target_reconciliation_in(
 
         bindings.push((binding, delivery));
     }
-    Ok(PreparedReconciliation { bindings })
+    Ok(PreparedReconciliation {
+        bindings,
+        blocked: false,
+    })
 }
 pub(crate) struct PreparedReconciliation {
+    blocked: bool,
     bindings: Vec<(access::Binding, Uuid)>,
+}
+pub(crate) struct Reconciliation {
+    pub operations: Vec<Uuid>,
+    pub blocked: bool,
 }
 /// Apply exactly the bounded bindings prepared before the caller's partition declaration.
 pub(crate) async fn reconcile_in(
@@ -643,8 +655,12 @@ pub(crate) async fn reconcile_in(
     prepared: PreparedReconciliation,
     now: i64,
     audit: &RequestAudit,
-) -> Result<()> {
+) -> Result<Reconciliation> {
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
+    let mut outcome = Reconciliation {
+        operations: Vec::new(),
+        blocked: prepared.blocked,
+    };
     for (previous, delivery) in prepared.bindings {
         let source = service.source.clone();
         let scope = service.tenant;
@@ -739,6 +755,10 @@ pub(crate) async fn reconcile_in(
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM mdm_commands.action_runs WHERE tenant_id=$1 AND source_kind='device_access' AND access_binding->>'id'=$2 AND state->>'execution' IN ('running','unknown','waiting_reboot'))").bind(t).bind(id.to_string()).fetch_one(c).await
         })).await?;
         if outstanding {
+            match current_binding_run_in(tx, &binding).await? {
+                Some(id) => outcome.operations.push(id),
+                None => outcome.blocked = true,
+            }
             continue;
         }
         // Only a delivery that never obtained Start can be replaced after expiry.
@@ -749,6 +769,9 @@ pub(crate) async fn reconcile_in(
                 .bind(tenant).bind(id.to_string()).bind(revision).bind(now).fetch_one(c).await
         })).await?;
         let Some(renewal) = renewal else {
+            if let Some(id) = current_binding_run_in(tx, &binding).await? {
+                outcome.operations.push(id);
+            }
             continue;
         };
         let occurrence = format!(
@@ -784,12 +807,22 @@ pub(crate) async fn reconcile_in(
             },
         )
         .await?;
+        outcome.operations.push(delivery);
         let document = checked_input(serde_json::to_value(&binding))?;
         tx.with_connection(move|c|Box::pin(async move{
             sqlx::query("UPDATE mdm_commands.action_runs SET access_binding=$3 WHERE tenant_id=$1 AND id=$2 AND access_binding IS NULL").bind(tenant).bind(delivery).bind(document).execute(c).await?;Ok(())
         })).await?;
     }
-    Ok(())
+    Ok(outcome)
+}
+
+async fn current_binding_run_in(
+    tx: &mut PgTransaction<'_>,
+    binding: &access::Binding,
+) -> Result<Option<Uuid>> {
+    let tenant = tx.tenant_id().to_string();
+    let binding = binding.clone();
+    Ok(tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar("SELECT id FROM mdm_commands.action_runs WHERE tenant_id=$1::uuid AND source_kind='device_access' AND access_binding->>'id'=$2 AND (access_binding->>'revision')::bigint=$3 AND policy_version=$4 AND registration=$5 AND generation=$6 ORDER BY created_at DESC,id DESC LIMIT 1").bind(tenant).bind(binding.id.to_string()).bind(binding.revision).bind(binding.policy_version).bind(binding.registration).bind(binding.registration_generation).fetch_optional(c).await})).await?)
 }
 
 pub async fn finish_in(
