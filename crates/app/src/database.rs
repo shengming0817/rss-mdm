@@ -195,60 +195,46 @@ fn access_contracts(audit: &crate::config::AuditConfig) -> Vec<&'static str> {
     contracts
 }
 
+fn storage_admission_error(error: impl std::fmt::Display) -> Error {
+    eprintln!("storage admission: {error}");
+    Error::Unavailable(Failure::AccessAdmission)
+}
+
+async fn verify_runtime_storage(connection: &mut sqlx::PgConnection) -> Result<(), Error> {
+    crate::migration::verify_runtime_installation(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_authorization_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_registration_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_device_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_flow_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_execution_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_apple_channel::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    rss_mdm_inventory_service::verify_authority(connection)
+        .await
+        .map_err(storage_admission_error)?;
+    Ok(())
+}
+
 async fn admission(pool: &PgPool, audit: &crate::config::AuditConfig) -> Result<(), Error> {
     let mut tx = pool.begin().await.map_err(db)?;
     sqlx::query("SET LOCAL statement_timeout='1s'")
         .execute(&mut *tx)
         .await
         .map_err(db)?;
-    crate::migration::verify_runtime_installation(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("installation admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_authorization_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_registration_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_device_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_flow_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_execution_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_apple_channel::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
-    rss_mdm_inventory_service::verify_authority(&mut tx)
-        .await
-        .map_err(|error| {
-            eprintln!("storage admission: {error}");
-            Error::Unavailable(Failure::AccessAdmission)
-        })?;
+    verify_runtime_storage(&mut tx).await?;
     let contracts = access_contracts(audit);
     let valid = rss_mdm_backend_postgres_support::access_admission::verify(
         &mut tx,

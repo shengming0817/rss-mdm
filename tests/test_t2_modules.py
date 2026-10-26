@@ -322,6 +322,10 @@ class ModuleImpactTests(unittest.TestCase):
         for path in (
             'crates/app/schema/flow-roles.sql',
             'crates/app/schema/installation.sql',
+            'crates/app/schema/platform-sso-identity.sql',
+            'crates/app/schema/commands-roles.sql',
+            'crates/inventory-service/schema/relations.sql',
+             'crates/flow-service/schema/relations.sql',
             'crates/apple-channel/schema/account-enrollment.sql',
             'crates/apple-channel/schema/platform-qualifications.sql',
             'crates/authorization-service/schema/authority.sql',

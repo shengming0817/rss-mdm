@@ -1,6 +1,6 @@
 -- Only authorization/fencing kernels; bodies come directly from their owner's installation SQL.
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
- ('mdm_devices.object_current(jsonb,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_input','p_channel']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_owner']::text[]),
+ ('mdm_devices.object_current(jsonb,text)', 'plpgsql', 'jsonb', true, false, 's', ARRAY['p_input','p_channel']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_flow_runtime','mdm_identity_runtime','mdm_owner']::text[]),
  ('mdm_devices.association_grant_current(uuid,bigint,uuid,bigint)', 'sql', 'boolean', true, false, 's', ARRAY['p_id','p_version','p_registration','p_generation']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_identity_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
