@@ -86,7 +86,7 @@ impl ExecutionService {
         let query = Query::new(&SCHEMA, parameters).map_err(|_| Error::Malformed)?;
         crate::transaction::inspect(&self.runtime, self.tenant, (self, p, proof, &query, audit), |ctx, tx| Box::pin(async move {
             let (service, p, proof, query, _audit) = *ctx;
-            storage::lock(tx, p.device()).await?;
+            storage::lock_device(tx, p.device()).await?;
             crate::actions::agent::principal(service, tx, p).await?;
             let subject = if let Some(proof) = proof {
                 Some(crate::action_admission::current(tx, proof).await?.query_binding(proof)?)
@@ -127,7 +127,7 @@ impl ExecutionService {
             |ctx, tx| {
                 Box::pin(async move {
                     let (service, p, proof, input, _audit) = *ctx;
-                    storage::lock(tx, p.device()).await?;
+                    storage::lock_device(tx, p.device()).await?;
                     crate::actions::agent::principal(service, tx, p).await?;
                     let id = checked(
                         service
