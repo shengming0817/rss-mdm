@@ -58,17 +58,24 @@ async fn exercise(
         .build()?;
     let mut browser = Authority::prepared_browser("admin")?;
     browser.network = Some((client, format!("http://{address}")));
-    http::seed_management_grants(
-        case_admin(),
-        json!([
-            "scope_write",
-            "scope_read",
-            "policy_write",
-            "policy_read",
-            "account_write"
-        ]),
-    )
-    .await?;
+    use crate::authorization::{Grant, Permission, Scope};
+    let mut grants = [
+        Permission::ScopeWrite,
+        Permission::ScopeRead,
+        Permission::PolicyWrite,
+        Permission::PolicyRead,
+    ]
+    .into_iter()
+    .map(|operation| Grant {
+        operation,
+        scope: Scope::Tenant,
+    })
+    .collect::<Vec<_>>();
+    grants.extend(identity::device_grants(
+        None,
+        &["inventory_read", "account_write"],
+    )?);
+    identity::seed_grants(case_tenant(), case_admin(), grants).await?;
     let scope = Uuid::new_v4();
     http::ok(
         &mut browser,
@@ -117,12 +124,14 @@ async fn exercise(
         )),
     )
     .await?;
-    let mut anonymous = connect_agent(agent_address, None).await?;
     let path = "/api/v1/agent/runtime/policy-event-batches";
-    let denied = agent_http(&mut anonymous, "GET", path, None).await?;
+    let mut anonymous = connect_agent(agent_address, None).await?;
+    let denied = agent_http(&mut anonymous, "GET", path, None)
+        .await
+        .context("anonymous policy event read")?;
     ensure!(
         denied.0 == 401 && denied.1["code"] == "invalid_identity",
-        "{denied:?}"
+        "anonymous Agent ingress: {denied:?}"
     );
     drop(anonymous);
     let mut peer = connect_agent(agent_address, Some(chain)).await?;

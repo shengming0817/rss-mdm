@@ -215,8 +215,9 @@ MODULES['agent.pki'] = replace(MODULES['agent.pki'], scope='tenant', policies=(
 
 # The complete product listener owns assembly/readiness proof, independently of CA lifecycle.
 add('agent.listener', selectors=('agent_listener_tests::',),
-    fixtures=('identity', 'agent_pki', 'task_signing', 'local_worker'),
-    sources=('crates/http-contract/src/catalog.rs', 'crates/app/src/api.rs'),
+    fixtures=('identity', 'agent_pki', 'ca_agent', 'task_signing', 'local_worker'),
+    sources=('crates/http-contract/src/catalog.rs', 'crates/app/src/api.rs',
+             'crates/agent-channel/src/policy_events.rs'),
     tests=('crates/app/tests/agent_listener.rs',),
     support=('crates/app/tests/support/agent.rs', 'crates/app/tests/support/agent_http.rs',
              'crates/app/tests/support/gateway.rs', 'crates/app/tests/support/task_signing.rs'))

@@ -351,7 +351,8 @@ class ModuleImpactTests(unittest.TestCase):
     def test_recovery_helper_and_normal_transport_have_distinct_consumers(self):
         self.assertEqual(self.selected('hack/pki_recovery.py'), {'agent.pki-recovery'})
         self.assertEqual(self.selected('crates/app/tests/agent_pki/recovery.rs'), {'agent.pki-recovery'})
-        self.assertEqual(self.selected('crates/app/tests/support/agent_http.rs'), {'agent.pki', 'agent.configurations'})
+        self.assertEqual(self.selected('crates/app/tests/support/agent_http.rs'),
+                         {'agent.pki', 'agent.configurations', 'agent.listener'})
         self.assertNotIn('agent.configurations', self.selected('crates/app/tests/agent_pki/mod.rs'))
 
 
@@ -386,7 +387,7 @@ class ModuleImpactTests(unittest.TestCase):
 
 class DirectProofs(unittest.TestCase):
     def test_shared_contracts_keep_fast_checks_without_business_t2(self):
-        for path in ('crates/http-contract/src/catalog.rs', 'crates/http-contract/src/collections.rs',
+        for path in ('crates/http-contract/src/collections.rs',
                      'crates/app/src/lib.rs', 'crates/agent-wire/src/runtime.rs',
                      'crates/agent-wire/src/mapping.rs', 'crates/agent-wire/src/native_collection.rs',
                      'crates/query/src/lib.rs', 'crates/compliance/src/lib.rs'):
@@ -395,6 +396,9 @@ class DirectProofs(unittest.TestCase):
 
     def test_preparation_and_composition_select_owner_proofs(self):
         for path, expected in {
+            'crates/http-contract/src/catalog.rs': {'agent.listener'},
+            'crates/app/src/api.rs': {'agent.listener', 'api.identity_context', 'api.diagnostics'},
+            'crates/agent-channel/src/policy_events.rs': {'agent.listener', 'planning.custom_events'},
             'crates/management-http/src/router.rs': {'api.identity_context', 'api.diagnostics'},
             'crates/app/src/config.rs': {'host.lifecycle'},
             'crates/app/tests/support/authority.rs': {'authorization.rules'},

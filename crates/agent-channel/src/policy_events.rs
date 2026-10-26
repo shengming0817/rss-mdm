@@ -33,7 +33,7 @@ pub fn routes(tasks: Arc<TaskState>, events: Arc<Events>) -> Router {
         )
         .route(
             "/policy-event-batches/{batch}",
-            get(read).owned(&catalog::PROTOCOL_AGENT_CHANNEL, &[Operation::Action]),
+            get(read).owned(&catalog::POLICY_EVENT_BATCHES, &[Operation::Get]),
         )
         .route(
             "/policy-event-batches/{batch}/members",
