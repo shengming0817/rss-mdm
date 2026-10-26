@@ -232,6 +232,14 @@ impl ExecutionService {
         self.recover_entity_fixture(crate::target(self.tenant, device).entity().to_owned())
             .await
     }
+    /// Reconcile a prepared configuration target through the real worker transaction.
+    pub async fn recover_configuration_fixture(
+        &self,
+        device: &str,
+    ) -> std::result::Result<(), Error> {
+        self.recover_entity_fixture(crate::wake::configuration_key(device))
+            .await
+    }
     async fn recover_entity_fixture(&self, entity: String) -> std::result::Result<(), Error> {
         let audit = rss_mdm_audit_integration::RequestAudit::new(
             self.tenant.to_string(),

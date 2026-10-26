@@ -1348,7 +1348,8 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
         let overlap = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 // This backend holds only this case's device lock. Both requests must
-                // reach its wait graph; the second may wait behind the first request's
+                // reach its wait graph, including Registration authentication; the second
+                // may wait behind the first request's
                 // earlier business lock rather than directly on the device lock.
                 let overlapping: bool = sqlx::query_scalar(
                     "SELECT EXISTS (
@@ -1357,8 +1358,8 @@ async fn available_software_requires_request_and_deduplicates_users_policies_and
                         JOIN pg_stat_activity competing ON competing.pid <> direct_waiter.pid
                         WHERE direct_waiter.datname = current_database()
                           AND competing.datname = current_database()
-                          AND direct_waiter.usename = 'mdm_command_runtime'
-                          AND competing.usename = 'mdm_command_runtime'
+                          AND direct_waiter.usename IN ('mdm_access', 'mdm_command_runtime')
+                          AND competing.usename IN ('mdm_access', 'mdm_command_runtime')
                           AND direct_waiter.state = 'active'
                           AND competing.state = 'active'
                           AND direct_waiter.wait_event_type = 'Lock'
