@@ -2141,13 +2141,13 @@ async fn package_withdrawal_fences_locked_authority(release: Uuid) -> Result<()>
         .await??;
         sqlx::query("UPDATE mdm_agent_packages.releases SET state='withdrawn' WHERE tenant_id=$1::uuid AND id=$2").bind(tenant.to_string()).bind(release).execute(&mut *tx).await?;
         tx.commit().await?;
-        withdrawal.close().await?;
         Ok::<_, anyhow::Error>(())
     };
     tokio::time::timeout(Duration::from_secs(5), async {
         tokio::try_join!(admission, withdraw)
     })
     .await??;
+    withdrawal.close().await?;
     // Restore the disposable fixture so its HTTP withdrawal/receipt assertions still execute.
     pg(&format!(
         "UPDATE mdm_agent_packages.releases SET state='published' WHERE tenant_id='{}' AND id='{release}'",
