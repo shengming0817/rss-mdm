@@ -17,6 +17,8 @@ uuid.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+sqlparser = { version = "=0.63.0", default-features = false, features = ["std", "visitor"] }
+
 [dev-dependencies]
 ring.workspace = true
 jsonschema.workspace = true

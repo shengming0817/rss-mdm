@@ -2,7 +2,7 @@
 
 `rss-mdm-agent-wire` 是独立可消费的纯协议 crate，版本 `1.0.0`，最低 Rust `1.96.0`。`enroll` 持有注册生命周期 DTO；`runtime` 持有运行消息、采集定义与值、任务 DTO、静态约束、规范签名字节及内容摘要；`pki` 持有共享设备信任与安装确认 DTO、静态约束及规范安装摘要。当前 HTTP API、消息 wireVersion、capability 与 PKI 格式保持 V1；Collection 任务格式及全部任务签名域均为 V1；注册族只维护当前 CSR 必填请求与完整签名配置文件，旧普通请求期限字段及 AuthorizationRequest shape 已退出。V1 标识不代表跨 revision 的结构兼容；采集 scope 与 claim environment 是本次必填契约，相关采集指纹与报告摘要随之改变。PKI 与任务信任使用稳定 serviceId，注册文件嵌入签名连接配置；当前结构和摘要随本次更新。
 
-采集 DTO 由本包拥有，服务端在 Agent ingress 转成 Inventory 值。执行资格、当前凭据可用性和软件结果判定由 software-service 持有，上下文 revision 的更新规则由 agent-channel 持有。协议包不依赖 RSS、Identity 或 MDM 业务 crate，不执行设备操作、网络请求或运行时 schema 验证。CI 校验正常、build、可选及平台条件生产依赖；开发测试中的签名验证不进入交付闭包。
+采集 DTO 由本包拥有，服务端在 Agent ingress 转成 Inventory 值。执行资格、当前凭据可用性和软件结果判定由 software-service 持有，上下文 revision 的更新规则由 agent-channel 持有。协议包不依赖 RSS、Identity 或 MDM 业务 crate，不执行设备操作、网络请求或运行时 schema 验证。 `osquery::SqlTemplate` 唯一持有正式模板的静态 SQL、参数字面化、表列和平台约束；执行参数、映像验证与字段投影仍由消费者拥有。CI 校验正常、build、可选及平台条件生产依赖；开发测试中的签名验证不进入交付闭包。
 
 ## 固定版本消费
 

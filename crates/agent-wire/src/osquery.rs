@@ -1,5 +1,5 @@
 //! Read-only osquery templates. Parse, admit and bind literals before constructing executor arguments.
-use crate::{Error, Platform};
+use crate::runtime::{TaskPlatform as Platform, WireError as Error};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use sqlparser::{ast::*, dialect::SQLiteDialect, parser::Parser};
@@ -43,13 +43,13 @@ impl SqlTemplate {
     /// The consumer must mark max_rows+1 rows incomplete, never truncate into a full snapshot.
     pub fn render(&self, parameters: &Json, max_rows: u32) -> Result<String, Error> {
         if !(1..=100_000).contains(&max_rows) {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidValue);
         }
         let mut query = parse(&self.0)?;
         let expected = check(&query)?.1;
-        let values = parameters.as_object().ok_or(Error::InvalidInput)?;
+        let values = parameters.as_object().ok_or(Error::InvalidValue)?;
         if values.len() > 32 || values.keys().cloned().collect::<BTreeSet<_>>() != expected {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidValue);
         }
         struct Bind<'a>(&'a serde_json::Map<String, Json>);
         impl VisitorMut for Bind<'_> {
@@ -59,7 +59,7 @@ impl SqlTemplate {
                     && let Value::Placeholder(name) = &v.value
                 {
                     let Some(name) = name.strip_prefix(':') else {
-                        return ControlFlow::Break(Error::InvalidInput);
+                        return ControlFlow::Break(Error::InvalidValue);
                     };
                     let literal = match self.0.get(name) {
                         Some(Json::String(s)) if s.len() <= 4096 && !s.contains('\0') => {
@@ -71,7 +71,7 @@ impl SqlTemplate {
                         Some(Json::Number(n)) if n.as_i64().is_some() => {
                             Value::Number(n.to_string(), false)
                         }
-                        _ => return ControlFlow::Break(Error::InvalidInput),
+                        _ => return ControlFlow::Break(Error::InvalidValue),
                     };
                     *expr = Expr::Value(literal.into());
                 }
@@ -90,45 +90,27 @@ impl SqlTemplate {
         });
         let sql = query.to_string();
         if sql.len() > 65536 {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidValue);
         }
         Ok(sql)
-    }
-    /// Independently validate the signed, already-bound query at the Agent execution boundary.
-    pub fn validate_rendered(sql: &str, max_rows: u32, platform: Platform) -> Result<(), Error> {
-        if !(1..=100_000).contains(&max_rows) {
-            return Err(Error::InvalidInput);
-        }
-        let mut query = parse(sql)?;
-        let Some(limit) = query.limit_clause.take() else {
-            return Err(Error::InvalidInput);
-        };
-        if limit.to_string().trim() != format!("LIMIT {}", max_rows + 1) {
-            return Err(Error::InvalidInput);
-        }
-        let (table, parameters) = check(&query)?;
-        if !parameters.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-        platform_table(&table, platform)
     }
 }
 fn parse(sql: &str) -> Result<Query, Error> {
     if sql.len() > 65536 || sql.contains('\0') {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     }
     let mut statements = Parser::new(&SQLiteDialect {})
         .with_recursion_limit(32)
         .try_with_sql(sql)
-        .map_err(|_| Error::InvalidInput)?
+        .map_err(|_| Error::InvalidValue)?
         .parse_statements()
-        .map_err(|_| Error::InvalidInput)?;
+        .map_err(|_| Error::InvalidValue)?;
     if statements.len() != 1 {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     }
     match statements.remove(0) {
         Statement::Query(q) => Ok(*q),
-        _ => Err(Error::InvalidInput),
+        _ => Err(Error::InvalidValue),
     }
 }
 fn identifier(id: &Ident) -> Result<&str, Error> {
@@ -141,7 +123,7 @@ fn identifier(id: &Ident) -> Result<&str, Error> {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
     {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     }
     Ok(&id.value)
 }
@@ -217,7 +199,7 @@ fn columns(table: &str) -> Result<&'static [&'static str], Error> {
             "minimum_system_version",
             "category",
         ],
-        _ => return Err(Error::InvalidInput),
+        _ => return Err(Error::InvalidValue),
     })
 }
 fn platform_table(table: &str, platform: Platform) -> Result<(), Error> {
@@ -225,20 +207,20 @@ fn platform_table(table: &str, platform: Platform) -> Result<(), Error> {
         (table, platform),
         (
             "programs" | "bitlocker_info" | "logical_drives" | "windows_security_center",
-            Platform::MacOS
+            Platform::Macos
         ) | ("apps", Platform::Windows)
     ) {
-        Err(Error::InvalidInput)
+        Err(Error::InvalidValue)
     } else {
         Ok(())
     }
 }
 fn check(query: &Query) -> Result<(String, BTreeSet<String>), Error> {
     let SetExpr::Select(select) = query.body.as_ref() else {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     };
     if select.from.len() != 1 || !(1..=64).contains(&select.projection.len()) {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     }
     // Comparing the complete rendered query with the admitted shape rejects every
     // additional clause, including newly parsed syntax from a dependency update.
@@ -260,10 +242,10 @@ fn check(query: &Query) -> Result<(String, BTreeSet<String>), Error> {
                 context.check(expr, 0)?;
                 identifier(alias)?.to_owned()
             }
-            _ => return Err(Error::InvalidInput),
+            _ => return Err(Error::InvalidValue),
         };
         if !names.insert(name) {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidValue);
         }
     }
     let mut admitted = format!(
@@ -281,7 +263,7 @@ fn check(query: &Query) -> Result<(String, BTreeSet<String>), Error> {
         admitted.push_str(&format!(" WHERE {expr}"));
     }
     if query.to_string() != admitted {
-        return Err(Error::InvalidInput);
+        return Err(Error::InvalidValue);
     }
     Ok((table, context.parameters))
 }
@@ -294,7 +276,7 @@ impl Expressions {
     fn check(&mut self, expr: &Expr, depth: usize) -> Result<(), Error> {
         self.nodes += 1;
         if self.nodes > 256 || depth > 16 {
-            return Err(Error::InvalidInput);
+            return Err(Error::InvalidValue);
         }
         match expr {
             Expr::Identifier(id) if self.columns.contains(&identifier(id)?) => (),
@@ -304,15 +286,15 @@ impl Expressions {
                     if n.len() <= 64 && n.parse::<f64>().is_ok_and(f64::is_finite) => {}
                 Value::Boolean(_) | Value::Null => (),
                 Value::Placeholder(p) => {
-                    let name = p.strip_prefix(':').ok_or(Error::InvalidInput)?;
+                    let name = p.strip_prefix(':').ok_or(Error::InvalidValue)?;
                     let id = Ident::new(name);
                     identifier(&id)?;
                     self.parameters.insert(name.into());
                     if self.parameters.len() > 32 {
-                        return Err(Error::InvalidInput);
+                        return Err(Error::InvalidValue);
                     }
                 }
-                _ => return Err(Error::InvalidInput),
+                _ => return Err(Error::InvalidValue),
             },
             Expr::Nested(e) | Expr::IsNull(e) | Expr::IsNotNull(e) => self.check(e, depth + 1)?,
             Expr::UnaryOp {
@@ -344,27 +326,27 @@ impl Expressions {
             Expr::Function(f) => {
                 let name = f.name.to_string();
                 if !matches!(name.as_str(), "lower" | "upper" | "length" | "coalesce") {
-                    return Err(Error::InvalidInput);
+                    return Err(Error::InvalidValue);
                 }
                 let FunctionArguments::List(args) = &f.args else {
-                    return Err(Error::InvalidInput);
+                    return Err(Error::InvalidValue);
                 };
                 if !(1..=4).contains(&args.args.len()) {
-                    return Err(Error::InvalidInput);
+                    return Err(Error::InvalidValue);
                 }
                 let mut rendered = Vec::new();
                 for arg in &args.args {
                     let FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) = arg else {
-                        return Err(Error::InvalidInput);
+                        return Err(Error::InvalidValue);
                     };
                     self.check(e, depth + 1)?;
                     rendered.push(e.to_string());
                 }
                 if f.to_string() != format!("{name}({})", rendered.join(", ")) {
-                    return Err(Error::InvalidInput);
+                    return Err(Error::InvalidValue);
                 }
             }
-            _ => return Err(Error::InvalidInput),
+            _ => return Err(Error::InvalidValue),
         }
         Ok(())
     }

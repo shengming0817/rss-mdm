@@ -239,7 +239,7 @@ fn preparation_enforces_artifact_budget_at_the_boundary() {
 
 #[test]
 fn sql_preparation_requires_canonical_digest_and_length() {
-    let sql = rss_mdm_resource::SqlTemplate::new(
+    let sql = rss_mdm_agent_wire::osquery::SqlTemplate::new(
         "SELECT version FROM osquery_info WHERE version = :name",
     )
     .unwrap();
