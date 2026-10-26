@@ -8,37 +8,37 @@ pub static RESULTS: Schema = Schema {
     context: &[],
 };
 pub static FACETS: Schema = Schema {
-    id: "asset_queries",
-    default_limit: 1000,
-    max_limit: 1000,
+    id: "asset_facets",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "frozen facet label",
     context: &[],
 };
 pub static SCOPES: Schema = Schema {
-    id: "devices",
-    default_limit: 50,
-    max_limit: 100,
+    id: "inventory_scopes",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "scope identity at watermark",
     context: &[],
 };
 pub static LISTS: Schema = Schema {
-    id: "devices",
-    default_limit: 50,
-    max_limit: 100,
+    id: "inventory_list_items",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "source array ordinal at watermark",
     context: &["scope"],
 };
 pub static COLLECTION_ITEMS: Schema = Schema {
-    id: "devices",
-    default_limit: 100,
-    max_limit: 1000,
+    id: "collection_items",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "sealed collection field ordinal",
     context: &["scope"],
 };
 pub static FIELD_REFERENCES: Schema = Schema {
-    id: "asset_fields",
-    default_limit: 64,
-    max_limit: 128,
+    id: "field_references",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "resource, version",
     context: &[],
 };

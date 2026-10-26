@@ -139,13 +139,7 @@ pub struct RunSummary {
     user_action: Option<String>,
     result: Option<SummaryResult>,
 }
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RunCursor {
-    available_at: i64,
-    task_id: Uuid,
-}
-pub type RunPage = Page<RunSummary, RunCursor>;
+pub type RunPage = Page<RunSummary, String>;
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunNode {

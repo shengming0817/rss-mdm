@@ -114,6 +114,11 @@ pub(crate) async fn published(client: &mut Client, policy: Uuid) -> anyhow::Resu
                     None,
                 )
                 .await?;
+            // Publication can change the source while this first-page read is in flight.
+            if page.0 == StatusCode::CONFLICT {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
             ensure!(page.0 == StatusCode::OK, "configuration assignments: {page:?}");
             let ids: Vec<Uuid> = page.1["items"]
                 .as_array()

@@ -214,6 +214,7 @@ pub async fn preview_targets_on(
     c: &mut sqlx::PgConnection,
     scope: Uuid,
     after: Option<&str>,
+    limit: usize,
 ) -> std::result::Result<
     (
         Vec<rss_mdm_execution_service::source_authority::AssignmentObject>,
@@ -224,7 +225,7 @@ pub async fn preview_targets_on(
     use rss_mdm_execution_service::source_authority::{Channel, SourceAuthority};
     let source = crate::planning::execution_source::ExecutionSource::new(planning.objects.clone());
     let targets = source
-        .assignment_objects_on(c, planning.tenant, scope, Channel::Agent, after)
+        .assignment_objects_on(c, planning.tenant, scope, Channel::Agent, after, limit)
         .await
         .map_err(|_| Error::Conflict)?;
     let result = source

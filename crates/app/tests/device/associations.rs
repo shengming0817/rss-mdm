@@ -57,10 +57,13 @@ pub(super) fn parameters(
     rss_mdm_device_service::directory::parse(&url.finish()).unwrap()
 }
 pub(super) fn window(cursor: Option<&str>) -> rss_mdm_query::window::Query {
-    rss_mdm_query::window::Query {
-        limit: 64,
-        cursor: cursor.map(str::to_owned),
-    }
+    rss_mdm_device_service::changes::SCHEMA
+        .parse(&format!(
+            "limit=64{}",
+            cursor.map(|c| format!("&cursor={c}")).unwrap_or_default()
+        ))
+        .unwrap()
+        .0
 }
 pub(crate) fn seed(device: &str, channel: &str, serial: &str) -> anyhow::Result<Uuid> {
     let source = if channel == "mdm" {

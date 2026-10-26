@@ -78,9 +78,9 @@
         ]
       },
       "limit": {
-        "default": 64,
+        "default": 1000,
         "format": "uint16",
-        "maximum": 128,
+        "maximum": 1000,
         "minimum": 1,
         "type": "integer"
       }

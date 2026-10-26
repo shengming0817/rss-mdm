@@ -41,26 +41,39 @@ async fn blueprints(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Result<Json<Value>, Error> {
-    audit.set_action(
-        "management_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    Ok(Json(s.catalog.blueprints(&auth.proof, &audit).await?))
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        Ok(Json(s.catalog.blueprints(&auth.proof, &audit).await?))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn directory(
     State(s): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<serde_json::Map<String, Value>>>, Error> {
-    audit.set_action(
-        "management_read",
-        rss_mdm_audit_integration::AuditIntent::Routine,
-    );
-    let q = rss_mdm_resource::directory::Query::parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<
+        Json<rss_mdm_query::Page<serde_json::Map<String, Value>>>,
+    >,
+    Error,
+> {
+    (async {
+        audit.set_action(
+            "management_read",
+            rss_mdm_audit_integration::AuditIntent::Routine,
+        );
+        let q = rss_mdm_resource::directory::Query::parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        Ok(Json(s.catalog.directory(&auth.proof, &q, &audit).await?))
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn run(
     app: &HttpState,

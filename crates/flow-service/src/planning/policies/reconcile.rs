@@ -43,7 +43,7 @@ impl super::super::Planning {
             .with_connection(move |c| {
                 Box::pin(async move {
                     Ok(source
-                        .assignment_objects_on(c, tenant, scope, channel, after.as_deref())
+                        .assignment_objects_on(c, tenant, scope, channel, after.as_deref(), 64)
                         .await)
                 })
             })

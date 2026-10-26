@@ -417,29 +417,43 @@ async fn list(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
-    let q = directory::TENANTS
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| HttpFailure(Error::Malformed))?;
-    service
-        .read(&auth.proof, Read::List(q))
-        .await
-        .map(Json)
-        .map_err(HttpFailure)
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>,
+    HttpFailure,
+> {
+    (async {
+        let q = directory::TENANTS
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| HttpFailure(Error::Malformed))?;
+        service
+            .read(&auth.proof, Read::List(q))
+            .await
+            .map(Json)
+            .map_err(HttpFailure)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn provisionings(
     State(service): State<Arc<Service>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> std::result::Result<Json<serde_json::Value>, HttpFailure> {
-    let q = directory::PROVISIONINGS
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| HttpFailure(Error::Malformed))?;
-    service
-        .read(&auth.proof, Read::Provisionings(q))
-        .await
-        .map(Json)
-        .map_err(HttpFailure)
+) -> std::result::Result<
+    rss_mdm_http_contract::CollectionResponse<Json<serde_json::Value>>,
+    HttpFailure,
+> {
+    (async {
+        let q = directory::PROVISIONINGS
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| HttpFailure(Error::Malformed))?;
+        service
+            .read(&auth.proof, Read::Provisionings(q))
+            .await
+            .map(Json)
+            .map_err(HttpFailure)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn detail(
     State(service): State<Arc<Service>>,

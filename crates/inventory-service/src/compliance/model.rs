@@ -60,19 +60,59 @@ pub enum Command {
     History {
         device: String,
         subject: String,
-        page: HistoryPage,
+        page: HistoryQuery,
     },
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Empty {}
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryPage {
-    pub cursor: Option<String>,
+pub static HISTORY: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
+    id: "compliance_history",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
+    order: "evaluated_at DESC, task DESC",
+    context: &["from", "until"],
+};
+#[derive(Clone, Debug, Serialize)]
+pub struct HistoryQuery {
+    pub page: rss_mdm_query::window::Query,
+    pub bounds: HistoryBounds,
+}
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct HistoryBounds {
     pub from: Option<i64>,
     pub until: Option<i64>,
-    pub limit: Option<usize>,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoryPosition {
+    pub evaluated_at: i64,
+    pub task: Uuid,
+}
+pub struct HistoryRow {
+    pub position: HistoryPosition,
+    pub document: String,
+    pub failure: Option<String>,
+}
+impl HistoryQuery {
+    pub fn parse(raw: &str) -> Result<Self> {
+        let (page, context) = checked_input(HISTORY.parse(raw))?;
+        let from = context
+            .get("from")
+            .map(|v| checked_input(v.parse::<i64>()))
+            .transpose()?;
+        let until = context
+            .get("until")
+            .map(|v| checked_input(v.parse::<i64>()))
+            .transpose()?;
+        if from.zip(until).is_some_and(|(a, b)| a > b) {
+            return Err(Error::Malformed.into());
+        }
+        Ok(Self {
+            page,
+            bounds: HistoryBounds { from, until },
+        })
+    }
 }
 impl Command {
     pub fn operation(&self) -> Option<Uuid> {

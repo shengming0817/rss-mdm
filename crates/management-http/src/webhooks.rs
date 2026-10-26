@@ -271,16 +271,20 @@ async fn types(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
-) -> Response {
-    call(s, a, audit, Command::Types).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { call(s, a, audit, Command::Types).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscriptions(
     State(s): State<Arc<dyn Source>>,
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     RawQuery(q): RawQuery,
-) -> Response {
-    call(s, a, audit, Command::Subscriptions(q.unwrap_or_default())).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { call(s, a, audit, Command::Subscriptions(q.unwrap_or_default())).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn subscription(
     State(s): State<Arc<dyn Source>>,
@@ -330,8 +334,10 @@ async fn deliveries(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     RawQuery(q): RawQuery,
-) -> Response {
-    call(s, a, audit, Command::Deliveries(q.unwrap_or_default())).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { call(s, a, audit, Command::Deliveries(q.unwrap_or_default())).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn delivery(
     State(s): State<Arc<dyn Source>>,

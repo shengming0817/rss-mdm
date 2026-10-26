@@ -133,33 +133,34 @@ impl Authority {
     pub(crate) fn enrollment(&self) -> Routes {
         Routes::new().nest(
             "/api/v1",
-            crate::enrollment::http::routes().with_state(Arc::new(
-                crate::enrollment::http::HttpState {
-                    channels: Arc::new(crate::test_support::authority::RegistrationChannels),
-                    native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
-                        sessions: Arc::new(
-                            rss_mdm_authorization_service::session::SessionAuthority::new(
-                                self.identity.authority.clone(),
-                                self.identity.tenant,
-                            ),
+            crate::enrollment::http::routes(
+                rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
+            )
+            .with_state(Arc::new(crate::enrollment::http::HttpState {
+                channels: Arc::new(crate::test_support::authority::RegistrationChannels),
+                native: Arc::new(crate::enrollment_progress::EnrollmentProgress {
+                    sessions: Arc::new(
+                        rss_mdm_authorization_service::session::SessionAuthority::new(
+                            self.identity.authority.clone(),
+                            self.identity.tenant,
                         ),
-                        windows: None,
-                        apple: None,
-                    }),
-                    service: Arc::new(crate::enrollment::EnrollmentService::new(
-                        self.registration.clone(),
-                        self.credentials.clone(),
-                        self.audit.clone(),
-                    )),
-                    devices: Arc::new(crate::device::DeviceService::new(
-                        self.registration.clone(),
-                        case_tenant().into(),
-                        self.audit.clone(),
-                    )),
-                    apple: false,
-                    windows: true,
-                },
-            )),
+                    ),
+                    windows: None,
+                    apple: None,
+                }),
+                service: Arc::new(crate::enrollment::EnrollmentService::new(
+                    self.registration.clone(),
+                    self.credentials.clone(),
+                    self.audit.clone(),
+                )),
+                devices: Arc::new(crate::device::DeviceService::new(
+                    self.registration.clone(),
+                    case_tenant().into(),
+                    self.audit.clone(),
+                )),
+                apple: false,
+                windows: true,
+            })),
         )
     }
 

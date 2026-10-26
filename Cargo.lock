@@ -4475,6 +4475,7 @@ dependencies = [
  "rss-mdm-inventory-postgres",
  "rss-mdm-inventory-service",
  "rss-mdm-policy",
+ "rss-mdm-query",
  "rss-mdm-registration-service",
  "rss-mdm-resource",
  "rss-mdm-resource-postgres",

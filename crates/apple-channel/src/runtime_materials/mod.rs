@@ -507,7 +507,11 @@ async fn history(
     Extension(auth): Extension<RequestAuth>,
     Path(purpose): Path<Purpose>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<PublicVersion>>, Error> {
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<PublicVersion>>>,
+    Error,
+> {
+    (async {
     let p = proof(&app, &auth, false)?;
     let (q, _) = HISTORY
         .parse(raw.as_deref().unwrap_or(""))
@@ -528,7 +532,7 @@ async fn history(
     ))
     .map_err(|_| Error::Malformed)?;
     let before: Option<i64> = q
-        .cursor
+        .cursor()
         .as_ref()
         .map(|v| {
             app.query_cursor
@@ -539,11 +543,11 @@ async fn history(
                 .map_err(|_| Error::Conflict)
         })
         .transpose()?;
-    let rows=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND ($3::bigint IS NULL OR revision<$3) ORDER BY revision DESC LIMIT $4").bind(p.tenant_id()).bind(purpose.name()).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
-    let more = rows.len() > q.limit;
+    let rows=sqlx::query("SELECT revision,key_id,public_digest,csr,certificate,certificate_digest,topic,expires_at,revoked FROM mdm_apple_runtime.versions WHERE tenant_id=$1::uuid AND purpose=$2 AND ($3::bigint IS NULL OR revision<$3) ORDER BY revision DESC LIMIT $4").bind(p.tenant_id()).bind(purpose.name()).bind(before).bind((q.limit()+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
+    let more = rows.len() > q.limit();
     let items = rows
         .iter()
-        .take(q.limit)
+        .take(q.limit())
         .map(storage::decode)
         .collect::<Result<Vec<_>, _>>()?;
     let next_cursor = if more {
@@ -562,4 +566,6 @@ async fn history(
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(Json(rss_mdm_query::Page { items, next_cursor }))
+
+    }).await.map(rss_mdm_http_contract::CollectionResponse)
 }

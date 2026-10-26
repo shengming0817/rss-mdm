@@ -20,6 +20,15 @@ impl ExecutionSource {
     }
 }
 impl SourceAuthority for ExecutionSource {
+    fn query_coordinate_on<'a>(
+        &'a self,
+        c: &'a mut PgConnection,
+        tenant: TenantId,
+        scope: Uuid,
+    ) -> Pending<'a, String> {
+        Box::pin(query_coordinate_on(c, tenant, scope))
+    }
+
     fn effect_devices_on<'a>(
         &'a self,
         c: &'a mut PgConnection,
@@ -38,6 +47,7 @@ impl SourceAuthority for ExecutionSource {
         tenant: TenantId,
         scope: Uuid,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<DeviceAssignment>> {
         Box::pin(super::targets::lifecycle_objects_on(
             self.objects.as_ref(),
@@ -45,6 +55,7 @@ impl SourceAuthority for ExecutionSource {
             tenant,
             scope,
             after,
+            limit,
         ))
     }
 
@@ -134,6 +145,7 @@ impl SourceAuthority for ExecutionSource {
         scope: Uuid,
         channel: Channel,
         after: Option<&'a str>,
+        limit: usize,
     ) -> Pending<'a, Vec<AssignmentObject>> {
         Box::pin(super::targets::objects_on(
             self.objects.as_ref(),
@@ -142,6 +154,7 @@ impl SourceAuthority for ExecutionSource {
             scope,
             channel,
             after,
+            limit,
         ))
     }
     fn evidence_on<'a>(
@@ -252,4 +265,15 @@ impl SourceAuthority for ExecutionSource {
             })
         })
     }
+}
+
+/// Scope and source coordinates share the caller's transaction; no result-set scan is needed.
+pub async fn query_coordinate_on(
+    c: &mut PgConnection,
+    tenant: TenantId,
+    scope: Uuid,
+) -> Result<String, SourceError> {
+    let stamp: Value = sqlx::query_scalar("SELECT jsonb_build_array(s.revision,s.resolution,coalesce((SELECT revision FROM mdm.asset_clock WHERE tenant_id=s.tenant_id),0),coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=s.tenant_id),0)) FROM mdm_planning.scopes s WHERE s.tenant_id=$1::uuid AND s.id=$2 AND NOT s.deleted")
+        .bind(tenant.to_string()).bind(scope).fetch_optional(c).await?.ok_or(SourceError::Missing)?;
+    rss_mdm_query::cursor::fingerprint(&stamp).map_err(|_| SourceError::Invariant)
 }

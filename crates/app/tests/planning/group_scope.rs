@@ -115,10 +115,7 @@ async fn durable_asset_group_scope_pipeline() {
         group,
         result: task,
         projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-        query: rss_mdm_inventory_service::groups::pages::PageQuery {
-            limit: 1,
-            cursor: None,
-        },
+        query: crate::planning::test_support::group_page_query(1, None),
     };
     let page = execute(&service, &page_command).await.unwrap();
     assert_eq!(
@@ -127,21 +124,10 @@ async fn durable_asset_group_scope_pipeline() {
     );
     assert_eq!(page["current"], true);
     assert!(rss_mdm_inventory_service::groups::response::Response::decode(page.clone()).is_ok());
-    let continuation = execute(
-        &service,
-        &GroupCommand::GroupPage {
-            group,
-            result: task,
-            projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-            query: rss_mdm_inventory_service::groups::pages::PageQuery {
-                limit: 1,
-                cursor: Some(page["nextCursor"].as_str().unwrap().into()),
-            },
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(continuation["page"]["items"], serde_json::json!([]));
+    assert!(
+        page["nextCursor"].is_null(),
+        "exact final page must terminate"
+    );
     let denied_audit = RequestAudit::new(
         tenant().to_string(),
         "management_read",
@@ -196,11 +182,7 @@ async fn durable_asset_group_scope_pipeline() {
                 scope: scope_id,
                 result: scope_task,
                 projection,
-                query: pages::PageQuery {
-                    channel: rss_mdm_inventory::Channel::Mdm,
-                    limit: 1000,
-                    cursor: None,
-                },
+                query: crate::planning::test_support::scope_page_query(1000, None),
             },
         )
         .await

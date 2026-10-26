@@ -4,6 +4,7 @@ pub mod credentials;
 pub mod managed;
 pub mod native;
 pub mod read;
+pub mod registrations;
 pub mod store;
 use crate::Error;
 use rss_mdm_inventory::ReportSource;
@@ -327,9 +328,10 @@ impl EnrollmentService {
         &self,
         proof: &rss_mdm_authorization_service::context::AuthorizedPrincipal,
         device: &str,
-        page: read::Page,
-    ) -> Result<read::Registrations, Error> {
-        read::registration_list(&self.access, proof, device, page).await
+        page: &rss_mdm_query::directory::Query,
+        codec: &rss_mdm_query::cursor::CursorCodec,
+    ) -> Result<rss_mdm_query::Page<serde_json::Value>, Error> {
+        registrations::list(&self.access, proof, device, page, codec).await
     }
     pub async fn cancel(
         &self,

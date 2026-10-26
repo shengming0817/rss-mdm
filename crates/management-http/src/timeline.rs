@@ -41,37 +41,46 @@ async fn device(
     Extension(audit): Extension<RequestAudit>,
     Path(device): Path<String>,
     RawQuery(params): RawQuery,
-) -> Result<Json<Page>, Error> {
-    audit.target_device(&device);
-    let mut query = rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), true)
-        .map_err(error)?;
-    if query.device.is_some() {
-        return Err(Error::Malformed);
-    }
-    query.device = Some(device);
-    service
-        .query(&auth.proof, "device", &query)
-        .await
-        .map(Json)
-        .map_err(error)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
+    (async {
+        audit.target_device(&device);
+        let mut query =
+            rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), true)
+                .map_err(error)?;
+        if query.device.is_some() {
+            return Err(Error::Malformed);
+        }
+        query.device = Some(device);
+        service
+            .query(&auth.proof, "device", &query)
+            .await
+            .map(Json)
+            .map_err(error)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn search(
     State(service): State<Arc<Timeline>>,
     Extension(audit): Extension<RequestAudit>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(params): RawQuery,
-) -> Result<Json<Page>, Error> {
-    audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
-        rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
-    ));
-    service
-        .query(
-            &auth.proof,
-            "audit",
-            &rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), false)
-                .map_err(error)?,
-        )
-        .await
-        .map(Json)
-        .map_err(error)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Page>>, Error> {
+    (async {
+        audit.intent(rss_mdm_audit_integration::AuditIntent::Sensitive(
+            rss_mdm_audit_integration::SensitiveAction::AuditHistoryRead,
+        ));
+        service
+            .query(
+                &auth.proof,
+                "audit",
+                &rss_mdm_timeline_service::Query::parse(params.as_deref().unwrap_or(""), false)
+                    .map_err(error)?,
+            )
+            .await
+            .map(Json)
+            .map_err(error)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }

@@ -238,7 +238,7 @@ impl AssetService {
         limit: usize,
         token: Option<&str>,
     ) -> Result<Response> {
-        if !(1..=100).contains(&limit)
+        if !(1..=1000).contains(&limit)
             || scope
                 .devices
                 .as_ref()

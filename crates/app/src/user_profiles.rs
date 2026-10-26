@@ -62,16 +62,13 @@ impl Source for Backend {
                 rss_mdm_audit_integration::AuditIntent::Routine,
             );
             match command {
-                Command::Definitions(raw) => {
+                Command::Definitions(query) => {
                     p.require(Permission::UserAttributeDefinitionsRead, None)?;
                     let sources = self
                         .identity
                         .profile_sources(p.session()?, deadline())
                         .await
                         .map_err(identity_error)?;
-                    let query = directory::SCHEMA
-                        .parse(&raw)
-                        .map_err(|_| Error::Malformed)?;
                     let page = directory::list(self, &p, &audit, &query).await?;
                     p.check_live()?;
                     Ok(

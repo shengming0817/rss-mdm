@@ -145,14 +145,18 @@ async fn list(
     Extension(a): Extension<RequestAuth>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<archive::Page>, Error> {
-    let q = archive::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    s.list(&a.proof, &q, &cursor)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<archive::Page>>, Error> {
+    (async {
+        let q = archive::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        s.list(&a.proof, &q, &cursor)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn detail(
     State(s): State<Arc<archive::Archive>>,
@@ -170,14 +174,21 @@ async fn history(
     Path(entry): Path<Uuid>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<archive::Version>>, Error> {
-    let (q, _) = archive::directory::HISTORY
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    s.history(&a.proof, entry, &q, &cursor)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<archive::Version>>>,
+    Error,
+> {
+    (async {
+        let (q, _) = archive::directory::HISTORY
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        s.history(&a.proof, entry, &q, &cursor)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn import(
     State(s): State<Arc<archive::Archive>>,

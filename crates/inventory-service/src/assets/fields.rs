@@ -174,12 +174,12 @@ pub struct FieldReferenceQuery {
     #[schemars(skip)]
     pub authority: String,
     #[serde(default = "reference_limit")]
-    #[schemars(extend("minimum" = 1, "maximum" = 128))]
+    #[schemars(extend("minimum" = 1, "maximum" = 1000))]
     pub limit: u16,
     pub cursor: Option<String>,
 }
 fn reference_limit() -> u16 {
-    64
+    rss_mdm_query::DEFAULT_PAGE_LIMIT
 }
 /// Exact resource coordinates; presence is configuration, not an execution/readiness assertion.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -197,7 +197,7 @@ impl AssetService {
         field: FieldKey,
         query: &FieldReferenceQuery,
     ) -> Result<rss_mdm_query::Page<FieldMappingReference>> {
-        if !(1..=128).contains(&query.limit) {
+        if !(1..=1000).contains(&query.limit) {
             return Err(Error::Malformed.into());
         }
         let codec = rss_mdm_query::cursor::CursorCodec::from_key(self.asset_cursor_key.clone());

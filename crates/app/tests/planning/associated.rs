@@ -133,10 +133,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
             group,
             result,
             projection: rss_mdm_inventory_service::groups::pages::GroupPageKind::Members,
-            query: rss_mdm_inventory_service::groups::pages::PageQuery {
-                limit: 1000,
-                cursor: None,
-            },
+            query: crate::planning::test_support::group_page_query(1000, None),
         },
     )
     .await
@@ -221,7 +218,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
                         tx.with_connection(move |c| {
                             Box::pin(async move {
                                 Ok(source
-                                    .assignment_objects_on(c, tenant(), scope, channel, None)
+                                    .assignment_objects_on(c, tenant(), scope, channel, None, 1000)
                                     .await)
                             })
                         })
@@ -289,6 +286,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         tenant(),
         lifecycle_scope,
         None,
+        1000,
     )
     .await
     .unwrap();
@@ -306,6 +304,7 @@ async fn associated_context_maps_before_exclusions_and_missing_channels_recover(
         tenant(),
         lifecycle_scope,
         Some(&pair_key),
+        1000,
     )
     .await
     .unwrap();

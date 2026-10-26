@@ -117,14 +117,18 @@ async fn managed_packages(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    let q = rss_mdm_software_service::agent_packages::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| Error::Malformed)?;
-    rss_mdm_software_service::agent_packages::directory::list(&app, &auth.proof, &audit, q)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let q = rss_mdm_software_service::agent_packages::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        rss_mdm_software_service::agent_packages::directory::list(&app, &auth.proof, &audit, q)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn managed_package(
     State(app): State<Arc<HttpState>>,
@@ -143,14 +147,18 @@ async fn versions(
     Extension(audit): Extension<RequestAudit>,
     Path(id): Path<String>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    let q = rss_mdm_resource::directory::VERSION_SCHEMA
-        .parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| Error::Malformed)?;
-    rss_mdm_software_service::management::directory::versions(&app, &auth.proof, &audit, &id, q)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let q = rss_mdm_resource::directory::VERSION_SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        rss_mdm_software_service::management::directory::versions(&app, &auth.proof, &audit, &id, q)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn read_source(
     State(app): State<Arc<HttpState>>,
@@ -431,12 +439,16 @@ async fn sources(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<Json<Value>, Error> {
-    let q = rss_mdm_software_service::management::directory::SOURCES
-        .parse(raw.as_deref().unwrap_or_default())
-        .map_err(|_| Error::Malformed)?;
-    rss_mdm_software_service::management::directory::sources(&app, &auth.proof, &audit, q)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let q = rss_mdm_software_service::management::directory::SOURCES
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        rss_mdm_software_service::management::directory::sources(&app, &auth.proof, &audit, q)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }

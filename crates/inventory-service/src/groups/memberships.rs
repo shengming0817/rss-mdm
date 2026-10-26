@@ -3,9 +3,9 @@ use rss_mdm_audit_integration::RequestAudit;
 use rss_mdm_authorization_service::{Permission, context::AuthorizedPrincipal};
 use rss_mdm_query::{cursor::CursorCodec, window::Query};
 pub static SCHEMA: rss_mdm_query::window::Schema = rss_mdm_query::window::Schema {
-    id: "devices",
-    default_limit: 64,
-    max_limit: 1000,
+    id: "device_groups",
+    default_limit: rss_mdm_query::DEFAULT_PAGE_LIMIT,
+    max_limit: rss_mdm_query::MAX_PAGE_LIMIT,
     order: "group identity",
     context: &[],
 };
@@ -17,9 +17,9 @@ impl Groups {
         query: &Query,
         audit: &RequestAudit,
     ) -> std::result::Result<Value, Error> {
-        if !(1..=1000).contains(&query.limit) {
-            return Err(Error::Malformed);
-        }
+        query
+            .require_schema(&SCHEMA)
+            .map_err(|_| Error::Malformed)?;
         proof.manage(Permission::GroupRead)?;
         proof.require_all_devices(Permission::InventoryRead)?;
         let authority = proof.authorization()?.query_binding(proof)?;
@@ -47,10 +47,10 @@ impl Groups {
             let stamp=tx.with_connection(move|c|Box::pin(async move{sqlx::query_scalar::<_,Value>("SELECT jsonb_build_array(coalesce((SELECT relation_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0),coalesce((SELECT query_revision FROM mdm_devices.checkpoints WHERE tenant_id=$1::uuid),0))").bind(tenant.to_string()).fetch_one(c).await})).await?;
             let codec=CursorCodec::from_key(s.cursor_key.clone());
             let binding=checked_input(rss_mdm_query::cursor::fingerprint(&("device-groups",p.tenant_id(),p.instance_id(),p.principal_id(),*device,&*authority,watermark,stamp)))?;
-            let after=q.cursor.as_ref().map(|token| -> Result<Uuid> {codec.decode(&checked_input(rss_contract::PageCursor::parse(token))?,&binding).map_err(|_|Error::Conflict.into())}).transpose()?;
+            let after=q.cursor().as_ref().map(|token| -> Result<Uuid> {codec.decode(&checked_input(rss_contract::PageCursor::parse(token))?,&binding).map_err(|_|Error::Conflict.into())}).transpose()?;
             let keys=resolved.objects.iter().map(crate::objects::ObjectRef::key).collect::<Vec<_>>();
-            let mut items=group_checked(s.groups.memberships_in(tx,device,&keys,after,q.limit).await?)?;
-            let more=items.len()>q.limit;items.truncate(q.limit);
+            let mut items=group_checked(s.groups.memberships_in(tx,device,&keys,after,q.limit()).await?)?;
+            let more=items.len()>q.limit();items.truncate(q.limit());
             for item in &mut items {
                 let context: rss_mdm_group_postgres::AssetContext=checked_input(serde_json::from_value(item["assetContext"].clone()))?;
                 let objects=item["objects"].as_array().ok_or(Error::Conflict)?.iter().map(|v|group_checked(crate::objects::ObjectRef::from_key(context,v.as_str().ok_or(Error::Conflict)?))).collect::<Result<Vec<_>>>()?;

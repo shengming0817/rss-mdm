@@ -596,7 +596,11 @@ async fn history(
     axum::extract::State(app): axum::extract::State<std::sync::Arc<crate::HttpState>>,
     axum::Extension(auth): axum::Extension<rss_mdm_authorization_service::context::RequestAuth>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Result<axum::Json<rss_mdm_query::Page<Receipt>>, Error> {
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<axum::Json<rss_mdm_query::Page<Receipt>>>,
+    Error,
+> {
+    (async {
     let p = proof(&app, &auth, false)?;
     let (q, _) = HISTORY
         .parse(raw.as_deref().unwrap_or(""))
@@ -620,7 +624,7 @@ async fn history(
     ))
     .map_err(|_| Error::Malformed)?;
     let before: Option<i64> = q
-        .cursor
+        .cursor()
         .as_ref()
         .map(|v| {
             app.query_cursor
@@ -631,11 +635,11 @@ async fn history(
                 .map_err(|_| Error::Conflict)
         })
         .transpose()?;
-    let rows=sqlx::query("SELECT operation_id,revision,pfn,qualified_at,attempted_at,failure_reason,selected,revoked FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
-    let more = rows.len() > q.limit;
+    let rows=sqlx::query("SELECT operation_id,revision,pfn,qualified_at,attempted_at,failure_reason,selected,revoked FROM mdm_wns.versions WHERE tenant_id=$1::uuid AND ($2::bigint IS NULL OR revision<$2) ORDER BY revision DESC LIMIT $3").bind(p.tenant_id()).bind(before).bind((q.limit()+1) as i64).fetch_all(&mut *tx).await.map_err(db)?;
+    let more = rows.len() > q.limit();
     let items = rows
         .iter()
-        .take(q.limit)
+        .take(q.limit())
         .map(receipt)
         .collect::<Result<Vec<_>, _>>()?;
     let next_cursor = if more {
@@ -654,6 +658,8 @@ async fn history(
     tx.rollback().await.map_err(db)?;
     p.check_live()?;
     Ok(axum::Json(rss_mdm_query::Page { items, next_cursor }))
+
+    }).await.map(rss_mdm_http_contract::CollectionResponse)
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ macOS 原生软件记录允许没有 Identifier；这些行保留在原始数量
 | GET /asset-fields/{field}/references | Group、模板、合规及保存查询引用计数 |
 | GET /devices/{id}/collections/{run} | 当前设备所属采集的冻结身份、时间、字段质量及投递状态 |
 | GET /devices/{id}/collections/{run}/fields/{field}/items?limit=100&cursor=… | 冻结采集的逐行质量与已验证值；保留原始 ordinal、无效行和分页 |
-| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，最多 100 条且受字节预算限制 |
+| GET /devices/{id}/inventory-lists/{field}?limit=50&cursor=… | 固定资产水位的清单分页，默认及最多 1000 条，且受字节预算限制 |
 | GET /devices/{id}/inventory | 统一详情，不再接受 source 参数 |
 | POST /device-queries | 异步受理，Operation 包含 filter/scope/fields/sort |
 | GET /device-queries/{task} | 状态、全结果计数与结果入口 |
@@ -127,7 +127,7 @@ inventory_fields_write 管理目录并允许读取配置所需的字段定义，
 | POST /compliance-rules/{id}/recompute | Operation 包装，input 为 `{}`，expectedRevision 为当前版本 |
 | GET /compliance-rules/{id}/tasks/{task} | phase、processed、completed、failure 与 diagnostic |
 | GET /devices/{id}/compliance | 设备汇总、各规则 current；待评估时 previous 单独标识 |
-| GET /devices/{id}/compliance/history?from=…&until=…&limit=50&cursor=… | UTC 秒范围、最多 100 条，返回 nextCursor |
+| GET /devices/{id}/compliance/history?from=…&until=…&limit=50&cursor=… | UTC 秒范围、默认及最多 1000 条，返回 nextCursor |
 
 规则 input 示例：
 
@@ -352,7 +352,7 @@ after（上一页 next 或 null），返回 reports 与 next；每页按当前 `
 未知展示扩展仍按原产品规则保存，不参与可信字段解释。
 
 `GET /api/v1/asset-fields/{field}/references` 同时返回原引用计数，以及 `mappings` 和 `nextCursor`。
-`limit` 默认 64、范围 1–128，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
+`limit` 默认 1000、范围 1–1000，`cursor` 绑定租户、字段和页大小；后续页继续用相同条件。
 映射引用提供 resource/version/state/telemetry，状态来自 Resource owner，不证明 Policy 已启用或采集成功。
 此详情接口同时要求 InventoryFieldsWrite 和 ResourceRead；字段编辑本身沿原权限、CAS 与幂等规则。
 

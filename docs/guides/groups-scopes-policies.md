@@ -226,3 +226,9 @@ presentation/resourceRevision，展示只从 Resource 读取。原生软件发�
 
 本次是当前后端契约替换；after/afterKind、独立 descending/固定过滤参数及旧 DTO 均退出，
 调用方必须使用新契约。原生设备协议不随管理目录改变。
+
+### 子集合分页
+
+策略 assignments、runs、POST policies/previews，以及 Group/Scope 结果页、组引用、设备合规历史统一使用 `limit/cursor`，默认和最大页大小均为 1000。将响应 `nextCursor` 原样用于下一页；不接受旧的 `after`、`afterAt`、`afterId`。预览分页参数放在 URL，定义仍放在请求体中。固定顺序结果不接受 `filter/sort/fields`；引用保留 `kind/relation`，Scope 结果保留 `channel`，合规历史保留 `from/until`。游标绑定资源与请求上下文，不能跨身份、路径或查询条件复用；相关可变来源变化时重新从第一页读取。
+
+设备 `GET /api/v1/devices/{device}/registrations` 使用统一目录查询，支持 `filter/sort/fields/limit/cursor`，默认和上限同为 1000。可过滤/排序字段为 `registrationId/source/generation/status`，可投影 `userContextId/enrollmentId/agentGrantId`；每页重新检查当前 credentials 权限。

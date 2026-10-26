@@ -2067,3 +2067,10 @@ for path, owner in (
 consume(('crates/management-http/src/boundary.rs','crates/management-http/src/webhooks.rs',
          'crates/management-http/src/device_access.rs','crates/management-http/src/software_catalog.rs',
          'crates/management-http/src/execution/http.rs'), 'authorization.programmatic')
+
+# Unified management subcollection query owners (#3010).
+consume(('crates/execution-service/src/queries/window.rs',), 'planning.policy planning.agent_policy telemetry.ingress.postgres')
+consume(('crates/registration-service/src/enrollment/registrations.rs',), 'device.revocation')
+consume(('crates/flow-service/src/automation/inventory_tasks.rs',), 'compliance.http')
+
+T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)

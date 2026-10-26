@@ -75,13 +75,17 @@ async fn history(
     Extension(audit): Extension<RequestAudit>,
     Extension(cursor): Extension<rss_mdm_query::cursor::CursorCodec>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<Receipt>>, Error> {
-    let (q, _) = rss_mdm_mail_service::authority::HISTORY
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    service
-        .history(&auth.proof, &audit, &q, &cursor)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Receipt>>>, Error> {
+    (async {
+        let (q, _) = rss_mdm_mail_service::authority::HISTORY
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        service
+            .history(&auth.proof, &audit, &q, &cursor)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }

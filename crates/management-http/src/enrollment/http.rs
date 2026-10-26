@@ -3,7 +3,7 @@ use super::{Create, Resume};
 use crate::{Error, api::write_key, authorization::context::RequestAuth};
 use axum::{
     Extension, Json,
-    extract::{Path, Query, State},
+    extract::{Path, State},
     http::HeaderMap,
 };
 use rss_mdm_http_contract::{Operation as RouteOperation, catalog as contracts};
@@ -51,16 +51,26 @@ async fn registrations(
     Extension(auth): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
-    query: Result<Query<crate::enrollment::read::Page>, axum::extract::rejection::QueryRejection>,
-) -> Result<Json<crate::enrollment::read::Registrations>, Error> {
-    let Path(device) = path.map_err(|_| Error::Malformed)?;
-    let Query(page) = query.map_err(|_| Error::Malformed)?;
-    audit.target_device(&device);
-    app.service
-        .registrations(&auth.proof, &device, page)
-        .await
-        .map(Json)
-        .map_err(Error::from)
+    axum::extract::RawQuery(raw): axum::extract::RawQuery,
+    Extension(codec): Extension<rss_mdm_query::cursor::CursorCodec>,
+) -> Result<
+    rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<serde_json::Value>>>,
+    Error,
+> {
+    (async {
+        let Path(device) = path.map_err(|_| Error::Malformed)?;
+        let page = rss_mdm_registration_service::enrollment::registrations::SCHEMA
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        audit.target_device(&device);
+        app.service
+            .registrations(&auth.proof, &device, &page, &codec)
+            .await
+            .map(Json)
+            .map_err(Error::from)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn resume_enrollment(
     State(app): State<Arc<HttpState>>,
@@ -145,7 +155,9 @@ impl HttpState {
 #[serde(deny_unknown_fields)]
 struct EmptyRequest {}
 
-pub fn routes() -> rss_mdm_http_contract::Router<Arc<HttpState>> {
+pub fn routes(
+    cursor: rss_mdm_query::cursor::CursorCodec,
+) -> rss_mdm_http_contract::Router<Arc<HttpState>> {
     use rss_mdm_http_contract::routing::{get, post};
     rss_mdm_http_contract::Router::new()
         .merge(super::quotas::routes())
@@ -162,7 +174,9 @@ pub fn routes() -> rss_mdm_http_contract::Router<Arc<HttpState>> {
         )
         .route(
             "/devices/{device}/registrations",
-            get(registrations).owned(&contracts::DEVICES, &[RouteOperation::Action]),
+            get(registrations)
+                .owned(&contracts::DEVICE_REGISTRATIONS, &[RouteOperation::List])
+                .queried(&rss_mdm_registration_service::enrollment::registrations::SCHEMA),
         )
         .route(
             "/enrollments/{id}/resume",
@@ -182,6 +196,7 @@ pub fn routes() -> rss_mdm_http_contract::Router<Arc<HttpState>> {
             "/devices/{device}/registrations/{registration}/revoke",
             post(revoke_registration).owned(&contracts::DEVICES, &[RouteOperation::Lifecycle]),
         )
+        .layer(axum::Extension(cursor))
 }
 
 use rss_mdm_audit_integration::RequestAudit;

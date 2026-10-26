@@ -27,19 +27,20 @@ impl Planning {
         scope: Uuid,
         result: Uuid,
         kind: ScopePageKind,
-        query: &PageQuery,
+        query: &ResultQuery,
+        subject: &str,
     ) -> Result<Value> {
-        if !(1..=1000).contains(&query.limit) {
-            return Err(Error::Malformed.into());
-        }
+        checked_input(query.page.require_schema(&SCHEMA))?;
         let channel = query.channel;
         let binding = ResultBinding::Scope {
             scope,
             kind,
             channel,
+            subject: subject.to_owned(),
         };
         let after = query
-            .cursor
+            .page
+            .cursor()
             .as_ref()
             .map(|token| {
                 decode(
@@ -52,7 +53,7 @@ impl Planning {
             })
             .transpose()?;
         let tenant = self.tenant;
-        let limit = query.limit;
+        let limit = query.page.limit();
         let page = tx
             .with_connection(move |c| {
                 Box::pin(async move {
@@ -81,8 +82,8 @@ impl Planning {
         if page.result != result {
             return Err(Error::Conflict.into());
         }
-        let more = page.devices.len() > query.limit;
-        let devices: Vec<_> = page.devices.into_iter().take(query.limit).collect();
+        let more = page.devices.len() > query.page.limit();
+        let devices: Vec<_> = page.devices.into_iter().take(query.page.limit()).collect();
         let next_cursor = if more {
             devices
                 .last()

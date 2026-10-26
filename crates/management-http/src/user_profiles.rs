@@ -88,9 +88,9 @@ pub struct ProfileQuery {
     #[serde(default)]
     pub preview: bool,
 }
-#[derive(Clone, Serialize)]
+#[derive(Clone)]
 pub enum Command {
-    Definitions(String),
+    Definitions(rss_mdm_query::directory::Query),
     Definition(Uuid),
     Change(Uuid, Change),
     Operation(Uuid),
@@ -154,8 +154,16 @@ async fn definitions(
     Extension(a): Extension<RequestAuth>,
     Extension(audit): Extension<RequestAudit>,
     axum::extract::RawQuery(raw): axum::extract::RawQuery,
-) -> Response {
-    call(s, a, audit, Command::Definitions(raw.unwrap_or_default())).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async {
+        let query = s
+            .directory_schema()
+            .parse(raw.as_deref().unwrap_or_default())
+            .map_err(|_| Error::Malformed)?;
+        call(s, a, audit, Command::Definitions(query)).await
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn definition(
     State(s): State<Arc<dyn Source>>,

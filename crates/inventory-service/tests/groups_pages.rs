@@ -5,6 +5,7 @@ fn cursors_bind_tenant_owner_result_and_projection() {
     let group = Uuid::new_v4();
     let result = Uuid::new_v4();
     let binding = ResultBinding::Group {
+        subject: "principal".into(),
         group,
         kind: GroupPageKind::Members,
     };
@@ -26,10 +27,17 @@ fn cursors_bind_tenant_owner_result_and_projection() {
     assert!(decode(&key, &token, "tenant-a", Uuid::new_v4(), &binding).is_err());
     for other in [
         ResultBinding::Group {
+            subject: "other-principal".into(),
+            group,
+            kind: GroupPageKind::Members,
+        },
+        ResultBinding::Group {
+            subject: "principal".into(),
             group: Uuid::new_v4(),
             kind: GroupPageKind::Members,
         },
         ResultBinding::Group {
+            subject: "principal".into(),
             group,
             kind: GroupPageKind::Decisions,
         },
@@ -45,17 +53,17 @@ fn signed_foreign_family_is_rejected() {
     let owner = Uuid::new_v4();
     let result = Uuid::new_v4();
     let value = serde_json::json!({"tenant":"tenant-a","result":result,"binding":{"family":"scope","scope":owner,"kind":"members"},"after":"device-1"});
-    let mut bytes = serde_json::to_vec(&value).unwrap();
-    let tag = ring::hmac::sign(&key, &bytes);
-    bytes.extend_from_slice(tag.as_ref());
-    let token = URL_SAFE_NO_PAD.encode(bytes);
+    let token = CursorCodec::from_key(key.clone())
+        .encode("foreign-results", &value)
+        .unwrap();
     assert!(
         decode(
             &key,
-            &token,
+            token.as_str(),
             "tenant-a",
             result,
             &ResultBinding::Group {
+                subject: "principal".into(),
                 group: owner,
                 kind: GroupPageKind::Members
             }

@@ -63,6 +63,7 @@ async fn fixture(base: Value) -> Result<Fixture> {
                 .merge(rss_mdm_management_http::planning::policies::http::previews(
                     f.queries.clone(),
                     Some(telemetry.clone()),
+                    rss_mdm_query::cursor::CursorCodec::new(&[31; 32]).expect("fixture cursor"),
                 ))
                 .merge(
                     rss_mdm_management_http::assets::routes().with_state(Arc::new(
@@ -176,7 +177,7 @@ async fn run(expected: &str, projection: r::TelemetryProjection) -> Result<()> {
 
         let definition=json!({"scope":scope,"action":{"kind":"telemetry_profile","resource":{"id":profile_id,"version":"v1","platform":"macos","architecture":"aarch64","variant":"default"}}});
         if anchor {
-        let preview=post(&mut f.author,&f.router,"/api/v1/policies/previews",json!({"definition":definition,"after":null,"scopeResult":null})).await?;
+        let preview=post(&mut f.author,&f.router,"/api/v1/policies/previews",json!({"definition":definition,"scopeResult":null})).await?;
         ensure!(preview["items"].as_array().is_some_and(|v|v.len()==1+usize::from(secondary.is_some()) && v.iter().any(|item|item["target"]["device"]==case_device_id() && item["collectionSupported"]==true)),"preview: {preview}");
         }
         let policy=Uuid::new_v4();
@@ -872,7 +873,7 @@ async fn postgres_baseline_recovers_original_receipts_without_overwriting_edits(
         let crate::baseline::manifest::Action::Policy {definition}=&last.action else {anyhow::bail!("last policy");};
         let mut administrator = crate::test_support::authority::Authority::prepared_browser("admin")?;
         let agent=manifest.steps.iter().find_map(|s|match &s.action {crate::baseline::manifest::Action::Policy{definition} if matches!(definition.action,rss_mdm_policy::Action::AgentCollection{..})=>Some(definition),_=>None}).unwrap();
-        let (status,_)=administrator.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"after":null,"scopeResult":null}))).await?;
+        let (status,_)=administrator.call(&router,Method::POST,"/api/v1/policies/previews",Some(json!({"definition":agent,"scopeResult":null}))).await?;
         ensure!(status==StatusCode::CONFLICT,"unsigned baseline preview claimed execution readiness");
         let changed=post(&mut administrator,&router,&format!("/api/v1/policies/{policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":1,"input":{"action":"put","enabled":false,"definition":definition}})).await?;
         ensure!(changed["revision"]==2);

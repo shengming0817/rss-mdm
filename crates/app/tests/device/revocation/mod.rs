@@ -71,8 +71,8 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
                 None
             )
             .await?
-            .1["items"]
-            == json!([])
+            .0
+            == StatusCode::BAD_REQUEST
     );
     ensure!(
         browser
@@ -86,6 +86,24 @@ pub(crate) async fn revoke_http_matrix(session: &Browser) -> Result<()> {
             .0
             == StatusCode::BAD_REQUEST
     );
+    // More than one default page proves filtering and ordering precede LIMIT.
+    pg(&format!("CREATE TEMP TABLE registration_pages AS SELECT n,gen_random_uuid() AS request,gen_random_uuid() AS registration FROM generate_series(2,1002) n;
+        INSERT INTO mdm_access.requests(tenant_id,id,source,windows_profile) SELECT '{tenant}',request,'mdm.windows','Full' FROM registration_pages;
+        INSERT INTO mdm_access.registrations(tenant_id,id,device,channel,generation,request_id,state,purpose,epoch) SELECT '{tenant}',registration,'{device}','mdm',n,request,'revoked','primary',gen_random_uuid() FROM registration_pages;", tenant=case_tenant()))?;
+    let query = format!("{listing}?filter=status==revoked&sort=-generation&fields=registrationId,generation,userContextId");
+    let (status, first_page) = browser.call(&allowed, Method::GET, &query, None).await?;
+    ensure!(status == StatusCode::OK, "registration page: {status} {first_page}");
+    ensure!(first_page["items"].as_array().unwrap().len() == 1000);
+    ensure!(first_page["items"][0]["generation"] == 1002);
+    ensure!(first_page["items"][999]["generation"] == 3);
+    ensure!(first_page["items"][0]["userContextId"] == first_page["items"][0]["registrationId"]);
+    ensure!(first_page["items"][0].get("status").is_none());
+    let cursor = first_page["nextCursor"].as_str().unwrap();
+    let (status, last_page) = browser.call(&allowed, Method::GET, &format!("{query}&cursor={cursor}"), None).await?;
+    ensure!(status == StatusCode::OK && last_page["items"].as_array().unwrap().len() == 1);
+    ensure!(last_page["items"][0]["generation"] == 2 && last_page["nextCursor"].is_null());
+    ensure!(browser.call(&allowed, Method::GET, &format!("{listing}?sort=generation&cursor={cursor}"), None).await?.0 == StatusCode::CONFLICT);
+    ensure!(browser.call(&allowed, Method::GET, &format!("{listing}?limit=1001"), None).await?.0 == StatusCode::BAD_REQUEST);
     browser.operation = Some(uuid::Uuid::new_v4());
     for bad in [
         "/api/v1/enrollments/not-a-uuid/resume",

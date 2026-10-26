@@ -172,3 +172,12 @@ pub fn validate_ownership(endpoints: &[Endpoint], expected: &[&Resource]) -> Vec
     }
     violations
 }
+
+/// An HTTP collection, including domain-owned page metadata. Serialization is unchanged.
+/// Inventory associates this explicit handler result with its resource and query contract.
+pub struct CollectionResponse<T>(pub T);
+impl<T: axum::response::IntoResponse> axum::response::IntoResponse for CollectionResponse<T> {
+    fn into_response(self) -> axum::response::Response {
+        self.0.into_response()
+    }
+}

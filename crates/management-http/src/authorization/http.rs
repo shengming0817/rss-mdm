@@ -101,15 +101,19 @@ async fn rules(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    listing(&app, &auth, raw, Directory::Rules).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { listing(&app, &auth, raw, Directory::Rules).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn groups(
     State(app): State<Arc<HttpState>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    listing(&app, &auth, raw, Directory::Groups).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { listing(&app, &auth, raw, Directory::Groups).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn rule_detail(
     State(app): State<Arc<HttpState>>,
@@ -176,8 +180,10 @@ async fn members(
     Extension(auth): Extension<RequestAuth>,
     Path(id): Path<Uuid>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, Error> {
-    listing(&app, &auth, raw, Directory::Members(id)).await
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<Value>>, Error> {
+    (async { listing(&app, &auth, raw, Directory::Members(id)).await })
+        .await
+        .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn departments(Extension(auth): Extension<RequestAuth>) -> Result<Json<Value>, Error> {
     use rss_identity_postgres::VerifiedDepartmentSnapshot as Department;

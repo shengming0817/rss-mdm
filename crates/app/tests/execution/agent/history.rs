@@ -46,7 +46,12 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
         ))?
         .trim()
         .parse::<i64>()?;
-        let mut path = format!("/api/v1/policies/{plan}/runs");
+        let (status, default_page) = author.call(router, Method::GET, &format!("/api/v1/policies/{plan}/runs"), None).await?;
+        ensure!(status == StatusCode::OK && default_page["items"].as_array().unwrap().len() == 26 && default_page["nextCursor"].is_null());
+        for invalid in ["limit=1001", "afterAt=0", "afterId=invalid"] {
+            ensure!(author.call(router, Method::GET, &format!("/api/v1/policies/{plan}/runs?{invalid}"), None).await?.0 == StatusCode::BAD_REQUEST);
+        }
+        let mut path = format!("/api/v1/policies/{plan}/runs?limit=20");
         let mut ids = Vec::new();
         let mut unique = BTreeSet::new();
         loop {
@@ -72,15 +77,11 @@ async fn policy_run_history_cursor_summary_and_detail() -> Result<()> {
                 ensure!(unique.insert(id.clone()), "duplicate run history item: {id}");
                 ids.push(id);
             }
-            let Some(cursor) = page["nextCursor"].as_object() else {
+            let Some(cursor) = page["nextCursor"].as_str() else {
                 ensure!(page["nextCursor"].is_null(), "invalid run cursor: {page}");
                 break;
             };
-            let after_at = cursor["availableAt"].as_i64().context("cursor availableAt")?;
-            let after_id = cursor["taskId"].as_str().context("cursor taskId")?;
-            path = format!(
-                "/api/v1/policies/{plan}/runs?afterAt={after_at}&afterId={after_id}"
-            );
+            path = format!("/api/v1/policies/{plan}/runs?limit=20&cursor={cursor}");
         }
         ensure!(ids.len() == 26, "run history lost records: {ids:?}");
         let mut path=format!("/api/v1/operations?filter=kind==action_run;policy=={plan}&limit=3&sort=-id,-kind");

@@ -23,7 +23,7 @@ async fn history_boundaries(
                 None
             )
             .await?
-            .0 == StatusCode::BAD_REQUEST
+            .0 == StatusCode::CONFLICT
         );
     }
     let mut other = crate::test_support::authority::Authority::prepared_browser("other")?;
@@ -45,7 +45,7 @@ async fn history_boundaries(
             )
             .await?
             .0
-            == StatusCode::BAD_REQUEST
+            == StatusCode::CONFLICT
     );
     for device in [None, Some("compliance-a")] {
         let mut limited = vec![crate::authorization::Grant {
@@ -145,7 +145,7 @@ async fn history_boundaries(
                     )
                     .await?
                     .0
-                    == StatusCode::BAD_REQUEST
+                    == StatusCode::CONFLICT
             );
             Ok(())
         })
@@ -217,6 +217,26 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
             .any(|v| v["status"] == "compliant" && v["factWatermark"] == old["factWatermark"]),
         "history was rewritten"
     );
+    // A newer incomplete assessment must not consume the requested history window.
+    let incomplete = Uuid::new_v4();
+    pg(&format!("INSERT INTO mdm_automation.automation_jobs(tenant_id,id,kind,target,input,forwarded,completed) SELECT tenant_id,'{incomplete}',kind,target,input,true,false FROM mdm_automation.automation_jobs WHERE id='{}';
+        INSERT INTO mdm_compliance.results(tenant_id,task,rule_id,rule_revision,device,evaluated_at,document) SELECT tenant_id,'{incomplete}',rule_id,rule_revision,device,evaluated_at+100,document FROM mdm_compliance.results WHERE device='compliance-a' ORDER BY evaluated_at DESC,task DESC LIMIT 1;", history["items"][0]["task"].as_str().unwrap()))?;
+    let completed_page = ok(
+        &mut browser,
+        router,
+        Method::GET,
+        "/api/v1/devices/compliance-a/compliance/history?limit=1",
+        None,
+    )
+    .await?;
+    ensure!(
+        completed_page["items"].as_array().unwrap().len() == 1
+            && completed_page["items"][0]["task"] == history["items"][0]["task"],
+        "incomplete result consumed history page: {completed_page}"
+    );
+    pg(&format!(
+        "DELETE FROM mdm_compliance.results WHERE task='{incomplete}'; DELETE FROM mdm_automation.automation_jobs WHERE id='{incomplete}'"
+    ))?;
     let original = ok(
         &mut browser,
         router,
@@ -257,7 +277,7 @@ async fn http_history_cursors_authorization_and_disable() -> Result<()> {
         )
         .await?;
     ensure!(
-        s == StatusCode::BAD_REQUEST,
+        s == StatusCode::CONFLICT,
         "history cursor was reused for a different device"
     );
     history_boundaries(

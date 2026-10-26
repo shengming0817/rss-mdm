@@ -188,15 +188,19 @@ async fn list(
     Extension(auth): Extension<RequestAuth>,
     Path(device): Path<String>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<Value>>, Error> {
-    let q = access::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    s.registration
-        .device_access_bindings(&auth.proof, &device, &q, &s.cursor)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Value>>>, Error> {
+    (async {
+        let q = access::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        s.registration
+            .device_access_bindings(&auth.proof, &device, &q, &s.cursor)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 async fn binding(
     State(s): State<Arc<Services>>,
@@ -416,7 +420,7 @@ async fn offboarding_identity(
     ))
     .map_err(|_| Error::Malformed)?;
     let after: Option<Uuid> = page_query
-        .cursor
+        .cursor()
         .as_ref()
         .map(|value| {
             let token = rss_contract::PageCursor::parse(value).map_err(|_| Error::Malformed)?;
@@ -449,7 +453,7 @@ async fn offboarding_identity(
                 .list_accounts(
                     actor,
                     cursor,
-                    u16::try_from(page_query.limit).map_err(|_| Error::Malformed)?,
+                    u16::try_from(page_query.limit()).map_err(|_| Error::Malformed)?,
                     deadline(),
                 )
                 .await
@@ -554,15 +558,19 @@ async fn enterprise_list(
     State(s): State<Arc<Services>>,
     Extension(auth): Extension<RequestAuth>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<rss_mdm_query::Page<Value>>, Error> {
-    let q = rss_mdm_registration_service::enterprise::directory::SCHEMA
-        .parse(raw.as_deref().unwrap_or(""))
-        .map_err(|_| Error::Malformed)?;
-    s.registration
-        .enterprise_configuration(&auth.proof, &q, &s.cursor)
-        .await
-        .map(Json)
-        .map_err(Into::into)
+) -> Result<rss_mdm_http_contract::CollectionResponse<Json<rss_mdm_query::Page<Value>>>, Error> {
+    (async {
+        let q = rss_mdm_registration_service::enterprise::directory::SCHEMA
+            .parse(raw.as_deref().unwrap_or(""))
+            .map_err(|_| Error::Malformed)?;
+        s.registration
+            .enterprise_configuration(&auth.proof, &q, &s.cursor)
+            .await
+            .map(Json)
+            .map_err(Into::into)
+    })
+    .await
+    .map(rss_mdm_http_contract::CollectionResponse)
 }
 fn enterprise_target(
     s: &Services,

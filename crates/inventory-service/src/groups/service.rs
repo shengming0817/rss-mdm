@@ -19,7 +19,7 @@ pub enum Command {
         group: Uuid,
         result: Uuid,
         projection: pages::GroupPageKind,
-        query: pages::PageQuery,
+        query: rss_mdm_query::window::Query,
     },
     TaskRead {
         id: Uuid,
@@ -186,8 +186,19 @@ impl Groups {
                             projection,
                             query,
                         } => {
-                            s.group_page_in(tx, *group, *result, *projection, query, flow)
-                                .await?
+                            s.group_page_in(
+                                tx,
+                                *group,
+                                *result,
+                                *projection,
+                                query,
+                                flow,
+                                &checked_input(rss_mdm_query::cursor::fingerprint(&(
+                                    audit.snapshot().actor,
+                                    audit.snapshot().instance,
+                                )))?,
+                            )
+                            .await?
                         }
                         Command::TaskRead { id, target } => flow.task(tx, *id, target).await?,
                     };

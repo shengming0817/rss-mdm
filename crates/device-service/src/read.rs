@@ -148,7 +148,7 @@ impl Associations {
         token: Option<&str>,
         limit: usize,
     ) -> Result<CandidatePage> {
-        if !(1..=100).contains(&limit) || !model::text(device) {
+        if !(1..=1000).contains(&limit) || !model::text(device) {
             return Err(Error::Malformed);
         }
         if proof.tenant_id() != self.tenant.to_string() {
