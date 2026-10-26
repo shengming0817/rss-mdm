@@ -328,6 +328,10 @@ pub async fn serve(
                             )
                             .await
                             .map_err(|e| ProcessError::at("startup.asset_automation", e.into()))?;
+                        automation
+                            .work
+                            .bind_execution(execution.service.clone())
+                            .map_err(|e| ProcessError::at("startup.policy_events", e.into()))?;
                         startup.stage_resource(DynManagedResource::new_box(
                             crate::automation::Resource(automation.work.clone()),
                         ));

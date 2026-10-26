@@ -37,7 +37,8 @@ impl Planning {
         let mut members = 0u64;
         if failure.is_none() {
             match &job {
-                JobInput::PolicyReconcile { .. }
+                JobInput::PolicyEvent { .. }
+                | JobInput::PolicyReconcile { .. }
                 | JobInput::AssetQuery { .. }
                 | JobInput::Compliance { .. } => {
                     return Err(Error::NotFound.into());

@@ -351,7 +351,9 @@ impl Definition {
         self.action.validate()?;
         if self.custom_event.is_some()
             && matches!(&self.action, Action::Execution { parameters, .. } if parameters.has_input())
-        { return Err(Error::Malformed); }
+        {
+            return Err(Error::Malformed);
+        }
         if matches!(
             self.action,
             Action::Software {

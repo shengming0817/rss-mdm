@@ -290,18 +290,7 @@ pub fn authorize_policy_snapshot(
     proof: &AuthorizedPrincipal,
     definition: &rss_mdm_policy::Definition,
 ) -> std::result::Result<(), crate::Error> {
-    let permission = match definition.action {
-        Action::Credential { ref operation, .. } => crate::credential_tasks::permission(operation),
-        Action::Execution { .. } => Permission::ScriptExecute,
-        Action::NativeCollection { .. }
-        | Action::AgentCollection { .. }
-        | Action::TelemetryProfile { .. } => Permission::InventoryCollect,
-        Action::Configuration { .. } => Permission::ConfigurationWrite,
-        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
-        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
-        Action::DeviceAccess { .. } => Permission::AccountWrite,
-        Action::UnmanageDevice { .. } => Permission::DeviceUnmanage,
-    };
+    let permission = policy_permission(&definition.action);
     if matches!(definition.action, Action::EnsureAgentInstalled { .. }) {
         snapshot.require_all_devices(proof, Permission::Enrollment)?;
     }
@@ -371,5 +360,21 @@ impl Inputs {
             ));
         }
         Ok(None)
+    }
+}
+
+/// Primary operation permission shared by publication and targeted admission.
+pub fn policy_permission(action: &Action) -> Permission {
+    match *action {
+        Action::Credential { ref operation, .. } => crate::credential_tasks::permission(operation),
+        Action::Execution { .. } => Permission::ScriptExecute,
+        Action::NativeCollection { .. }
+        | Action::AgentCollection { .. }
+        | Action::TelemetryProfile { .. } => Permission::InventoryCollect,
+        Action::Configuration { .. } => Permission::ConfigurationWrite,
+        Action::Software { .. } | Action::EnsureAgentInstalled { .. } => Permission::SoftwareDeploy,
+        Action::RequestMdmEnrollment { .. } => Permission::Enrollment,
+        Action::DeviceAccess { .. } => Permission::AccountWrite,
+        Action::UnmanageDevice { .. } => Permission::DeviceUnmanage,
     }
 }

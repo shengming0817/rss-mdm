@@ -164,6 +164,18 @@
     {
       "type": "FilevaultReceipt",
       "file": "filevault-receipt-v1.schema.json"
+    },
+    {
+      "type": "PolicyEventRequest",
+      "file": "policy-event-request-v1.schema.json"
+    },
+    {
+      "type": "PolicyEventAccepted",
+      "file": "policy-event-accepted-v1.schema.json"
+    },
+    {
+      "type": "PolicyEventDecision",
+      "file": "policy-event-decision-v1.schema.json"
     }
   ],
   "apiVersion": 1

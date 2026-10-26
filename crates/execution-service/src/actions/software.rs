@@ -20,7 +20,8 @@ pub async fn accept_for_device(
     if policy.assignment.intent() == rss_mdm_policy::SoftwareIntent::AvailableInstall {
         return Ok(());
     }
-    let Some(slot) = slot_in(service, tx, policy, target, None, now, None).await? else {
+    let Preparation::Ready(slot) = slot_in(service, tx, policy, target, None, now, None).await?
+    else {
         return Ok(());
     };
     queue_run_in(
@@ -44,6 +45,18 @@ pub async fn accept_for_device(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+pub enum Invocation {
+    SelfService(Uuid),
+    Event(Uuid),
+}
+
+pub enum Preparation {
+    Ready(Slot),
+    Satisfied,
+    NotEligible,
+}
+
 pub struct Slot {
     pub occurrence: String,
     pub available: i64,
@@ -56,27 +69,31 @@ pub async fn slot_in(
     tx: &mut PgTransaction<'_>,
     policy: &crate::sources::software::SoftwareExecutionPolicy,
     target: &Target,
-    request: Option<Uuid>,
+    request: Option<Invocation>,
     now: i64,
     existing: Option<Uuid>,
-) -> Result<Option<Slot>> {
+) -> Result<Preparation> {
     let stage = match policy
         .assignment
         .entry_in(&service.source, tx, &target.device, now)
         .await?
     {
         Some((stage, _)) => stage,
-        None if request.is_some() && !policy.assignment.stages().is_empty() => 0,
-        None => return Ok(None),
+        None if matches!(request, Some(Invocation::SelfService(_)))
+            && !policy.assignment.stages().is_empty() =>
+        {
+            0
+        }
+        None => return Ok(Preparation::NotEligible),
     };
     let mut prepared = Vec::new();
     let effect = if policy.assignment.channel() == rss_mdm_inventory::Channel::Mdm {
         if !service.inputs.software_distribution.mdm_enabled {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         }
         let Some((current, p, a)) = crate::native_software::target_in(tx, &target.device).await?
         else {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         };
         if current.registration != target.registration
             || current.generation != target.generation
@@ -86,7 +103,7 @@ pub async fn slot_in(
                 .await?
                 .is_none()
         {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         }
         let package = policy
             .assignment
@@ -100,20 +117,20 @@ pub async fn slot_in(
             crate::channels::agent_binding_in(tx, service.agent_store.clone(), target.registration)
                 .await?
         else {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         };
-        if request.is_none()
+        if !matches!(request, Some(Invocation::SelfService(_)))
             && !policy
                 .assignment
                 .supported_in(&service.admission(), tx, &binding)
                 .await?
         {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         }
         let Some((platform, architecture)) =
             db::agent_profile_in(service, tx, target.registration).await?
         else {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         };
         if policy
             .assignment
@@ -121,7 +138,7 @@ pub async fn slot_in(
             .await?
             .is_none()
         {
-            return Ok(None);
+            return Ok(Preparation::NotEligible);
         }
         let steps = policy
             .assignment
@@ -196,30 +213,38 @@ pub async fn slot_in(
         "#)
             .bind(tenant).bind(key).bind(device).bind(version).bind(now).bind(prefix).bind(existing).fetch_one(c).await
     })).await?;
-    if pending || satisfied || failures >= 3 {
-        return Ok(None);
+    if satisfied && !pending {
+        return Ok(Preparation::Satisfied);
+    }
+    if pending || failures >= 3 {
+        return Ok(Preparation::NotEligible);
     }
     let schedule = &policy.assignment.frozen.schedule;
-    let coordinate = match &schedule.trigger {
-        Trigger::Manual if request.is_some() => now,
-        Trigger::Manual => return Ok(None),
-        Trigger::CheckIn { minimum_seconds } => {
-            let delay = i64::from(*minimum_seconds).saturating_mul(1_i64 << failures.clamp(0, 3));
-            if last.is_some_and(|at| now.saturating_sub(at) < delay) {
-                return Ok(None);
+    let coordinate = if matches!(request, Some(Invocation::Event(_))) {
+        now
+    } else {
+        match &schedule.trigger {
+            Trigger::Manual if request.is_some() => now,
+            Trigger::Manual => return Ok(Preparation::NotEligible),
+            Trigger::CheckIn { minimum_seconds } => {
+                let delay =
+                    i64::from(*minimum_seconds).saturating_mul(1_i64 << failures.clamp(0, 3));
+                if last.is_some_and(|at| now.saturating_sub(at) < delay) {
+                    return Ok(Preparation::NotEligible);
+                }
+                now
             }
-            now
-        }
-        Trigger::Registration => now,
-        Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
-            let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
-                return Ok(None);
-            };
-            due.coordinate
+            Trigger::Registration => now,
+            Trigger::Once { .. } | Trigger::Interval { .. } | Trigger::Weekly { .. } => {
+                let Some(due) = schedule.due(-1, now, target.device.as_bytes())? else {
+                    return Ok(Preparation::NotEligible);
+                };
+                due.coordinate
+            }
         }
     };
     let Some(slot) = schedule.occurrence(coordinate, target.device.as_bytes())? else {
-        return Ok(None);
+        return Ok(Preparation::NotEligible);
     };
     let available = slot.available_at.max(now);
     let deadline = available
@@ -228,10 +253,13 @@ pub async fn slot_in(
         .min(schedule.ends_at())
         .min(slot.window_end.unwrap_or(i64::MAX));
     if deadline <= available {
-        return Ok(None);
+        return Ok(Preparation::NotEligible);
     }
     let occurrence = match request {
-        Some(request) => format!("software:stage:{stage_scope}:self-service:{request}"),
+        Some(Invocation::SelfService(request)) => {
+            format!("software:stage:{stage_scope}:self-service:{request}")
+        }
+        Some(Invocation::Event(request)) => format!("software:stage:{stage_scope}:event:{request}"),
         None => format!(
             "software:stage:{stage_scope}:desired:{}:{attempts}",
             target.registration
@@ -246,9 +274,9 @@ pub async fn slot_in(
             .bind(tenant).bind(version).bind(device).bind(key).bind(now).bind(existing).fetch_one(c).await
     })).await?;
     if exists || active >= 128 {
-        return Ok(None);
+        return Ok(Preparation::NotEligible);
     }
-    Ok(Some(Slot {
+    Ok(Preparation::Ready(Slot {
         occurrence,
         available,
         deadline,

@@ -55,14 +55,11 @@ impl DurableStore for PlanningWork {
                 || (completion == Completion::Converged && claim.target().entity() == "changes")
             {
                 let entity = claim.target().entity();
-                let id = entity
-                    .strip_prefix("job:")
-                    .and_then(|s| Uuid::parse_str(s).ok());
+                let id = jobs::target_job(entity).and_then(|s| Uuid::parse_str(s).ok());
                 if id.is_none() && entity != "changes" {
                     return Err(ReconcileError::new(ErrorKind::Invariant));
                 }
-                self.service
-                    .runtime
+                self.work_runtime(entity)?
                     .local_tx_with_context(
                         self.service.tenant,
                         rss_transactional_messaging::policy::OperationDeadline::from_remaining(

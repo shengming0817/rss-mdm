@@ -150,7 +150,7 @@ pub(crate) fn routes() -> Router<Arc<TaskState>> {
             ),
         )
 }
-async fn authenticate(
+pub(crate) async fn authenticate(
     app: &TaskState,
     headers: &HeaderMap,
     peer: Option<&rss_mdm_certificate::ClientCertificateEvidence>,

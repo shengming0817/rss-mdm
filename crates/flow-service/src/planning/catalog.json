@@ -294,6 +294,177 @@
       ""
     ],
     [
+      "event_batches",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "request",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "actor",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "caller",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "device",
+      "text",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "input",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "fingerprint",
+      "bytea",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "created_at",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_batches",
+      "deadline",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "tenant_id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "batch",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "id",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "policy",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "revision",
+      "bigint",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "version",
+      "uuid",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "target",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "authority",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
+      "event_members",
+      "decision",
+      "jsonb",
+      true,
+      null,
+      "",
+      ""
+    ],
+    [
       "group_definition_walk",
       "tenant_id",
       "uuid",
@@ -1158,6 +1329,55 @@
       true
     ],
     [
+      "event_batches",
+      "event_batches_check",
+      "c",
+      "CHECK ((deadline > created_at))",
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_fingerprint_check",
+      "c",
+      "CHECK ((octet_length(fingerprint) = 32))",
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_tenant_id_actor_request_key",
+      "u",
+      "UNIQUE (tenant_id, actor, request)",
+      true
+    ],
+    [
+      "event_members",
+      "event_members_pkey",
+      "p",
+      "PRIMARY KEY (tenant_id, id)",
+      true
+    ],
+    [
+      "event_members",
+      "event_members_tenant_id_batch_fkey",
+      "f",
+      "FOREIGN KEY (tenant_id, batch) REFERENCES mdm_planning.event_batches(tenant_id, id)",
+      true
+    ],
+    [
+      "event_members",
+      "event_members_tenant_id_batch_policy_key",
+      "u",
+      "UNIQUE (tenant_id, batch, policy)",
+      true
+    ],
+    [
       "group_definition_walk",
       "group_definition_walk_graph_revision_check",
       "c",
@@ -1580,6 +1800,54 @@
       "configuration_objects",
       "configuration_objects_pkey",
       "CREATE UNIQUE INDEX configuration_objects_pkey ON mdm_planning.configuration_objects USING btree (tenant_id, device, user_key, platform, object_kind, object_key)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_device",
+      "CREATE INDEX event_batches_device ON mdm_planning.event_batches USING btree (tenant_id, device, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_pkey",
+      "CREATE UNIQUE INDEX event_batches_pkey ON mdm_planning.event_batches USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_batches",
+      "event_batches_tenant_id_actor_request_key",
+      "CREATE UNIQUE INDEX event_batches_tenant_id_actor_request_key ON mdm_planning.event_batches USING btree (tenant_id, actor, request)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_members",
+      "event_members_pending",
+      "CREATE INDEX event_members_pending ON mdm_planning.event_members USING btree (tenant_id, batch, id) WHERE ((decision ->> 'state'::text) = 'pending'::text)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_members",
+      "event_members_pkey",
+      "CREATE UNIQUE INDEX event_members_pkey ON mdm_planning.event_members USING btree (tenant_id, id)",
+      true,
+      true,
+      true
+    ],
+    [
+      "event_members",
+      "event_members_tenant_id_batch_policy_key",
+      "CREATE UNIQUE INDEX event_members_tenant_id_batch_policy_key ON mdm_planning.event_members USING btree (tenant_id, batch, policy)",
       true,
       true,
       true

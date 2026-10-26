@@ -7,6 +7,7 @@ mod completion;
 /// Single-step planning execution over the real claims and protected transaction.
 /// It owns no Inventory/Compliance services and cannot register a background runner.
 pub struct PlanningWork {
+    execution: std::sync::OnceLock<Arc<rss_mdm_execution_service::ExecutionService>>,
     service: Arc<Planning>,
     store: rss_reconcile_postgres::PgStore,
 }
@@ -23,6 +24,24 @@ impl std::ops::Deref for Automation {
     }
 }
 impl PlanningWork {
+    fn work_runtime(&self, entity: &str) -> std::result::Result<&PgRuntime, rss_reconcile::Error> {
+        if entity.starts_with("event:") {
+            self.execution
+                .get()
+                .map(|s| s.event_runtime())
+                .ok_or_else(|| rss_reconcile::Error::new(rss_reconcile::ErrorKind::Transient))
+        } else {
+            Ok(&self.service.runtime)
+        }
+    }
+
+    /// Bind the execution owner before starting jobs that dispatch Policy events.
+    pub fn bind_execution(
+        &self,
+        execution: Arc<rss_mdm_execution_service::ExecutionService>,
+    ) -> std::result::Result<(), Error> {
+        self.execution.set(execution).map_err(|_| Error::Conflict)
+    }
     pub async fn connect(
         service: Arc<Planning>,
         options: sqlx::postgres::PgConnectOptions,
@@ -43,7 +62,11 @@ impl PlanningWork {
                 return Err(Error::Unavailable(Failure::AutomationAdmission));
             }
         };
-        Ok(Arc::new(Self { service, store }))
+        Ok(Arc::new(Self {
+            service,
+            store,
+            execution: Default::default(),
+        }))
     }
     pub async fn close(&self) -> std::result::Result<(), rss_runtime::ShutdownError> {
         let timer = Timer::new();
@@ -177,8 +200,7 @@ impl PlanningWork {
             control.check()?;
             let failure = Mutex::new(None);
             let result = self
-                .service
-                .runtime
+                .work_runtime(claim.target().entity())?
                 .local_tx_with_context(
                     self.service.tenant,
                     deadline(),
@@ -188,10 +210,7 @@ impl PlanningWork {
                             let result = if ctx.1 == "changes" {
                                 ctx.0.asset_work_pending(tx).await
                             } else {
-                                match ctx
-                                    .1
-                                    .strip_prefix("job:")
-                                    .and_then(|s| Uuid::parse_str(s).ok())
+                                match jobs::target_job(ctx.1).and_then(|s| Uuid::parse_str(s).ok())
                                 {
                                     Some(id) => crate::automation::jobs::read_in(tx, id)
                                         .await
@@ -246,8 +265,7 @@ impl PlanningWork {
         Box::pin(async move {
             let failure = Mutex::new(None);
             let attempt = self
-                .service
-                .runtime
+                .work_runtime(claim.target().entity())?
                 .local_tx_with_context(
                     self.service.tenant,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -256,7 +274,13 @@ impl PlanningWork {
                     (
                         &self.service,
                         claim,
-                        (&self.service, claim.target().entity(), &failure, inventory),
+                        (
+                            &self.service,
+                            claim.target().entity(),
+                            &failure,
+                            inventory,
+                            self.execution.get(),
+                        ),
                     ),
                     |(service, claim, context), tx| {
                         Box::pin(async move {
@@ -265,10 +289,8 @@ impl PlanningWork {
                                 .bind_in(tx)
                                 .await
                                 .map_err(PgError::from)?;
-                            let definition_page = if let Some(id) = context
-                                .1
-                                .strip_prefix("job:")
-                                .and_then(|s| Uuid::parse_str(s).ok())
+                            let definition_page = if let Some(id) =
+                                jobs::target_job(context.1).and_then(|s| Uuid::parse_str(s).ok())
                             {
                                 let (job, _, _, cursor, _) =
                                     crate::automation::jobs::read_in(tx, id)
@@ -294,7 +316,7 @@ impl PlanningWork {
                                     return Ok(None);
                                 }
                                 let id = Uuid::parse_str(
-                                    context.1.strip_prefix("job:").ok_or(Error::Malformed)?,
+                                    jobs::target_job(context.1).ok_or(Error::Malformed)?,
                                 )
                                 .map_err(|_| Error::Malformed)?;
                                 let (job, done, _, cursor, _) =
@@ -404,6 +426,17 @@ impl PlanningWork {
                                                             )
                                                             .await
                                                     }
+                                                    JobInput::PolicyEvent { batch } => {
+                                                        ctx.0
+                                                            .advance_event_in(
+                                                                ctx.4.ok_or(Error::Unavailable(
+                                                                    Failure::AutomationAdmission,
+                                                                ))?,
+                                                                tx,
+                                                                batch,
+                                                            )
+                                                            .await
+                                                    }
                                                     JobInput::PolicyReconcile { .. } => {
                                                         ctx.0
                                                             .advance_assignment_in(
@@ -458,22 +491,19 @@ impl PlanningWork {
                 )) => Some("capacity_exceeded"),
                 Some(ref error) if error.is_not_found() => Some("source_unavailable"),
                 Some(Error::Malformed) => Some("invalid_input"),
+                Some(Error::Unsupported) => Some("capability_unknown"),
                 Some(Error::Forbidden) => Some("permission_denied"),
                 Some(error) => return Err(reconcile_error(error)),
                 None => return Ok(()),
             };
-            let Some(id) = claim
-                .target()
-                .entity()
-                .strip_prefix("job:")
-                .and_then(|s| Uuid::parse_str(s).ok())
+            let Some(id) =
+                jobs::target_job(claim.target().entity()).and_then(|s| Uuid::parse_str(s).ok())
             else {
                 return Err(rss_reconcile::Error::new(
                     rss_reconcile::ErrorKind::Transient,
                 ));
             };
-            self.service
-                .runtime
+            self.work_runtime(claim.target().entity())?
                 .local_tx_with_context(
                     self.service.tenant,
                     rss_transactional_messaging::policy::OperationDeadline::from_remaining(
@@ -502,6 +532,22 @@ impl PlanningWork {
                                 .reconcile_messaging
                                 .protect_in(tx, claim, context, |service, tx| {
                                     Box::pin(async move {
+                                        if matches!(
+                                            crate::automation::jobs::read_in(tx, id)
+                                                .await
+                                                .map_err(|e| fault(e, &Mutex::new(None)))?
+                                                .0,
+                                            JobInput::PolicyEvent { .. }
+                                        ) {
+                                            return service
+                                                .reject_event_member_in(
+                                                    tx,
+                                                    id,
+                                                    terminal.unwrap_or("rejected"),
+                                                )
+                                                .await
+                                                .map_err(|e| fault(e, &Mutex::new(None)));
+                                        }
                                         crate::automation::jobs::finish_job_in(
                                             tx,
                                             &service.audit_store,

@@ -1,0 +1,163 @@
+{
+  "$defs": {
+    "PolicyEventOperation": {
+      "description": "An operation remains owned by its original execution subsystem.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Existing Agent or software action Run.",
+          "properties": {
+            "id": {
+              "description": "Run identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "run",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing native command operation.",
+          "properties": {
+            "id": {
+              "description": "Operation identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "native",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Existing logical-device retirement.",
+          "properties": {
+            "id": {
+              "description": "Retirement identity.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "retirement",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Durable member admission facts; running and completion states are read from the operation owner.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Processing has not settled yet.",
+      "properties": {
+        "state": {
+          "const": "pending",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Actual operations were accepted or already exist.",
+      "properties": {
+        "operations": {
+          "description": "Exact owner references.",
+          "items": {
+            "$ref": "#/$defs/PolicyEventOperation"
+          },
+          "type": "array"
+        },
+        "state": {
+          "const": "accepted",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "operations"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Current desired state needs no new operation.",
+      "properties": {
+        "reason": {
+          "description": "Stable owner reason.",
+          "type": "string"
+        },
+        "state": {
+          "const": "no_change",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A business qualification failed; no child was accepted.",
+      "properties": {
+        "reason": {
+          "description": "Stable non-sensitive rejection category.",
+          "type": "string"
+        },
+        "state": {
+          "const": "rejected",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state",
+        "reason"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "The acceptance deadline passed before this member was processed.",
+      "properties": {
+        "state": {
+          "const": "expired",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "PolicyEventDecision",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/policy-event-decision.schema.json"
+}

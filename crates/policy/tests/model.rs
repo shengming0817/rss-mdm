@@ -445,14 +445,42 @@ fn software_channel_defaults_only_at_the_management_boundary() {
 
 #[test]
 fn event_names_change_configuration_without_resetting_execution_frequency() {
-    let fixture: Value = serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
-    let mut definition: Definition = serde_json::from_value(fixture[0]["definition"].clone()).unwrap();
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/semantic-identities.json")).unwrap();
+    let mut definition: Definition =
+        serde_json::from_value(fixture[0]["definition"].clone()).unwrap();
     let id = Uuid::new_v4();
-    let first = Policy::apply(id, None, 0, &Change::Put { definition: Box::new(definition.clone()), enabled: true }, Uuid::new_v4(), None).unwrap();
-    definition.custom_event = Some(rss_mdm_agent_wire::runtime::PolicyEventName::parse(" Refresh ").unwrap());
-    let next = Policy::apply(id, Some(&first.policy), 1, &Change::Put { definition: Box::new(definition), enabled: true }, Uuid::new_v4(), None).unwrap();
+    let first = Policy::apply(
+        id,
+        None,
+        0,
+        &Change::Put {
+            definition: Box::new(definition.clone()),
+            enabled: true,
+        },
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
+    definition.custom_event =
+        Some(rss_mdm_agent_wire::runtime::PolicyEventName::parse(" Refresh ").unwrap());
+    let next = Policy::apply(
+        id,
+        Some(&first.policy),
+        1,
+        &Change::Put {
+            definition: Box::new(definition),
+            enabled: true,
+        },
+        Uuid::new_v4(),
+        None,
+    )
+    .unwrap();
     assert_eq!(next.policy.revision, 2);
     assert_eq!(next.policy.version, first.policy.version);
     assert!(!next.semantic_changed);
-    assert_eq!(next.policy.definition.custom_event.unwrap().as_str(), "refresh");
+    assert_eq!(
+        next.policy.definition.custom_event.unwrap().as_str(),
+        "refresh"
+    );
 }

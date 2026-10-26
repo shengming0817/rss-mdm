@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "AccessWindowsAuthority": {
+      "description": "Stable Windows identity authority. Display names and email addresses are excluded.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "The current registered computer's SAM database.",
+          "properties": {
+            "kind": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Native directory domain SID, distinct from the user's account SID.",
+          "properties": {
+            "domainSid": {
+              "description": "SID of the native AD domain, excluding the user's RID.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "active_directory",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "domainSid"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Stable directory identifiers from the native Entra account.",
+          "properties": {
+            "kind": {
+              "const": "entra",
+              "type": "string"
+            },
+            "objectId": {
+              "description": "Immutable user object identifier within that tenant.",
+              "format": "uuid",
+              "type": "string"
+            },
+            "tenantId": {
+              "description": "Tenant that owns the native directory account.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "tenantId",
+            "objectId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PolicyEventName": {
+      "description": "Tenant-local event name shared by any number of Policies; never an object alias.",
+      "type": "string"
+    },
+    "PolicyEventSource": {
+      "description": "Origin supplied by the authenticated service; Policy origins must reference a real parent run.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "Human invocation through the device service or management session.",
+          "properties": {
+            "kind": {
+              "const": "human",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "AI invocation through the authenticated service.",
+          "properties": {
+            "kind": {
+              "const": "ai",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A running Policy, validated against the current device.",
+          "properties": {
+            "kind": {
+              "const": "policy",
+              "type": "string"
+            },
+            "runId": {
+              "description": "Parent execution identity.",
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "runId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SoftwareExecutionContext": {
+      "additionalProperties": false,
+      "description": "Complete current native execution environment reported by this registration.",
+      "properties": {
+        "interactiveUser": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SoftwareInteractiveUser"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exact live interactive session, when one exists."
+        },
+        "msixSideload": {
+          "description": "Current native Windows sideload policy.",
+          "type": "boolean"
+        },
+        "msixUnsigned": {
+          "description": "Current native API support for explicitly approved unsigned packages.",
+          "type": "boolean"
+        },
+        "osVersion": {
+          "description": "Complete numeric OS version, not an inferred product/platform string.",
+          "items": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "not": {
+            "const": [
+              0,
+              0,
+              0,
+              0
+            ]
+          },
+          "type": "array"
+        },
+        "revision": {
+          "description": "Strictly increasing local context generation; retries retain the same value.",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sourceCredentials": {
+          "description": "Source-scoped read credential references actually available locally.",
+          "items": {
+            "$ref": "#/$defs/SoftwareReadCredential"
+          },
+          "maxItems": 16,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "systemBroker": {
+          "description": "Whether the native system broker is available in this Agent installation.",
+          "type": "boolean"
+        },
+        "userHelper": {
+          "description": "Whether a helper is bound to this exact live interactive session.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "revision",
+        "msixSideload",
+        "msixUnsigned",
+        "osVersion",
+        "systemBroker",
+        "userHelper",
+        "interactiveUser",
+        "sourceCredentials"
+      ],
+      "type": "object"
+    },
+    "SoftwareInteractiveUser": {
+      "additionalProperties": false,
+      "description": "One concrete live OS session.",
+      "properties": {
+        "administrator": {
+          "description": "Privilege needed by the exact native profile, not a generic authorization grant.",
+          "type": "boolean"
+        },
+        "generatedUid": {
+          "description": "macOS GeneratedUID for this live account; Windows must explicitly report null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity": {
+          "description": "Windows SID or macOS numeric UID.",
+          "maxLength": 184,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "sessionId": {
+          "description": "Changes on logoff/login; identical account names cannot reuse a previous session.",
+          "format": "uuid",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          },
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "type": "string"
+        },
+        "windowsAuthority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AccessWindowsAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Native Windows account authority when known; required for Device Access admission."
+        }
+      },
+      "required": [
+        "windowsAuthority",
+        "generatedUid",
+        "identity",
+        "sessionId",
+        "administrator"
+      ],
+      "type": "object"
+    },
+    "SoftwareReadCredential": {
+      "additionalProperties": false,
+      "description": "Availability of a particular source read credential in the local Agent.",
+      "properties": {
+        "reference": {
+          "description": "Host-provisioned opaque credential reference; never token bytes or a URL.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        },
+        "source": {
+          "description": "Exact source identity in the consuming tenant.",
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00-\\x1f\\x7f]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "reference"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Explicit event for one authenticated device, never a tenant or device selector.",
+  "properties": {
+    "event": {
+      "$ref": "#/$defs/PolicyEventName",
+      "description": "Canonical Policy trigger name."
+    },
+    "executionContext": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SoftwareExecutionContext"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Local context attested by the authenticated Agent; absent for remote management."
+    },
+    "operationId": {
+      "description": "Stable request identity reused after response loss.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/PolicyEventSource",
+      "description": "Real invocation origin, not authorization."
+    }
+  },
+  "required": [
+    "operationId",
+    "event",
+    "source"
+  ],
+  "title": "PolicyEventRequest",
+  "type": "object",
+  "$id": "https://rss.example/mdm/agent/runtime/v1/payload/v1/policy-event-request.schema.json"
+}

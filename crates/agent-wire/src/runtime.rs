@@ -19,8 +19,11 @@ mod native_collection;
 #[path = "tasks.rs"]
 mod tasks;
 pub use crate::addressing::*;
+#[path = "policy_events.rs"]
+mod policy_events;
 pub use crate::self_service::*;
 pub use native_collection::*;
+pub use policy_events::*;
 pub use tasks::*;
 #[path = "recovery_credentials.rs"]
 mod recovery_credentials;
@@ -52,7 +55,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "5f8a34dd63f08a33022df5bbc877e4f70cdc3af444a7b2cde61312dc9ce2075b";
+    "414bd9c9cb89e82cea94366aee7254c41fa82639b74d318308f20923cac225b2";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

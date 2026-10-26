@@ -2519,6 +2519,14 @@
       true
     ],
     [
+      "action_runs",
+      "collection_starts",
+      "CREATE INDEX collection_starts ON mdm_commands.action_runs USING btree (tenant_id, policy_version, device, registration, generation, (((state ->> 'startedAt'::text))::bigint) DESC) WHERE ((state ->> 'startedAt'::text) IS NOT NULL)",
+      true,
+      true,
+      true
+    ],
+    [
       "attempt_frames",
       "attempt_frames_pkey",
       "CREATE UNIQUE INDEX attempt_frames_pkey ON mdm_commands.attempt_frames USING btree (tenant_id, attempt, message, command)",

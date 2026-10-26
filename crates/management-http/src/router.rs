@@ -73,6 +73,11 @@ pub fn device_action_routes() -> Router {
     )
 }
 pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
+    let policy_events =
+        crate::policy_events::routes(Arc::new(rss_mdm_flow_service::planning::events::Events {
+            planning: state.planning.clone(),
+            execution: state.execution.clone(),
+        }));
     let broker = crate::enterprise_broker::routes(
         state.agent_enrollment.clone(),
         state.execution.clone(),
@@ -232,6 +237,7 @@ pub fn router(state: Services, envelope: crate::boundary::Envelope) -> Router {
     );
     let protected = core
         .merge(planning_routes)
+        .merge(policy_events)
         .merge(operations)
         .merge(resources)
         .merge(workspace_routes())

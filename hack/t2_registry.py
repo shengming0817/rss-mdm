@@ -173,6 +173,7 @@ CAPABILITY_INPUTS = {'identity.local': ('crates/app/src/identity.rs',),
  'windows.limits': ('crates/app/src/native/admission.rs',)}
 
 
+CAPABILITY_INPUTS['planning.custom_events'] = ('crates/flow-service/src/planning/events.rs','crates/flow-service/src/planning/events/*','crates/execution-service/src/policy_events.rs','crates/agent-channel/src/policy_events.rs','crates/management-http/src/policy_events.rs','crates/agent-wire/src/policy_events.rs')
 CAPABILITY_INPUTS['planning.self_service'] = ('crates/execution-service/src/self_service.rs', 'crates/execution-service/src/self_service/*', 'crates/execution-service/src/script_eligibility.rs', 'crates/agent-channel/src/tasks.rs')
 
 def app_family(owner, *, namespace=None, identity=True,
@@ -891,7 +892,7 @@ add('settings.first_use', selectors=('first_use::tests::',), fixtures=('identity
 MODULES['settings.first_use'] = replace(MODULES['settings.first_use'], scope='pair')
 
 # Runtime fixture consumers sign durable candidates and use completed TLS peers.
-AGENT_FIXTURE_CONSUMERS = tuple(('execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.software').split())
+AGENT_FIXTURE_CONSUMERS = tuple(('planning.custom_events execution.agent.task_trust planning.self_service agent.registration agent.reports execution.agent.delivery execution.agent.poll execution.agent.content execution.agent.recovery execution.agent.history execution.software.offer execution.software.content execution.software.recovery planning.onboarding execution.commands.onboarding apple.onboarding planning.agent_policy planning.frequency planning.software').split())
 AGENT_FIXTURES = ('identity','agent_pki','task_signing')
 for name in AGENT_FIXTURE_CONSUMERS:
     module=MODULES[name]
@@ -2074,3 +2075,6 @@ consume(('crates/registration-service/src/enrollment/registrations.rs',), 'devic
 consume(('crates/flow-service/src/automation/inventory_tasks.rs',), 'compliance.http')
 
 T1_INPUTS += ('crates/inventory-service/tests/groups_pages.rs',)
+
+
+MODULES['planning.custom_events'] = replace(MODULES['planning.custom_events'], fixtures=tuple(dict.fromkeys((*MODULES['planning.custom_events'].fixtures, 'content', 'task_signing'))), support_inputs=MODULES['planning.custom_events'].support_inputs + ('crates/app/tests/planning/support.rs',))

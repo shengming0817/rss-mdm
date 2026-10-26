@@ -15,11 +15,21 @@ impl ExecutionService {
         device: &str,
         audit: &RequestAudit,
     ) -> Result<()> {
+        self.reconcile_agent_install_trigger_in(tx, device, audit, None)
+            .await
+    }
+    pub(crate) async fn reconcile_agent_install_trigger_in(
+        &self,
+        tx: &mut PgTransaction<'_>,
+        device: &str,
+        audit: &RequestAudit,
+        event: Option<(Uuid, i64)>,
+    ) -> Result<()> {
         self.recover_bootstrap_in(tx, device, audit).await?;
         self.cleanup_bootstrap_in(tx, device, audit).await?;
         self.settle_agent_install_in(tx, device).await?;
         let Some((policy, version, package, deadline)) =
-            self.agent_install_candidate_in(tx, device).await?
+            self.agent_install_candidate_in(tx, device, event).await?
         else {
             return Ok(());
         };
@@ -113,6 +123,7 @@ impl ExecutionService {
         &self,
         tx: &mut PgTransaction<'_>,
         device: &str,
+        event: Option<(Uuid, i64)>,
     ) -> Result<Option<(Uuid, Uuid, Package, i64)>> {
         let (registration, generation) = match storage::current_registration(
             tx,
@@ -223,22 +234,29 @@ impl ExecutionService {
                 }
                 let identity = format!("{registration}:{version}");
                 let mut trigger_deadline = i64::MAX;
-                let occurrence = match action.schedule.trigger {
-                    Trigger::Manual => {
-                        let tenant = tx.tenant_id().to_string();
-                        let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
-                        if let Some((at, end)) = at {
-                            trigger_deadline = end;
-                            action.schedule.occurrence(at, identity.as_bytes())?
-                        } else {
-                            None
+                let occurrence = if event.is_some_and(|(policy, _)| policy == id) {
+                    trigger_deadline = event.map_or(i64::MAX, |(_, end)| end);
+                    action.schedule.occurrence(now, identity.as_bytes())?
+                } else {
+                    match action.schedule.trigger {
+                        Trigger::Manual => {
+                            let tenant = tx.tenant_id().to_string();
+                            let at=tx.with_connection(move|c|Box::pin(async move{sqlx::query_as::<_,(i64,i64)>("SELECT created_at,deadline FROM mdm_policy.triggers WHERE tenant_id=$1::uuid AND version=$2 AND deadline>$3 ORDER BY created_at,id LIMIT 1").bind(tenant).bind(version).bind(now).fetch_optional(c).await})).await?;
+                            if let Some((at, end)) = at {
+                                trigger_deadline = end;
+                                action.schedule.occurrence(at, identity.as_bytes())?
+                            } else {
+                                None
+                            }
                         }
+                        Trigger::Registration | Trigger::CheckIn { .. } => {
+                            action.schedule.occurrence(
+                                fact.received_at.max(action.schedule.not_before),
+                                identity.as_bytes(),
+                            )?
+                        }
+                        _ => action.schedule.due(-1, now, identity.as_bytes())?,
                     }
-                    Trigger::Registration | Trigger::CheckIn { .. } => action.schedule.occurrence(
-                        fact.received_at.max(action.schedule.not_before),
-                        identity.as_bytes(),
-                    )?,
-                    _ => action.schedule.due(-1, now, identity.as_bytes())?,
                 };
                 let Some(occurrence) = occurrence.filter(|o| {
                     o.available_at <= now

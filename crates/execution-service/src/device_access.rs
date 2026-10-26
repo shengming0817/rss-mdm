@@ -556,10 +556,27 @@ pub(crate) async fn prepare_reconciliation_in(
     tx: &mut PgTransaction<'_>,
     device: &crate::device::DevicePrincipal,
 ) -> Result<PreparedReconciliation> {
+    prepare_target_reconciliation_in(
+        service,
+        tx,
+        &crate::Target {
+            device: device.device().to_owned(),
+            registration: device.registration(),
+            generation: device.generation(),
+        },
+    )
+    .await
+}
+
+pub(crate) async fn prepare_target_reconciliation_in(
+    service: &ExecutionService,
+    tx: &mut PgTransaction<'_>,
+    target: &crate::Target,
+) -> Result<PreparedReconciliation> {
     // Retirement needs this poll to carry its accepted cleanup/unmanage work.
     // Keep the existing lifecycle lock and propagate storage faults unchanged.
     let tenant_name = tx.tenant_id().to_string();
-    let device_name = device.device().to_owned();
+    let device_name = target.device.clone();
     let work_allowed = tx
         .with_connection(move |c| {
             Box::pin(async move {
@@ -578,8 +595,8 @@ pub(crate) async fn prepare_reconciliation_in(
         });
     }
     let tenant = stored(Uuid::parse_str(&tx.tenant_id().to_string()))?;
-    let name = device.device().to_owned();
-    let registration = device.registration();
+    let name = target.device.clone();
+    let registration = target.registration;
     let documents:Vec<serde_json::Value>=tx.with_connection(move|c|Box::pin(async move{
         sqlx::query_scalar("SELECT document FROM mdm_access.device_access_bindings WHERE tenant_id=$1 AND device=$2 AND registration=$3 ORDER BY id LIMIT 128").bind(tenant).bind(name).bind(registration).fetch_all(c).await
     })).await?;

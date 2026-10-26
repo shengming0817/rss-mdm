@@ -494,6 +494,12 @@ pub(crate) struct RunningAutomation {
 }
 impl RunningAutomation {
     pub(crate) async fn start(service: Arc<Planning>) -> Self {
+        Self::start_with_execution(service, None).await
+    }
+    pub(crate) async fn start_with_execution(
+        service: Arc<Planning>,
+        execution: Option<Arc<rss_mdm_execution_service::ExecutionService>>,
+    ) -> Self {
         let config = fixture();
         let options = sqlx::postgres::PgConnectOptions::new()
             .host("localhost")
@@ -525,6 +531,9 @@ impl RunningAutomation {
         )
         .await
         .unwrap();
+        if let Some(execution) = execution {
+            automation.work.bind_execution(execution).unwrap();
+        }
         let mut stack = rss_runtime::ShutdownStack::try_new(
             rss_runtime::TotalDrainBudget::new(Duration::from_secs(10)).unwrap(),
             Arc::new(crate::lifecycle::RuntimeTimer),

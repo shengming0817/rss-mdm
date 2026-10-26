@@ -216,16 +216,17 @@ async fn prepare_in(
                     execution_target: None,
                 }));
             }
-            let Some(slot) = crate::actions::software::slot_in(
-                service,
-                tx,
-                software,
-                target,
-                Some(request),
-                now,
-                None,
-            )
-            .await?
+            let crate::actions::software::Preparation::Ready(slot) =
+                crate::actions::software::slot_in(
+                    service,
+                    tx,
+                    software,
+                    target,
+                    Some(crate::actions::software::Invocation::SelfService(request)),
+                    now,
+                    None,
+                )
+                .await?
             else {
                 return Ok(None);
             };
@@ -748,16 +749,19 @@ pub(crate) async fn advance_waiting_in(
             else {
                 return Err(Error::Malformed.into());
             };
-            let Some(slot) = crate::actions::software::slot_in(
-                service,
-                tx,
-                software,
-                &run.target,
-                Some(*request_id),
-                created,
-                Some(run.id),
-            )
-            .await?
+            let crate::actions::software::Preparation::Ready(slot) =
+                crate::actions::software::slot_in(
+                    service,
+                    tx,
+                    software,
+                    &run.target,
+                    Some(crate::actions::software::Invocation::SelfService(
+                        *request_id,
+                    )),
+                    created,
+                    Some(run.id),
+                )
+                .await?
             else {
                 return Ok(false);
             };

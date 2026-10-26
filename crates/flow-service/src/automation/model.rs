@@ -11,6 +11,9 @@ pub enum TaskKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobInput {
+    PolicyEvent {
+        batch: Uuid,
+    },
     GroupDefinition {
         edit: Box<rss_mdm_inventory_service::groups::DefinitionEdit>,
     },
@@ -47,6 +50,7 @@ impl JobInput {
             Self::Group { publish: false, .. } => "group_preview",
             Self::Scope { .. } => "scope",
             Self::PolicyReconcile { .. } => "policy_reconcile",
+            Self::PolicyEvent { .. } => "policy_event",
         }
     }
     pub fn target(&self) -> String {
@@ -57,6 +61,7 @@ impl JobInput {
             Self::GroupDefinition { edit } => edit.group.to_string(),
             Self::Scope { scope } => scope.to_string(),
             Self::PolicyReconcile { policy } => policy.to_string(),
+            Self::PolicyEvent { batch } => batch.to_string(),
         }
     }
 }
