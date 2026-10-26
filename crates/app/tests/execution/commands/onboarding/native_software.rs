@@ -437,16 +437,23 @@ async fn observe_channel(
 async fn channel_observation(
     c: &mut sqlx::PgConnection,
 ) -> Result<rss_mdm_inventory_service::assets::channel::Observation> {
+    use sqlx::Connection;
+    let mut tx = c.begin().await?;
+    crate::Database::configure_transaction(&mut tx, case_tenant()).await?;
     let (registration,generation): (Uuid,i64) = sqlx::query_as("SELECT id,generation FROM mdm_access.registrations WHERE tenant_id=$1::uuid AND device=$2 AND channel='mdm' AND state='active'")
-        .bind(case_tenant()).bind(case_device()).fetch_one(&mut *c).await?;
-    Ok(rss_mdm_inventory_service::assets::channel::detail_in(
-        c,
+        .bind(case_tenant()).bind(case_device()).fetch_one(&mut *tx).await?;
+    let observed = rss_mdm_inventory_service::assets::channel::detail_in(
+        &mut tx,
         rss_request_context::TenantId::parse(case_tenant())?,
         registration,
         generation,
         rss_mdm_inventory::ReportSource::MdmWindows,
     )
-    .await?)
+    .await;
+    let released = tx.rollback().await;
+    let observed = observed?;
+    released?;
+    Ok(observed)
 }
 
 async fn await_channel_projection() -> Result<()> {
