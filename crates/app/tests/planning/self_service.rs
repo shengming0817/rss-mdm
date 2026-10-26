@@ -1747,6 +1747,7 @@ async fn personal_activities_bind_enterprise_and_os_identity_across_sessions() -
     resources.finish(async {
         f.register().await?;
         let mut context=crate::test_support::software_execution::context(crate::test_support::software_execution::Platform::MacOs);
+        context["revision"]=json!(2);
         context["interactiveUser"]=json!({"windowsAuthority":null,"generatedUid":"00000000-0000-0000-0000-000000000501","identity":"501","sessionId":Uuid::new_v4(),"administrator":false});
         ensure!(claim_with_context(&f.router,&context).await?.0==StatusCode::OK);
         f.scope(case_task_scope(),json!([{"kind":"device","id":case_device_id()}])).await?;

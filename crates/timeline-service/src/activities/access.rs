@@ -137,7 +137,7 @@ impl Timeline {
                 }
                 (
                     members,
-                    serde_json::to_value(&(&object.object, object.association_version))
+                    serde_json::to_value((&object.object, object.association_version))
                         .map_err(|_| Error::Integrity)?,
                 )
             }

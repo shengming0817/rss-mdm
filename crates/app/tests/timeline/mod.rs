@@ -843,6 +843,8 @@ async fn earlier_position_committed_later_is_indexed_on_refresh() -> Result<()> 
     let resources = std::mem::take(&mut f.resources);
     resources
         .finish(async {
+            identity::seed_grants(case_tenant(), &prepared_subject(&f.admin)?,
+                identity::device_grants(None, &["enrollment", "credentials", "inventory_read", "operation_read"])?).await?;
             let proof = crate::device::test_support::admin(case_tenant(), "admin-a").await?;
             let device = case::name("late-activity-device");
             let service = crate::device::DeviceService::new(

@@ -211,7 +211,8 @@ def verify_audit_integration(data):
         key = pending.pop()
         if key in visited: continue
         visited.add(key)
-        require(key == identity or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a product, domain or Identity package')
+        # The independently checked wire closure holds shared activity value types only.
+        require(key == identity or packages[key] == 'rss-mdm-agent-wire' or not packages[key].startswith(('rss-mdm-', 'rss-identity-')), 'audit integration depends on a domain, application or Identity package')
         pending.extend(d['pkg'] for d in nodes[key]['deps'])
 
 def verify_agent_wire(data):
