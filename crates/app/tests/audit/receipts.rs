@@ -214,3 +214,41 @@ async fn ordinary_and_sensitive_reads_have_distinct_failure_policies() -> Result
     ));
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "MODULE=audit.receipts: scoped observations exclude concurrent tenant and device facts"]
+async fn business_fact_observation_is_tenant_and_device_scoped() -> Result<()> {
+    use sqlx::Connection;
+    async fn append(store: &AuditStore, tenant: TenantId, device: &str) -> Result<()> {
+        let request = RequestAudit::new(tenant.to_string(), "apple_checkin", rss_mdm_audit_integration::AuditIntent::Management);
+        request.target_device(device);
+        let fact = Fact::business(&request, &Uuid::new_v4().to_string(), 200, "success", None)?;
+        let budget = rss_mdm_audit_integration::budget::AuditBudget::new(Duration::from_secs(5));
+        let attempt = store.write(tenant, &budget.source_control(), (store, &fact), |(store, fact), tx| {
+            Box::pin(async move { store.append(tx, fact).await })
+        }).await;
+        request.finalize(None);
+        ensure!(state(attempt) == "committed");
+        Ok(())
+    }
+    let pool = pool("mdm_access").await?;
+    let own = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let peer = TenantId::parse(&Uuid::new_v4().to_string())?;
+    let store = new_store(pool.clone(), Integrity::Plain, own).await?;
+    let other = new_store(pool.clone(), Integrity::Plain, peer).await?;
+    let mut observer = sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?).await?;
+    let count = |facts: Vec<crate::audit_test_support::Record>| facts.into_iter().filter(|r| r.source() == "mdm.business" && r.action() == "apple_checkin" && r.target() == "target-device").count();
+    append(&store, own, "target-device").await?;
+    let before = count(crate::audit_test_support::read(&mut observer, &own.to_string()).await?);
+    ensure!(before == 1);
+    let (same_tenant, other_tenant) = tokio::join!(append(&store, own, "other-device"), append(&other, peer, "target-device"));
+    same_tenant?;
+    other_tenant?;
+    ensure!(count(crate::audit_test_support::read(&mut observer, &own.to_string()).await?) == before);
+    ensure!(count(crate::audit_test_support::read(&mut observer, &peer.to_string()).await?) == 1);
+    append(&store, own, "target-device").await?;
+    ensure!(count(crate::audit_test_support::read(&mut observer, &own.to_string()).await?) == before + 1);
+    observer.close().await?;
+    pool.close().await;
+    Ok(())
+}

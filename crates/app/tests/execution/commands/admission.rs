@@ -63,7 +63,7 @@ impl Client {
             sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
                 .await?;
         let effects:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(old_id.to_string()).bind(format!("dispatch.{old_id}")).fetch_one(&mut check).await?;
-        let audits = crate::audit_test_support::read(&mut check)
+        let audits = crate::audit_test_support::read(&mut check, crate::test_support::case::tenant())
             .await?
             .iter()
             .filter(|r| {
@@ -225,7 +225,7 @@ impl Client {
                 ensure!(a == b && a.0 == StatusCode::ACCEPTED);
             }
             let facts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid),(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$1),(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$2)").bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
-            let audits = crate::audit_test_support::read(&mut pg)
+            let audits = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
                 .await?
                 .iter()
                 .filter(|r| {
@@ -461,7 +461,7 @@ impl Client {
         ensure!(result.0 == StatusCode::SERVICE_UNAVAILABLE);
         let count:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM mdm_commands.operations WHERE id=$1::uuid)+(SELECT count(*) FROM rss_device_command.commands WHERE command_id=$2)+(SELECT count(*) FROM rss_transactional_messaging.outbox WHERE message_id=$3)").bind(id.to_string()).bind(id.to_string()).bind(format!("dispatch.{id}")).fetch_one(&mut pg).await?;
         let count = count
-            + crate::audit_test_support::read(&mut pg)
+            + crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
                 .await?
                 .iter()
                 .filter(|r| {

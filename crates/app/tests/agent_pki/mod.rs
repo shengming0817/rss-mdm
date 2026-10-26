@@ -452,7 +452,7 @@ async fn explicit_development_limit_and_unknown_result_remain_auditable() -> any
                 failures.push(serde_json::from_slice::<wire::ErrorBody>(
                     &response.into_body().collect().await?.to_bytes(),
                 )?);
-                let records = crate::audit_test_support::read(&mut owner).await?;
+                let records = crate::audit_test_support::read(&mut owner, crate::test_support::case::tenant()).await?;
                 let facts: Vec<_> = records
                     .iter()
                     .filter(|r| r.request() == Some(id.as_str()))
@@ -703,7 +703,7 @@ async fn agent_ingress_holds_one_global_permit_per_request() -> anyhow::Result<(
             let mut observer =
                 <sqlx::PgConnection as sqlx::Connection>::connect_with(&options("postgres")?)
                     .await?;
-            let records = crate::audit_test_support::read(&mut observer).await?;
+            let records = crate::audit_test_support::read(&mut observer, crate::test_support::case::tenant()).await?;
             for id in completed {
                 assert_eq!(
                     records
@@ -2392,7 +2392,7 @@ async fn administrator_recovery_receipt_is_independent_of_issued_certificate() -
             }
             let mut owner =
                 <sqlx::PgConnection as Connection>::connect_with(&options("postgres")?).await?;
-            let records = crate::audit_test_support::read(&mut owner).await?;
+            let records = crate::audit_test_support::read(&mut owner, crate::test_support::case::tenant()).await?;
             assert_eq!(
                 records
                     .iter()

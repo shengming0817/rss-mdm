@@ -251,7 +251,7 @@ async fn issuance_recovery_and_enrollment_boundaries() -> anyhow::Result<()> {
             .registration()
             == intent.registration
     );
-    let successes = crate::audit_test_support::read(&mut pg)
+    let successes = crate::audit_test_support::read(&mut pg, crate::test_support::case::tenant())
         .await?
         .iter()
         .filter(|r| {

@@ -1,6 +1,7 @@
 // Business assertions read the atomically committed final audit facts.
 use rss_audit_core::DecodedAuditV1;
 use serde_json::Value;
+use sqlx::Connection;
 
 pub(crate) struct Record {
     pub event: DecodedAuditV1,
@@ -49,9 +50,11 @@ impl Record {
             .expect("HTTP status width")
     }
 }
-pub(crate) async fn read(connection: &mut sqlx::PgConnection) -> anyhow::Result<Vec<Record>> {
+pub(crate) async fn read(connection: &mut sqlx::PgConnection, tenant: &str) -> anyhow::Result<Vec<Record>> {
+    let tenant = uuid::Uuid::parse_str(tenant)?;
     let rows: Vec<Vec<u8>> =
-        sqlx::query_scalar("SELECT canonical FROM rss_audit.records ORDER BY tenant_id,source_id")
+        sqlx::query_scalar("SELECT canonical FROM rss_audit.records WHERE tenant_id=$1 ORDER BY source_id,event_id")
+            .bind(tenant)
             .fetch_all(connection)
             .await?;
     rows.iter().map(|row| Record::from_canonical(row)).collect()
@@ -96,21 +99,14 @@ pub(crate) async fn request_store() -> anyhow::Result<(
 }
 
 pub(crate) async fn audit_records() -> anyhow::Result<Vec<Record>> {
-    let lines = crate::test_support::process::pg(&format!(
-        "SELECT encode(canonical,'hex') FROM rss_audit.records WHERE tenant_id='{TENANT}' ORDER BY source_id,event_id",
-        TENANT = crate::test_support::runtime::case_tenant()
-    ))?;
-    lines
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let bytes = (0..line.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&line[i..i + 2], 16))
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Record::from_canonical(&bytes)
-        })
-        .collect()
+    let mut connection = sqlx::PgConnection::connect_with(
+        &crate::device::test_support::options("postgres")?,
+    ).await?;
+    let records = read(&mut connection, crate::test_support::case::tenant()).await;
+    let closed = connection.close().await;
+    let records = records?;
+    closed?;
+    Ok(records)
 }
 
 pub(crate) async fn audit_count(
