@@ -61,7 +61,7 @@ make ci-full
 | `sources.{winget,brew_git,brew_recovery}` | Sources 自有真实 HTTPS/TLS/凭据及 Git/ref/ACK 协议，无产品 PG/Identity。 |
 | `windows.{issuance,enrollment,management,commands,retention,limits}` | 受信网关证书证据、签发/注册、会话/nonce、轻量注册→命令、保留期和业务限流；公网 TLS 由 Nginx 接缝验证。 |
 | `apple.{cms,apns,scep,collection,profile,policy,renewal,identity,push,fairness,host,commands,users,ddm,status}` | 各协议与持久化接缝独立。CMS/APNs 无 PG/Identity；普通原生前置不启动外部 SCEP。 |
-| `catalog.contract`、`gateway.admission` | 正式迁移后的全部 SQL catalog 在一个环境核对；真实 nginx 来源/限流/安全头单独验证。 |
+| `installation.storage`、`gateway.admission` | 产品安装准入与恢复由前者验证；真实 nginx 来源/限流/安全头由后者验证。 |
 
 App 的测试实现统一放在 `crates/app/tests/`，按业务 owner 分目录；`src/` 只保留 `cfg(test)` 接入和必要测试钩子。现有 Rust 命名空间与 MODULE ID 保持独立，不要求物理路径包含 `t2`。目录按当前 owner 维护，不由历史拆分方式决定测试保留数量。
 

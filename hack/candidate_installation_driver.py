@@ -82,6 +82,44 @@ class Browser:
 
 
 
+def storage_roundtrip(owner, business):
+    """One stopped product database, restored by the same pinned PostgreSQL image."""
+    path = '/api/v1/user-attribute-definitions/' + str(uuid.uuid4())
+    definition = dict(key='restoreProof',displayName='Restore proof',source=dict(kind='identity_local'),
+        pointer='/extensions/restoreProof',valueType='string',maxLength=64,maxItems=None,
+        minimum=None,maximum=None,enabled=True,sensitive=False,visibility='both',
+        displayUse='profile',required=False,useExistingObservation=False)
+    request = dict(operationId=str(uuid.uuid4()),expectedRevision=0,value=definition)
+    status, receipt = business.call('PUT', path, request)
+    check(status == 200, 'candidate pre-backup write')
+    configuration = json.loads(owner.read('/var/lib/rss-mdm/installation-input.json'))
+    database = configuration['database']['name']
+    check(database not in ('postgres','template0','template1'), 'owned product database')
+    owner.compose('stop','server','maintenance')
+    quoted = "'" + database.replace("'", "''") + "'"
+    active = owner.compose('exec','-T','postgres','psql','-U','postgres','-d','postgres','-XAt','-v','ON_ERROR_STOP=1',
+        '-c', 'SELECT count(*) FROM pg_stat_activity WHERE datname=' + quoted)
+    check(active == '0', 'product writers stopped before archive')
+    archive = '/tmp/candidate-product-' + uuid.uuid4().hex + '.dump'
+    try:
+        owner.compose('exec','-T','postgres','pg_dump','-U','postgres','--format=custom','--create','--file',archive,'--dbname',database)
+        owner.compose('exec','-T','postgres','chmod','600',archive)
+        owner.compose('exec','-T','postgres','dropdb','-U','postgres',database)
+        owner.compose('exec','-T','postgres','pg_restore','-U','postgres','--create','--exit-on-error','--dbname','postgres',archive)
+    finally:
+        owner.compose('exec','-T','postgres','rm','-f',archive)
+    owner.compose('up','-d','--no-deps','server','maintenance')
+    until(lambda: business.call('GET','/readyz')[0] == 200)
+    status, replay = business.call('PUT', path, request)
+    check(status == 200 and replay == receipt, 'candidate restored original write receipt')
+    status, record = business.call('GET', path)
+    check(status == 200 and record is not None, 'candidate restored product read')
+    request = dict(operationId=str(uuid.uuid4()),expectedRevision=1,
+        value=dict(definition,displayName='After recovery'))
+    status, changed = business.call('PUT', path, request)
+    check(status == 200 and changed['definition']['revision'] == 2, 'candidate post-restore write')
+
+
 def qualify(owner,origin,other_origin,port,second_backend):
     owner.compose('up','-d')
     first=json.loads(owner.read('/var/lib/rss-mdm/installation/installation.json'))['receipt']
@@ -142,4 +180,5 @@ def qualify(owner,origin,other_origin,port,second_backend):
         owner.compose('up','-d','--no-deps','--force-recreate',service)
         until(lambda:business.call('GET','/readyz')[0]==200)
         until(lambda:business.call('GET','/')==(200,static))
-    return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services'])
+    storage_roundtrip(owner,business)
+    return dict(status='passed',checks=['seed_and_replay','first_host_observation','real_administrators_and_authorization','second_tenant_login_and_isolation','compose_owned_services','same_candidate_product_restore'])

@@ -471,7 +471,7 @@ execution epoch 来自原宿主配置，在连接建立时固定；源事件复�
 
 ### 固定候选的完整安装资格
 
-`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，只覆盖必要链路：幂等种子、独立管理员真实认证与授权、第二租户及隔离、Compose 直接持有服务。删除部署控制器的重启、动态编排及 Docker 策略测试。数据库/密钥/内容恢复仍由对应 T2 和受控运维演练分别验证；不使用开发 fixture 冒充正式初始化。
+`python3 hack/candidate_installation.py /absolute/candidate` 使用普通 Compose 和空库运行正式初始化，只覆盖必要链路：幂等种子、独立管理员真实认证与授权、第二租户及隔离、Compose 直接持有服务。删除部署控制器的重启、动态编排及 Docker 策略测试。该入口另验证同候选产品库停写后真实 pg_dump/pg_restore、重开、原回执重放及新写入；安全反例、各遥测 provider 与密钥/内容恢复仍由对应 T2 和受控运维演练分别验证；不使用开发 fixture 冒充正式初始化。
 
 只有验证与清理都完成才发布 `installation-result.json`，绑定候选/Compose 摘要，并分别记录执行客户端 OS/架构、Docker daemon OS/架构和系统说明、容器目标平台及 daemon 与容器架构是否相同。客户端可能连接远程 Docker，架构相同也不能独立证明物理宿主原生运行；验收人员补充实际宿主和仿真方式。arm64 与 amd64 候选分别运行；仿真、原生及不同宿主的结果分别记录，不能由一台 Mac 推导所有宿主均通过。协议 `candidate_smoke.py` 的合法预置仅证明相应协议接缝，不是本入口的完整初始化证据。浏览器与真机 T3 按各自输入继续，不能用安装、readiness 或 smoke 代替终端效果。
 
