@@ -390,8 +390,7 @@ impl Planning {
                     tx,
                     policy,
                     target,
-                    member,
-                    origin,
+                    (member, origin),
                     retirement_target.ok_or(Error::Malformed)?,
                 )
                 .await
@@ -409,11 +408,11 @@ impl Planning {
         tx: &mut PgTransaction<'_>,
         policy: &rss_mdm_policy::Policy,
         target: &Target,
-        member: Uuid,
-        origin: rss_mdm_audit_integration::activity::ActivityOrigin,
+        cause: (Uuid, ActivityOrigin),
         frozen_target: &rss_mdm_inventory_service::objects::DeviceObject,
     ) -> Result<wire::PolicyEventDecision> {
         use rss_mdm_execution_service::source_authority::SourceAuthority;
+        let (member, origin) = cause;
         let tenant = tx.tenant_id();
         let reader = self.objects.clone();
         let device = target.device.clone();

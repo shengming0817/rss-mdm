@@ -61,8 +61,8 @@ async fn setup() -> Result<Fixture> {
     f.register_profile(json!([
         "inventory.collect.v1",
         "task.execute.v1",
-        "inventory.native.v1",
-        "device.unmanage.v1"
+        "device.unmanage.v1",
+        "inventory.native.v1"
     ]))
     .await?;
     ensure!(claim_request(&f.router, Uuid::new_v4()).await?.0 == StatusCode::OK);
@@ -256,7 +256,7 @@ async fn event_batches_freeze_members_replay_and_keep_independent_results() -> R
             let mut ai_definition=policy_definition(resource,case_task_scope());
             ai_definition["customEvent"]=json!("origin-ai");
             ai_definition["action"]["schedule"]=json!({"trigger":{"kind":"manual"},"misfire":{"kind":"coalesce_one"},"notBefore":0,"until":null,"jitterSeconds":0,"window":null});
-            ai_definition["selfService"]=json!({"access":{"kind":"device"},"published":false,"allowAi":true,"riskLevel":1});
+            ai_definition["selfService"]=json!({"access":{"kind":"device"},"published":false,"presentation":{"displayName":"AI origin","description":"","prerequisites":"","sideEffects":"","category":"Support","keywords":[]},"allowAi":true,"riskLevel":1});
             post(&mut f.author,&f.router,&format!("/api/v1/policies/{ai_policy}"),json!({"operationId":Uuid::new_v4(),"expectedRevision":0,"input":{"action":"put","enabled":true,"definition":ai_definition}})).await?;
             let mut ai_input=request("origin-ai");ai_input["source"]=json!({"kind":"ai"});
             let ai_batch=post(&mut f.author,&f.router,&endpoint(),ai_input).await?;
@@ -605,7 +605,7 @@ async fn rotated_credential_cannot_accept_replay_or_read_but_accepted_work_survi
         let secret=crate::test_support::runtime::credential("event-credential-rotation");
         let csr=crate::test_support::agent::csr()?;
         let grant=post(&mut f.author,&f.router,&format!("/api/v1/agent-registrations/{}/recovery",old.registration()),json!({"wireVersion":1,"operationId":Uuid::new_v4(),"secret":secret,"platform":"macos","csr":csr})).await?;
-        crate::test_support::agent::complete_grant(&enrollment,&grant,&json!({"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}),"event-rotated").await?;
+        crate::test_support::agent::complete_grant(&enrollment,&grant,&json!({"secret":secret,"csr":csr,"runtime":{"platform":"macos","architecture":"aarch64","capabilities":["inventory.collect.v1","task.execute.v1","device.unmanage.v1","inventory.native.v1"],"executionContext":body["executionContext"]}}),"event-rotated").await?;
         let peer=crate::test_support::agent::evidence("event-rotated").unwrap();
         let current=enrollment.authenticate(&peer).await?;
         ensure!(current.registration()==old.registration() && current.generation()==old.generation() && current.credential()!=old.credential());
