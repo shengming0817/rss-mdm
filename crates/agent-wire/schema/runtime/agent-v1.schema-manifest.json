@@ -176,6 +176,14 @@
     {
       "type": "PolicyEventDecision",
       "file": "policy-event-decision-v1.schema.json"
+    },
+    {
+      "type": "ManagementActivityPage",
+      "file": "management-activity-page-v1.schema.json"
+    },
+    {
+      "type": "ManagementActivityDetail",
+      "file": "management-activity-detail-v1.schema.json"
     }
   ],
   "apiVersion": 1

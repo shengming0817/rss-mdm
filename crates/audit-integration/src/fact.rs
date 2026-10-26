@@ -144,6 +144,26 @@ impl Fact {
     pub fn identity(&self) -> &RecordIdentity {
         &self.identity
     }
+    /// Attach typed activity coordinates without replacing other source-owned evidence.
+    pub fn with_activity(
+        mut self,
+        activity: &crate::activity::Activity,
+    ) -> Result<Self, InvalidFact> {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&self.payload).map_err(|_| InvalidFact::Payload)?;
+        if payload["details"].is_null() {
+            payload["details"] = serde_json::json!({});
+        }
+        let details = payload["details"]
+            .as_object_mut()
+            .ok_or(InvalidFact::Payload)?;
+        details.insert(
+            "activity".into(),
+            serde_json::to_value(activity).map_err(|_| InvalidFact::Payload)?,
+        );
+        self.payload = serde_json::to_vec(&payload).map_err(|_| InvalidFact::Payload)?;
+        Ok(self)
+    }
     pub fn event(&self, observed_at: Timepoint) -> Result<AuditEventV1, InvalidFact> {
         let actor = self.snapshot.actor.as_deref().unwrap_or("unidentified");
         let resource = self.snapshot.target.as_deref().unwrap_or("request");

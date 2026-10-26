@@ -55,7 +55,7 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub const SCHEMA_MANIFEST: &str = include_str!("../schema/runtime/agent-v1.schema-manifest.json");
 /// SHA-256 of the ordered schema payloads named by [`SCHEMA_MANIFEST`].
 pub const SCHEMA_FINGERPRINT: &str =
-    "414bd9c9cb89e82cea94366aee7254c41fa82639b74d318308f20923cac225b2";
+    "fab1d6ceb552b7cfc7675475d4d8378a2e2d13f7f2e965eeec6042e4fc9b3fae";
 
 /// Closed validation failure without retaining input values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -604,6 +604,10 @@ pub struct ReportStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
+    /// Management activity is absent or outside the current read scope.
+    ActivityNotFound,
+    /// Activity continuation no longer matches the authorized history; resynchronize.
+    ActivityCursorInvalidated,
     /// The exact capability is absent or not visible to this caller.
     CapabilityNotFound,
     /// JSON or field validation failed.
@@ -725,3 +729,8 @@ fn nonnegative_time<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
 #[path = "mapping.rs"]
 mod mapping;
 pub use mapping::*;
+
+pub use crate::activities::{
+    ActivityCoverage, ActivityLinks, ManagementActivity, ManagementActivityDetail,
+    ManagementActivityPage,
+};
