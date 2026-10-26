@@ -584,7 +584,7 @@ SELECT 'registration-root',revision::text FROM mdm_access.directory_revisions WH
 UNION ALL
 SELECT 'software-root',revision::text FROM mdm_software.authority_revision WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND EXISTS(SELECT 1 FROM commands WHERE kind IN('software','agent_install'))
 UNION ALL
-SELECT 'identity-input',id::text FROM (SELECT id FROM mdm_devices.input_snapshots WHERE tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND phase='sealed' ORDER BY watermark DESC,relation_revision DESC LIMIT 1) s
+SELECT 'identity-input',id::text FROM (SELECT s.id FROM mdm_devices.input_snapshots s JOIN mdm_devices.checkpoints k USING(tenant_id) WHERE s.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid AND s.phase='sealed' AND s.relation_revision=k.relation_revision AND s.watermark>=k.identity_watermark ORDER BY s.watermark DESC LIMIT 1) current_input
 UNION ALL
 SELECT 'capability',v.ctid::text||'/'||v.xmin::text FROM mdm_commands.capabilities v JOIN registrations r ON r.id=v.registration WHERE v.tenant_id=nullif(current_setting('rss.tenant_id',true),'')::uuid
 UNION ALL
