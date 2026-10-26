@@ -594,11 +594,32 @@ async fn authorization_cursor_expires_without_command_mutation() -> anyhow::Resu
 async fn unrelated_scope_history_does_not_bound_command_reads() -> anyhow::Result<()> {
     let (host, mut client) = ordinary(rss_device_command_postgres::CommandClock::Postgres).await?;
     client.accept_authorized().await?;
+    use sqlx::Connection;
     let run = Uuid::new_v4();
     let scope = Uuid::new_v4();
     crate::test_support::process::pg(&format!(
-        "INSERT INTO mdm_planning.scopes(tenant_id,id,revision,deleted) VALUES(current_setting('rss.tenant_id')::uuid,'{scope}',1,true); INSERT INTO mdm_planning.scope_runs(tenant_id,id,scope,definition_revision,asset_watermark,input,fingerprint,phase) VALUES(current_setting('rss.tenant_id')::uuid,'{run}','{scope}',1,0,'{{}}',decode(repeat('00',32),'hex'),'project'); INSERT INTO mdm_planning.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT current_setting('rss.tenant_id')::uuid,'{run}','mdm','historical-'||n,false,false,'{{}}',0 FROM generate_series(1,350000) n; UPDATE mdm_planning.scope_runs SET phase='superseded' WHERE tenant_id=current_setting('rss.tenant_id')::uuid AND id='{run}'",
+        "INSERT INTO mdm_planning.scopes(tenant_id,id,revision,deleted) VALUES(current_setting('rss.tenant_id')::uuid,'{scope}',1,true); INSERT INTO mdm_planning.scope_runs(tenant_id,id,scope,definition_revision,asset_watermark,input,fingerprint,phase) VALUES(current_setting('rss.tenant_id')::uuid,'{run}','{scope}',1,0,'{{}}',decode(repeat('00',32),'hex'),'project')"
     ))?;
+    let mut db =
+        sqlx::PgConnection::connect_with(&crate::device::test_support::options("postgres")?)
+            .await?;
+    sqlx::query("SELECT set_config('rss.tenant_id',$1,false)")
+        .bind(case_tenant())
+        .execute(&mut db)
+        .await?;
+    // Materialize immutable history as production-sized commits; each batch retains all owner triggers.
+    for start in (1..=350_000i64).step_by(1000) {
+        sqlx::query("INSERT INTO mdm_planning.scope_channel_results(tenant_id,run,channel,device,matched,pending,target,entry_revision) SELECT $1::uuid,$2,'mdm','historical-'||n,false,false,'{}',0 FROM generate_series($3::bigint,$4::bigint) n")
+            .bind(case_tenant()).bind(run).bind(start).bind(start+999).execute(&mut db).await?;
+    }
+    sqlx::query(
+        "UPDATE mdm_planning.scope_runs SET phase='superseded' WHERE tenant_id=$1::uuid AND id=$2",
+    )
+    .bind(case_tenant())
+    .bind(run)
+    .execute(&mut db)
+    .await?;
+    db.close().await?;
     let detail = client
         .call(Method::GET, &format!("/{}", client.operation), None)
         .await?;
