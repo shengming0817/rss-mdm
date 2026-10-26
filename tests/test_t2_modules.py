@@ -22,9 +22,9 @@ class ModuleImpactTests(unittest.TestCase):
             self.assertEqual(select_inputs([f'crates/agent-wire/schema/runtime/access-{name}-v1.schema.json']).modules, ('device-access.http',))
 
 
-    def test_recovery_schema_selects_installation_catalog_and_business_consumers(self):
+    def test_recovery_schema_selects_installation_and_business_consumers(self):
         selected=set(select_inputs(['crates/recovery-credentials/schema/install.sql']).modules)
-        self.assertTrue({'installation.migration','catalog.contract','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
+        self.assertTrue({'installation.migration','recovery-credentials.http','apple.commands','execution.agent.delivery'} <= selected,selected)
 
 
     def test_management_limits_and_moved_entra_owners_select_real_consumers(self):
@@ -233,12 +233,12 @@ class ModuleImpactTests(unittest.TestCase):
     def test_product_migrations_do_not_start_unrelated_protocol_fixtures(self):
         selected = self.selected('crates/app/src/migration.rs')
         self.assertIn('installation.migration', selected)
-        self.assertIn('catalog.contract', selected)
+        self.assertIn('installation.storage', selected)
         self.assertNotIn('apple.cms', selected)
         self.assertNotIn('apple.apns', selected)
         self.assertNotIn('sources.winget', selected)
         self.assertNotIn('publication.artifact', selected)
-        # Shared migration setup is proven by installation/catalog.
+        # Shared migration setup is proven by its installation owners.
         self.assertNotIn('gateway.admission', selected)
 
     def test_python_tests_and_docs_do_not_select_integration(self):
@@ -310,17 +310,36 @@ class ModuleImpactTests(unittest.TestCase):
                          {'apple.apns','apple.push','apple.host'})
 
     def test_local_schema_selects_installation_and_real_consumers(self):
-        self.assertTrue({'installation.migration', 'catalog.contract'} <= self.selected('crates/execution-service/schema/install.sql'))
+        self.assertTrue({'installation.migration'} <= self.selected('crates/execution-service/schema/install.sql'))
         self.assertEqual(self.selected('crates/windows-channel/schema/entra.sql'),
-                         {'installation.migration', 'catalog.contract', 'windows.entra'})
+                         {'installation.migration', 'windows.entra'})
         selected = self.selected('crates/flow-service/schema/install.sql')
-        self.assertTrue({'installation.migration', 'catalog.contract'} <= selected)
+        self.assertTrue({'installation.migration'} <= selected)
         self.assertTrue(selected.isdisjoint({'identity.sso', 'apple.cms', 'agent.pki', 'resource.persistence'}))
 
 
+    def test_storage_admission_inputs_select_the_runtime_owner(self):
+        for path in (
+            'crates/app/schema/flow-roles.sql',
+            'crates/app/schema/installation.sql',
+            'crates/apple-channel/schema/account-enrollment.sql',
+            'crates/apple-channel/schema/platform-qualifications.sql',
+            'crates/authorization-service/schema/authority.sql',
+            'crates/device-service/schema/install.sql',
+            'crates/device-service/schema/object-qualification.sql',
+            'crates/execution-service/schema/device-access-qualification.sql',
+            'crates/flow-service/schema/install.sql',
+            'crates/flow-service/schema/qualification.sql',
+            'crates/inventory-service/schema/collection-metadata.sql',
+            'crates/inventory-service/schema/install.sql',
+            'crates/registration-service/schema/device-access.sql',
+        ):
+            with self.subTest(path=path):
+                self.assertIn('installation.storage', self.selected(path))
+
     def test_migration_registration_is_not_execution_or_all_pg(self):
         self.assertEqual(self.selected('crates/app/src/migration/units.rs'),
-                         {'installation.migration', 'installation.tenants', 'deployment.management-tenant', 'catalog.contract'})
+                         {'installation.migration', 'installation.tenants', 'deployment.management-tenant', 'installation.storage'})
         self.assertIn('api.identity_context', self.selected('crates/app/src/migration.rs'))
 
     def test_recovery_helper_and_normal_transport_have_distinct_consumers(self):
@@ -378,7 +397,7 @@ class DirectProofs(unittest.TestCase):
             'crates/app/tests/support/runtime.rs': {'api.identity_context'},
             'crates/app/tests/support/tls.rs': {'windows.management', 'apple.identity', 'agent.registration'},
             'tests/support/context.rs': {'group.persistence'},
-            'crates/app/schema/flow-roles.sql': {'installation.migration', 'catalog.contract'},
+            'crates/app/schema/flow-roles.sql': {'installation.migration', 'installation.storage'},
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(set(select_inputs([path]).modules), expected)

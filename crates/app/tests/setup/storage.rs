@@ -95,21 +95,39 @@ async fn incomplete_installation_and_unsafe_authority_are_rejected() -> Result<(
         connected(&config).await?;
     }
     // A valid ledger is not proof of a trustworthy authorization implementation.
-    let original: String = sqlx::query_scalar("SELECT pg_get_functiondef('mdm_access.operation_authority_valid(jsonb,text,bigint)'::regprocedure)").fetch_one(&mut root).await?;
-    sqlx::raw_sql("CREATE OR REPLACE FUNCTION mdm_access.operation_authority_valid(authority jsonb,requested text,as_of bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS 'SELECT true'").execute(&mut root).await?;
-    let admitted = crate::Database::connect(config.access_options()?, &config.audit).await;
-    sqlx::raw_sql(sqlx::AssertSqlSafe(original))
-        .execute(&mut root)
-        .await?;
-    let rejected = match admitted {
-        Ok(db) => {
-            db.close().await;
-            false
-        }
-        Err(_) => true,
-    };
-    ensure!(rejected, "always-allow authority accepted");
-    connected(&config).await?;
+    for (signature, declaration) in [
+        (
+            "mdm_access.operation_authority_valid(jsonb,text,bigint)",
+            "mdm_access.operation_authority_valid(authority jsonb,requested text,as_of bigint)",
+        ),
+        (
+            "mdm_devices.association_grant_current(uuid,bigint,uuid,bigint)",
+            "mdm_devices.association_grant_current(p_id uuid,p_version bigint,p_registration uuid,p_generation bigint)",
+        ),
+        (
+            "mdm_apple.platform_registration_matches(uuid,bigint,jsonb)",
+            "mdm_apple.platform_registration_matches(p_source uuid,p_version bigint,p_binding jsonb)",
+        ),
+    ] {
+        let original: String = sqlx::query_scalar("SELECT pg_get_functiondef(to_regprocedure($1))")
+            .bind(signature)
+            .fetch_one(&mut root)
+            .await?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE OR REPLACE FUNCTION {declaration} RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog AS 'SELECT true'"))).execute(&mut root).await?;
+        let admitted = crate::Database::connect(config.access_options()?, &config.audit).await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(original))
+            .execute(&mut root)
+            .await?;
+        let rejected = match admitted {
+            Ok(db) => {
+                db.close().await;
+                false
+            }
+            Err(_) => true,
+        };
+        ensure!(rejected, "always-allow authority accepted: {signature}");
+        connected(&config).await?;
+    }
     root.close().await?;
     Ok(())
 }
@@ -166,7 +184,7 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     .await?;
     // Equivalent subquery rendering and an ordinary index change the old snapshot.
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE OR REPLACE VIEW mdm_apple.profile_qualifications WITH(security_barrier=true) AS SELECT * FROM ({}) equivalent", view.trim().trim_end_matches(';')))).execute(&mut root).await?;
-    sqlx::raw_sql("CREATE INDEX restore_diagnostic_index ON mdm_commands.operations(tenant_id)")
+    sqlx::raw_sql("ALTER INDEX mdm.inventory_source RENAME TO restored_source_lookup; CREATE INDEX restore_diagnostic_index ON mdm_commands.operations(tenant_id)")
         .execute(&mut root)
         .await?;
     root.close().await?;
@@ -176,9 +194,9 @@ async fn product_restarts_and_restores_without_structural_snapshot() -> Result<(
     connection_fence(&mut root, &journal, true).await?;
     no_writers(&mut root).await?;
     root.close().await?;
-    archive::capture(&journal, &admin).await?;
-    let hash = archive::seal(&journal, Uuid::new_v4())?;
-    archive::verify(&journal, &hash)?;
+    // This case proves the database seam; the complete bundle has its own backup tests.
+    let backup = archive::capture(&journal, &admin).await?;
+    let hash = backup.sha256;
     telemetry_fixture::recreate(&admin).await?;
     let mut root = sqlx::PgConnection::connect_with(&admin.options()?).await?;
     reserve_restore(&mut root, Uuid::new_v4(), &hash).await?;

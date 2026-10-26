@@ -13,6 +13,12 @@ pub const OUTBOX_MIGRATION_SQL: &str = include_str!("../migrations/outbox.sql");
 use rss_mdm_backend_postgres_support::{Admission, BackendKind, BackendStorage};
 const STORAGE: BackendStorage = BackendStorage::new(BackendKind::Policy);
 const ADMISSION: Admission = Admission {
+    required_keys: &[
+        ("policies", &["tenant_id", "id"]),
+        ("versions", &["tenant_id", "id"]),
+        ("triggers", &["tenant_id", "id"]),
+        ("requests", &["tenant_id", "id"]),
+    ],
     tables: &["policies", "requests", "triggers", "versions"],
     update_columns: &[
         "policies.revision",

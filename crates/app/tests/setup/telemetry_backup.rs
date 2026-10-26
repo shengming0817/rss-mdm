@@ -1,4 +1,4 @@
-//! Exercises the joint stopped-data seam with an actual published host projection.
+//! Exercises provider recovery with an actual published host projection.
 //! Installation/control-plane publication is covered by its own installation T2 cases.
 use super::*;
 use anyhow::{Context, ensure};
@@ -95,8 +95,12 @@ pub(crate) async fn roundtrip(
     telemetry::capture(&frozen, &journal)
         .await
         .context("capture telemetry")?;
-    let hash = archive::seal(&journal, frozen.request.operation_id)?;
-    archive::verify(&journal, &hash)?;
+    // Provider restore verifies its own archive; the full bundle is proven by backup tests.
+    let provider = Journal::open(&journal.path("telemetry-0")?)?;
+    let backup: archive::DatabaseBackup = provider
+        .load("database-backup.json")?
+        .ok_or_else(|| anyhow::anyhow!("missing provider archive"))?;
+    let hash = backup.sha256;
 
     restore_and_readmit(&journal, &frozen, &administrator, &profile, &root, hash).await
 }

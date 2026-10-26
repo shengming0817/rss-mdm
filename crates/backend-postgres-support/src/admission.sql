@@ -44,25 +44,11 @@ SELECT
  LATERAL aclexplode(a.attacl) acl WHERE acl.grantee=0
  OR (acl.grantee IN(SELECT oid FROM reachable) AND acl.is_grantable))
  -- These keys are required by tenant-addressed reads, conflict handling and replay.
- AND NOT EXISTS(SELECT 1 FROM (VALUES
- ('mdm_policy.policies',ARRAY['tenant_id','id']::text[]),
- ('mdm_policy.versions',ARRAY['tenant_id','id']::text[]),
- ('mdm_policy.triggers',ARRAY['tenant_id','id']::text[]),
- ('mdm_policy.requests',ARRAY['tenant_id','id']::text[]),
- ('mdm_resource.aggregates',ARRAY['tenant_id','id']::text[]),
- ('mdm_resource.immutable',ARRAY['tenant_id','owner','kind','key']::text[]),
- ('mdm_resource.requests',ARRAY['tenant_id','id']::text[]),
- ('mdm_resource.artifact_refs',ARRAY['tenant_id','owner','version','sha256','length']::text[]),
- ('mdm_resource.field_refs',ARRAY['tenant_id','owner','version','field']::text[]),
- ('mdm_resource.profile_refs',ARRAY['tenant_id','owner','version','target','target_version']::text[]),
- ('mdm_software_release.aggregates',ARRAY['tenant_id','id']::text[]),
- ('mdm_software_release.immutable',ARRAY['tenant_id','owner','kind','key']::text[]),
- ('mdm_software_release.requests',ARRAY['tenant_id','id']::text[])
- ) required(relation,columns) WHERE split_part(required.relation,'.',1)=$1::text AND NOT EXISTS(
- SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(required.relation)
+ AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements($4::jsonb) required(key) WHERE NOT EXISTS(
+ SELECT 1 FROM pg_index i WHERE i.indrelid=to_regclass(format('%I.%I',$1::text,required.key->>0))
  AND i.indisunique AND i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
  AND i.indpred IS NULL AND i.indexprs IS NULL
  AND (SELECT array_agg(a.attname::text ORDER BY k.ordinality)
  FROM unnest(i.indkey::smallint[]) WITH ORDINALITY k(num,ordinality)
  JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=k.num
- WHERE k.ordinality<=i.indnkeyatts)=required.columns))
+ WHERE k.ordinality<=i.indnkeyatts)=ARRAY(SELECT jsonb_array_elements_text(required.key->1))))

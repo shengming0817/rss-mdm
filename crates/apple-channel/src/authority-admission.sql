@@ -2,7 +2,8 @@
 WITH expected(signature,language,result,definer,returns_set,volatility,names,config,body,roles) AS (VALUES
  ('mdm_apple.account_current(uuid,uuid,bigint,uuid,text)', 'plpgsql', 'boolean', true, false, 'v', ARRAY['p_tenant','p_enrollment','p_version','p_flow','p_hash']::text[], ARRAY['search_path=pg_catalog']::text[], $1::text, ARRAY['mdm_access','mdm_command_runtime','mdm_owner']::text[]),
  ('mdm_apple.application_valid_until(uuid,jsonb,bigint)', 'sql', 'bigint', true, false, 's', ARRAY['registration','config','as_of']::text[], ARRAY['search_path=pg_catalog']::text[], $2::text, ARRAY['mdm_access','mdm_command_runtime','mdm_identity_runtime','mdm_owner']::text[]),
- ('mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)', 'sql', 'record', true, true, 's', ARRAY['p_source','config','as_of','tenant_id','instance_id','principal_id','binding_id','binding_generation','source_id','source_version','valid_until']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[])
+ ('mdm_apple.platform_session_qualifications(uuid,jsonb,bigint)', 'sql', 'record', true, true, 's', ARRAY['p_source','config','as_of','tenant_id','instance_id','principal_id','binding_id','binding_generation','source_id','source_version','valid_until']::text[], ARRAY['search_path=pg_catalog']::text[], $3::text, ARRAY['mdm_access','mdm_identity_runtime','mdm_owner']::text[]),
+ ('mdm_apple.platform_registration_matches(uuid,bigint,jsonb)', 'sql', 'boolean', true, false, 's', ARRAY['p_source','p_version','p_binding']::text[], ARRAY['search_path=pg_catalog']::text[], $4::text, ARRAY['mdm_command_runtime','mdm_owner']::text[])
 )
 SELECT e.signature FROM expected e
 LEFT JOIN pg_proc p ON p.oid=to_regprocedure(e.signature)

@@ -299,6 +299,7 @@ impl BackendStorage {
                         .bind(schema)
                         .bind(policy.tables)
                         .bind(policy.update_columns)
+                        .bind(serde_json::json!(policy.required_keys))
                         .fetch_one(c)
                         .await
                 })
