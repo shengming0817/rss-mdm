@@ -1881,7 +1881,7 @@ consume(('crates/query-postgres/src/lib.rs',), 'planning.http')
 consume(('crates/resource/src/directory.rs',), 'planning.http software.http')
 consume(('crates/flow-service/src/action_admission.rs',), 'planning.http planning.policy')
 T1_INPUTS += ('crates/query/tests/*', 'crates/query-postgres/tests/*', 'crates/http-contract/tests/*',
-              'crates/resource/tests/directory.rs', 'crates/management-http/examples/resource_query.rs', 'crates/management-http/examples/management_capabilities.rs')
+              'crates/resource/tests/directory.rs', 'crates/management-http/examples/*')
 consume(('crates/management-http/src/execution/actions/http.rs',), 'execution.agent.history')
 
 
@@ -2077,7 +2077,9 @@ for selector in (
 
 consume(('crates/agent-wire/src/addressing.rs',), 'planning.http planning.self_service policy.persistence')
 
-T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',)
+T1_INPUTS += ('crates/agent-wire/examples/protocol_schema.rs',
+              'crates/app/examples/http_contract.rs',
+              'crates/management-http/tests/http_contract.rs')
 
 # Remaining management query owners; route declarations alone do not imply business coverage.
 consume(('crates/authorization-service/src/directory.rs',), 'authorization.rules authorization.membership authorization.capacity authorization.programmatic')
