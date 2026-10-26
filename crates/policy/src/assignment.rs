@@ -323,6 +323,8 @@ fn default_schedule() -> Schedule {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Complete authored Policy definition, without execution progress.
 pub struct Definition {
+    /// Explicit named trigger, independent of the regular schedule and unique alias.
+    pub custom_event: Option<rss_mdm_agent_wire::runtime::PolicyEventName>,
     /// Optional unique tenant-local address, distinct from presentation text.
     pub alias: Option<rss_mdm_agent_wire::runtime::PolicyAlias>,
     /// Opaque Scope identity; Scope alone owns membership and entry coordinates.
@@ -347,6 +349,9 @@ impl Definition {
             return Err(Error::Malformed);
         }
         self.action.validate()?;
+        if self.custom_event.is_some()
+            && matches!(&self.action, Action::Execution { parameters, .. } if parameters.has_input())
+        { return Err(Error::Malformed); }
         if matches!(
             self.action,
             Action::Software {

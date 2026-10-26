@@ -138,3 +138,23 @@ pub struct SelfServiceResolve {
     /// One explicit address.
     pub selector: CapabilitySelector,
 }
+
+/// Tenant-local event name shared by any number of Policies; never an object alias.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+pub struct PolicyEventName(String);
+impl PolicyEventName {
+    /// Use the same canonical spelling as other enterprise names.
+    pub fn parse(value: &str) -> Result<Self, WireError> {
+        Ok(Self(PolicyAlias::parse(value)?.as_str().to_owned()))
+    }
+    /// Canonical event name used by the Policy index.
+    pub fn as_str(&self) -> &str { &self.0 }
+}
+impl TryFrom<String> for PolicyEventName {
+    type Error = WireError;
+    fn try_from(value: String) -> Result<Self, Self::Error> { Self::parse(&value) }
+}
+impl From<PolicyEventName> for String {
+    fn from(value: PolicyEventName) -> Self { value.0 }
+}
